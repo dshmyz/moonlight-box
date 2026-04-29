@@ -1,12 +1,12 @@
 <template>
-  <el-table :data="packages" v-loading="loading" style="width: 100%">
+  <el-table :data="packages" v-loading="loading" style="width: 100%" empty-text="暂无数据">
     <el-table-column prop="name" label="包名" min-width="200">
       <template #default="{ row }">
         <div>
           <div class="package-name" @click="$emit('view-detail', row)">
             {{ row.name }}
           </div>
-          <div class="package-description">{{ row.description }}</div>
+          <div class="package-description">{{ row.description || '暂无描述' }}</div>
         </div>
       </template>
     </el-table-column>
@@ -43,6 +43,8 @@
 
 <script setup lang="ts">
 import type { Package } from '@/api/package'
+import { formatNumber, formatDate } from '@/utils/format'
+import { getPackageTypeColor } from '@/constants/package'
 
 defineProps<{
   packages: Package[]
@@ -55,24 +57,7 @@ defineEmits<{
 }>()
 
 const getTypeTag = (type: string) => {
-  const tagMap: Record<string, string> = {
-    npm: 'primary',
-    maven: 'danger',
-    pypi: 'success',
-    go: 'warning',
-    nuget: 'info',
-  }
-  return tagMap[type] || 'info'
-}
-
-const formatNumber = (num: number) => {
-  if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M'
-  if (num >= 1000) return (num / 1000).toFixed(1) + 'K'
-  return num.toString()
-}
-
-const formatDate = (date: string) => {
-  return new Date(date).toLocaleDateString('zh-CN')
+  return getPackageTypeColor(type)
 }
 </script>
 

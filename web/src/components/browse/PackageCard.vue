@@ -2,7 +2,7 @@
   <div class="package-card" @click="$emit('click')">
     <div class="card-main">
       <div class="card-header">
-        <el-tag :type="getTypeColor(pkg.type)" size="small" effect="plain" class="type-tag">
+        <el-tag :type="getPackageTypeColor(pkg.type)" size="small" effect="plain" class="type-tag">
           {{ getPackageTypeLabel(pkg.type) }}
         </el-tag>
         <span class="package-name">{{ pkg.name }}</span>
@@ -32,6 +32,8 @@
 <script setup lang="ts">
 import { Download, PriceTag, Clock } from '@element-plus/icons-vue'
 import type { Package } from '@/api/package'
+import { formatNumber, formatRelativeTime } from '@/utils/format'
+import { getPackageTypeColor, getPackageTypeLabel } from '@/constants/package'
 
 defineProps<{
   pkg: Package
@@ -40,48 +42,6 @@ defineProps<{
 defineEmits<{
   click: []
 }>()
-
-function getTypeColor(type: string) {
-  const t = type === 'maven' ? 'maven2' : type
-  const colors: Record<string, string> = {
-    npm: '',
-    maven2: 'success',
-    pypi: 'warning',
-    go: 'info',
-  }
-  return colors[t] || 'info'
-}
-
-function getPackageTypeLabel(type: string) {
-  const t = type === 'maven' ? 'maven2' : type
-  const labels: Record<string, string> = {
-    npm: 'npm',
-    maven2: 'Maven',
-    pypi: 'PyPI',
-    go: 'Go',
-  }
-  return labels[t] || type
-}
-
-function formatNumber(num: number) {
-  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`
-  return String(num)
-}
-
-function formatRelativeTime(timeStr: string) {
-  const date = new Date(timeStr)
-  const now = new Date()
-  const diffMs = now.getTime() - date.getTime()
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
-
-  if (diffDays < 0) return date.toLocaleDateString('zh-CN')
-  if (diffDays === 0) return 'Today'
-  if (diffDays === 1) return 'Yesterday'
-  if (diffDays < 30) return `${diffDays}d ago`
-  if (diffDays < 365) return `${Math.floor(diffDays / 30)}mo ago`
-  return `${Math.floor(diffDays / 365)}y ago`
-}
 </script>
 
 <style scoped>
