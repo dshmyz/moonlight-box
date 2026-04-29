@@ -1,0 +1,365 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/validate-command.js\"",
+            "timeout": 5
+          }
+        ],
+        "description": "命令验证: 阻止危险命令 (rm -rf /, git push --force 等)"
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/pause-before-push.js\"",
+            "timeout": 5
+          }
+        ],
+        "description": "推送确认: git push 前暂停确认"
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/check-secrets.js\"",
+            "timeout": 10,
+            "statusMessage": "检查密钥泄露..."
+          }
+        ],
+        "description": "密钥检测: 检查命令中是否包含 API 密钥等敏感信息"
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/protect-files.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "文件保护: 阻止修改敏感文件 (.env, .key, .git/ 等)"
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/block-random-md.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "Markdown 文件保护: 阻止在根目录创建随机 .md 文件"
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/long-running-warning.js\"",
+            "timeout": 5
+          }
+        ],
+        "description": "长时间命令警告: 检测开发服务器、watch 等长时间运行命令"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/format-file.js\"",
+            "timeout": 60,
+            "statusMessage": "格式化代码..."
+          }
+        ],
+        "description": "自动格式化: 文件写入后自动格式化代码"
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/auto-archive.js\"",
+            "timeout": 5
+          }
+        ],
+        "description": "自动归档: progress.md 超过 300 行时提醒归档"
+      },
+      {
+        "matcher": "Write|Edit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/observe-patterns.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "模式观察: 追踪工具调用模式，写入 memory-bank/observations.jsonl 供 /learn 消费"
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/suggest-compact.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "压缩提醒: 工具调用达到阈值时提醒压缩上下文 (官方 auto-compact bug 的 workaround)"
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/check-console-log.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "调试日志检查: 检查 JS/TS 文件中的 console.log 语句"
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/typescript-check.js\"",
+            "timeout": 30,
+            "statusMessage": "TypeScript 类型检查..."
+          }
+        ],
+        "description": "TypeScript 类型检查: .ts 文件编辑后运行 tsc --noEmit"
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/user-prompt-submit.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "上下文注入: 用户提交提示时注入项目状态信息"
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/session-check.js\"",
+            "timeout": 5
+          }
+        ],
+        "description": "会话检查: 启动时检查文件更新状态和项目配置"
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/stop-check.js\"",
+            "timeout": 5
+          }
+        ],
+        "description": "遗漏检查: 响应完成时检查 progress.md 中未完成任务"
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/subagent-stop.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "子代理追踪: 子代理完成时记录任务状态"
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/pre-compact.js\"",
+            "timeout": 10,
+            "statusMessage": "保存压缩前状态..."
+          }
+        ],
+        "description": "压缩前保存: 压缩前保存 git 状态、任务列表等到 .pre-compact-state.json"
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/post-compact.js\"",
+            "timeout": 5
+          }
+        ],
+        "description": "压缩后恢复: 读取压缩前状态并输出恢复信息（分支、任务、修改文件）"
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/post-tool-failure.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "失败追踪: 工具调用失败后记录错误模式，检测重复失败（红旗增强）"
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/notification-handler.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "通知处理: 记录和处理 Claude Code 通知事件"
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/subagent-start.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "子代理启动: 记录子代理启动信息，与 SubagentStop 配对追踪生命周期"
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/evaluate-session.js\"",
+            "timeout": 30
+          }
+        ],
+        "description": "会话评估: 会话结束时评估并提取可学习的模式"
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/permission-request.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "权限请求: 记录工具权限请求信息"
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/permission-denied.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "权限拒绝: 记录被拒绝的权限请求到 observations.jsonl"
+      }
+    ],
+    "InstructionsLoaded": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/instructions-loaded.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "指令加载: 验证指令加载并注入插件版本信息"
+      }
+    ],
+    "FileChanged": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/file-changed.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "文件变更: 检测外部文件修改并提醒用户"
+      }
+    ],
+    "CwdChanged": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/cwd-changed.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "目录切换: 记录工作目录变更"
+      }
+    ],
+    "ConfigChange": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/config-change.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "配置变更: 检测配置文件修改并提醒重新加载"
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/node/hooks/task-completed.js\"",
+            "timeout": 3
+          }
+        ],
+        "description": "任务完成: 记录任务完成事件到 observations.jsonl"
+      }
+    ]
+  }
+}

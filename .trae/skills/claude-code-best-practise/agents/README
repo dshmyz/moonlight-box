@@ -1,0 +1,423 @@
+# Agents 子代理系统指南
+
+子代理是专门处理特定任务的 AI 助手，拥有独立的上下文窗口、自定义系统提示、特定工具访问和独立权限。
+
+## Skill vs Agent：核心区别
+
+> **重要**：理解 Skill 和 Agent 的区别是正确使用本插件的关键。
+
+| 维度         | Skill（技能）            | Agent（代理）      |
+| ------------ | ------------------------ | ------------------ |
+| **本质**     | 知识库 / 参考文档        | 执行者 / 独立助手  |
+| **作用**     | 提供清单、模式、最佳实践 | 主动分析、产出报告 |
+| **上下文**   | 注入到当前对话           | 独立上下文窗口     |
+| **调用方式** | 自动加载或 `/skill-name` | `Task` 工具委派    |
+| **消耗**     | 不额外消耗 token         | 独立 token 消耗    |
+| **适用场景** | 需要参考指南时           | 需要独立执行任务时 |
+
+### 配对关系与架构模式
+
+本插件中存在功能相关的 Skill-Agent 配对。**推荐架构**：Agent 通过 `skills:` 字段预加载相关 Skill，避免内容重复。
+
+| Skill                    | Agent                   | 架构模式                                                    |
+| ------------------------ | ----------------------- | ----------------------------------------------------------- |
+| `architecture`           | `architect`             | ✅ Agent 预加载 Skill（`skills: [architecture, exploration]`） |
+| `security`               | `security-reviewer`     | ✅ Agent 预加载 Skill（`skills: [security]`）               |
+| `testing`                | `tdd-guide`             | ✅ Agent 预加载 Skill（`skills: [testing]`）                |
+| `debug`                  | `build-error-resolver`  | ✅ Agent 预加载 Skill（`skills: [debug]`）                  |
+| -                        | `code-reviewer`         | 独立 Agent，无对应 Skill                                    |
+| -                        | `code-simplifier`       | 独立 Agent，无对应 Skill                                    |
+| -                        | `planner`               | 独立 Agent，与 `/lead` 命令配合                             |
+| -                        | `requirement-validator` | 独立 Agent，与 `/pm` 命令配合                               |
+
+#### 架构优势
+
+```yaml
+# Agent 定义（精简版）
+---
+name: security-reviewer
+skills:
+  - security # Skill 内容自动注入到 Agent 上下文
+---
+# Agent 只定义：行为准则 + 核心职责 + 输出格式
+# Skill 提供：详细知识库 + 代码示例 + 检查清单
+```
+
+- **避免重复**：知识内容只在 Skill 中维护一份
+- **职责分离**：Agent 定义"怎么做"，Skill 定义"做什么"
+- **易于维护**：更新 Skill 自动影响所有引用它的 Agent
+
+### 使用建议
+
+```
+# 需要了解安全最佳实践？→ 使用 Skill
+/security  # 加载安全检查清单到上下文
+
+# 需要自动扫描代码安全问题？→ 使用 Agent
+Task: security-reviewer  # 委派 Agent 执行扫描
+# Agent 已预加载 security Skill，无需额外加载
+```
+
+## 为什么使用子代理？
+
+- **保持上下文干净**：复杂任务在子代理中执行，只返回精炼结果
+- **强制约束**：限制工具访问和权限
+- **复用配置**：定义一次，多次使用
+- **控制成本**：为不同任务选择合适的模型
+
+## 目录结构
+
+```
+agents/
+├── README                     # 本文档
+├── architect.md               # 架构师代理
+├── build-error-resolver.md    # 构建错误解析代理
+├── code-reviewer.md           # 代码审查代理
+├── code-simplifier.md         # 代码简化代理
+├── planner.md                 # 规划代理
+├── requirement-validator.md   # 需求验证代理
+├── security-reviewer.md       # 安全审查代理
+└── tdd-guide.md               # TDD 指导代理
+```
+
+## Agent Frontmatter 字段
+
+```yaml
+---
+name: my-agent
+description: 代理描述，说明何时委托给此代理
+tools: Read, Glob, Grep, Bash
+disallowedTools: Write, Edit
+model: sonnet
+permissionMode: default
+skills:
+  - api-conventions
+  - error-handling
+color: blue
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "./scripts/validate.sh"
+---
+代理指令内容...
+```
+
+### 字段说明
+
+| 字段              | 必需 | 说明                                                     |
+| ----------------- | ---- | -------------------------------------------------------- |
+| `name`            | 是   | 唯一标识符（小写字母和连字符）                           |
+| `description`     | 是   | 何时委托给此代理。Claude 用于决策                        |
+| `tools`           | 否   | 代理可使用的工具；省略则继承所有                         |
+| `disallowedTools` | 否   | 禁止的工具                                               |
+| `model`           | 否   | 使用的模型：`sonnet`、`opus`、`haiku`、`inherit`（默认） |
+| `permissionMode`  | 否   | 权限模式（见下方）                                       |
+| `skills`          | 否   | 预加载到代理上下文的技能                                 |
+| `hooks`           | 否   | 作用域限定于此代理的生命周期钩子                         |
+| `color`           | 否   | UI 显示颜色：`red`/`blue`/`green`/`yellow`/`magenta`/`cyan`/`white` |
+
+## 权限模式
+
+| 模式                | 行为                         |
+| ------------------- | ---------------------------- |
+| `default`           | 标准权限检查，有提示         |
+| `acceptEdits`       | 自动接受文件编辑             |
+| `dontAsk`           | 自动拒绝权限提示             |
+| `bypassPermissions` | 跳过所有权限检查（谨慎使用） |
+| `plan`              | 规划模式（只读探索）         |
+
+## 内置子代理
+
+| 代理              | 模型  | 工具 | 用途                           |
+| ----------------- | ----- | ---- | ------------------------------ |
+| `Explore`         | Haiku | 只读 | 文件发现、代码搜索、代码库探索 |
+| `Plan`            | 继承  | 只读 | 规划模式期间的代码库研究       |
+| `general-purpose` | 继承  | 所有 | 需要探索和操作的复杂多步任务   |
+| `Bash`            | 继承  | Bash | 在单独上下文中运行终端命令     |
+
+## 工具控制
+
+### 允许特定工具
+
+```yaml
+tools: Read, Grep, Glob, Bash
+```
+
+### 禁止特定工具
+
+```yaml
+disallowedTools: Write, Edit
+```
+
+### 使用钩子进行条件验证
+
+```yaml
+---
+name: db-reader
+description: 执行只读数据库查询
+tools: Bash
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "./scripts/validate-readonly-query.sh"
+---
+```
+
+钩子通过 stdin 接收 JSON：
+
+```json
+{
+  "tool_input": {
+    "command": "SELECT * FROM users"
+  }
+}
+```
+
+退出码 2 阻止操作。
+
+## 技能集成
+
+预加载技能到子代理：
+
+```yaml
+---
+name: api-developer
+description: 按照团队规范实现 API 端点
+skills:
+  - api-conventions
+  - error-handling-patterns
+---
+实现 API 端点。遵循预加载技能中的规范和模式。
+```
+
+**关键点**：
+
+- 完整技能内容注入到子代理上下文（不只是可用）
+- 子代理不继承父对话的技能
+- 必须显式列出技能
+
+## 子代理中的 Hooks
+
+### 代理级别钩子（Frontmatter）
+
+仅在该代理活跃时运行：
+
+```yaml
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "./scripts/validate-command.sh"
+  PostToolUse:
+    - matcher: "Edit|Write"
+      hooks:
+        - type: command
+          command: "./scripts/run-linter.sh"
+  SessionEnd:
+    - type: command
+      command: "./scripts/cleanup.sh"
+```
+
+### 项目级别钩子（settings.json）
+
+响应子代理生命周期事件：
+
+```json
+{
+  "hooks": {
+    "SubagentStart": [
+      {
+        "matcher": "db-agent",
+        "hooks": [{ "type": "command", "command": "./scripts/setup-db.sh" }]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "db-agent",
+        "hooks": [{ "type": "command", "command": "./scripts/cleanup-db.sh" }]
+      }
+    ]
+  }
+}
+```
+
+## 执行模式
+
+### 前台（阻塞）
+
+- 阻塞主对话直到完成
+- 权限提示传递给用户
+- MCP 工具可用
+
+### 后台（并发）
+
+- 与主对话并行运行
+- 继承父级的预批准权限
+- 自动拒绝未批准的操作
+- MCP 工具**不可用**
+- 如果权限失败可以恢复到前台
+
+**触发后台运行**：
+
+- 请求 Claude："在后台运行"
+- 任务运行时按 **Ctrl+B**
+
+## 恢复子代理
+
+恢复的子代理保留完整对话历史、工具调用和推理：
+
+```
+用户: 使用 code-reviewer 子代理审查认证模块
+[代理完成]
+
+用户: 继续那个代码审查，现在分析授权逻辑
+[Claude 恢复相同子代理，保留上下文]
+```
+
+## 并行执行 | Parallel Execution
+
+多个独立任务可以并行执行，显著提升效率。
+
+### 并行执行条件
+
+任务满足以下条件时可以并行：
+
+- **独立性**: 任务之间无数据依赖
+- **无共享状态**: 不修改相同文件
+- **无顺序要求**: 执行顺序不影响结果
+
+### 并行执行示例
+
+```
+# 单消息发起多个并行 Agent
+Task: code-reviewer  → 审查模块 A
+Task: code-reviewer  → 审查模块 B
+Task: security-reviewer → 安全扫描
+
+# Claude 会在单次响应中发起所有任务
+```
+
+### 最佳实践
+
+| 场景                | 推荐方式                   |
+| ------------------- | -------------------------- |
+| 多模块代码审查      | 并行启动多个 code-reviewer |
+| 代码审查 + 安全扫描 | 并行（独立任务）           |
+| 规划 → 实现         | 串行（有依赖）             |
+| 测试 → 提交         | 串行（需要测试通过）       |
+
+### 注意事项
+
+1. **并行数量限制**: 建议同时不超过 3-5 个 Agent
+2. **资源竞争**: 避免多个 Agent 同时修改同一文件
+3. **结果合并**: 并行任务完成后，主会话负责合并结果
+4. **错误处理**: 单个 Agent 失败不影响其他并行任务
+
+## 何时使用子代理
+
+**使用主对话**：
+
+- 需要频繁来回交互的任务
+- 共享大量上下文的多阶段任务
+- 快速、针对性的修改
+- 延迟敏感场景
+
+**使用子代理**：
+
+- 产生大量你不需要的输出的任务
+- 强制特定工具限制
+- 返回摘要的自包含工作
+- 隔离高流量操作
+
+**注意**：子代理不能生成其他子代理。
+
+## 模板中的代理
+
+| 代理                    | 模型   | 工具 | 用途                                                                   |
+| ----------------------- | ------ | ---- | ---------------------------------------------------------------------- |
+| `architect`             | Opus   | 读写 | 系统架构设计、ADR 创建、可扩展性评估                                   |
+| `build-error-resolver`  | Sonnet | 读写 | 构建/编译错误诊断和修复                                                |
+| `code-reviewer`         | Opus   | 只读 | 深度代码审查 + 多语言专项检查 (Go/Python/Java/TS/C#/React/Vue/Angular) |
+| `code-simplifier`       | Opus   | 读写 | 代码简化和重构                                                         |
+| `planner`               | Opus   | 只读 | 任务规划和分解                                                         |
+| `requirement-validator` | Sonnet | 只读 | 需求文档验证                                                           |
+| `security-reviewer`     | Opus   | 只读 | 安全漏洞检查                                                           |
+| `tdd-guide`             | Sonnet | 读写 | TDD 指导和测试编写                                                     |
+
+## 调用方式
+
+通过 Task 工具调用（官方标准方式）：
+
+```
+使用 Task 工具调用 code-simplifier agent:
+- subagent_type: "cc-best:code-simplifier"
+- prompt: "简化代码"
+```
+
+或在 command body 中使用自然语言指导：
+
+```markdown
+完成后，使用 Task 工具调用 code-reviewer agent 进行代码审查
+```
+
+> **说明**：使用 `插件名:agent名` 格式确保正确定位。
+
+---
+
+## 与官方插件的配合
+
+本地 agents **无需安装任何插件即可独立工作**。安装官方插件后可获得增强功能：
+
+| 本地 Agent              | 官方插件            | 配合策略                                               |
+| ----------------------- | ------------------- | ------------------------------------------------------ |
+| `architect`             | -                   | 本地独有，与 `/lead` 命令配合                          |
+| `build-error-resolver`  | -                   | 本地独有，与 `/build` `/fix` 命令配合                  |
+| `code-reviewer`         | `code-review`       | 本地：快速审查、可定制检查项；插件：深度分析、自动触发 |
+| `code-simplifier`       | `code-simplifier`   | 功能相似，插件上下文更丰富                             |
+| `planner`               | -                   | 本地独有，与 `/lead` 命令配合                          |
+| `requirement-validator` | -                   | 本地独有，与 `/pm` 命令配合                            |
+| `security-reviewer`     | `security-guidance` | 本地：OWASP 清单检查；插件：智能安全分析               |
+| `tdd-guide`             | -                   | 本地独有，无官方对应                                   |
+
+### 使用策略
+
+**未安装插件时**：
+
+- Claude 自动委派本地 agents 执行相应任务
+- 功能完整，无需额外配置
+
+**安装插件后**：
+
+- 本地 agent 做快速、即时的检查
+- 插件做深度、智能的分析
+- 两者结果互补
+
+### 推荐插件配置
+
+在 `.claude/settings.json` 中启用：
+
+```json
+{
+  "enabledPlugins": {
+    "code-review@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true
+  }
+}
+```
+
+详细说明见 `.claude-plugin/PLUGIN-INTEGRATION.md`
+
+## /agents 命令
+
+运行 `/agents` 可以：
+
+- 查看所有子代理（内置、用户、项目、插件）
+- 使用引导设置或 Claude 生成创建新代理
+- 编辑现有配置和工具访问
+- 删除自定义代理
+- 查看哪些代理处于活跃状态

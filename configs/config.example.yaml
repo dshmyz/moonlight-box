@@ -1,0 +1,47 @@
+server:
+  host: 0.0.0.0
+  port: 9081
+  mode: debug  # debug / release / test
+  read_timeout: 30s
+  write_timeout: 30s
+
+database:
+  driver: sqlite  # sqlite / postgres
+  dsn: "./data/registry.db"
+  # postgres:
+  #   host: localhost
+  #   port: 5432
+  #   database: moonlight
+  #   username: registry
+  #   password: your-password
+
+storage:
+  backend: local  # local / s3
+  local:
+    base_path: "./data/packages"
+    max_size_gb: 100
+
+auth:
+  jwt_secret: change-me-in-production-use-random-string
+  token_expiry: 24h
+  refresh_expiry: 168h
+  min_password_len: 8
+  max_login_attempts: 5
+  lockout_duration: 15m
+
+security:
+  enabled: true
+  scan_on_upload: false  # Phase 2 启用
+  block_critical: true
+  block_high: true
+
+cache:
+  enabled: true
+  default_ttl: 24h
+  max_size_gb: 10
+  eviction_policy: lru  # lru / fifo / ttl
+
+logging:
+  level: info  # debug / info / warn / error
+  format: console  # console / json
+  output: stdout

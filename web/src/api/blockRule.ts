@@ -1,0 +1,49 @@
+import request from './request'
+
+export interface BlockRule {
+  id: number
+  package_name: string
+  version: string
+  match_type: 'exact' | 'wildcard'
+  package_type: string
+  reason: string
+  enabled: boolean
+  created_by?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface BlockRuleCreateParams {
+  package_name: string
+  version: string
+  match_type: 'exact' | 'wildcard'
+  package_type: string
+  reason: string
+  enabled?: boolean
+}
+
+export const blockRuleApi = {
+  list(params?: { package_name?: string; package_type?: string; enabled?: string }) {
+    return request.get<BlockRule[]>('/block-rules', { params })
+  },
+
+  create(data: BlockRuleCreateParams) {
+    return request.post<BlockRule>('/block-rules', data)
+  },
+
+  batchImport(data: { rules: BlockRuleCreateParams[] }) {
+    return request.post<{ success: number; failed: number; total: number }>('/block-rules/batch-import', data)
+  },
+
+  downloadTemplate() {
+    return request.get('/block-rules/template', { responseType: 'blob' })
+  },
+
+  update(id: number, data: Partial<BlockRule>) {
+    return request.put(`/block-rules/${id}`, data)
+  },
+
+  delete(id: number) {
+    return request.delete(`/block-rules/${id}`)
+  },
+}
