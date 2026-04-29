@@ -24,8 +24,49 @@ export interface SearchResponse {
   search_time_ms: number
 }
 
+export interface PackageVersion {
+  id: number
+  package_id: number
+  version: string
+  status: string
+  storage_path: string
+  size_bytes: number
+  checksum_sha256?: string
+  checksum_md5?: string
+  published_at: string
+  published_by: number
+  metadata?: string
+  download_count: number
+}
+
+export interface VersionListResponse {
+  package_name: string
+  type: string
+  versions: PackageVersion[]
+}
+
 export const packageApi = {
   search(params: { q: string; type?: string; scope?: string; sort?: string; page?: number; page_size?: number }) {
     return request.get<SearchResponse>('/packages/search', { params })
+  },
+
+  getVersions(type: string, name: string) {
+    return request.get<VersionListResponse>(`/packages/${type}/${encodeURIComponent(name)}/versions`)
+  },
+
+  deprecateVersion(versionId: number, reason: string) {
+    return request.post(`/packages/versions/${versionId}/deprecate`, { reason })
+  },
+
+  restoreVersion(versionId: number) {
+    return request.post(`/packages/versions/${versionId}/restore`)
+  },
+
+  yankVersion(versionId: number) {
+    return request.post(`/packages/versions/${versionId}/yank`)
+  },
+
+  deleteVersion(versionId: number) {
+    return request.delete(`/packages/versions/${versionId}`)
   },
 }
