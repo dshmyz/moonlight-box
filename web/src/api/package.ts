@@ -13,6 +13,7 @@ export interface Package {
   homepage?: string
   license?: string
   created_by?: number
+  versions_count?: number
 }
 
 export interface SearchResponse {
