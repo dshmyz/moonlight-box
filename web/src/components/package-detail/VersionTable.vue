@@ -48,11 +48,51 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="80" fixed="right" align="center">
+      <el-table-column label="操作" :width="showAdminActions ? '240' : '80'" fixed="right" align="center">
         <template #default="{ row }">
-          <el-button size="small" type="primary" link @click.stop="$emit('download', row)">
-            下载
-          </el-button>
+          <div class="action-buttons">
+            <el-button size="small" type="primary" link @click.stop="$emit('download', row)">
+              下载
+            </el-button>
+            <template v-if="showAdminActions">
+              <el-button
+                v-if="row.status === 'published'"
+                size="small"
+                type="warning"
+                link
+                @click.stop="handleDeprecate(row)"
+              >
+                废弃
+              </el-button>
+              <el-button
+                v-if="row.status === 'deprecated'"
+                size="small"
+                type="success"
+                link
+                @click.stop="handleRestore(row)"
+              >
+                恢复
+              </el-button>
+              <el-button
+                v-if="row.status === 'published' || row.status === 'deprecated'"
+                size="small"
+                type="danger"
+                link
+                @click.stop="handleYank(row)"
+              >
+                撤回
+              </el-button>
+              <el-button
+                v-if="row.status === 'yanked'"
+                size="small"
+                type="danger"
+                link
+                @click.stop="handleDelete(row)"
+              >
+                删除
+              </el-button>
+            </template>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -72,7 +112,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const props = defineProps<{
   versions: Array<{
@@ -85,11 +125,16 @@ const props = defineProps<{
     status: string
   }>
   selectedVersion: string
+  showAdminActions?: boolean
 }>()
 
 const emit = defineEmits<{
   download: [version: { version: string; published_at: string; downloads: number; is_latest?: boolean; size: number; checksum: string; status: string }]
   select: [version: string]
+  deprecate: [version: { version: string }]
+  restore: [version: { version: string }]
+  yank: [version: { version: string }]
+  delete: [version: { version: string }]
 }>()
 
 const pageSize = 10
@@ -102,6 +147,55 @@ const pagedVersions = computed(() => {
 
 function handleRowClick(row: { version: string }) {
   emit('select', row.version)
+}
+
+function handleDeprecate(row: { version: string }) {
+  ElMessageBox.prompt('请输入废弃原因', '废弃版本', {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    inputPattern: /.+/,
+    inputErrorMessage: '废弃原因不能为空',
+  }).then(({ value }) => {
+    emit('deprecate', { version: row.version, reason: value })
+  }).catch(() => {
+    // 用户取消
+  })
+}
+
+function handleRestore(row: { version: string }) {
+  ElMessageBox.confirm('确定要恢复此版本吗？', '恢复版本', {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    type: 'warning',
+  }).then(() => {
+    emit('restore', row)
+  }).catch(() => {
+    // 用户取消
+  })
+}
+
+function handleYank(row: { version: string }) {
+  ElMessageBox.confirm('撤回后此版本将无法下载，确定要撤回吗？', '撤回版本', {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    type: 'warning',
+  }).then(() => {
+    emit('yank', row)
+  }).catch(() => {
+    // 用户取消
+  })
+}
+
+function handleDelete(row: { version: string }) {
+  ElMessageBox.confirm('删除后无法恢复，确定要删除此版本吗？', '删除版本', {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    type: 'error',
+  }).then(() => {
+    emit('delete', row)
+  }).catch(() => {
+    // 用户取消
+  })
 }
 
 function getStatusType(status: string) {
@@ -210,6 +304,13 @@ async function copyChecksum(checksum: string) {
   display: flex;
   justify-content: center;
   margin-top: 16px;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: center;
 }
 
 :deep(.el-table__row) {

@@ -6,8 +6,13 @@
       <VersionTable
         :versions="versions"
         :selected-version="selectedVersion"
+        :show-admin-actions="isAdminRoute"
         @select="handleSelectVersion"
         @download="handleDownload"
+        @deprecate="handleDeprecate"
+        @restore="handleRestore"
+        @yank="handleYank"
+        @delete="handleDelete"
       />
 
       <el-row :gutter="24">
@@ -25,16 +30,22 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import PackageHeader from '@/components/package-detail/PackageHeader.vue'
 import PackageUsageGuide from '@/components/package-detail/PackageUsageGuide.vue'
 import VersionTable from '@/components/package-detail/VersionTable.vue'
 import PackageInfoSidebar from '@/components/package-detail/PackageInfoSidebar.vue'
 import { ElMessage } from 'element-plus'
+import { packageApi } from '@/api/package'
 
 const route = useRoute()
 const loading = ref(false)
+
+// 判断是否为管理后台路由
+const isAdminRoute = computed(() => {
+  return route.path.startsWith('/admin')
+})
 
 interface PackageInfo {
   id: number
@@ -67,6 +78,60 @@ function handleSelectVersion(version: string) {
 
 function handleDownload(version: VersionInfo) {
   ElMessage.info(`正在下载 ${pkg.value?.name}@${version.version}`)
+}
+
+async function handleDeprecate(data: { version: string; reason: string }) {
+  try {
+    const versionInfo = versions.value.find(v => v.version === data.version)
+    if (versionInfo) {
+      // 这里需要版本ID，暂时使用版本号作为标识
+      // 实际使用时需要从 API 返回的数据中获取版本 ID
+      ElMessage.success(`版本 ${data.version} 已废弃`)
+      versionInfo.status = 'deprecated'
+    }
+  } catch (error) {
+    ElMessage.error('废弃版本失败')
+    console.error('Failed to deprecate version:', error)
+  }
+}
+
+async function handleRestore(data: { version: string }) {
+  try {
+    const versionInfo = versions.value.find(v => v.version === data.version)
+    if (versionInfo) {
+      ElMessage.success(`版本 ${data.version} 已恢复`)
+      versionInfo.status = 'published'
+    }
+  } catch (error) {
+    ElMessage.error('恢复版本失败')
+    console.error('Failed to restore version:', error)
+  }
+}
+
+async function handleYank(data: { version: string }) {
+  try {
+    const versionInfo = versions.value.find(v => v.version === data.version)
+    if (versionInfo) {
+      ElMessage.success(`版本 ${data.version} 已撤回`)
+      versionInfo.status = 'yanked'
+    }
+  } catch (error) {
+    ElMessage.error('撤回版本失败')
+    console.error('Failed to yank version:', error)
+  }
+}
+
+async function handleDelete(data: { version: string }) {
+  try {
+    const index = versions.value.findIndex(v => v.version === data.version)
+    if (index !== -1) {
+      versions.value.splice(index, 1)
+      ElMessage.success(`版本 ${data.version} 已删除`)
+    }
+  } catch (error) {
+    ElMessage.error('删除版本失败')
+    console.error('Failed to delete version:', error)
+  }
 }
 
 onMounted(() => {

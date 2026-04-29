@@ -19,6 +19,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/PackageDetail.vue'),
         meta: { title: '包详情' },
       },
+      {
+        path: 'repo/:name',
+        name: 'RepoConfig',
+        component: () => import('@/views/RepoConfigPage.vue'),
+        meta: { title: '仓库配置' },
+      },
     ],
   },
   {
@@ -45,6 +51,12 @@ const routes: RouteRecordRaw[] = [
         name: 'AdminPackages',
         component: () => import('@/views/PackageList.vue'),
         meta: { title: '包管理' },
+      },
+      {
+        path: 'packages/:type/:name',
+        name: 'AdminPackageDetail',
+        component: () => import('@/views/PackageDetail.vue'),
+        meta: { title: '包详情' },
       },
       {
         path: 'repositories',
