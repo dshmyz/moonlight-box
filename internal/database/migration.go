@@ -16,6 +16,7 @@ func AutoMigrate() error {
 		&model.RolePermission{},
 		&model.Package{},
 		&model.PackageVersion{},
+		&model.PackageFile{},
 		&model.PackageDependency{},
 		&model.AuditLog{},
 		&model.CacheEntry{},
@@ -23,6 +24,13 @@ func AutoMigrate() error {
 		&model.Repository{},
 		&model.RepositoryGroup{},
 		&model.BlockRule{},
+		&model.ScanResult{},
+		&model.Vulnerability{},
+		&model.StorageBackend{},
+		&model.Backup{},
+		&model.Webhook{},
+		&model.WebhookDelivery{},
+		&model.MigrationTask{},
 	)
 }
 
@@ -336,16 +344,28 @@ func insertPackage(repo *model.Repository, userID uint, pkgType model.PackageTyp
 
 	for i, ver := range versions {
 		version := model.PackageVersion{
-			PackageID:      pkg.ID,
-			Version:        ver,
-			Status:         model.StatusPublished,
-			StoragePath:    fmt.Sprintf("%s/%s/%s", pkgType, name, ver),
-			SizeBytes:      int64(100000 + i*50000),
-			ChecksumSHA256: fmt.Sprintf("sha256-%s-%d", name, i),
-			PublishedBy:    userID,
+			PackageID:   pkg.ID,
+			Version:     ver,
+			Status:      model.StatusPublished,
+			StoragePath: fmt.Sprintf("%s/%s/%s", pkgType, name, ver),
+			PublishedBy: userID,
 		}
 
 		if err := DB.Create(&version).Error; err != nil {
+			return err
+		}
+
+		// 创建主文件记录
+		file := model.PackageFile{
+			VersionID:      version.ID,
+			Filename:       fmt.Sprintf("%s-%s.pkg", name, ver),
+			FileType:       model.FileTypePrimary,
+			StoragePath:    fmt.Sprintf("%s/%s/%s/%s-%s.pkg", pkgType, name, ver, name, ver),
+			SizeBytes:      int64(100000 + i*50000),
+			ChecksumSHA256: fmt.Sprintf("sha256-%s-%d", name, i),
+		}
+
+		if err := DB.Create(&file).Error; err != nil {
 			return err
 		}
 	}
