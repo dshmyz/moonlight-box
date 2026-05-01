@@ -1,6 +1,8 @@
 package service
 
 import (
+	"encoding/json"
+
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"gorm.io/gorm"
@@ -25,6 +27,14 @@ func NewRepositoryService(repoRepo *repository.RepositoryRepository, groupRepo *
 // Create 创建仓库，如果是虚拟仓则同时添加成员
 func (s *RepositoryService) Create(repo *model.Repository, members []string) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		// 如果 PackageTypes 非空，取第一个值填充 PackageType（向后兼容）
+		if repo.PackageTypes != "" && repo.PackageType == "" {
+			types := parseJSONStringArray(repo.PackageTypes)
+			if len(types) > 0 {
+				repo.PackageType = types[0]
+			}
+		}
+
 		if err := tx.Create(repo).Error; err != nil {
 			return err
 		}
@@ -57,6 +67,13 @@ func (s *RepositoryService) Get(name string) (*model.Repository, error) {
 
 // Update 更新仓库信息
 func (s *RepositoryService) Update(name string, updates map[string]interface{}) error {
+	// 如果更新了 PackageTypes，同步更新 PackageType
+	if packageTypes, ok := updates["package_types"].(string); ok && packageTypes != "" {
+		types := parseJSONStringArray(packageTypes)
+		if len(types) > 0 {
+			updates["package_type"] = types[0]
+		}
+	}
 	return s.repoRepo.Update(name, updates)
 }
 
@@ -98,4 +115,13 @@ func (s *RepositoryService) GetMembers(virtualRepoName string) ([]model.Reposito
 		return nil, err
 	}
 	return s.groupRepo.GetMembersByVirtualRepo(virtualRepo.ID)
+}
+
+// parseJSONStringArray 解析 JSON 字符串数组
+func parseJSONStringArray(s string) []string {
+	var result []string
+	if err := json.Unmarshal([]byte(s), &result); err != nil {
+		return nil
+	}
+	return result
 }
