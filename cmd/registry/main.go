@@ -15,10 +15,12 @@ import (
 	"github.com/moonlight-box/registry/internal/database"
 	"github.com/moonlight-box/registry/internal/handler"
 	"github.com/moonlight-box/registry/internal/middleware"
+	"github.com/moonlight-box/registry/internal/migration"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/gin-gonic/gin"
 )
@@ -73,6 +75,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 初始化系统配置
+	systemConfigRepo := repository.NewSystemConfigRepository(database.GetDB())
+	configInitializer := service.NewConfigInitializer(systemConfigRepo)
+	if err := configInitializer.InitializeDefaultConfigs(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize configs: %v\n", err)
+		os.Exit(1)
+	}
+
 	// 设置 Gin 模式
 	gin.SetMode(cfg.Server.Mode)
 
@@ -92,11 +102,12 @@ func main() {
 	blockRuleRepo := repository.NewBlockRuleRepository(db)
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
 	cacheSvc := proxy.NewCacheService()
-	tm := proxy.NewTransportManager(cfg.Proxy.ConnectTimeout)
+	dnsResolver := proxy.NewDNSResolver(cfg.Proxy.DNSMapping)
+	tm := proxy.NewTransportManager(cfg.Proxy.ConnectTimeout, dnsResolver)
 	remoteClient := proxy.NewRemoteClient(tm, cfg.Proxy.MaxRedirects)
 
 	// 初始化存储服务（依赖于 storageBackendRepo）
-	storageSvc, err := service.NewStorageService(storageBackendRepo)
+	storageSvc, err := service.NewStorageService(storageBackendRepo, cfg.Storage.Local.BasePath, int64(cfg.Storage.Local.MaxSizeGB))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize storage service: %v\n", err)
 		os.Exit(1)
@@ -150,6 +161,7 @@ func main() {
 	repoHandler := handler.NewRepositoryHandler(repoSvc)
 	cacheHandler := handler.NewCacheHandler(cacheSvc)
 	blockRuleHandler := handler.NewBlockRuleHandler(blockRuleSvc, auditSvc)
+	publicRepoHandler := handler.NewPublicRepoHandler(repoSvc)
 
 	// 初始化存储后端管理服务
 	storageBackendSvc := service.NewStorageBackendService(storageBackendRepo)
@@ -181,8 +193,47 @@ func main() {
 	scanner := service.NewSecurityScanner(scanRepo, packageRepo, blockRuleRepo)
 	securityHandler := handler.NewSecurityHandler(scanner)
 
+	// 初始化备份服务
+	backupRepo := repository.NewBackupRepository(db)
+	backupSvc := service.NewBackupService(backupRepo, cfg.Storage.Local.BasePath, cfg.Storage.Local.BasePath+"/backups")
+	backupHandler := handler.NewBackupHandler(backupSvc)
+
+	// 初始化 Webhook 服务
+	webhookRepo := repository.NewWebhookRepository(db)
+	webhookSvc := service.NewWebhookService(webhookRepo)
+	webhookHandler := handler.NewWebhookHandler(webhookSvc)
+
+	// 初始化系统配置服务
+	systemConfigSvc := service.NewSystemConfigService(systemConfigRepo)
+	systemConfigHandler := handler.NewSystemConfigHandler(systemConfigSvc)
+	systemInfoHandler := handler.NewSystemInfoHandler(version, buildTime, time.Now().Unix())
+
+	// 初始化文件浏览服务
+	fileBrowseHandler := handler.NewFileBrowseHandler(cfg.Storage.Local.BasePath)
+
+	// 初始化调度器服务
+	schedulerSvc := service.NewSchedulerService(backupSvc, systemConfigSvc, webhookSvc)
+
+	// 初始化迁移服务
+	migrationSvc := migration.NewMigrationService(db)
+	migrationWorker := migration.NewMigrationWorker(migrationSvc, 5)
+	migrationHandler := handler.NewMigrationHandler(migrationSvc, migrationWorker)
+
 	// 创建路由器
-	router := setupRouter(cfg, authService, adapters, repoHandler, cacheHandler, blockRuleHandler, searchHandler, dashboardHandler, casHandler, casAdminHandler, blockRuleSvc, storageBackendHandler, securityHandler, auditLogHandler, userHandler, pkgVersionHandler, roleRepo)
+	router := setupRouter(cfg, authService, adapters, repoHandler, cacheHandler, blockRuleHandler, searchHandler, dashboardHandler, casHandler, casAdminHandler, blockRuleSvc, storageBackendHandler, securityHandler, auditLogHandler, userHandler, pkgVersionHandler, roleRepo, publicRepoHandler, backupHandler, webhookHandler, systemConfigHandler, systemInfoHandler, fileBrowseHandler, repoSvc, migrationHandler)
+
+	// 设置 Webhook 服务到适配器
+	for _, adap := range adapters {
+		if webhookAware, ok := adap.(interface{ SetWebhookService(*service.WebhookService) }); ok {
+			webhookAware.SetWebhookService(webhookSvc)
+		}
+	}
+
+	// 启动调度器
+	if err := schedulerSvc.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to start scheduler: %v\n", err)
+	}
+	defer schedulerSvc.Stop()
 
 	// 创建 HTTP 服务器
 	srv := &http.Server{
@@ -215,13 +266,14 @@ func main() {
 	fmt.Println("Server exited")
 }
 
-func setupRouter(cfg *config.Config, authService *service.AuthService, adapters []adapter.Adapter, repoHandler *handler.RepositoryHandler, cacheHandler *handler.CacheHandler, blockRuleHandler *handler.BlockRuleHandler, searchHandler *handler.PackageSearchHandler, dashboardHandler *handler.DashboardHandler, casHandler *handler.CASHandler, casAdminHandler *handler.CASAdminHandler, blockRuleSvc *service.BlockRuleService, storageBackendHandler *handler.StorageBackendHandler, securityHandler *handler.SecurityHandler, auditLogHandler *handler.AuditLogHandler, userHandler *handler.UserHandler, pkgVersionHandler *handler.PackageVersionHandler, roleRepo *repository.RoleRepository) *gin.Engine {
+func setupRouter(cfg *config.Config, authService *service.AuthService, adapters []adapter.Adapter, repoHandler *handler.RepositoryHandler, cacheHandler *handler.CacheHandler, blockRuleHandler *handler.BlockRuleHandler, searchHandler *handler.PackageSearchHandler, dashboardHandler *handler.DashboardHandler, casHandler *handler.CASHandler, casAdminHandler *handler.CASAdminHandler, blockRuleSvc *service.BlockRuleService, storageBackendHandler *handler.StorageBackendHandler, securityHandler *handler.SecurityHandler, auditLogHandler *handler.AuditLogHandler, userHandler *handler.UserHandler, pkgVersionHandler *handler.PackageVersionHandler, roleRepo *repository.RoleRepository, publicRepoHandler *handler.PublicRepoHandler, backupHandler *handler.BackupHandler, webhookHandler *handler.WebhookHandler, systemConfigHandler *handler.SystemConfigHandler, systemInfoHandler *handler.SystemInfoHandler, fileBrowseHandler *handler.FileBrowseHandler, repoSvc *service.RepositoryService, migrationHandler *handler.MigrationHandler) *gin.Engine {
 	r := gin.New()
 
 	// 全局中间件
 	r.Use(middleware.Recovery())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.CORS())
+	r.Use(middleware.PrometheusMiddleware())
 	r.Use(gin.Logger())
 
 	// 初始化 auth handler
@@ -234,6 +286,9 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 			"version": version,
 		})
 	})
+
+	// Prometheus 指标端点
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	// API 路由组
 	api := r.Group("/api/v1")
@@ -251,6 +306,9 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 			public.POST("/login", authHandler.Login)
 			public.POST("/refresh", authHandler.RefreshToken)
 		}
+
+		// 公开仓库配置（无需认证）
+		api.GET("/public/repo/:name", publicRepoHandler.GetRepoConfig)
 
 		// CAS 认证（公开路由）
 		api.GET("/auth/cas/login", casHandler.Login)
@@ -399,19 +457,101 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 			// Dashboard 统计（需要认证）
 			protected.GET("/dashboard/stats", dashboardHandler.GetStats)
+
+			// 备份管理
+			backups := protected.Group("/backups")
+			backups.Use(middleware.RequirePermission(roleRepo, "system", "admin"))
+			{
+				backups.GET("", backupHandler.List)
+				backups.GET("/:id", backupHandler.Get)
+				backups.POST("", backupHandler.Create)
+				backups.POST("/:id/restore", backupHandler.Restore)
+				backups.DELETE("/:id", backupHandler.Delete)
+			}
+
+			// Webhook 管理
+			webhooks := protected.Group("/webhooks")
+			webhooks.Use(middleware.RequirePermission(roleRepo, "webhooks", "read"))
+			{
+				webhooks.GET("", webhookHandler.List)
+				webhooks.GET("/:id", webhookHandler.Get)
+				webhooks.GET("/:id/deliveries", webhookHandler.ListDeliveries)
+			}
+			webhooksWrite := protected.Group("/webhooks")
+			webhooksWrite.Use(middleware.RequirePermission(roleRepo, "webhooks", "write"))
+			{
+				webhooksWrite.POST("", webhookHandler.Create)
+				webhooksWrite.PUT("/:id", webhookHandler.Update)
+				webhooksWrite.POST("/:id/test", webhookHandler.Test)
+				webhooksWrite.DELETE("/:id", webhookHandler.Delete)
+			}
+
+			// 系统配置管理
+			configs := protected.Group("/configs")
+			configs.Use(middleware.RequirePermission(roleRepo, "system", "admin"))
+			{
+				configs.GET("", systemConfigHandler.List)
+				configs.GET("/:key", systemConfigHandler.Get)
+				configs.POST("", systemConfigHandler.Set)
+				configs.DELETE("/:key", systemConfigHandler.Delete)
+			}
+
+			// 系统信息
+			protected.GET("/system/info", systemInfoHandler.GetInfo)
+
+			// 文件浏览
+			files := protected.Group("/files")
+			files.Use(middleware.RequirePermission(roleRepo, "system", "admin"))
+			{
+				files.GET("/browse", fileBrowseHandler.ListDirectory)
+				files.GET("/stats", fileBrowseHandler.GetFileStats)
+				files.GET("/download", fileBrowseHandler.DownloadFile)
+			}
+
+			// 数据迁移
+			migrationGroup := protected.Group("/migration")
+			migrationGroup.Use(middleware.RequirePermission(roleRepo, "system", "admin"))
+			{
+				migrationGroup.GET("", migrationHandler.ListMigrations)
+				migrationGroup.POST("/nexus/test", migrationHandler.TestNexusConnection)
+				migrationGroup.POST("/nexus/repositories", migrationHandler.ListNexusRepositories)
+				migrationGroup.POST("/nexus", migrationHandler.CreateMigration)
+				migrationGroup.GET("/:id/status", migrationHandler.GetMigrationStatus)
+				migrationGroup.POST("/:id/cancel", migrationHandler.CancelMigration)
+			}
 		}
 	}
 
-	// 注册适配器路由
+	// 注册统一仓库路由
+	repoRouter := handler.NewRepoRouter(repoHandler.Service())
+	for _, adap := range adapters {
+		if repoAware, ok := adap.(adapter.RepoAwareAdapter); ok {
+			repoRouter.RegisterAdapter(string(adap.Type()), repoAware)
+		}
+	}
+
 	authMw := middleware.Auth(authService)
-	blockMw := middleware.BlockCheck(blockRuleSvc)
+	blockMw := middleware.BlockCheck(blockRuleSvc, repoSvc)
 	permMw := func(resource, action string) gin.HandlerFunc {
 		return middleware.RequirePermission(roleRepo, resource, action)
 	}
-	for _, adap := range adapters {
-		group := r.Group(adap.RoutePrefix())
-		group.Use(blockMw)
-		adap.RegisterRoutes(group, authMw, permMw)
+
+	repoGroup := r.Group("/repo/:repoName")
+	repoGroup.Use(blockMw)
+	{
+		repoGroup.GET("/*path", repoRouter.HandleRequest)
+
+		publishGroup := repoGroup.Group("")
+		publishGroup.Use(authMw, permMw("npm", "write"))
+		{
+			publishGroup.PUT("/*path", repoRouter.HandlePublish)
+		}
+
+		deleteGroup := repoGroup.Group("")
+		deleteGroup.Use(authMw, permMw("npm", "delete"))
+		{
+			deleteGroup.DELETE("/*path", repoRouter.HandleDelete)
+		}
 	}
 
 	return r
