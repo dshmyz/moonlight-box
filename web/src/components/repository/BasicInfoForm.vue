@@ -17,12 +17,38 @@
       </el-select>
     </el-form-item>
     
-    <el-form-item label="包类型" prop="package_type">
+    <el-form-item
+      label="包类型"
+      prop="package_type"
+      v-if="form.type !== 'virtual'"
+    >
       <el-select v-model="form.package_type" :disabled="disabled" style="width: 100%">
         <el-option label="npm" value="npm" />
         <el-option label="maven2" value="maven2" />
       </el-select>
       <span class="form-hint">当前仅支持 npm 和 maven2，其他类型正在开发中</span>
+    </el-form-item>
+
+    <el-form-item
+      label="包类型"
+      v-if="form.type === 'virtual'"
+    >
+      <el-select
+        v-model="selectedPackageTypes"
+        :disabled="disabled"
+        multiple
+        placeholder="选择包类型"
+        style="width: 100%"
+      >
+        <el-option label="npm" value="npm" />
+        <el-option label="maven" value="maven" />
+        <el-option label="pypi" value="pypi" />
+        <el-option label="go" value="go" />
+        <el-option label="nuget" value="nuget" />
+        <el-option label="yum" value="yum" />
+        <el-option label="apt" value="apt" />
+      </el-select>
+      <span class="form-hint">虚拟仓库可聚合多种包类型的仓库</span>
     </el-form-item>
     
     <el-form-item label="显示名称" prop="display_name">
@@ -41,6 +67,8 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+
 interface FormModel {
   name: string
   display_name: string
@@ -52,10 +80,23 @@ interface FormModel {
 interface Props {
   form: FormModel
   disabled?: boolean
+  selectedPackageTypes?: string[]
 }
 
-withDefaults(defineProps<Props>(), {
+interface Emits {
+  (e: 'update:selectedPackageTypes', value: string[]): void
+}
+
+const props = withDefaults(defineProps<Props>(), {
   disabled: false,
+  selectedPackageTypes: () => [],
+})
+
+const emit = defineEmits<Emits>()
+
+const selectedPackageTypes = computed({
+  get: () => props.selectedPackageTypes,
+  set: (val: string[]) => emit('update:selectedPackageTypes', val),
 })
 </script>
 

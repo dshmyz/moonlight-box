@@ -22,7 +22,11 @@
               基础信息
             </span>
           </template>
-          <BasicInfoForm :form="formData" :disabled="isEditMode" />
+          <BasicInfoForm
+            :form="formData"
+            :disabled="isEditMode"
+            v-model:selected-package-types="selectedPackageTypes"
+          />
         </el-tab-pane>
 
         <el-tab-pane v-if="formData.type === 'proxy'" name="proxy">
@@ -192,6 +196,7 @@ const authConfig = ref({
 })
 
 const membersText = ref('')
+const selectedPackageTypes = ref<string[]>([])
 
 const formRules = computed<FormRules>(() => ({
   name: [{ required: true, message: '请输入仓库名称', trigger: 'blur' }],
@@ -216,6 +221,7 @@ const resetForm = () => {
     key_value: '',
   }
   membersText.value = ''
+  selectedPackageTypes.value = []
   activeTab.value = 'basic'
   formRef.value?.clearValidate()
 }
@@ -268,6 +274,14 @@ watch(
           .map(m => m.member_repo?.name || '')
           .filter(Boolean)
           .join('\n')
+      }
+
+      if (repo.package_types) {
+        try {
+          selectedPackageTypes.value = repo.package_types.split(',').filter(Boolean)
+        } catch {
+          selectedPackageTypes.value = []
+        }
       }
     } else {
       resetForm()
@@ -322,6 +336,11 @@ const buildSubmitData = (): Partial<Repository> => {
     description: formData.value.description,
     type: formData.value.type,
     package_type: formData.value.package_type,
+  }
+
+  if (formData.value.type === 'virtual' && selectedPackageTypes.value.length > 0) {
+    data.package_types = selectedPackageTypes.value.join(',')
+    data.package_type = selectedPackageTypes.value[0]
   }
 
   if (formData.value.type === 'proxy') {

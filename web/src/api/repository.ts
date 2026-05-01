@@ -13,6 +13,7 @@ export interface Repository {
   description: string
   type: 'local' | 'proxy' | 'virtual'
   package_type: string
+  package_types?: string
   enabled: boolean
   remote_url?: string
   auth_type?: string
@@ -43,7 +44,7 @@ export interface RepositoryGroup {
 
 export const repositoryApi = {
   list(params?: { package_type?: string; type?: string }) {
-    return request.get<{ list: Repository[] }>('/repositories', { params })
+    return request.get<Repository[]>('/repositories', { params })
   },
 
   get(name: string) {
@@ -72,19 +73,5 @@ export const repositoryApi = {
 
   removeMember(name: string, memberName: string) {
     return request.delete(`/repositories/${name}/members/${memberName}`)
-  },
-}
-
-export const cacheApi = {
-  getStats() {
-    return request.get('/cache/stats')
-  },
-
-  clear() {
-    return request.delete('/cache')
-  },
-
-  invalidate(data: { pattern: string }) {
-    return request.post('/cache/invalidate', data)
   },
 }
