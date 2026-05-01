@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"time"
@@ -50,6 +51,7 @@ func NewProxyRouter(
 type RouteResult struct {
 	Source     string        // 来源仓库名称
 	SourceType string        // 来源类型：local 或 proxy
+	RepoID     uint          // 来源仓库 ID
 	Content    io.ReadCloser // 包内容流
 	Size       int64         // 内容大小
 	FromCache  bool          // 是否来自缓存
@@ -60,6 +62,83 @@ type URLBuilder func(repo *model.Repository, name, version string) string
 
 func (r *ProxyRouter) Resolve(ctx context.Context, pkgType, name, version string) (*RouteResult, error) {
 	return r.resolveFull(ctx, pkgType, name, version, nil)
+}
+
+func (r *ProxyRouter) ResolveProxyOnlyForRepo(ctx context.Context, repo *model.Repository, name, version string, urlBuilder URLBuilder) (*RouteResult, error) {
+	return r.resolveProxyWithURL(ctx, repo, name, version, urlBuilder)
+}
+
+func (r *ProxyRouter) ResolveSmart(ctx context.Context, repo *model.Repository, pkgType, name, version string, urlBuilder URLBuilder) (*RouteResult, error) {
+	if repo != nil && repo.Type == model.RepoTypeProxy {
+		return r.resolveProxyWithURL(ctx, repo, name, version, urlBuilder)
+	}
+
+	virtualRepo, err := r.repoRepo.FindVirtualByPackageType(pkgType)
+	if err != nil {
+		if repo != nil && repo.Type == model.RepoTypeProxy {
+			return r.resolveProxyWithURL(ctx, repo, name, version, urlBuilder)
+		}
+		return nil, ErrPackageNotFound
+	}
+
+	members, err := r.groupRepo.GetMembersByVirtualRepo(virtualRepo.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, member := range members {
+		memberRepo := member.MemberRepo
+		if memberRepo.Type != model.RepoTypeProxy {
+			continue
+		}
+
+		result, err := r.resolveProxyWithURL(ctx, &memberRepo, name, version, urlBuilder)
+		if err == nil && result != nil {
+			result.Source = memberRepo.Name
+			result.RepoID = memberRepo.ID
+			return result, nil
+		}
+	}
+
+	return nil, ErrPackageNotFound
+}
+
+func (r *ProxyRouter) ResolveForVirtualRepo(ctx context.Context, virtualRepo *model.Repository, pkgType, name, version string, urlBuilder URLBuilder) (*RouteResult, error) {
+	members, err := r.groupRepo.GetMembersByVirtualRepo(virtualRepo.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, member := range members {
+		repo := member.MemberRepo
+
+		// 过滤不匹配类型的成员
+		if !r.isMemberTypeMatch(&repo, pkgType) {
+			continue
+		}
+
+		var result *RouteResult
+		switch repo.Type {
+		case model.RepoTypeLocal:
+			result, err = r.resolveLocal(ctx, &repo, pkgType, name, version)
+		case model.RepoTypeProxy:
+			if urlBuilder != nil {
+				result, err = r.resolveProxyWithURL(ctx, &repo, name, version, urlBuilder)
+			} else {
+				result, err = r.resolveProxy(ctx, &repo, pkgType, name, version)
+			}
+		default:
+			continue
+		}
+
+		if err == nil && result != nil {
+			result.Source = repo.Name
+			result.RepoID = repo.ID
+			return result, nil
+		}
+	}
+
+	return nil, ErrPackageNotFound
 }
 
 func (r *ProxyRouter) ResolveProxyOnly(ctx context.Context, pkgType, name, version string, urlBuilder URLBuilder) (*RouteResult, error) {
@@ -82,6 +161,7 @@ func (r *ProxyRouter) ResolveProxyOnly(ctx context.Context, pkgType, name, versi
 		result, err := r.resolveProxyWithURL(ctx, &repo, name, version, urlBuilder)
 		if err == nil && result != nil {
 			result.Source = repo.Name
+			result.RepoID = repo.ID
 			return result, nil
 		}
 	}
@@ -119,6 +199,7 @@ func (r *ProxyRouter) resolveFull(ctx context.Context, pkgType, name, version st
 
 		if err == nil && result != nil {
 			result.Source = repo.Name
+			result.RepoID = repo.ID
 			return result, nil
 		}
 	}
@@ -356,4 +437,22 @@ func toProxyAuthConfig(cfg *model.ProxyAuthConfig) *ProxyAuthConfig {
 		}
 	}
 	return result
+}
+
+func (r *ProxyRouter) isMemberTypeMatch(repo *model.Repository, pkgType string) bool {
+	// 支持 PackageTypes 多类型的成员
+	if repo.PackageTypes != "" {
+		var types []string
+		if err := json.Unmarshal([]byte(repo.PackageTypes), &types); err == nil {
+			for _, t := range types {
+				if t == pkgType {
+					return true
+				}
+			}
+			return false
+		}
+	}
+
+	// 回退到单一 PackageType
+	return repo.PackageType == pkgType
 }
