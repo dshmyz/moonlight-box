@@ -50,7 +50,7 @@ logging:
 ai:
   enabled: false
   provider: "chatglm"  # chatglm, qwen, custom
-  base_url: "http://192.168.1.100:8000/v1"
+  base_url: "http://localhost:8000/v1"
   api_key: ""
   model: "chatglm3-6b"
   max_tokens: 2048
