@@ -8,7 +8,7 @@ import (
 )
 
 func AutoMigrate() error {
-	return DB.AutoMigrate(
+	if err := DB.AutoMigrate(
 		&model.User{},
 		&model.Role{},
 		&model.Permission{},
@@ -31,7 +31,73 @@ func AutoMigrate() error {
 		&model.Webhook{},
 		&model.WebhookDelivery{},
 		&model.MigrationTask{},
-	)
+	); err != nil {
+		return err
+	}
+
+	// 添加元数据同步相关字段
+	if err := DB.AutoMigrate(&model.MetadataSyncTask{}); err != nil {
+		return err
+	}
+
+	// 为 Repository 表添加新字段
+	if !DB.Migrator().HasColumn(&model.Repository{}, "metadata_sync_enabled") {
+		if err := DB.Exec("ALTER TABLE repositories ADD COLUMN metadata_sync_enabled BOOLEAN DEFAULT FALSE").Error; err != nil {
+			return err
+		}
+	}
+
+	if !DB.Migrator().HasColumn(&model.Repository{}, "metadata_sync_interval") {
+		if err := DB.Exec("ALTER TABLE repositories ADD COLUMN metadata_sync_interval INT DEFAULT 3600").Error; err != nil {
+			return err
+		}
+	}
+
+	if !DB.Migrator().HasColumn(&model.Repository{}, "sync_mode") {
+		if err := DB.Exec("ALTER TABLE repositories ADD COLUMN sync_mode VARCHAR(20) DEFAULT 'metadata_only'").Error; err != nil {
+			return err
+		}
+	}
+
+	if !DB.Migrator().HasColumn(&model.Repository{}, "last_metadata_sync_at") {
+		if err := DB.Exec("ALTER TABLE repositories ADD COLUMN last_metadata_sync_at TIMESTAMP NULL").Error; err != nil {
+			return err
+		}
+	}
+
+	if !DB.Migrator().HasColumn(&model.Repository{}, "last_sync_status") {
+		if err := DB.Exec("ALTER TABLE repositories ADD COLUMN last_sync_status VARCHAR(20) DEFAULT ''").Error; err != nil {
+			return err
+		}
+	}
+
+	if !DB.Migrator().HasColumn(&model.Repository{}, "last_sync_error") {
+		if err := DB.Exec("ALTER TABLE repositories ADD COLUMN last_sync_error TEXT").Error; err != nil {
+			return err
+		}
+	}
+
+	// 为 Package 表添加新字段
+	if !DB.Migrator().HasColumn(&model.Package{}, "metadata_synced") {
+		if err := DB.Exec("ALTER TABLE packages ADD COLUMN metadata_synced BOOLEAN DEFAULT FALSE").Error; err != nil {
+			return err
+		}
+	}
+
+	if !DB.Migrator().HasColumn(&model.Package{}, "metadata_sync_at") {
+		if err := DB.Exec("ALTER TABLE packages ADD COLUMN metadata_sync_at TIMESTAMP NULL").Error; err != nil {
+			return err
+		}
+	}
+
+	// 为 PackageVersion 表添加新字段
+	if !DB.Migrator().HasColumn(&model.PackageVersion{}, "files_downloaded") {
+		if err := DB.Exec("ALTER TABLE package_versions ADD COLUMN files_downloaded BOOLEAN DEFAULT FALSE").Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func SeedData() error {
@@ -138,10 +204,10 @@ func SeedData() error {
 		return err
 	}
 
-	// 创建测试包数据
-	if err := seedTestPackages(); err != nil {
-		return err
-	}
+	// 创建测试包数据（已禁用，需要时手动添加）
+	// if err := seedTestPackages(); err != nil {
+	// 	return err
+	// }
 
 	return nil
 }
