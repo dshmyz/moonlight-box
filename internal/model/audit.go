@@ -54,6 +54,7 @@ type SystemConfig struct {
 	Key         string    `gorm:"primaryKey" json:"key"`
 	Value       string    `gorm:"not null" json:"value"`
 	ValueType   string    `gorm:"default:string" json:"value_type"`
+	Category    string    `gorm:"size:50;index" json:"category"`
 	Description string    `gorm:"size:500" json:"description,omitempty"`
 	IsSensitive bool      `gorm:"default:false" json:"is_sensitive"`
 	UpdatedBy   *uint     `json:"updated_by,omitempty"`

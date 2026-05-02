@@ -2,9 +2,11 @@ package models
 
 type ChatResponse struct {
 	ID      string   `json:"id"`
+	Object  string   `json:"object"`
+	Created int64    `json:"created"`
 	Model   string   `json:"model"`
 	Choices []Choice `json:"choices"`
-	Usage   Usage    `json:"usage"`
+	Usage   *Usage   `json:"usage,omitempty"`
 }
 
 type Choice struct {
@@ -19,17 +21,22 @@ type Usage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+type Delta struct {
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
+type StreamChoice struct {
+	Index        int    `json:"index"`
+	Delta        Delta  `json:"delta"`
+	FinishReason string `json:"finish_reason,omitempty"`
+}
+
 type StreamChunk struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role    string `json:"role,omitempty"`
-			Content string `json:"content,omitempty"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason,omitempty"`
-	} `json:"choices"`
+	ID      string         `json:"id"`
+	Object  string         `json:"object"`
+	Created int64          `json:"created"`
+	Model   string         `json:"model"`
+	Choices []StreamChoice `json:"choices"`
+	Error   error          `json:"-"` // 用于传递流式响应中的错误
 }

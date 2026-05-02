@@ -35,7 +35,7 @@ func NewNuGetAdapter(
 	}
 }
 
-func (a *NuGetAdapter) Type() PackageType { return NuGetType }
+func (a *NuGetAdapter) Type() PackageType   { return NuGetType }
 func (a *NuGetAdapter) RoutePrefix() string { return "/nuget" }
 
 func (a *NuGetAdapter) RegisterRoutes(r *gin.RouterGroup, authMw gin.HandlerFunc, permMw func(resource, action string) gin.HandlerFunc) {
@@ -46,6 +46,13 @@ func (a *NuGetAdapter) RegisterRoutes(r *gin.RouterGroup, authMw gin.HandlerFunc
 		r.GET("/v3/registration/:id/:version/index.json", a.RegistrationEntry)
 		r.HEAD("/v3-flatcontainer/:id/:version/:filename", a.HeadNupkg)
 		r.PUT("/api/v2/package", authMw, permMw("nuget", "write"), a.PushPackage)
+
+		// OData V2 查询接口
+		r.GET("/api/v2/Packages", a.ODataQueryPackages)
+		r.GET("/api/v2/Packages()", a.ODataQueryPackages)
+		r.GET("/api/v2/Packages(Id=':id',Version=':version')", a.ODataGetPackage)
+		r.GET("/api/v2/Search()/$count", a.ODataSearchCount)
+		r.GET("/api/v2/Search()", a.ODataSearch)
 	}
 }
 
@@ -65,18 +72,18 @@ func (a *NuGetAdapter) ServiceIndex(c *gin.Context) {
 	baseURL := c.Request.URL.Scheme + "://" + c.Request.Host + "/nuget"
 
 	c.JSON(200, gin.H{
-		"version":  "3.0.0",
+		"version": "3.0.0",
 		"resources": []gin.H{
 			{
-				"@id":  fmt.Sprintf("%s/v3/registration/", baseURL),
+				"@id":   fmt.Sprintf("%s/v3/registration/", baseURL),
 				"@type": "RegistrationsBaseUrl",
 			},
 			{
-				"@id":  fmt.Sprintf("%s/v3-flatcontainer/", baseURL),
+				"@id":   fmt.Sprintf("%s/v3-flatcontainer/", baseURL),
 				"@type": "PackageBaseAddress/3.0.0",
 			},
 			{
-				"@id":  fmt.Sprintf("%s/api/v2/package", baseURL),
+				"@id":   fmt.Sprintf("%s/api/v2/package", baseURL),
 				"@type": "PackagePublish/2.0.0",
 			},
 		},
@@ -131,8 +138,8 @@ func (a *NuGetAdapter) RegistrationIndex(c *gin.Context) {
 			"items": []gin.H{
 				{
 					"catalogEntry": gin.H{
-						"version":     ver.Version,
-						"published":   ver.PublishedAt.Format(time.RFC3339),
+						"version":   ver.Version,
+						"published": ver.PublishedAt.Format(time.RFC3339),
 					},
 				},
 			},
@@ -166,8 +173,8 @@ func (a *NuGetAdapter) RegistrationEntry(c *gin.Context) {
 				"@id":   fmt.Sprintf("/nuget/v3/registration/%s/%s/index.json", id, version),
 				"@type": "Package",
 				"catalogEntry": gin.H{
-					"version":     version,
-					"published":   ver.PublishedAt.Format(time.RFC3339),
+					"version":   version,
+					"published": ver.PublishedAt.Format(time.RFC3339),
 				},
 			})
 			return
@@ -237,18 +244,22 @@ func (a *NuGetAdapter) Upload(ctx context.Context, req *UploadRequest) (*Package
 	}
 
 	name, _ := req.Metadata["name"].(string)
+	version, _ := req.Metadata["version"].(string)
 	if name == "" {
 		name = fmt.Sprintf("unknown-%d", time.Now().UnixNano())
 	}
+	if version == "" {
+		version = "1.0.0"
+	}
 
-	version := fmt.Sprintf("1.0.0-%d", time.Now().UnixNano())
-
+	filename := fmt.Sprintf("%s.%s.nupkg", name, version)
+	storageVersion := filepath.Join(version, filename)
 	storageKey, err := a.storageSvc.StorePackage(ctx, "nuget", name, version, reader, req.Size)
 	if err != nil {
 		return nil, err
 	}
 
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(ctx, &model.Package{
+	pkg, ver, _, err := a.pkgRepo.StorePackageFile(ctx, &model.Package{
 		Name:           name,
 		Type:           model.PackageTypeNuGet,
 		RepositoryType: model.RepoTypeLocal,
@@ -256,19 +267,24 @@ func (a *NuGetAdapter) Upload(ctx context.Context, req *UploadRequest) (*Package
 	}, &model.PackageVersion{
 		Version:     version,
 		Status:      model.StatusPublished,
-		StoragePath: storageKey,
-		SizeBytes:   req.Size,
+		StoragePath: filepath.Dir(storageKey),
 		PublishedBy: req.UploadedBy,
 		Metadata:    marshalMetadata(req.Metadata),
+	}, &model.PackageFile{
+		Filename:    filename,
+		FileType:    model.FileTypePrimary,
+		StoragePath: storageKey,
+		SizeBytes:   req.Size,
 	})
 
 	if err != nil {
-		a.storageSvc.DeletePackage(ctx, "nuget", name, version)
+		a.storageSvc.DeletePackage(ctx, "nuget", name, storageVersion)
 		return nil, err
 	}
 
 	return &PackageVersionResult{
 		PackageID:  pkg.ID,
+		VersionID:  ver.ID,
 		Version:    version,
 		StorageKey: storageKey,
 		Size:       req.Size,
@@ -276,7 +292,9 @@ func (a *NuGetAdapter) Upload(ctx context.Context, req *UploadRequest) (*Package
 }
 
 func (a *NuGetAdapter) Download(ctx context.Context, identity *PackageIdentity) (*PackageContent, error) {
-	reader, size, err := a.storageSvc.GetPackage(ctx, "nuget", identity.Name, identity.Version)
+	filename := fmt.Sprintf("%s.%s.nupkg", identity.Name, identity.Version)
+	storageVersion := filepath.Join(identity.Version, filename)
+	reader, size, err := a.storageSvc.GetPackage(ctx, "nuget", identity.Name, storageVersion)
 	if err != nil {
 		return nil, err
 	}

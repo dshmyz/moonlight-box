@@ -112,7 +112,7 @@ func (s *MigrationService) GetProgress(taskID uint) *MigrationProgress {
 func (s *MigrationService) RegisterContext(taskID uint, ctx context.Context, cancel context.CancelFunc) {
 	s.mu.Lock()
 	s.tasks[taskID] = &MigrationContext{
-		Cancel: cancel,
+		Cancel:   cancel,
 		Progress: &MigrationProgress{},
 	}
 	s.mu.Unlock()

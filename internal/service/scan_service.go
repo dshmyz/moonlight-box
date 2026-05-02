@@ -14,10 +14,10 @@ import (
 )
 
 type SecurityScanner struct {
-	scanRepo    *repository.ScanRepository
-	pkgRepo     *repository.PackageRepository
-	blockRepo   *repository.BlockRuleRepository
-	logger      *logrus.Logger
+	scanRepo  *repository.ScanRepository
+	pkgRepo   *repository.PackageRepository
+	blockRepo *repository.BlockRuleRepository
+	logger    *logrus.Logger
 }
 
 type ScanRule struct {
@@ -183,12 +183,12 @@ func (s *SecurityScanner) ScanPackage(ctx context.Context, versionID uint, pkgTy
 	scanResult.LowCount = low
 
 	s.scanRepo.UpdateScanResult(scanResult.ID, map[string]interface{}{
-		"scan_status":             scanResult.ScanStatus,
-		"total_vulnerabilities":   scanResult.TotalVulnerabilities,
-		"critical_count":          scanResult.CriticalCount,
-		"high_count":              scanResult.HighCount,
-		"medium_count":            scanResult.MediumCount,
-		"low_count":               scanResult.LowCount,
+		"scan_status":           scanResult.ScanStatus,
+		"total_vulnerabilities": scanResult.TotalVulnerabilities,
+		"critical_count":        scanResult.CriticalCount,
+		"high_count":            scanResult.HighCount,
+		"medium_count":          scanResult.MediumCount,
+		"low_count":             scanResult.LowCount,
 	})
 
 	for i := range vulnerabilities {

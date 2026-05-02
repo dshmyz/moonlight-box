@@ -18,12 +18,16 @@ type StorageService struct {
 	defaultBackend     storage.Backend
 	backendMap         map[uint]storage.Backend
 	mutex              sync.RWMutex
+	localBasePath      string
+	localMaxSizeGB     int64
 }
 
-func NewStorageService(storageBackendRepo *repository.StorageBackendRepository) (*StorageService, error) {
+func NewStorageService(storageBackendRepo *repository.StorageBackendRepository, localBasePath string, localMaxSizeGB int64) (*StorageService, error) {
 	svc := &StorageService{
 		storageBackendRepo: storageBackendRepo,
 		backendMap:         make(map[uint]storage.Backend),
+		localBasePath:      localBasePath,
+		localMaxSizeGB:     localMaxSizeGB,
 	}
 
 	// 初始化默认存储后端
@@ -41,6 +45,10 @@ func NewStorageService(storageBackendRepo *repository.StorageBackendRepository) 
 	return svc, nil
 }
 
+func (s *StorageService) SetDefaultBackendForTest(backend storage.Backend) {
+	s.defaultBackend = backend
+}
+
 func (s *StorageService) initDefaultBackend() (storage.Backend, error) {
 	// 首先尝试从数据库获取默认存储后端
 	defaultBackend, err := s.storageBackendRepo.FindDefault()
@@ -49,7 +57,7 @@ func (s *StorageService) initDefaultBackend() (storage.Backend, error) {
 	}
 
 	// 如果数据库中没有默认后端，则使用本地存储作为默认值
-	return storage.NewLocalStorage("./data/packages", 100*1024)
+	return storage.NewLocalStorage(s.localBasePath, s.localMaxSizeGB)
 }
 
 func (s *StorageService) initStorageBackends() error {
@@ -70,8 +78,6 @@ func (s *StorageService) initStorageBackends() error {
 
 	return nil
 }
-
-
 
 func (s *StorageService) GetBackend(backendID uint) (storage.Backend, error) {
 	s.mutex.RLock()
@@ -222,18 +228,30 @@ func (s *StorageService) buildKey(pkgType, name, version string) string {
 	case "npm":
 		if strings.Contains(name, "@") {
 			parts := strings.SplitN(name, "/", 2)
-			return filepath.Join("packages", "npm", parts[0], parts[1], version)
+			return filepath.Join("npm", parts[0], parts[1], version)
 		}
-		return filepath.Join("packages", "npm", name, version)
+		return filepath.Join("npm", name, version)
 
 	case "maven":
-		return filepath.Join("packages", "maven2", name, version)
+		return filepath.Join("maven2", name, version)
 
 	case "pypi":
-		return filepath.Join("packages", "pypi", name, version)
+		return filepath.Join("pypi", name, version)
+
+	case "go":
+		return filepath.Join("go", name, version)
+
+	case "nuget":
+		return filepath.Join("nuget", name, version)
+
+	case "yum":
+		return filepath.Join("yum", version)
+
+	case "apt":
+		return filepath.Join("apt", version)
 
 	default:
-		return filepath.Join("packages", pkgType, name, version)
+		return filepath.Join(pkgType, name, version)
 	}
 }
 

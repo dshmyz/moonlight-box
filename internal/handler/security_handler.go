@@ -84,20 +84,20 @@ func (h *SecurityHandler) ListVulnerabilities(c *gin.Context) {
 				continue
 			}
 			allVulns = append(allVulns, map[string]interface{}{
-				"id":               v.ID,
-				"scan_result_id":   v.ScanResultID,
-				"cve_id":           v.CVEID,
-				"severity":         v.Severity,
-				"cvss_score":       v.CVSSScore,
-				"dependency_name":  v.DependencyName,
-				"current_version":  v.CurrentVersion,
-				"fixed_version":    v.FixedVersion,
-				"is_direct_dep":    v.IsDirectDep,
-				"title":            v.Title,
-				"description":      v.Description,
-				"references":       v.References,
-				"created_at":       v.CreatedAt,
-				"scan_result":      result,
+				"id":              v.ID,
+				"scan_result_id":  v.ScanResultID,
+				"cve_id":          v.CVEID,
+				"severity":        v.Severity,
+				"cvss_score":      v.CVSSScore,
+				"dependency_name": v.DependencyName,
+				"current_version": v.CurrentVersion,
+				"fixed_version":   v.FixedVersion,
+				"is_direct_dep":   v.IsDirectDep,
+				"title":           v.Title,
+				"description":     v.Description,
+				"references":      v.References,
+				"created_at":      v.CreatedAt,
+				"scan_result":     result,
 			})
 		}
 	}
@@ -113,12 +113,12 @@ func (h *SecurityHandler) GetSecurityStats(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"total_scans":  total,
-		"critical":     critical,
-		"high":         high,
-		"medium":       medium,
-		"low":          low,
-		"total_vulns":  critical + high + medium + low,
+		"total_scans": total,
+		"critical":    critical,
+		"high":        high,
+		"medium":      medium,
+		"low":         low,
+		"total_vulns": critical + high + medium + low,
 	})
 }
 

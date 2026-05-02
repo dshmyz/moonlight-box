@@ -1058,3 +1058,44 @@ func (a *NpmAdapter) setAuthHeader(req *http.Request, cfg *model.ProxyAuthConfig
 		}
 	}
 }
+
+// parseTarballFilename 从 tarball 文件名中解析包名和版本
+// 例如：lodash-4.17.21.tgz -> ("lodash", "4.17.21")
+// 例如：@scope-package-1.0.0.tgz with scope "@scope" -> ("@scope/@scope-package", "1.0.0")
+func parseTarballFilename(filename, scope string) (name, version string) {
+	// 移除 .tgz 后缀
+	basename := strings.TrimSuffix(filename, ".tgz")
+	if basename == filename {
+		return "", ""
+	}
+
+	// 如果有 scope，需要特殊处理
+	if scope != "" {
+		// 文件名格式：scope-package-version
+		// 需要移除 scope 前缀（去掉 @ 符号）
+		scopePrefix := strings.TrimPrefix(scope, "@") + "-"
+		if strings.HasPrefix(basename, scopePrefix) {
+			// 移除 scope 前缀
+			remaining := strings.TrimPrefix(basename, scopePrefix)
+			// 找到最后一个 - 作为版本分隔符
+			lastDash := strings.LastIndex(remaining, "-")
+			if lastDash > 0 {
+				pkgName := remaining[:lastDash]
+				version = remaining[lastDash+1:]
+				name = scope + "/" + pkgName
+				return name, version
+			}
+		}
+	}
+
+	// 普通包：package-name-version
+	// 找到最后一个 - 作为版本分隔符
+	lastDash := strings.LastIndex(basename, "-")
+	if lastDash > 0 {
+		name = basename[:lastDash]
+		version = basename[lastDash+1:]
+		return name, version
+	}
+
+	return "", ""
+}

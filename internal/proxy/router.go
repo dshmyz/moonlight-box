@@ -258,7 +258,9 @@ func (r *ProxyRouter) resolveProxyWithURL(ctx context.Context, repo *model.Repos
 			return nil, ErrPackageNotFound
 		}
 		return &RouteResult{
+			Source:     repo.Name,
 			SourceType: "proxy",
+			RepoID:     repo.ID,
 			Content:    io.NopCloser(bytes.NewReader(cached.Content)),
 			Size:       cached.Size,
 			FromCache:  true,
@@ -302,7 +304,9 @@ func (r *ProxyRouter) resolveProxyWithURL(ctx context.Context, repo *model.Repos
 	}, time.Duration(repo.CacheTTLSeconds)*time.Second)
 
 	return &RouteResult{
+		Source:     repo.Name,
 		SourceType: "proxy",
+		RepoID:     repo.ID,
 		Content:    io.NopCloser(bytes.NewReader(content)),
 		Size:       size,
 		FromCache:  false,

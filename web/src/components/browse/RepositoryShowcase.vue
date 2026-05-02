@@ -98,11 +98,10 @@ onMounted(async () => {
   loading.value = true
   try {
     const res = await repositoryApi.list()
-    const data = res.data as any
-    const list = data?.list ?? []
-    repos.value = list.length > 0 ? list : getMockRepos()
+    const list = res || []
+    repos.value = list
   } catch {
-    repos.value = getMockRepos()
+    repos.value = []
   } finally {
     if (repos.value.length > 0 && !activeType.value) {
       activeType.value = groupedRepos.value[0]?.type || ''
@@ -111,31 +110,17 @@ onMounted(async () => {
   }
 })
 
-function getMockRepos(): Repository[] {
-  return [
-    { id: 1, name: 'npm-virtual', display_name: 'npm-virtual', description: 'npm 虚拟仓库，聚合本地与代理', type: 'virtual', package_type: 'npm', enabled: true, created_at: '2024-01-01', updated_at: '2024-06-01' },
-    { id: 2, name: 'npm-local', display_name: 'npm-local', description: 'npm 本地发布仓库', type: 'local', package_type: 'npm', enabled: true, created_at: '2024-01-01', updated_at: '2024-06-01' },
-    { id: 3, name: 'npm-proxy', display_name: 'npm-proxy', description: 'npm 官方仓库代理', type: 'proxy', package_type: 'npm', enabled: true, remote_url: 'https://registry.npmjs.org', created_at: '2024-01-01', updated_at: '2024-06-01' },
-    { id: 4, name: 'maven-virtual', display_name: 'maven-virtual', description: 'Maven 虚拟仓库', type: 'virtual', package_type: 'maven2', enabled: true, created_at: '2024-01-01', updated_at: '2024-06-01' },
-    { id: 5, name: 'maven-proxy', display_name: 'maven-proxy', description: 'Maven Central 代理', type: 'proxy', package_type: 'maven2', enabled: true, remote_url: 'https://repo.maven.apache.org/maven2', created_at: '2024-01-01', updated_at: '2024-06-01' },
-    { id: 6, name: 'pypi-virtual', display_name: 'pypi-virtual', description: 'PyPI 虚拟仓库', type: 'virtual', package_type: 'pypi', enabled: true, created_at: '2024-01-01', updated_at: '2024-06-01' },
-    { id: 7, name: 'pypi-proxy', display_name: 'pypi-proxy', description: 'PyPI 官方代理', type: 'proxy', package_type: 'pypi', enabled: true, remote_url: 'https://pypi.org/simple', created_at: '2024-01-01', updated_at: '2024-06-01' },
-    { id: 8, name: 'go-proxy', display_name: 'go-proxy', description: 'Go 模块代理', type: 'proxy', package_type: 'go', enabled: true, remote_url: 'https://proxy.golang.org', created_at: '2024-01-01', updated_at: '2024-06-01' },
-    { id: 9, name: 'nuget-proxy', display_name: 'nuget-proxy', description: 'NuGet 官方代理', type: 'proxy', package_type: 'nuget', enabled: false, remote_url: 'https://api.nuget.org/v3/index.json', created_at: '2024-01-01', updated_at: '2024-06-01' },
-  ]
-}
-
 function getRegistryUrl(repo: Repository): string {
-  const base = `${window.location.origin}/api/v1`
+  const base = window.location.origin
   switch (repo.package_type) {
     case 'npm':
-      return `${base}/repository/${repo.name}/`
+      return `${base}/repo/${repo.name}/`
     case 'pypi':
-      return `${base}/repository/${repo.name}/simple`
+      return `${base}/repo/${repo.name}/simple`
     case 'nuget':
-      return `${base}/repository/${repo.name}/v3/index.json`
+      return `${base}/repo/${repo.name}/v3/index.json`
     default:
-      return `${base}/repository/${repo.name}/`
+      return `${base}/repo/${repo.name}/`
   }
 }
 

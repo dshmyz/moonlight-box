@@ -65,6 +65,11 @@ func (s *RepositoryService) Get(name string) (*model.Repository, error) {
 	return s.repoRepo.FindByName(name)
 }
 
+// GetByID 根据ID获取仓库详情
+func (s *RepositoryService) GetByID(id uint) (*model.Repository, error) {
+	return s.repoRepo.FindByID(id)
+}
+
 // Update 更新仓库信息
 func (s *RepositoryService) Update(name string, updates map[string]interface{}) error {
 	// 如果更新了 PackageTypes，同步更新 PackageType

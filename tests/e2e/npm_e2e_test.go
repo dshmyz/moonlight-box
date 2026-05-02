@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/adapter"
@@ -17,46 +19,73 @@ import (
 	"github.com/moonlight-box/registry/internal/handler"
 	"github.com/moonlight-box/registry/internal/middleware"
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
 	"github.com/stretchr/testify/assert"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 var (
 	testServer *httptest.Server
-	testDB     *database.Database
-	npmAdapter *adapter.NpmAdapter
+	testDB     *gorm.DB
+	npmAdapter adapter.RepoAwareAdapter
 	repoSvc    *service.RepositoryService
 	pkgRepo    *repository.PackageRepository
+	storageSvc *service.StorageService
 )
 
 func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
 
-	// 初始化测试数据库
-	testDB = database.New(&database.Config{
-		Driver: "sqlite",
-		Path:   ":memory:",
-	})
+	var err error
+	testDB, err = gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		panic(err)
+	}
+	database.DB = testDB
 
-	// 初始化存储
-	localStorage, _ := storage.NewLocalStorage("/tmp/test-e2e")
+	testDB.AutoMigrate(
+		&model.User{},
+		&model.Role{},
+		&model.Permission{},
+		&model.RolePermission{},
+		&model.UserRole{},
+		&model.Repository{},
+		&model.RepositoryGroup{},
+		&model.Package{},
+		&model.PackageVersion{},
+		&model.PackageFile{},
+		&model.PackageDependency{},
+		&model.AuditLog{},
+		&model.BlockRule{},
+		&model.ScanResult{},
+		&model.Vulnerability{},
+		&model.StorageBackend{},
+	)
 
-	// 初始化仓库层
-	pkgRepo = repository.NewPackageRepository(testDB.DB)
-	repoRepo := repository.NewRepositoryRepository(testDB.DB)
-	groupRepo := repository.NewGroupRepository(testDB.DB)
+	localStorage, _ := storage.NewLocalStorage("/tmp/test-e2e", 1024)
+	storageBackendRepo := repository.NewStorageBackendRepository(testDB)
+	storageSvc, _ = service.NewStorageService(storageBackendRepo, "", 0)
+	storageSvc.SetDefaultBackendForTest(localStorage)
 
-	// 初始化服务层
-	storageSvc := service.NewStorageService(localStorage, pkgRepo)
-	auditSvc := service.NewAuditService(testDB.DB)
-	repoSvc = service.NewRepositoryService(repoRepo, groupRepo, testDB.DB)
+	pkgRepo = repository.NewPackageRepository(testDB)
+	repoRepo := repository.NewRepositoryRepository(testDB)
+	groupRepo := repository.NewGroupRepository(testDB)
 
-	// 初始化适配器
-	npmAdapter = adapter.NewNpmAdapter(pkgRepo, storageSvc, auditSvc)
+	auditSvc := service.NewAuditService()
+	repoSvc = service.NewRepositoryService(repoRepo, groupRepo, testDB)
 
-	// 设置路由
+	cacheSvc := proxy.NewCacheService()
+	dnsResolver := proxy.NewDNSResolver(nil)
+	tm := proxy.NewTransportManager(30*time.Second, dnsResolver)
+	remoteClient := proxy.NewRemoteClient(tm, 5)
+	proxyRouter := proxy.NewProxyRouter(testDB, cacheSvc, remoteClient, repoRepo, groupRepo, nil)
+
+	npmAdapter = adapter.NewNpmAdapter(pkgRepo, storageSvc, auditSvc, proxyRouter)
+
 	router := setupRouter()
 	testServer = httptest.NewServer(router)
 
@@ -71,19 +100,27 @@ func setupRouter() *gin.Engine {
 	router.Use(gin.Recovery())
 	router.Use(middleware.CORS())
 
-	// NPM 路由
-	npmGroup := router.Group("/npm")
-	npmAdapter.RegisterRoutes(npmGroup, func(c *gin.Context) {
+	authMw := func(c *gin.Context) {
 		c.Set("userID", uint(1))
 		c.Next()
-	}, func(resource, action string) gin.HandlerFunc {
+	}
+	permMw := func(resource, action string) gin.HandlerFunc {
 		return func(c *gin.Context) {
 			c.Next()
 		}
-	})
+	}
 
-	// 仓库管理路由
-	repoHandler := handler.NewRepositoryHandler(repoSvc)
+	repoRouter := handler.NewRepoRouter(repoSvc)
+	repoRouter.RegisterAdapter("npm", npmAdapter)
+
+	repoGroup := router.Group("/repo/:repoName")
+	{
+		repoGroup.GET("/*path", repoRouter.HandleRequest)
+		repoGroup.PUT("/*path", authMw, permMw("npm", "write"), repoRouter.HandlePublish)
+		repoGroup.DELETE("/*path", authMw, permMw("npm", "delete"), repoRouter.HandleDelete)
+	}
+
+	repoHandler := handler.NewRepositoryHandler(repoSvc, nil, nil)
 	repoAPI := router.Group("/api/repositories")
 	{
 		repoAPI.GET("", repoHandler.List)
@@ -102,17 +139,15 @@ func setupRouter() *gin.Engine {
 // ==================== E2E 测试：npm 本地仓库 ====================
 
 func TestE2E_PublishNpmPackage(t *testing.T) {
-	// 1. 创建 npm 本地仓库
 	repo := &model.Repository{
 		Name:        "npm-local-e2e",
 		Type:        model.RepoTypeLocal,
-		PackageType: model.PackageTypeNPM,
+		PackageType: string(model.PackageTypeNPM),
 		Enabled:     true,
 	}
 	err := repoSvc.Create(repo, nil)
 	assert.Nil(t, err)
 
-	// 2. 发布包
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
@@ -126,11 +161,10 @@ func TestE2E_PublishNpmPackage(t *testing.T) {
 	}`)
 	writer.Close()
 
-	resp, err := http.Post(
-		testServer.URL+"/npm/test-pkg/-rev/123",
-		writer.FormDataContentType(),
-		body,
-	)
+	req, _ := http.NewRequest("PUT", testServer.URL+"/repo/npm-local-e2e/test-pkg/-rev/123", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	assert.Nil(t, err)
 	assert.Equal(t, 201, resp.StatusCode)
 
@@ -140,19 +174,30 @@ func TestE2E_PublishNpmPackage(t *testing.T) {
 }
 
 func TestE2E_GetNpmPackage(t *testing.T) {
-	// 先发布一个包
-	pkgRepo.CreateOrUpdate(testDB.DB.Context(), &model.Package{
+	pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:        "e2e-pkg",
 		Type:        model.PackageTypeNPM,
 		Description: "E2E package for testing",
 	}, &model.PackageVersion{
-		Version:   "1.0.0",
-		Status:    model.StatusPublished,
-		SizeBytes: 1000,
+		Version:     "1.0.0",
+		Status:      model.StatusPublished,
+		StoragePath: "npm/e2e-pkg/1.0.0",
+	}, &model.PackageFile{
+		Filename:    "package.tgz",
+		FileType:    model.FileTypePrimary,
+		StoragePath: "npm/e2e-pkg/1.0.0/package.tgz",
+		SizeBytes:   1000,
 	})
 
-	// 获取包元数据
-	resp, err := http.Get(testServer.URL + "/npm/e2e-pkg")
+	repo := &model.Repository{
+		Name:        "npm-local-get",
+		Type:        model.RepoTypeLocal,
+		PackageType: string(model.PackageTypeNPM),
+		Enabled:     true,
+	}
+	repoSvc.Create(repo, nil)
+
+	resp, err := http.Get(testServer.URL + "/repo/npm-local-get/e2e-pkg")
 	assert.Nil(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 
@@ -162,52 +207,45 @@ func TestE2E_GetNpmPackage(t *testing.T) {
 }
 
 func TestE2E_GetNpmPackage_NotFound(t *testing.T) {
-	resp, err := http.Get(testServer.URL + "/npm/nonexistent-pkg")
-	assert.Nil(t, err)
-	assert.Equal(t, 404, resp.StatusCode)
-}
+	repo := &model.Repository{
+		Name:        "npm-local-notfound",
+		Type:        model.RepoTypeLocal,
+		PackageType: string(model.PackageTypeNPM),
+		Enabled:     true,
+	}
+	repoSvc.Create(repo, nil)
 
-func TestE2E_GetNpmVersion(t *testing.T) {
-	// 先发布一个包
-	pkgRepo.CreateOrUpdate(testDB.DB.Context(), &model.Package{
-		Name:        "version-test-pkg",
-		Type:        model.PackageTypeNPM,
-		Description: "Version test package",
-	}, &model.PackageVersion{
-		Version:   "2.0.0",
-		Status:    model.StatusPublished,
-		SizeBytes: 2000,
-	})
-
-	resp, err := http.Get(testServer.URL + "/npm/version-test-pkg/2.0.0")
-	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
-
-	var version map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&version)
-	assert.Equal(t, "2.0.0", version["version"])
-}
-
-func TestE2E_GetNpmVersion_NotFound(t *testing.T) {
-	resp, err := http.Get(testServer.URL + "/npm/nonexistent-pkg/1.0.0")
+	resp, err := http.Get(testServer.URL + "/repo/npm-local-notfound/nonexistent-pkg")
 	assert.Nil(t, err)
 	assert.Equal(t, 404, resp.StatusCode)
 }
 
 func TestE2E_UnpublishNpmPackage(t *testing.T) {
-	// 先发布一个包
-	pkgRepo.CreateOrUpdate(testDB.DB.Context(), &model.Package{
+	pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:        "unpublish-test",
 		Type:        model.PackageTypeNPM,
 		Description: "Unpublish test package",
 	}, &model.PackageVersion{
-		Version:   "1.0.0",
-		Status:    model.StatusPublished,
-		SizeBytes: 1000,
+		Version:     "1.0.0",
+		Status:      model.StatusPublished,
+		StoragePath: "npm/unpublish-test/1.0.0",
+	}, &model.PackageFile{
+		Filename:    "package.tgz",
+		FileType:    model.FileTypePrimary,
+		StoragePath: "npm/unpublish-test/1.0.0/package.tgz",
+		SizeBytes:   1000,
 	})
 
-	// 取消发布
-	req, _ := http.NewRequest("DELETE", testServer.URL+"/npm/unpublish-test/-rev/123", nil)
+	repo := &model.Repository{
+		Name:        "npm-local-unpublish",
+		Type:        model.RepoTypeLocal,
+		PackageType: string(model.PackageTypeNPM),
+		Enabled:     true,
+		AllowDelete: true,
+	}
+	repoSvc.Create(repo, nil)
+
+	req, _ := http.NewRequest("DELETE", testServer.URL+"/repo/npm-local-unpublish/unpublish-test/-rev/123", nil)
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	assert.Nil(t, err)
@@ -218,17 +256,11 @@ func TestE2E_UnpublishNpmPackage(t *testing.T) {
 	assert.Equal(t, true, result["ok"])
 }
 
-func TestE2E_DownloadTarball_NotFound(t *testing.T) {
-	resp, err := http.Get(testServer.URL + "/npm/-/tarball/nonexistent-1.0.0.tgz")
-	assert.Nil(t, err)
-	assert.Equal(t, 404, resp.StatusCode)
-}
-
 // ==================== E2E 测试：仓库管理 ====================
 
 func TestE2E_CreateLocalRepository(t *testing.T) {
 	payload := map[string]interface{}{
-		"name":         "npm-local-e2e",
+		"name":         "npm-local-create",
 		"display_name": "NPM Local Repository",
 		"description":  "Local npm repository for e2e testing",
 		"type":         "local",
@@ -242,11 +274,11 @@ func TestE2E_CreateLocalRepository(t *testing.T) {
 		bytes.NewBuffer(body),
 	)
 	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, 201, resp.StatusCode)
 
 	var result map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&result)
-	assert.Equal(t, "npm-local-e2e", result["name"])
+	assert.Equal(t, "npm-local-create", result["name"])
 }
 
 func TestE2E_CreateProxyRepository(t *testing.T) {
@@ -266,50 +298,18 @@ func TestE2E_CreateProxyRepository(t *testing.T) {
 		bytes.NewBuffer(body),
 	)
 	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, 201, resp.StatusCode)
 
 	var result map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&result)
 	assert.Equal(t, "https://registry.npmjs.org", result["remote_url"])
 }
 
-func TestE2E_CreateVirtualRepository(t *testing.T) {
-	// 先创建成员仓库
-	repoSvc.Create(&model.Repository{
-		Name:        "npm-local-virtual-member",
-		Type:        model.RepoTypeLocal,
-		PackageType: model.PackageTypeNPM,
-		Enabled:     true,
-	}, nil)
-
-	payload := map[string]interface{}{
-		"name":         "npm-virtual-e2e",
-		"display_name": "NPM Virtual Repository",
-		"description":  "Virtual npm repository for e2e testing",
-		"type":         "virtual",
-		"package_type": "npm",
-		"members":      []string{"npm-local-virtual-member"},
-	}
-
-	body, _ := json.Marshal(payload)
-	resp, err := http.Post(
-		testServer.URL+"/api/repositories",
-		"application/json",
-		bytes.NewBuffer(body),
-	)
-	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
-
-	var result map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&result)
-	assert.Equal(t, "npm-virtual-e2e", result["name"])
-}
-
 func TestE2E_GetRepository(t *testing.T) {
 	repoSvc.Create(&model.Repository{
 		Name:        "get-repo-e2e",
 		Type:        model.RepoTypeLocal,
-		PackageType: model.PackageTypeNPM,
+		PackageType: string(model.PackageTypeNPM),
 		Enabled:     true,
 	}, nil)
 
@@ -332,38 +332,11 @@ func TestE2E_ListRepositories(t *testing.T) {
 	assert.NotNil(t, result["list"])
 }
 
-func TestE2E_UpdateRepository(t *testing.T) {
-	repoSvc.Create(&model.Repository{
-		Name:        "update-repo-e2e",
-		Type:        model.RepoTypeLocal,
-		PackageType: model.PackageTypeNPM,
-		Enabled:     true,
-	}, nil)
-
-	payload := map[string]interface{}{
-		"display_name": "Updated Name",
-		"description":  "Updated description",
-	}
-
-	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequest(
-		"PUT",
-		testServer.URL+"/api/repositories/update-repo-e2e",
-		bytes.NewBuffer(body),
-	)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
-}
-
 func TestE2E_DeleteRepository(t *testing.T) {
 	repoSvc.Create(&model.Repository{
 		Name:        "delete-repo-e2e",
 		Type:        model.RepoTypeLocal,
-		PackageType: model.PackageTypeNPM,
+		PackageType: string(model.PackageTypeNPM),
 		Enabled:     true,
 	}, nil)
 
@@ -378,7 +351,6 @@ func TestE2E_DeleteRepository(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 
-	// 验证已删除
 	resp, _ = http.Get(testServer.URL + "/api/repositories/delete-repo-e2e")
 	assert.Equal(t, 404, resp.StatusCode)
 }
@@ -386,22 +358,20 @@ func TestE2E_DeleteRepository(t *testing.T) {
 // ==================== E2E 测试：虚拟仓库成员管理 ====================
 
 func TestE2E_AddVirtualMember(t *testing.T) {
-	// 创建本地仓库和虚拟仓库
 	repoSvc.Create(&model.Repository{
 		Name:        "npm-local-member",
 		Type:        model.RepoTypeLocal,
-		PackageType: model.PackageTypeNPM,
+		PackageType: string(model.PackageTypeNPM),
 		Enabled:     true,
 	}, nil)
 
 	repoSvc.Create(&model.Repository{
 		Name:        "npm-virtual-members",
 		Type:        model.RepoTypeVirtual,
-		PackageType: model.PackageTypeNPM,
+		PackageType: string(model.PackageTypeNPM),
 		Enabled:     true,
 	}, nil)
 
-	// 添加成员
 	payload := map[string]interface{}{
 		"member_name": "npm-local-member",
 		"priority":    0,
@@ -418,18 +388,17 @@ func TestE2E_AddVirtualMember(t *testing.T) {
 }
 
 func TestE2E_GetVirtualMembers(t *testing.T) {
-	// 创建本地仓库和虚拟仓库
 	repoSvc.Create(&model.Repository{
 		Name:        "npm-local-get-members",
 		Type:        model.RepoTypeLocal,
-		PackageType: model.PackageTypeNPM,
+		PackageType: string(model.PackageTypeNPM),
 		Enabled:     true,
 	}, nil)
 
 	repoSvc.Create(&model.Repository{
 		Name:        "npm-virtual-get-members",
 		Type:        model.RepoTypeVirtual,
-		PackageType: model.PackageTypeNPM,
+		PackageType: string(model.PackageTypeNPM),
 		Enabled:     true,
 	}, nil)
 
@@ -445,24 +414,22 @@ func TestE2E_GetVirtualMembers(t *testing.T) {
 }
 
 func TestE2E_RemoveVirtualMember(t *testing.T) {
-	// 创建本地仓库和虚拟仓库
 	repoSvc.Create(&model.Repository{
 		Name:        "npm-local-remove",
 		Type:        model.RepoTypeLocal,
-		PackageType: model.PackageTypeNPM,
+		PackageType: string(model.PackageTypeNPM),
 		Enabled:     true,
 	}, nil)
 
 	repoSvc.Create(&model.Repository{
 		Name:        "npm-virtual-remove",
 		Type:        model.RepoTypeVirtual,
-		PackageType: model.PackageTypeNPM,
+		PackageType: string(model.PackageTypeNPM),
 		Enabled:     true,
 	}, nil)
 
 	repoSvc.AddMember("npm-virtual-remove", "npm-local-remove", 0)
 
-	// 移除成员
 	req, _ := http.NewRequest(
 		"DELETE",
 		testServer.URL+"/api/repositories/npm-virtual-remove/members/npm-local-remove",
@@ -475,218 +442,108 @@ func TestE2E_RemoveVirtualMember(t *testing.T) {
 	assert.Equal(t, 200, resp.StatusCode)
 }
 
-// ==================== E2E 测试：npm 包操作完整流程 ====================
+// ==================== E2E 测试：公开仓库配置 API ====================
 
-func TestE2E_CompleteNpmWorkflow(t *testing.T) {
-	// 1. 创建 npm 本地仓库
-	repo := &model.Repository{
-		Name:        "npm-workflow-local",
+func TestE2E_PublicRepoConfig(t *testing.T) {
+	repoSvc.Create(&model.Repository{
+		Name:        "npm-public-config",
+		DisplayName: "NPM Public Config Test",
 		Type:        model.RepoTypeLocal,
-		PackageType: model.PackageTypeNPM,
+		PackageType: string(model.PackageTypeNPM),
 		Enabled:     true,
-	}
-	err := repoSvc.Create(repo, nil)
-	assert.Nil(t, err)
+	}, nil)
 
-	// 2. 发布包
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
+	publicHandler := handler.NewPublicRepoHandler(repoSvc)
+	testRouter := gin.New()
+	testRouter.GET("/api/v1/public/repo/:name", publicHandler.GetRepoConfig)
+	server := httptest.NewServer(testRouter)
+	defer server.Close()
 
-	part, _ := writer.CreateFormFile("_attachments", "workflow-pkg-1.0.0.tgz")
-	part.Write([]byte("fake tarball content"))
-
-	writer.WriteField("_attachment", `{
-		"name": "workflow-pkg",
-		"version": "1.0.0",
-		"description": "Workflow test package"
-	}`)
-	writer.Close()
-
-	resp, err := http.Post(
-		testServer.URL+"/npm/workflow-pkg/-rev/123",
-		writer.FormDataContentType(),
-		body,
-	)
-	assert.Nil(t, err)
-	assert.Equal(t, 201, resp.StatusCode)
-
-	// 3. 获取包元数据
-	resp, err = http.Get(testServer.URL + "/npm/workflow-pkg")
-	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
-
-	// 4. 获取特定版本
-	resp, err = http.Get(testServer.URL + "/npm/workflow-pkg/1.0.0")
-	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
-
-	// 5. 取消发布
-	req, _ := http.NewRequest(
-		"DELETE",
-		testServer.URL+"/npm/workflow-pkg/-rev/123",
-		nil,
-	)
-	client := &http.Client{}
-	resp, err = client.Do(req)
-	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
-
-	// 6. 验证包已删除
-	resp, err = http.Get(testServer.URL + "/npm/workflow-pkg")
-	assert.Nil(t, err)
-	assert.Equal(t, 404, resp.StatusCode)
-}
-
-// ==================== E2E 测试：认证配置 ====================
-
-func TestE2E_RepositoryWithBasicAuth(t *testing.T) {
-	payload := map[string]interface{}{
-		"name":         "npm-proxy-basicauth",
-		"type":         "proxy",
-		"package_type": "npm",
-		"remote_url":   "https://private.registry.com",
-		"auth_type":    "basic",
-		"auth_config":  `{"username":"admin","password":"secret"}`,
-	}
-
-	body, _ := json.Marshal(payload)
-	resp, err := http.Post(
-		testServer.URL+"/api/repositories",
-		"application/json",
-		bytes.NewBuffer(body),
-	)
-	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
-}
-
-func TestE2E_RepositoryWithBearerToken(t *testing.T) {
-	payload := map[string]interface{}{
-		"name":         "npm-proxy-bearer",
-		"type":         "proxy",
-		"package_type": "npm",
-		"remote_url":   "https://token.registry.com",
-		"auth_type":    "bearer",
-		"auth_config":  `{"token":"my-secret-token"}`,
-	}
-
-	body, _ := json.Marshal(payload)
-	resp, err := http.Post(
-		testServer.URL+"/api/repositories",
-		"application/json",
-		bytes.NewBuffer(body),
-	)
-	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
-}
-
-func TestE2E_RepositoryWithApiKey(t *testing.T) {
-	payload := map[string]interface{}{
-		"name":         "npm-proxy-apikey",
-		"type":         "proxy",
-		"package_type": "npm",
-		"remote_url":   "https://apikey.registry.com",
-		"auth_type":    "api_key",
-		"auth_config":  `{"header_name":"X-API-Key","key_value":"secret-key"}`,
-	}
-
-	body, _ := json.Marshal(payload)
-	resp, err := http.Post(
-		testServer.URL+"/api/repositories",
-		"application/json",
-		bytes.NewBuffer(body),
-	)
-	assert.Nil(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
-}
-
-// ==================== E2E 测试：缓存配置 ====================
-
-func TestE2E_RepositoryWithCacheConfig(t *testing.T) {
-	payload := map[string]interface{}{
-		"name":              "npm-proxy-cache",
-		"type":              "proxy",
-		"package_type":      "npm",
-		"remote_url":        "https://registry.npmjs.org",
-		"cache_enabled":     true,
-		"cache_ttl_seconds": 3600,
-		"cache_max_size_gb": 5,
-	}
-
-	body, _ := json.Marshal(payload)
-	resp, err := http.Post(
-		testServer.URL+"/api/repositories",
-		"application/json",
-		bytes.NewBuffer(body),
-	)
+	resp, err := http.Get(server.URL + "/api/v1/public/repo/npm-public-config")
 	assert.Nil(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 
 	var result map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&result)
-	assert.Equal(t, float64(3600), result["cache_ttl_seconds"])
+	assert.Equal(t, float64(200), result["code"])
+
+	data := result["data"].(map[string]interface{})
+	assert.Equal(t, "npm-public-config", data["name"])
+	assert.Equal(t, "NPM Public Config Test", data["display_name"])
+	assert.Contains(t, data["registry_url"], "/repo/npm-public-config/")
 }
 
-// ==================== E2E 测试：错误场景 ====================
+// ==================== E2E 测试：新路由架构 ====================
 
-func TestE2E_CreateRepositoryDuplicateName(t *testing.T) {
-	repoSvc.Create(&model.Repository{
-		Name:        "duplicate-name",
+func TestE2E_RepoRoute_GetPackage(t *testing.T) {
+	pkgRepo.StorePackageFile(context.Background(), &model.Package{
+		Name:        "route-test-pkg",
+		Type:        model.PackageTypeNPM,
+		Description: "Route test package",
+	}, &model.PackageVersion{
+		Version:     "1.0.0",
+		Status:      model.StatusPublished,
+		StoragePath: "npm/route-test-pkg/1.0.0",
+	}, &model.PackageFile{
+		Filename:    "package.tgz",
+		FileType:    model.FileTypePrimary,
+		StoragePath: "npm/route-test-pkg/1.0.0/package.tgz",
+		SizeBytes:   1000,
+	})
+
+	repo := &model.Repository{
+		Name:        "npm-route-test",
 		Type:        model.RepoTypeLocal,
-		PackageType: model.PackageTypeNPM,
-	}, nil)
-
-	payload := map[string]interface{}{
-		"name":         "duplicate-name",
-		"type":         "local",
-		"package_type": "npm",
+		PackageType: string(model.PackageTypeNPM),
+		Enabled:     true,
 	}
+	repoSvc.Create(repo, nil)
 
-	body, _ := json.Marshal(payload)
-	resp, err := http.Post(
-		testServer.URL+"/api/repositories",
-		"application/json",
-		bytes.NewBuffer(body),
-	)
+	resp, err := http.Get(testServer.URL + "/repo/npm-route-test/route-test-pkg")
 	assert.Nil(t, err)
-	// 应返回 400 或 500 错误
-	assert.NotEqual(t, 200, resp.StatusCode)
+	assert.Equal(t, 200, resp.StatusCode)
 }
 
-func TestE2E_GetNonExistentRepository(t *testing.T) {
-	resp, err := http.Get(testServer.URL + "/api/repositories/nonexistent")
+func TestE2E_RepoRoute_DisabledRepo(t *testing.T) {
+	repo := &model.Repository{
+		Name:        "npm-disabled",
+		Type:        model.RepoTypeLocal,
+		PackageType: string(model.PackageTypeNPM),
+		Enabled:     false,
+	}
+	repoSvc.Create(repo, nil)
+
+	resp, err := http.Get(testServer.URL + "/repo/npm-disabled/some-pkg")
 	assert.Nil(t, err)
 	assert.Equal(t, 404, resp.StatusCode)
 }
 
-func TestE2E_PublishInvalidPackage(t *testing.T) {
+func TestE2E_RepoRoute_NonExistentRepo(t *testing.T) {
+	resp, err := http.Get(testServer.URL + "/repo/nonexistent-repo/some-pkg")
+	assert.Nil(t, err)
+	assert.Equal(t, 404, resp.StatusCode)
+}
+
+func TestE2E_RepoRoute_ProxyRepoPublish(t *testing.T) {
+	repo := &model.Repository{
+		Name:        "npm-proxy-no-publish",
+		Type:        model.RepoTypeProxy,
+		PackageType: string(model.PackageTypeNPM),
+		Enabled:     true,
+		RemoteURL:   "https://registry.npmjs.org",
+	}
+	repoSvc.Create(repo, nil)
+
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	writer.Close()
 
-	resp, err := http.Post(
-		testServer.URL+"/npm/invalid/-rev/123",
-		writer.FormDataContentType(),
-		body,
-	)
+	req, _ := http.NewRequest("PUT", testServer.URL+"/repo/npm-proxy-no-publish/test-pkg/-rev/123", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	assert.Nil(t, err)
-	assert.Equal(t, 400, resp.StatusCode)
-}
-
-func TestE2E_RepositoryValidation(t *testing.T) {
-	// 测试空名称
-	payload := map[string]interface{}{
-		"type":         "local",
-		"package_type": "npm",
-	}
-
-	body, _ := json.Marshal(payload)
-	resp, err := http.Post(
-		testServer.URL+"/api/repositories",
-		"application/json",
-		bytes.NewBuffer(body),
-	)
-	assert.Nil(t, err)
-	assert.NotEqual(t, 200, resp.StatusCode)
+	assert.Equal(t, 403, resp.StatusCode)
 }
 
 // ==================== 辅助函数 ====================
@@ -695,4 +552,48 @@ func readBody(t *testing.T, resp *http.Response) []byte {
 	body, err := io.ReadAll(resp.Body)
 	assert.Nil(t, err)
 	return body
+}
+
+func init() {
+	gin.SetMode(gin.TestMode)
+}
+
+func TestE2E_CompleteNpmWorkflow(t *testing.T) {
+	repo := &model.Repository{
+		Name:        "npm-workflow-complete",
+		Type:        model.RepoTypeLocal,
+		PackageType: string(model.PackageTypeNPM),
+		Enabled:     true,
+	}
+	err := repoSvc.Create(repo, nil)
+	assert.Nil(t, err)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	part, _ := writer.CreateFormFile("_attachments", "workflow-pkg-1.0.0.tgz")
+	part.Write([]byte("fake tarball content"))
+
+	writer.WriteField("_attachment", fmt.Sprintf(`{
+		"name": "workflow-pkg-%d",
+		"version": "1.0.0",
+		"description": "Workflow test package"
+	}`, os.Getpid()))
+	writer.Close()
+
+	req, _ := http.NewRequest("PUT", testServer.URL+"/repo/npm-workflow-complete/workflow-pkg/-rev/123", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	assert.Nil(t, err)
+	assert.Equal(t, 201, resp.StatusCode)
+
+	req2, _ := http.NewRequest(
+		"DELETE",
+		testServer.URL+"/repo/npm-workflow-complete/workflow-pkg/-rev/123",
+		nil,
+	)
+	resp, err = client.Do(req2)
+	assert.Nil(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
 }

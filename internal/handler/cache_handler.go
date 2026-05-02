@@ -1,8 +1,8 @@
 package handler
 
 import (
-	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/gin-gonic/gin"
+	"github.com/moonlight-box/registry/internal/proxy"
 )
 
 // CacheHandler 缓存管理处理器

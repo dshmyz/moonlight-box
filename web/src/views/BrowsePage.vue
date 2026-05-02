@@ -90,6 +90,7 @@
 import { ref, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { Search } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { packageApi, type Package } from '@/api/package'
 import PackageCard from '@/components/browse/PackageCard.vue'
 import RepositoryShowcase from '@/components/browse/RepositoryShowcase.vue'
@@ -109,9 +110,8 @@ const packages = ref<Package[]>([])
 
 const handleSearch = async () => {
   loading.value = true
-  currentPage.value = 1
   try {
-    const params: any = {
+    const params: Record<string, unknown> = {
       q: searchQuery.value,
       page: currentPage.value,
       page_size: pageSize.value,
@@ -121,52 +121,16 @@ const handleSearch = async () => {
       params.type = selectedType.value
     }
 
-    const res = await packageApi.search(params)
-    const list = res.list || res.data?.list || []
-    const totalVal = res.total ?? res.data?.total ?? 0
-    if (list.length === 0 && !searchQuery.value) {
-      const mock = getMockPackages()
-      const filtered = selectedType.value === 'all' ? mock : mock.filter(p => normalizeType(p.type) === normalizeType(selectedType.value))
-      packages.value = filtered
-      total.value = filtered.length
-    } else {
-      packages.value = list
-      total.value = totalVal
-    }
+    const res = await packageApi.search(params as { q: string; type?: string; scope?: string; sort?: string; page?: number; page_size?: number })
+    packages.value = res.list || []
+    total.value = res.total || 0
   } catch {
-    const mock = getMockPackages()
-    const filtered = selectedType.value === 'all' ? mock : mock.filter(p => normalizeType(p.type) === normalizeType(selectedType.value))
-    const q = searchQuery.value.toLowerCase()
-    const matched = q ? filtered.filter(p => p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q)) : filtered
-    packages.value = matched
-    total.value = matched.length
+    packages.value = []
+    total.value = 0
+    ElMessage.error('搜索失败，请稍后重试')
   } finally {
     loading.value = false
   }
-}
-
-function normalizeType(type: string) {
-  return type === 'maven' ? 'maven2' : type
-}
-
-function getMockPackages(): Package[] {
-  return [
-    { id: 1, name: 'lodash', type: 'npm', description: 'A modern JavaScript utility library delivering modularity, performance & extras', latest_version: '4.17.21', download_count: 50000000, updated_at: '2024-01-15T10:00:00Z' },
-    { id: 2, name: 'express', type: 'npm', description: 'Fast, unopinionated, minimalist web framework for Node.js', latest_version: '4.18.2', download_count: 32000000, updated_at: '2024-02-20T10:00:00Z' },
-    { id: 3, name: 'axios', type: 'npm', description: 'Promise based HTTP client for the browser and Node.js', latest_version: '1.6.7', download_count: 45000000, updated_at: '2024-03-10T10:00:00Z' },
-    { id: 4, name: 'vue', type: 'npm', description: 'The progressive JavaScript framework for building modern web UI', latest_version: '3.4.15', download_count: 18000000, updated_at: '2024-04-01T10:00:00Z' },
-    { id: 5, name: 'react', type: 'npm', description: 'The library for web and native user interfaces', latest_version: '18.2.0', download_count: 28000000, updated_at: '2024-01-20T10:00:00Z' },
-    { id: 6, name: 'com.google.guava:guava', type: 'maven2', description: 'Google Core Libraries for Java', latest_version: '33.0.0', download_count: 15000000, updated_at: '2024-02-28T10:00:00Z' },
-    { id: 7, name: 'org.springframework.boot:spring-boot-starter-web', type: 'maven2', description: 'Spring Boot Web Starter', latest_version: '3.2.3', download_count: 22000000, updated_at: '2024-03-15T10:00:00Z' },
-    { id: 8, name: 'com.fasterxml.jackson.core:jackson-databind', type: 'maven2', description: 'General data-binding functionality for Jackson', latest_version: '2.16.1', download_count: 18000000, updated_at: '2024-01-10T10:00:00Z' },
-    { id: 9, name: 'flask', type: 'pypi', description: 'A simple framework for building complex web applications', latest_version: '3.0.2', download_count: 12000000, updated_at: '2024-02-15T10:00:00Z' },
-    { id: 10, name: 'requests', type: 'pypi', description: 'Python HTTP for Humans', latest_version: '2.31.0', download_count: 35000000, updated_at: '2024-01-05T10:00:00Z' },
-    { id: 11, name: 'numpy', type: 'pypi', description: 'Fundamental package for array computing in Python', latest_version: '1.26.4', download_count: 40000000, updated_at: '2024-03-01T10:00:00Z' },
-    { id: 12, name: 'github.com/gin-gonic/gin', type: 'go', description: 'Gin is a HTTP web framework written in Go', latest_version: '1.9.1', download_count: 8000000, updated_at: '2024-02-10T10:00:00Z' },
-    { id: 13, name: 'github.com/go-chi/chi', type: 'go', description: 'Lightweight, idiomatic, composable router for building Go HTTP services', latest_version: '5.0.12', download_count: 5000000, updated_at: '2024-01-25T10:00:00Z' },
-    { id: 14, name: 'typescript', type: 'npm', description: 'TypeScript is a language for application-scale JavaScript', latest_version: '5.3.3', download_count: 38000000, updated_at: '2024-03-20T10:00:00Z' },
-    { id: 15, name: 'fastapi', type: 'pypi', description: 'FastAPI framework, high performance, easy to learn, fast to code', latest_version: '0.110.0', download_count: 9000000, updated_at: '2024-03-05T10:00:00Z' },
-  ]
 }
 
 function goToDetail(pkg: { id: number; type: string; name: string }) {

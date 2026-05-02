@@ -4,7 +4,7 @@
       <div class="guide-header">
         <span class="card-title">使用指南</span>
         <el-tag v-if="selectedVersion" type="primary" size="small" effect="plain" class="version-tag">
-          v{{ selectedVersion }}
+          {{ selectedVersion }}
         </el-tag>
       </div>
     </template>
@@ -54,6 +54,7 @@
 import { computed } from 'vue'
 import { CopyDocument } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import { normalizePackageType } from '@/constants/package'
 
 interface CommandItem {
   label: string
@@ -76,14 +77,10 @@ const props = defineProps<{
 
 const activeVersion = computed(() => props.selectedVersion || props.pkg.latest_version || 'latest')
 
-function normalizeType(type: string) {
-  return type === 'maven' ? 'maven2' : type
-}
-
 const installCommands = computed<CommandItem[]>(() => {
   const { name, type } = props.pkg
   const version = activeVersion.value
-  const t = normalizeType(type)
+  const t = normalizePackageType(type)
 
   switch (t) {
     case 'npm':
@@ -106,7 +103,7 @@ const installCommands = computed<CommandItem[]>(() => {
       ]
     case 'go':
       return [
-        { label: 'go get', command: `go get ${name}@v${version}` },
+        { label: 'go get', command: `go get ${name}@${version}` },
         { label: 'go mod tidy', command: `go mod tidy` },
       ]
     case 'nuget':
@@ -131,7 +128,7 @@ const installCommands = computed<CommandItem[]>(() => {
 const configSnippets = computed<CodeItem[]>(() => {
   const { name, type } = props.pkg
   const version = activeVersion.value
-  const t = normalizeType(type)
+  const t = normalizePackageType(type)
 
   switch (t) {
     case 'maven2': {
@@ -161,7 +158,7 @@ const configSnippets = computed<CodeItem[]>(() => {
       return [
         {
           label: 'go.mod',
-          code: `require ${name} v${version}`,
+          code: `require ${name} ${version}`,
         },
       ]
     case 'nuget':
@@ -178,7 +175,7 @@ const configSnippets = computed<CodeItem[]>(() => {
 
 const usageExamples = computed<CodeItem[]>(() => {
   const { name, type } = props.pkg
-  const t = normalizeType(type)
+  const t = normalizePackageType(type)
 
   switch (t) {
     case 'npm':

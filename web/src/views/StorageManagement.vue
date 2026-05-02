@@ -159,7 +159,7 @@ async function loadStorages() {
   loading.value = true
   try {
     const res = await storageBackendApi.list()
-    storages.value = res.data || []
+    storages.value = res || []
   } catch {
     ElMessage.error('加载存储列表失败')
   } finally {
@@ -234,10 +234,11 @@ async function handleSetDefault(row: StorageBackend) {
 async function handleTest(row: StorageBackend) {
   try {
     const res = await storageBackendApi.testConnection(row)
-    if (res.data.success) {
+    const data = res as any
+    if (data?.success) {
       ElMessage.success('连接测试成功')
     } else {
-      ElMessage.error(res.data.message || '连接测试失败')
+      ElMessage.error(data?.message || '连接测试失败')
     }
   } catch (error: any) {
     ElMessage.error(error.message || '连接测试失败')

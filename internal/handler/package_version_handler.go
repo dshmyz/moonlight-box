@@ -21,7 +21,12 @@ func NewPackageVersionHandler(pkgRepo *repository.PackageRepository) *PackageVer
 
 func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 	pkgType := c.Param("type")
-	pkgName := c.Param("name")
+	pkgName := c.Query("name")
+
+	if pkgName == "" {
+		response.BadRequest(c, "missing package name", "please provide package name via 'name' query parameter")
+		return
+	}
 
 	pkg, err := h.pkgRepo.FindByNameAndType(pkgName, model.PackageType(pkgType))
 	if err != nil {

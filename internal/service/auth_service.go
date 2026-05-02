@@ -13,9 +13,9 @@ import (
 )
 
 type AuthService struct {
-	userRepo     *repository.UserRepository
-	roleRepo     *repository.RoleRepository
-	config       *config.AuthConfig
+	userRepo       *repository.UserRepository
+	roleRepo       *repository.RoleRepository
+	config         *config.AuthConfig
 	tokenBlacklist map[string]bool // 简单内存黑名单，生产环境可用 Redis
 }
 

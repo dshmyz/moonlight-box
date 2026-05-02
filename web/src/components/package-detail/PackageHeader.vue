@@ -7,14 +7,14 @@
         </el-breadcrumb-item>
         <el-breadcrumb-item>
           <router-link to="/">
-            <el-tag size="small" :type="getTypeColor(pkg.type)">{{ getPackageTypeLabel(pkg.type) }}</el-tag>
+            <el-tag size="small" :type="getPackageTypeColor(pkg.type)">{{ getPackageTypeLabel(pkg.type) }}</el-tag>
           </router-link>
         </el-breadcrumb-item>
         <el-breadcrumb-item>{{ pkg.name }}</el-breadcrumb-item>
       </el-breadcrumb>
     </div>
     <div class="header-body">
-      <el-tag :type="getTypeColor(pkg.type)" size="large" effect="plain">
+      <el-tag :type="getPackageTypeColor(pkg.type)" size="large" effect="plain">
         {{ getPackageTypeLabel(pkg.type) }}
       </el-tag>
       <h1 class="package-title">{{ pkg.name }}</h1>
@@ -39,6 +39,8 @@
 
 <script setup lang="ts">
 import { PriceTag, Download, Document } from '@element-plus/icons-vue'
+import { formatNumber } from '@/utils/format'
+import { getPackageTypeColor, getPackageTypeLabel, normalizePackageType } from '@/constants/package'
 
 defineProps<{
   pkg: {
@@ -50,36 +52,6 @@ defineProps<{
     license?: string
   }
 }>()
-
-function normalizeType(type: string) {
-  return type === 'maven' ? 'maven2' : type
-}
-
-function getTypeColor(type: string) {
-  const colors: Record<string, string> = {
-    npm: '',
-    maven2: 'success',
-    pypi: 'warning',
-    go: 'info',
-  }
-  return colors[normalizeType(type)] || 'info'
-}
-
-function getPackageTypeLabel(type: string) {
-  const labels: Record<string, string> = {
-    npm: 'npm',
-    maven2: 'Maven',
-    pypi: 'PyPI',
-    go: 'Go',
-  }
-  return labels[normalizeType(type)] || type
-}
-
-function formatNumber(num: number) {
-  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`
-  return String(num)
-}
 </script>
 
 <style scoped>

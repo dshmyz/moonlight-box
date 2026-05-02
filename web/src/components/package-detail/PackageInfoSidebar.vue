@@ -6,7 +6,7 @@
 
     <el-descriptions :column="1" border size="small">
       <el-descriptions-item label="类型">
-        <el-tag :type="getTypeColor(pkg.type)" size="small">
+        <el-tag :type="getPackageTypeColor(pkg.type)" size="small">
           {{ getPackageTypeLabel(pkg.type) }}
         </el-tag>
       </el-descriptions-item>
@@ -25,15 +25,15 @@
       </h4>
       <el-descriptions :column="1" border size="small">
         <el-descriptions-item label="状态">
-          <el-tag :type="getStatusType(activeVersion.status)" size="small">
-            {{ getStatusLabel(activeVersion.status) }}
+          <el-tag :type="getVersionStatusColor(activeVersion.status)" size="small">
+            {{ getVersionStatusLabel(activeVersion.status) }}
           </el-tag>
         </el-descriptions-item>
-        <el-descriptions-item label="发布时间">{{ activeVersion.published_at || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="大小">{{ formatSize(activeVersion.size) }}</el-descriptions-item>
-        <el-descriptions-item label="下载量">{{ formatNumber(activeVersion.downloads) }}</el-descriptions-item>
+        <el-descriptions-item label="发布时间">{{ formatDate(activeVersion.published_at) }}</el-descriptions-item>
+        <el-descriptions-item label="大小">{{ formatSize(activeVersion.size_bytes) }}</el-descriptions-item>
+        <el-descriptions-item label="下载量">{{ formatNumber(activeVersion.download_count) }}</el-descriptions-item>
         <el-descriptions-item label="SHA256">
-          <span class="checksum-text" @click="copyText(activeVersion.checksum)">{{ activeVersion.checksum }}</span>
+          <span class="checksum-text" @click="copyText(activeVersion.checksum_sha256 || '')">{{ activeVersion.checksum_sha256 || '-' }}</span>
         </el-descriptions-item>
       </el-descriptions>
     </div>
@@ -55,6 +55,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { ElMessage } from 'element-plus'
+import { formatNumber, formatSize, formatDate } from '@/utils/format'
+import { getPackageTypeColor, getPackageTypeLabel, normalizePackageType, getVersionStatusColor, getVersionStatusLabel } from '@/constants/package'
+import type { PackageVersion } from '@/api/package'
 
 const props = defineProps<{
   pkg: {
@@ -65,15 +68,7 @@ const props = defineProps<{
     repository?: string
     license?: string
   }
-  versions: Array<{
-    version: string
-    published_at: string
-    downloads: number
-    is_latest?: boolean
-    size: number
-    checksum: string
-    status: string
-  }>
+  versions: PackageVersion[]
   selectedVersion: string
 }>()
 
@@ -81,29 +76,25 @@ const activeVersion = computed(() => {
   return props.versions.find(v => v.version === props.selectedVersion) || null
 })
 
-function normalizeType(type: string) {
-  return type === 'maven' ? 'maven2' : type
-}
-
 const registryUrl = computed(() => {
-  const base = `${window.location.origin}/api/v1`
+  const base = window.location.origin
   const repo = props.pkg.repository || 'default'
-  switch (normalizeType(props.pkg.type)) {
+  switch (normalizePackageType(props.pkg.type)) {
     case 'npm':
-      return `${base}/repository/${repo}/`
+      return `${base}/repo/${repo}/`
     case 'pypi':
-      return `${base}/repository/${repo}/simple`
+      return `${base}/repo/${repo}/simple`
     case 'nuget':
-      return `${base}/repository/${repo}/v3/index.json`
+      return `${base}/repo/${repo}/v3/index.json`
     default:
-      return `${base}/repository/${repo}/`
+      return `${base}/repo/${repo}/`
   }
 })
 
 const configCommand = computed(() => {
   const url = registryUrl.value
   const repo = props.pkg.repository || 'default'
-  switch (normalizeType(props.pkg.type)) {
+  switch (normalizePackageType(props.pkg.type)) {
     case 'npm':
       return `npm config set registry ${url}`
     case 'pypi':
@@ -119,59 +110,8 @@ const configCommand = computed(() => {
   }
 })
 
-function getTypeColor(type: string) {
-  const colors: Record<string, string> = {
-    npm: '',
-    maven2: 'success',
-    pypi: 'warning',
-    go: 'info',
-  }
-  return colors[normalizeType(type)] || 'info'
-}
-
-function getPackageTypeLabel(type: string) {
-  const labels: Record<string, string> = {
-    npm: 'npm',
-    maven2: 'Maven',
-    pypi: 'PyPI',
-    go: 'Go',
-  }
-  return labels[normalizeType(type)] || type
-}
-
-function getStatusType(status: string) {
-  const map: Record<string, string> = {
-    published: 'success',
-    deprecated: 'warning',
-    yanked: 'danger',
-    draft: 'info',
-  }
-  return map[status] || 'info'
-}
-
-function getStatusLabel(status: string) {
-  const map: Record<string, string> = {
-    published: '已发布',
-    deprecated: '已弃用',
-    yanked: '已撤回',
-    draft: '草稿',
-  }
-  return map[status] || status
-}
-
-function formatNumber(num: number) {
-  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`
-  return String(num)
-}
-
-function formatSize(bytes: number) {
-  if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1)} MB`
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${bytes} B`
-}
-
 async function copyText(text: string) {
+  if (!text) return
   try {
     await navigator.clipboard.writeText(text)
     ElMessage.success('已复制到剪贴板')

@@ -75,7 +75,7 @@ func NewAptAdapter(
 	}
 }
 
-func (a *AptAdapter) Type() PackageType { return AptType }
+func (a *AptAdapter) Type() PackageType   { return AptType }
 func (a *AptAdapter) RoutePrefix() string { return "/apt" }
 
 func (a *AptAdapter) RegisterRoutes(r *gin.RouterGroup, authMw gin.HandlerFunc, permMw func(resource, action string) gin.HandlerFunc) {
@@ -245,7 +245,7 @@ func (a *AptAdapter) DownloadDeb(c *gin.Context) {
 	filePath := c.Param("path")
 	filePath = strings.TrimPrefix(filePath, "/")
 
-	storageKey := "apt/" + filePath
+	storageKey := filePath
 
 	backend := a.storageSvc.GetDefaultBackend()
 	content, err := backend.Get(c.Request.Context(), storageKey)
@@ -291,8 +291,12 @@ func (a *AptAdapter) UploadDeb(c *gin.Context) {
 	packageName := parseDebPackageName(debName)
 	packageVersion := parseDebPackageVersion(debName)
 
-	poolDir := fmt.Sprintf("pool/%s", packageName)
-	storageKey := fmt.Sprintf("apt/%s/%s", poolDir, debName)
+	firstLetter := string(packageName[0])
+	if len(firstLetter) > 0 {
+		firstLetter = strings.ToLower(firstLetter)
+	}
+	poolDir := fmt.Sprintf("pool/main/%s/%s", firstLetter, packageName)
+	storageKey := poolDir + "/" + debName
 
 	backend := a.storageSvc.GetDefaultBackend()
 	if err := backend.Put(c.Request.Context(), storageKey, bytes.NewReader(debData), header.Size); err != nil {
@@ -349,14 +353,19 @@ func (a *AptAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageVe
 		return nil, fmt.Errorf("missing name or version in metadata")
 	}
 
-	storageKey := fmt.Sprintf("apt/pool/%s/%s_%s.deb", name, name, version)
+	firstLetter := string(name[0])
+	if len(firstLetter) > 0 {
+		firstLetter = strings.ToLower(firstLetter)
+	}
+	filename := fmt.Sprintf("%s_%s_amd64.deb", name, version)
+	storageVersion := fmt.Sprintf("pool/main/%s/%s/%s", firstLetter, name, filename)
 
-	_, err := a.storageSvc.StorePackage(ctx, "apt", name, version, reader, req.Size)
+	storageKey, err := a.storageSvc.StorePackage(ctx, "apt", name, version, reader, req.Size)
 	if err != nil {
 		return nil, err
 	}
 
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(ctx, &model.Package{
+	pkg, ver, _, err := a.pkgRepo.StorePackageFile(ctx, &model.Package{
 		Name:           name,
 		Type:           model.PackageTypeApt,
 		RepositoryType: model.RepoTypeLocal,
@@ -364,18 +373,23 @@ func (a *AptAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageVe
 	}, &model.PackageVersion{
 		Version:     version,
 		Status:      model.StatusPublished,
-		StoragePath: storageKey,
-		SizeBytes:   req.Size,
+		StoragePath: filepath.Dir(storageKey),
 		PublishedBy: req.UploadedBy,
 		Metadata:    marshalMetadata(req.Metadata),
+	}, &model.PackageFile{
+		Filename:    filename,
+		FileType:    model.FileTypePrimary,
+		StoragePath: storageKey,
+		SizeBytes:   req.Size,
 	})
 	if err != nil {
-		a.storageSvc.DeletePackage(ctx, "apt", name, version)
+		a.storageSvc.DeletePackage(ctx, "apt", name, storageVersion)
 		return nil, err
 	}
 
 	return &PackageVersionResult{
 		PackageID:  pkg.ID,
+		VersionID:  ver.ID,
 		Version:    version,
 		StorageKey: storageKey,
 		Size:       req.Size,

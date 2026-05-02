@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -20,6 +22,7 @@ import (
 )
 
 type GoAdapter struct {
+	*BaseAdapter
 	pkgRepo     *repository.PackageRepository
 	storageSvc  *service.StorageService
 	auditSvc    *service.AuditService
@@ -33,6 +36,7 @@ func NewGoAdapter(
 	proxyRouter *proxy.ProxyRouter,
 ) *GoAdapter {
 	return &GoAdapter{
+		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
 		pkgRepo:     pkgRepo,
 		storageSvc:  storageSvc,
 		auditSvc:    auditSvc,
@@ -113,14 +117,20 @@ func (a *GoAdapter) handleListVersions(c *gin.Context, module string) {
 			urlBuilder := func(repo *model.Repository, pkgName, _ string) string {
 				return fmt.Sprintf("%s/%s/@v/list", strings.TrimSuffix(repo.RemoteURL, "/"), encodeGoModulePath(pkgName))
 			}
-			result, resolveErr := a.proxyRouter.ResolveProxyOnly(c.Request.Context(), "go", module, "", urlBuilder)
+
+			var repo *model.Repository
+			if r, ok := c.Get("repo"); ok {
+				repo = r.(*model.Repository)
+			}
+
+			result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "go", module, "", urlBuilder)
 			if resolveErr == nil && result != nil {
 				defer result.Content.Close()
 				body, readErr := io.ReadAll(result.Content)
 				if readErr == nil {
 					remoteVersions := parseVersionList(string(body))
 					if len(remoteVersions) > 0 {
-						a.syncVersionsToLocal(c.Request.Context(), module, remoteVersions)
+						a.syncVersionsToLocal(c.Request.Context(), module, remoteVersions, result.RepoID)
 						c.Data(200, "text/plain", []byte(strings.Join(remoteVersions, "\n")+"\n"))
 						return
 					}
@@ -154,7 +164,13 @@ func (a *GoAdapter) handleVersionInfo(c *gin.Context, module, version string) {
 				urlBuilder := func(repo *model.Repository, pkgName, pkgVersion string) string {
 					return fmt.Sprintf("%s/%s/@v/%s.info", strings.TrimSuffix(repo.RemoteURL, "/"), encodeGoModulePath(pkgName), pkgVersion)
 				}
-				result, resolveErr := a.proxyRouter.ResolveProxyOnly(c.Request.Context(), "go", module, version, urlBuilder)
+
+				var repo *model.Repository
+				if r, ok := c.Get("repo"); ok {
+					repo = r.(*model.Repository)
+				}
+
+				result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "go", module, version, urlBuilder)
 				if resolveErr == nil && result != nil {
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
@@ -187,27 +203,67 @@ func (a *GoAdapter) handleVersionInfo(c *gin.Context, module, version string) {
 }
 
 func (a *GoAdapter) handleGoMod(c *gin.Context, module, version string) {
-	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "go", module, version)
+	storageVersion := filepath.Join("@v", version+".mod")
+	slog.Info("handleGoMod called", "module", module, "version", version, "storageVersion", storageVersion)
+
+	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "go", module, storageVersion)
 	if err == nil {
+		slog.Info("Found cached go.mod", "module", module, "version", version)
 		defer content.Close()
 		c.DataFromReader(200, size, "text/plain", content, nil)
 		return
 	}
 
+	slog.Info("Cache miss, trying proxy", "module", module, "version", version)
+
 	if a.proxyRouter != nil {
 		urlBuilder := func(repo *model.Repository, pkgName, pkgVersion string) string {
 			return fmt.Sprintf("%s/%s/@v/%s.mod", strings.TrimSuffix(repo.RemoteURL, "/"), encodeGoModulePath(pkgName), pkgVersion)
 		}
-		result, resolveErr := a.proxyRouter.ResolveProxyOnly(c.Request.Context(), "go", module, version, urlBuilder)
+
+		var repo *model.Repository
+		if r, ok := c.Get("repo"); ok {
+			repo = r.(*model.Repository)
+		}
+
+		result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "go", module, version, urlBuilder)
 		if resolveErr == nil && result != nil {
+			slog.Info("Proxy resolved successfully", "source", result.Source, "size", result.Size)
 			defer result.Content.Close()
 			body, readErr := io.ReadAll(result.Content)
 			if readErr == nil {
-				a.storageSvc.StorePackage(c.Request.Context(), "go", module, version, bytes.NewReader(body), result.Size)
+				slog.Info("Storing go.mod to storage", "module", module, "version", version, "size", len(body))
+				storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "go", module, version, bytes.NewReader(body), result.Size)
+				if storeErr == nil {
+					slog.Info("Stored successfully", "storageKey", storageKey)
+					a.pkgRepo.StorePackageFile(c.Request.Context(), &model.Package{
+						Name:           module,
+						Type:           model.PackageTypeGo,
+						RepositoryID:   result.RepoID,
+						RepositoryType: model.RepoTypeProxy,
+					}, &model.PackageVersion{
+						Version:     version,
+						Status:      model.StatusPublished,
+						StoragePath: filepath.Dir(storageKey),
+					}, &model.PackageFile{
+						Filename:    version + ".mod",
+						FileType:    model.FileTypeMetadata,
+						StoragePath: storageKey,
+						SizeBytes:   result.Size,
+					})
+				} else {
+					slog.Error("Failed to store go.mod", "error", storeErr)
+				}
 				c.Data(200, "text/plain", body)
 				return
+			} else {
+				slog.Error("Failed to read response body", "error", readErr)
 			}
+		} else {
+			slog.Error("Proxy resolution failed", "error", resolveErr)
 		}
+	} else {
+		slog.Warn("proxyRouter is nil")
 	}
 
 	response.NotFound(c, "go.mod not found")
@@ -217,6 +273,9 @@ func (a *GoAdapter) handleDownloadZip(c *gin.Context, module, version string) {
 	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "go", module, version)
 	if err == nil {
 		defer content.Close()
+
+		a.IncrementDownloadCountForPackage(module, model.PackageTypeGo, version, version+".zip")
+
 		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, version))
 		c.DataFromReader(200, size, "application/zip", content, nil)
 		return
@@ -226,12 +285,35 @@ func (a *GoAdapter) handleDownloadZip(c *gin.Context, module, version string) {
 		urlBuilder := func(repo *model.Repository, pkgName, pkgVersion string) string {
 			return fmt.Sprintf("%s/%s/@v/%s.zip", strings.TrimSuffix(repo.RemoteURL, "/"), encodeGoModulePath(pkgName), pkgVersion)
 		}
-		result, resolveErr := a.proxyRouter.ResolveProxyOnly(c.Request.Context(), "go", module, version, urlBuilder)
+
+		var repo *model.Repository
+		if r, ok := c.Get("repo"); ok {
+			repo = r.(*model.Repository)
+		}
+
+		result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "go", module, version, urlBuilder)
 		if resolveErr == nil && result != nil {
 			defer result.Content.Close()
 			body, readErr := io.ReadAll(result.Content)
 			if readErr == nil {
-				a.storageSvc.StorePackage(c.Request.Context(), "go", module, version, bytes.NewReader(body), result.Size)
+				storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "go", module, version, bytes.NewReader(body), result.Size)
+				if storeErr == nil {
+					a.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
+						Name:           module,
+						Type:           model.PackageTypeGo,
+						RepositoryID:   result.RepoID,
+						RepositoryType: model.RepoTypeProxy,
+					}, &model.PackageVersion{
+						Version:     version,
+						Status:      model.StatusPublished,
+						StoragePath: filepath.Dir(storageKey),
+					}, &model.PackageFile{
+						Filename:    version + ".zip",
+						FileType:    model.FileTypePrimary,
+						StoragePath: storageKey,
+						SizeBytes:   result.Size,
+					})
+				}
 				localContent, localSize, localErr := a.storageSvc.GetPackage(c.Request.Context(), "go", module, version)
 				if localErr == nil {
 					defer localContent.Close()
@@ -302,12 +384,13 @@ func (a *GoAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageVer
 		return nil, fmt.Errorf("missing module name or version")
 	}
 
+	storageVersion := filepath.Join("@v", version+".zip")
 	storageKey, err := a.storageSvc.StorePackage(ctx, "go", name, version, reader, req.Size)
 	if err != nil {
 		return nil, err
 	}
 
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(ctx, &model.Package{
+	pkg, ver, _, err := a.pkgRepo.StorePackageFile(ctx, &model.Package{
 		Name:           name,
 		Type:           model.PackageTypeGo,
 		RepositoryType: model.RepoTypeLocal,
@@ -315,19 +398,24 @@ func (a *GoAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageVer
 	}, &model.PackageVersion{
 		Version:     version,
 		Status:      model.StatusPublished,
-		StoragePath: storageKey,
-		SizeBytes:   req.Size,
+		StoragePath: filepath.Dir(storageKey),
 		PublishedBy: req.UploadedBy,
 		Metadata:    marshalMetadata(req.Metadata),
+	}, &model.PackageFile{
+		Filename:    version + ".zip",
+		FileType:    model.FileTypePrimary,
+		StoragePath: storageKey,
+		SizeBytes:   req.Size,
 	})
 
 	if err != nil {
-		a.storageSvc.DeletePackage(ctx, "go", name, version)
+		a.storageSvc.DeletePackage(ctx, "go", name, storageVersion)
 		return nil, err
 	}
 
 	return &PackageVersionResult{
 		PackageID:  pkg.ID,
+		VersionID:  ver.ID,
 		Version:    version,
 		StorageKey: storageKey,
 		Size:       req.Size,
@@ -380,10 +468,25 @@ func (a *GoAdapter) ListVersions(ctx context.Context, name string) ([]string, er
 	return a.pkgRepo.ListVersions(name, model.PackageTypeGo)
 }
 
-func (a *GoAdapter) syncVersionsToLocal(ctx context.Context, module string, versions []string) {
+func (a *GoAdapter) HandleRepoRequest(c *gin.Context, repo *model.Repository, path string) {
+	c.Set("repo", repo)
+	c.Params = append(c.Params, gin.Param{Key: "path", Value: "/" + path})
+	a.goProxyHandler(c)
+}
+
+func (a *GoAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) {
+	response.Forbidden(c, "Go modules cannot be published directly")
+}
+
+func (a *GoAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) {
+	response.Forbidden(c, "Go modules cannot be deleted directly")
+}
+
+func (a *GoAdapter) syncVersionsToLocal(ctx context.Context, module string, versions []string, repoID uint) {
 	pkg, _, err := a.pkgRepo.CreateOrUpdate(ctx, &model.Package{
 		Name:           module,
 		Type:           model.PackageTypeGo,
+		RepositoryID:   repoID,
 		RepositoryType: model.RepoTypeProxy,
 	}, nil)
 	if err != nil {

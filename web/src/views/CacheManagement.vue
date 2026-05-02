@@ -61,7 +61,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { cacheApi } from '@/api/repository'
+import { cacheApi } from '@/api/cache'
 
 const loading = ref(false)
 const clearing = ref(false)
@@ -90,7 +90,7 @@ const loadStats = async () => {
   loading.value = true
   try {
     const res = await cacheApi.getStats()
-    stats.value = res.data || {}
+    stats.value = res || {}
   } catch {
     ElMessage.error('加载缓存统计失败')
   } finally {

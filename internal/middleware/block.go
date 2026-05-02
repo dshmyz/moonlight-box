@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/moonlight-box/registry/internal/response"
@@ -10,9 +11,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func BlockCheck(blockSvc *service.BlockRuleService) gin.HandlerFunc {
+func BlockCheck(blockSvc *service.BlockRuleService, repoSvc *service.RepositoryService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		pkgType, pkgName, version := extractPackageInfo(c)
+		pkgType, pkgName, version := extractPackageInfo(c, repoSvc)
 		if pkgName == "" {
 			c.Next()
 			return
@@ -43,8 +44,12 @@ func BlockCheck(blockSvc *service.BlockRuleService) gin.HandlerFunc {
 	}
 }
 
-func extractPackageInfo(c *gin.Context) (pkgType, pkgName, version string) {
+func extractPackageInfo(c *gin.Context, repoSvc *service.RepositoryService) (pkgType, pkgName, version string) {
 	path := c.Request.URL.Path
+
+	if strings.HasPrefix(path, "/repo/") {
+		return extractRepoPackageInfo(c, repoSvc)
+	}
 
 	if strings.HasPrefix(path, "/npm") {
 		pkgType = "npm"
@@ -72,6 +77,223 @@ func extractPackageInfo(c *gin.Context) (pkgType, pkgName, version string) {
 		pkgName, version = extractGenericInfo(c)
 	}
 
+	return
+}
+
+func extractRepoPackageInfo(c *gin.Context, repoSvc *service.RepositoryService) (pkgType, pkgName, version string) {
+	repoName := c.Param("repoName")
+	if repoName == "" {
+		path := c.Request.URL.Path
+		parts := strings.Split(strings.TrimPrefix(path, "/repo/"), "/")
+		if len(parts) > 0 {
+			repoName = parts[0]
+		}
+	}
+
+	if repoName == "" {
+		return
+	}
+
+	repo, err := repoSvc.Get(repoName)
+	if err != nil || repo == nil {
+		return
+	}
+
+	pkgType = repo.PackageType
+	subPath := strings.TrimPrefix(c.Param("path"), "/")
+
+	switch pkgType {
+	case "npm":
+		pkgName, version = extractNpmFromPath(subPath)
+	case "maven":
+		pkgName, version = extractMavenFromPath(subPath)
+	case "pypi":
+		pkgName, version = extractPyPIFromPath(subPath)
+	case "go":
+		pkgName, version = extractGoFromPath(subPath)
+	case "nuget":
+		pkgName, version = extractNuGetFromPath(subPath)
+	case "yum":
+		pkgName, version = extractYumFromPath(subPath)
+	case "apt":
+		pkgName, version = extractAptFromPath(subPath)
+	case "generic":
+		pkgName, version = extractGenericFromPath(subPath)
+	}
+
+	return
+}
+
+func extractNpmFromPath(path string) (pkgName, version string) {
+	path = strings.TrimPrefix(path, "/")
+	if strings.Contains(path, "/-/tarball/") {
+		parts := strings.Split(path, "/-/tarball/")
+		if len(parts) > 0 {
+			pkgName = parts[0]
+		}
+		return
+	}
+
+	parts := strings.Split(path, "/")
+	if len(parts) == 0 {
+		return
+	}
+
+	if strings.HasPrefix(parts[0], "@") && len(parts) >= 2 {
+		pkgName = parts[0] + "/" + parts[1]
+		if len(parts) >= 3 {
+			version = parts[2]
+		}
+	} else {
+		pkgName = parts[0]
+		if len(parts) >= 2 {
+			version = parts[1]
+		}
+	}
+
+	return
+}
+
+func extractMavenFromPath(path string) (pkgName, version string) {
+	path = strings.TrimPrefix(path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 4 {
+		return
+	}
+
+	groupParts := []string{}
+	artifact := ""
+	ver := ""
+
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		if i == len(parts)-1 {
+			continue
+		}
+		if strings.Contains(p, ".") && i > 0 {
+			artifact = parts[i-1]
+			ver = p
+			break
+		}
+		groupParts = append(groupParts, p)
+	}
+
+	if len(groupParts) > 0 && artifact != "" {
+		pkgName = strings.Join(groupParts, "/") + "/" + artifact
+		version = ver
+	}
+
+	return
+}
+
+func extractPyPIFromPath(path string) (pkgName, version string) {
+	path = strings.TrimPrefix(path, "/")
+	if strings.HasPrefix(path, "simple/") {
+		path = strings.TrimPrefix(path, "simple/")
+	}
+
+	if strings.HasPrefix(path, "packages/") {
+		filename := filepath.Base(path)
+		filename = strings.Split(filename, "#")[0]
+		pkgName, version = parsePyPIFilename(filename)
+		return
+	}
+
+	parts := strings.Split(path, "/")
+	if len(parts) >= 1 {
+		pkgName = parts[0]
+	}
+	if len(parts) >= 2 {
+		for _, p := range parts[1:] {
+			if strings.Contains(p, ".whl") || strings.Contains(p, ".tar.gz") {
+				version = p
+				break
+			}
+		}
+	}
+
+	return
+}
+
+func parsePyPIFilename(filename string) (pkgName, version string) {
+	if strings.HasSuffix(filename, ".whl") {
+		parts := strings.Split(filename, "-")
+		if len(parts) >= 2 {
+			pkgName = parts[0]
+			version = parts[1]
+		}
+	} else if strings.HasSuffix(filename, ".tar.gz") {
+		name := strings.TrimSuffix(filename, ".tar.gz")
+		idx := strings.LastIndex(name, "-")
+		if idx > 0 {
+			pkgName = name[:idx]
+			version = name[idx+1:]
+		}
+	} else if strings.HasSuffix(filename, ".zip") {
+		name := strings.TrimSuffix(filename, ".zip")
+		idx := strings.LastIndex(name, "-")
+		if idx > 0 {
+			pkgName = name[:idx]
+			version = name[idx+1:]
+		}
+	}
+	return
+}
+
+func extractGoFromPath(path string) (pkgName, version string) {
+	path = strings.TrimPrefix(path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) >= 2 {
+		pkgName = strings.Join(parts[:len(parts)-1], "/")
+		version = parts[len(parts)-1]
+		if strings.HasPrefix(version, "v") {
+			version = version[1:]
+		}
+	}
+	return
+}
+
+func extractNuGetFromPath(path string) (pkgName, version string) {
+	path = strings.TrimPrefix(path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) >= 1 {
+		pkgName = parts[0]
+	}
+	if len(parts) >= 2 {
+		version = parts[1]
+	}
+	return
+}
+
+func extractYumFromPath(path string) (pkgName, version string) {
+	path = strings.TrimPrefix(path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) >= 1 {
+		pkgName = parts[0]
+	}
+	return
+}
+
+func extractAptFromPath(path string) (pkgName, version string) {
+	path = strings.TrimPrefix(path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) >= 1 {
+		pkgName = parts[0]
+	}
+	return
+}
+
+func extractGenericFromPath(path string) (pkgName, version string) {
+	path = strings.TrimPrefix(path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) >= 2 {
+		pkgName = parts[0]
+		version = parts[1]
+	} else if len(parts) == 1 && parts[0] != "" {
+		pkgName = parts[0]
+	}
 	return
 }
 

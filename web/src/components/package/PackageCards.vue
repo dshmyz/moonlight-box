@@ -9,13 +9,18 @@
         <div class="card-header">
           <div class="card-title">
             <div class="package-name" @click="$emit('view-detail', pkg)">
-              {{ pkg.name }}
+              {{ pkg.display_name || pkg.name }}
             </div>
-            <div class="package-version">v{{ pkg.latest_version || 'N/A' }}</div>
+            <div class="package-version">{{ pkg.latest_version || 'N/A' }}</div>
           </div>
-          <el-tag :type="getPackageTypeColor(pkg.type)" size="small">
-            {{ pkg.type }}
-          </el-tag>
+          <div class="card-tags">
+            <el-tag :type="getPackageTypeColor(pkg.type)" size="small">
+              {{ pkg.type }}
+            </el-tag>
+            <el-tag :type="pkg.repository_type === 'proxy' ? 'warning' : 'success'" size="small">
+              {{ pkg.repository_type === 'proxy' ? '代理' : '本地' }}
+            </el-tag>
+          </div>
         </div>
 
         <div class="card-body">
@@ -89,6 +94,12 @@ defineEmits<{
 
 .card-title {
   flex: 1;
+}
+
+.card-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
 }
 
 .package-name {

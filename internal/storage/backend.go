@@ -15,6 +15,7 @@ type Backend interface {
 	Size(ctx context.Context, key string) (int64, error)
 	List(ctx context.Context, prefix string) ([]Entry, error)
 	Close() error
+	BasePath() string
 }
 
 type Entry struct {

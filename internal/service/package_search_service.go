@@ -88,6 +88,16 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 		return nil, err
 	}
 
+	// 填充仓库名称
+	for i := range packages {
+		if packages[i].RepositoryID > 0 {
+			var repo model.Repository
+			if err := s.db.Select("name").First(&repo, packages[i].RepositoryID).Error; err == nil {
+				packages[i].RepositoryName = repo.Name
+			}
+		}
+	}
+
 	return &SearchResult{
 		List:         packages,
 		Total:        total,

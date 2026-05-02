@@ -19,6 +19,8 @@ type Tool interface {
 	Parameters() json.RawMessage
 	// Execute 执行工具并返回结果
 	Execute(ctx context.Context, params map[string]interface{}) (string, error)
+	// SetContext 设置工具上下文
+	SetContext(ctx *ToolContext)
 }
 
 // ToolContext 提供了工具执行所需的上下文信息

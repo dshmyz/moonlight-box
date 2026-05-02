@@ -135,11 +135,10 @@ async function loadUsers() {
     if (keyword.value) params.keyword = keyword.value
     if (filterActive.value !== null) params.is_active = filterActive.value
 
-    const res = await request.get('/api/v1/users', { params })
-    if (res.data.code === 200) {
-      users.value = res.data.data.items || []
-      total.value = res.data.data.pagination?.total || 0
-    }
+    const res = await request.get('/users', { params })
+    const data = res as any
+    users.value = data?.items || []
+    total.value = data?.pagination?.total || 0
   } catch (e: any) {
     console.error(e)
   } finally {
@@ -149,10 +148,8 @@ async function loadUsers() {
 
 async function loadRoles() {
   try {
-    const res = await request.get('/api/v1/roles')
-    if (res.data.code === 200) {
-      allRoles.value = res.data.data || []
-    }
+    const res = await request.get('/roles')
+    allRoles.value = (res as any) || []
   } catch (e: any) {
     console.error(e)
   }
@@ -170,12 +167,10 @@ function showCreateDialog() {
 
 async function createUser() {
   try {
-    const res = await request.post('/api/v1/users', createForm.value)
-    if (res.data.code === 200 || res.data.code === 201) {
-      ElMessage.success('用户创建成功')
-      createVisible.value = false
-      loadUsers()
-    }
+    await request.post('/users', createForm.value)
+    ElMessage.success('用户创建成功')
+    createVisible.value = false
+    loadUsers()
   } catch (e: any) {
     ElMessage.error('创建用户失败')
   }

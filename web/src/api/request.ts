@@ -1,4 +1,4 @@
-import axios from 'axios'
+import axios, { type AxiosResponse } from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '@/router'
 
@@ -25,7 +25,7 @@ request.interceptors.response.use(
       ElMessage.error(res.message || '请求失败')
       return Promise.reject(new Error(res.message))
     }
-    return res
+    return res.data as unknown as AxiosResponse
   },
   (error) => {
     if (error.response?.status === 401) {
@@ -43,4 +43,9 @@ request.interceptors.response.use(
   }
 )
 
-export default request
+export default request as unknown as {
+  get<T = unknown>(url: string, config?: object): Promise<T>
+  post<T = unknown>(url: string, data?: unknown, config?: object): Promise<T>
+  put<T = unknown>(url: string, data?: unknown, config?: object): Promise<T>
+  delete<T = unknown>(url: string, config?: object): Promise<T>
+}

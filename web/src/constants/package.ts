@@ -45,7 +45,32 @@ export const getPackageTypeColor = (type: string): string => {
  * @returns 包类型显示标签
  */
 export const getPackageTypeLabel = (type: string): string => {
-  // 处理 maven 和 maven2 的映射
   const normalizedType = type === 'maven' ? 'maven2' : type
   return PACKAGE_TYPE_LABELS[normalizedType] || type
+}
+
+export const VERSION_STATUS_COLORS: Record<string, string> = {
+  published: 'success',
+  deprecated: 'warning',
+  yanked: 'danger',
+  draft: 'info',
+}
+
+export const VERSION_STATUS_LABELS: Record<string, string> = {
+  published: '已发布',
+  deprecated: '已弃用',
+  yanked: '已撤回',
+  draft: '草稿',
+}
+
+export const getVersionStatusColor = (status: string): string => {
+  return VERSION_STATUS_COLORS[status] || 'info'
+}
+
+export const getVersionStatusLabel = (status: string): string => {
+  return VERSION_STATUS_LABELS[status] || status
+}
+
+export const normalizePackageType = (type: string): string => {
+  return type === 'maven' ? 'maven2' : type
 }

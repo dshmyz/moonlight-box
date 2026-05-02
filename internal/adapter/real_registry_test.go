@@ -29,7 +29,7 @@ func setupGoAdapter(t *testing.T) *GoAdapter {
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
 	pkgRepo := repository.NewPackageRepository(db)
 
-	storageSvc, err := service.NewStorageService(storageBackendRepo)
+	storageSvc, err := service.NewStorageService(storageBackendRepo, "", 0)
 	if err != nil {
 		t.Fatalf("failed to create storage service: %v", err)
 	}

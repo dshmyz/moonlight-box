@@ -46,11 +46,11 @@ func NewCASService(
 	authSvc *AuthService,
 ) *CASService {
 	return &CASService{
-		cfg:     &cfg.CAS,
-		authCfg: cfg,
+		cfg:      &cfg.CAS,
+		authCfg:  cfg,
 		userRepo: userRepo,
 		roleRepo: roleRepo,
-		authSvc: authSvc,
+		authSvc:  authSvc,
 	}
 }
 

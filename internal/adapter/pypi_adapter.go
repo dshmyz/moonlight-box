@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -21,6 +22,7 @@ import (
 )
 
 type PyPIAdapter struct {
+	*BaseAdapter
 	pkgRepo     *repository.PackageRepository
 	storageSvc  *service.StorageService
 	auditSvc    *service.AuditService
@@ -34,6 +36,7 @@ func NewPyPIAdapter(
 	proxyRouter *proxy.ProxyRouter,
 ) *PyPIAdapter {
 	return &PyPIAdapter{
+		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
 		pkgRepo:     pkgRepo,
 		storageSvc:  storageSvc,
 		auditSvc:    auditSvc,
@@ -41,7 +44,7 @@ func NewPyPIAdapter(
 	}
 }
 
-func (a *PyPIAdapter) Type() PackageType { return PyPIType }
+func (a *PyPIAdapter) Type() PackageType   { return PyPIType }
 func (a *PyPIAdapter) RoutePrefix() string { return "/pypi" }
 
 func (a *PyPIAdapter) SetProxyRouter(pr *proxy.ProxyRouter) {
@@ -137,7 +140,13 @@ func (a *PyPIAdapter) packageFilesJSON(c *gin.Context, pkgName string) {
 				urlBuilder := func(repo *model.Repository, name, _ string) string {
 					return fmt.Sprintf("%s/%s/", strings.TrimSuffix(repo.RemoteURL, "/"), normalizePackageName(name))
 				}
-				result, resolveErr := a.proxyRouter.ResolveProxyOnly(c.Request.Context(), "pypi", pkgName, "", urlBuilder)
+
+				var repo *model.Repository
+				if r, ok := c.Get("repo"); ok {
+					repo = r.(*model.Repository)
+				}
+
+				result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "pypi", pkgName, "", urlBuilder)
 				if resolveErr == nil && result != nil {
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
@@ -181,9 +190,15 @@ func (a *PyPIAdapter) packageFilesHTML(c *gin.Context, pkgName string) {
 		if util.IsErr(err, util.ErrPackageNotFound) {
 			if a.proxyRouter != nil {
 				urlBuilder := func(repo *model.Repository, name, _ string) string {
-					return fmt.Sprintf("%s/%s/", strings.TrimSuffix(repo.RemoteURL, "/"), normalizePackageName(name))
+					return fmt.Sprintf("%s/simple/%s/", strings.TrimSuffix(repo.RemoteURL, "/"), normalizePackageName(name))
 				}
-				result, resolveErr := a.proxyRouter.ResolveProxyOnly(c.Request.Context(), "pypi", pkgName, "", urlBuilder)
+
+				var repo *model.Repository
+				if r, ok := c.Get("repo"); ok {
+					repo = r.(*model.Repository)
+				}
+
+				result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "pypi", pkgName, "", urlBuilder)
 				if resolveErr == nil && result != nil {
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
@@ -216,33 +231,49 @@ func (a *PyPIAdapter) packageFilesHTML(c *gin.Context, pkgName string) {
 
 func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
 	filename := c.Param("filename")
+	slog.Info("DownloadPackage called", "filename", filename)
 
-	name, version := parseWheelFilename(filename)
+	actualFilename := filepath.Base(filename)
+	name, version := parseWheelFilename(actualFilename)
+	slog.Info("Parsed filename", "name", name, "version", version, "actualFilename", actualFilename)
 	if name == "" {
 		response.BadRequest(c, "invalid filename", "unable to parse package name from filename")
 		return
 	}
 
-	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "pypi", name, version)
+	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "pypi", name, actualFilename)
 	if err == nil {
 		defer content.Close()
-		contentType := a.storageSvc.GetContentType(filename)
-		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+
+		a.IncrementDownloadCountForPackage(name, model.PackageTypePyPI, version, actualFilename)
+
+		contentType := a.storageSvc.GetContentType(actualFilename)
+		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, actualFilename))
 		c.DataFromReader(200, size, contentType, content, nil)
 		return
 	}
 
 	if a.proxyRouter == nil {
+		slog.Warn("proxyRouter is nil")
 		response.NotFound(c, "package not found")
 		return
 	}
 
 	urlBuilder := func(repo *model.Repository, pkgName, _ string) string {
-		return fmt.Sprintf("%s/packages/%s", strings.TrimSuffix(repo.RemoteURL, "/"), filename)
+		url := fmt.Sprintf("%s/packages/%s", strings.TrimSuffix(repo.RemoteURL, "/"), filename)
+		slog.Info("Built proxy URL", "url", url)
+		return url
 	}
 
-	result, resolveErr := a.proxyRouter.ResolveProxyOnly(c.Request.Context(), "pypi", name, version, urlBuilder)
+	var repo *model.Repository
+	if r, ok := c.Get("repo"); ok {
+		repo = r.(*model.Repository)
+	}
+
+	slog.Info("Calling ResolveSmart", "repo", repo != nil, "name", name, "version", version)
+	result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "pypi", name, version, urlBuilder)
 	if resolveErr != nil {
+		slog.Error("ResolveSmart failed", "error", resolveErr)
 		response.NotFound(c, "package not found")
 		return
 	}
@@ -254,10 +285,33 @@ func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
 		return
 	}
 
-	a.storageSvc.StorePackage(c.Request.Context(), "pypi", name, version, bytes.NewReader(body), result.Size)
+	storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "pypi", name, actualFilename, bytes.NewReader(body), result.Size)
+	if storeErr == nil {
+		a.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
+			Name:           name,
+			Type:           model.PackageTypePyPI,
+			RepositoryID:   result.RepoID,
+			RepositoryType: model.RepoTypeProxy,
+		}, &model.PackageVersion{
+			Version:     version,
+			Status:      model.StatusPublished,
+			StoragePath: filepath.Dir(storageKey),
+			SizeBytes:   result.Size,
+		}, &model.PackageFile{
+			Filename:    actualFilename,
+			FileType:    model.FileTypePrimary,
+			StoragePath: storageKey,
+			SizeBytes:   result.Size,
+		})
+	}
 
-	contentType := a.storageSvc.GetContentType(filename)
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	if storeErr != nil {
+		response.InternalError(c, "failed to store package")
+		return
+	}
+
+	contentType := a.storageSvc.GetContentType(actualFilename)
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, actualFilename))
 	c.Data(200, contentType, body)
 }
 
@@ -272,7 +326,13 @@ func (a *PyPIAdapter) JSONAPI(c *gin.Context) {
 				urlBuilder := func(repo *model.Repository, name, ver string) string {
 					return fmt.Sprintf("%s/%s/%s/json", strings.TrimSuffix(repo.RemoteURL, "/"), normalizePackageName(name), ver)
 				}
-				result, resolveErr := a.proxyRouter.ResolveProxyOnly(c.Request.Context(), "pypi", pkgName, version, urlBuilder)
+
+				var repo *model.Repository
+				if r, ok := c.Get("repo"); ok {
+					repo = r.(*model.Repository)
+				}
+
+				result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "pypi", pkgName, version, urlBuilder)
 				if resolveErr == nil && result != nil {
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
@@ -375,16 +435,20 @@ func (a *PyPIAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageV
 
 	name, _ := req.Metadata["name"].(string)
 	version, _ := req.Metadata["version"].(string)
+	filename, _ := req.Metadata["filename"].(string)
+	if filename == "" {
+		filename = req.Filename
+	}
 	if name == "" || version == "" {
 		return nil, fmt.Errorf("missing name or version")
 	}
 
-	storageKey, err := a.storageSvc.StorePackage(ctx, "pypi", name, version, reader, req.Size)
+	storageKey, err := a.storageSvc.StorePackage(ctx, "pypi", name, filename, reader, req.Size)
 	if err != nil {
 		return nil, err
 	}
 
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(ctx, &model.Package{
+	pkg, ver, _, err := a.pkgRepo.StorePackageFile(ctx, &model.Package{
 		Name:           name,
 		Type:           model.PackageTypePyPI,
 		Description:    getDescription(req.Metadata),
@@ -393,19 +457,24 @@ func (a *PyPIAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageV
 	}, &model.PackageVersion{
 		Version:     version,
 		Status:      model.StatusPublished,
-		StoragePath: storageKey,
-		SizeBytes:   req.Size,
+		StoragePath: filepath.Dir(storageKey),
 		PublishedBy: req.UploadedBy,
 		Metadata:    marshalMetadata(req.Metadata),
+	}, &model.PackageFile{
+		Filename:    filename,
+		FileType:    model.FileTypePrimary,
+		StoragePath: storageKey,
+		SizeBytes:   req.Size,
 	})
 
 	if err != nil {
-		a.storageSvc.DeletePackage(ctx, "pypi", name, version)
+		a.storageSvc.DeletePackage(ctx, "pypi", name, filename)
 		return nil, err
 	}
 
 	return &PackageVersionResult{
 		PackageID:  pkg.ID,
+		VersionID:  ver.ID,
 		Version:    version,
 		StorageKey: storageKey,
 		Size:       req.Size,
@@ -458,15 +527,137 @@ func (a *PyPIAdapter) ListVersions(ctx context.Context, name string) ([]string, 
 	return a.pkgRepo.ListVersions(name, model.PackageTypePyPI)
 }
 
-var wheelRegex = regexp.MustCompile(`^(.+?)-(.+?)-.*\.(whl|tar\.gz|zip)$`)
+func (a *PyPIAdapter) HandleRepoRequest(c *gin.Context, repo *model.Repository, path string) {
+	c.Set("repo", repo)
+	if strings.HasPrefix(path, "simple/") {
+		pkgPath := strings.TrimPrefix(path, "simple/")
+		if pkgPath == "" || pkgPath == "/" {
+			a.ListPackages(c)
+		} else {
+			c.Params = append(c.Params, gin.Param{Key: "package", Value: strings.Trim(pkgPath, "/")})
+			a.PackageFiles(c)
+		}
+	} else if strings.HasPrefix(path, "packages/") {
+		filename := strings.TrimPrefix(path, "packages/")
+		c.Params = append(c.Params, gin.Param{Key: "filename", Value: filename})
+		a.DownloadPackage(c)
+	} else if strings.Contains(path, "/json") {
+		parts := strings.Split(path, "/")
+		if len(parts) >= 2 {
+			c.Params = append(c.Params, gin.Param{Key: "package", Value: parts[0]})
+			c.Params = append(c.Params, gin.Param{Key: "version", Value: parts[1]})
+			a.JSONAPI(c)
+		}
+	} else {
+		if a.proxyRouter != nil {
+			urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
+				baseURL := strings.TrimSuffix(r.RemoteURL, "/")
+				return fmt.Sprintf("%s/%s", baseURL, path)
+			}
+
+			result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "pypi", path, "", urlBuilder)
+			if resolveErr == nil && result != nil {
+				defer result.Content.Close()
+				body, readErr := io.ReadAll(result.Content)
+				if readErr == nil {
+					contentType := a.storageSvc.GetContentType(path)
+					c.Data(200, contentType, body)
+					return
+				}
+			}
+		}
+
+		response.NotFound(c, "path not found")
+	}
+}
+
+func (a *PyPIAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) {
+	userID := c.GetUint("userID")
+
+	file, header, err := c.Request.FormFile("content")
+	if err != nil {
+		response.BadRequest(c, "missing file", err.Error())
+		return
+	}
+	defer file.Close()
+
+	pkgData, err := io.ReadAll(file)
+	if err != nil {
+		response.BadRequest(c, "failed to read file", err.Error())
+		return
+	}
+
+	name, version := parseWheelFilename(header.Filename)
+	if name == "" {
+		name = strings.TrimSuffix(header.Filename, ".whl")
+		name = strings.TrimSuffix(name, ".tar.gz")
+	}
+
+	req := &UploadRequest{
+		Package:  bytes.NewReader(pkgData),
+		Filename: header.Filename,
+		Size:     header.Size,
+		Metadata: map[string]interface{}{
+			"name":      name,
+			"version":   version,
+			"repo_name": repo.Name,
+		},
+		UploadedBy: userID,
+	}
+
+	result, err := a.Upload(c.Request.Context(), req)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"result":  result,
+	})
+}
+
+func (a *PyPIAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) {
+	fullPath := strings.TrimPrefix(c.Param("path"), "/")
+	parts := strings.Split(fullPath, "/")
+	if len(parts) < 2 {
+		response.BadRequest(c, "invalid path", "expected name/version")
+		return
+	}
+
+	name := parts[0]
+	version := parts[1]
+
+	identity := &PackageIdentity{
+		Name:    name,
+		Version: version,
+		Type:    PyPIType,
+	}
+
+	if err := a.Delete(c.Request.Context(), identity); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	c.JSON(200, gin.H{"ok": true})
+}
+
+var wheelRegex = regexp.MustCompile(`^([A-Za-z0-9_]+)-([^-]+)-.+\.whl$`)
+var sdistRegex = regexp.MustCompile(`^([A-Za-z0-9_]+)-([^-]+)\.(tar\.gz|tar\.bz2|zip)$`)
 
 func parseWheelFilename(filename string) (name, version string) {
-	matches := wheelRegex.FindStringSubmatch(filename)
-	if len(matches) >= 3 {
+	basename := filepath.Base(filename)
+	basename = strings.Split(basename, "#")[0]
+
+	if matches := wheelRegex.FindStringSubmatch(basename); len(matches) >= 3 {
 		return matches[1], matches[2]
 	}
 
-	parts := strings.SplitN(filename, "-", 2)
+	if matches := sdistRegex.FindStringSubmatch(basename); len(matches) >= 3 {
+		return matches[1], matches[2]
+	}
+
+	parts := strings.SplitN(basename, "-", 2)
 	if len(parts) == 2 {
 		version = strings.TrimSuffix(parts[1], filepath.Ext(parts[1]))
 		return parts[0], version
