@@ -9,12 +9,16 @@
     <el-footer class="public-footer-wrapper">
       <PublicFooter />
     </el-footer>
+    
+    <!-- AI助手悬浮按钮 -->
+    <AIAssistant />
   </el-container>
 </template>
 
 <script setup lang="ts">
 import PublicHeader from '@/components/public/PublicHeader.vue'
 import PublicFooter from '@/components/public/PublicFooter.vue'
+import AIAssistant from '@/components/ai/AIAssistant.vue'
 </script>
 
 <style scoped>

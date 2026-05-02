@@ -285,6 +285,12 @@ func groupArtifactToName(groupArtifact string) string {
 }
 
 func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
+	// 检查是否是校验文件请求
+	if strings.HasSuffix(fullPath, ".sha1") || strings.HasSuffix(fullPath, ".md5") {
+		a.handleChecksumRequest(c, fullPath)
+		return
+	}
+
 	parts := strings.Split(fullPath, "/")
 	if len(parts) < 4 {
 		response.NotFound(c, "artifact not found")

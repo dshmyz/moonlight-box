@@ -23,7 +23,10 @@ func (r *MetadataSyncTaskRepository) Create(task *model.MetadataSyncTask) error 
 func (r *MetadataSyncTaskRepository) GetByID(id uint) (*model.MetadataSyncTask, error) {
 	var task model.MetadataSyncTask
 	err := r.db.First(&task, id).Error
-	return &task, err
+	if err != nil {
+		return nil, err
+	}
+	return &task, nil
 }
 
 // Update 更新同步任务
@@ -45,5 +48,11 @@ func (r *MetadataSyncTaskRepository) GetByRepositoryID(repoID uint, limit int) (
 func (r *MetadataSyncTaskRepository) GetRunningTaskByRepoID(repoID uint) (*model.MetadataSyncTask, error) {
 	var task model.MetadataSyncTask
 	err := r.db.Where("repository_id = ? AND status = ?", repoID, "running").First(&task).Error
-	return &task, err
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &task, nil
 }
