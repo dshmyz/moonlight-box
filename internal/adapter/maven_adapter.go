@@ -445,6 +445,51 @@ func (a *MavenAdapter) handleChecksumRequest(c *gin.Context, fullPath string) {
 	c.String(200, "%s  %s", checksum, actualFilename)
 }
 
+func (a *MavenAdapter) generateIndex(packages []model.Package, repoName string) *MavenPackageIndex {
+	index := &MavenPackageIndex{
+		Repository:  repoName,
+		GeneratedAt: time.Now().Format(time.RFC3339),
+		Packages:    make([]MavenPackageSummary, 0),
+	}
+
+	for _, pkg := range packages {
+		parts := strings.Split(pkg.Name, "/")
+		if len(parts) < 2 {
+			continue
+		}
+
+		groupID := parts[0]
+		artifactID := parts[1]
+
+		versions := make([]string, 0, len(pkg.Versions))
+		var latest, release string
+
+		for _, ver := range pkg.Versions {
+			versions = append(versions, ver.Version)
+
+			if latest == "" || compareVersions(ver.Version, latest) > 0 {
+				latest = ver.Version
+			}
+
+			if isRelease(ver.Version) {
+				if release == "" || compareVersions(ver.Version, release) > 0 {
+					release = ver.Version
+				}
+			}
+		}
+
+		index.Packages = append(index.Packages, MavenPackageSummary{
+			GroupID:    groupID,
+			ArtifactID: artifactID,
+			Versions:   versions,
+			Latest:     latest,
+			Release:    release,
+		})
+	}
+
+	return index
+}
+
 func (a *MavenAdapter) UploadArtifact(c *gin.Context) {
 	userID := c.GetUint("userID")
 
