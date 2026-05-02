@@ -3,7 +3,7 @@ import request from './request'
 export interface Package {
   id: number
   name: string
-  display_name: string
+  display_name?: string
   type: string
   description: string
   latest_version?: string

@@ -22,7 +22,12 @@
       <div class="section">
         <h5>快速操作</h5>
         <div class="quick-actions">
-          <el-button size="small" @click="copyInstallCommand">
+          <el-button 
+            size="small" 
+            :disabled="!getInstallCommand()"
+            :loading="copying"
+            @click="copyInstallCommand"
+          >
             复制安装命令
           </el-button>
         </div>
@@ -66,34 +71,62 @@ defineEmits<{
   close: []
 }>()
 
-function copyInstallCommand() {
+const copying = ref(false)
+
+async function copyInstallCommand() {
   const command = getInstallCommand()
-  if (command) {
-    navigator.clipboard.writeText(command)
+  if (!command) {
+    ElMessage.warning('无法生成安装命令')
+    return
+  }
+  
+  copying.value = true
+  try {
+    if (!navigator.clipboard) {
+      const textarea = document.createElement('textarea')
+      textarea.value = command
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+      ElMessage.success('安装命令已复制')
+      return
+    }
+    
+    await navigator.clipboard.writeText(command)
     ElMessage.success('安装命令已复制')
+  } catch (error) {
+    console.error('Failed to copy:', error)
+    ElMessage.error('复制失败，请手动复制')
+  } finally {
+    copying.value = false
   }
 }
 
 function getInstallCommand(): string {
   if (!props.version || !props.pkg) return ''
   
-  switch (props.pkg.type) {
+  const { type, name } = props.pkg
+  const { version } = props.version
+  
+  switch (type) {
     case 'npm':
-      return `npm install ${props.pkg.name}@${props.version.version}`
-    case 'maven':
-      const parts = props.pkg.name.split(':')
-      if (parts.length === 2) {
+      return `npm install ${name}@${version}`
+    case 'maven': {
+      const parts = name.split(':')
+      if (parts.length === 2 && parts[0].trim() && parts[1].trim()) {
         return `<dependency>
-  <groupId>${parts[0]}</groupId>
-  <artifactId>${parts[1]}</artifactId>
-  <version>${props.version.version}</version>
+  <groupId>${parts[0].trim()}</groupId>
+  <artifactId>${parts[1].trim()}</artifactId>
+  <version>${version}</version>
 </dependency>`
       }
       return ''
+    }
     case 'pypi':
-      return `pip install ${props.pkg.name}==${props.version.version}`
+      return `pip install ${name}==${version}`
     case 'go':
-      return `go get ${props.pkg.name}@${props.version.version}`
+      return `go get ${name}@${version}`
     default:
       return ''
   }
