@@ -61,6 +61,21 @@ type MavenSnapshotVersion struct {
 	Updated   string `xml:"updated"`
 }
 
+type MavenPackageIndex struct {
+	XMLName     xml.Name              `xml:"index"`
+	Repository  string                `xml:"repository" json:"repository"`
+	GeneratedAt string                `xml:"generatedAt" json:"generatedAt"`
+	Packages    []MavenPackageSummary `xml:"packages>package" json:"packages"`
+}
+
+type MavenPackageSummary struct {
+	GroupID    string   `xml:"groupId" json:"groupId"`
+	ArtifactID string   `xml:"artifactId" json:"artifactId"`
+	Versions   []string `xml:"versions>version" json:"versions"`
+	Latest     string   `xml:"latest" json:"latest"`
+	Release    string   `xml:"release" json:"release"`
+}
+
 type MavenVersions struct {
 	Version          []string `xml:"version"`
 	SnapshotVersions []string `xml:"snapshotVersions>snapshotVersion"`
