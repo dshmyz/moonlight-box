@@ -3,6 +3,8 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -443,7 +445,18 @@ func (a *PyPIAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageV
 		return nil, fmt.Errorf("missing name or version")
 	}
 
-	storageKey, err := a.storageSvc.StorePackage(ctx, "pypi", name, filename, reader, req.Size)
+	// 读取文件内容
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// 计算SHA256
+	hash := sha256.Sum256(content)
+	checksum := hex.EncodeToString(hash[:])
+
+	// 存储文件
+	storageKey, err := a.storageSvc.StorePackage(ctx, "pypi", name, filename, bytes.NewReader(content), int64(len(content)))
 	if err != nil {
 		return nil, err
 	}
@@ -461,10 +474,11 @@ func (a *PyPIAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageV
 		PublishedBy: req.UploadedBy,
 		Metadata:    marshalMetadata(req.Metadata),
 	}, &model.PackageFile{
-		Filename:    filename,
-		FileType:    model.FileTypePrimary,
-		StoragePath: storageKey,
-		SizeBytes:   req.Size,
+		Filename:       filename,
+		FileType:       model.FileTypePrimary,
+		StoragePath:    storageKey,
+		SizeBytes:      int64(len(content)),
+		ChecksumSHA256: checksum,
 	})
 
 	if err != nil {
@@ -477,7 +491,7 @@ func (a *PyPIAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageV
 		VersionID:  ver.ID,
 		Version:    version,
 		StorageKey: storageKey,
-		Size:       req.Size,
+		Size:       int64(len(content)),
 	}, nil
 }
 
