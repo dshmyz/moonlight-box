@@ -172,7 +172,21 @@ func main() {
 		}
 	}
 
-	repoHandler := handler.NewRepositoryHandler(repoSvc, metadataSyncSvc, nil)
+	// 初始化备份服务
+	backupRepo := repository.NewBackupRepository(db)
+	backupSvc := service.NewBackupService(backupRepo, cfg.Storage.Local.BasePath, cfg.Storage.Local.BasePath+"/backups")
+
+	// 初始化 Webhook 服务
+	webhookRepo := repository.NewWebhookRepository(db)
+	webhookSvc := service.NewWebhookService(webhookRepo)
+
+	// 初始化系统配置服务
+	systemConfigSvc := service.NewSystemConfigService(systemConfigRepo)
+
+	// 初始化调度器服务（需要在 repoHandler 之前创建）
+	schedulerSvc := service.NewSchedulerService(backupSvc, systemConfigSvc, webhookSvc, metadataSyncSvc, repoRepo)
+
+	repoHandler := handler.NewRepositoryHandler(repoSvc, metadataSyncSvc, schedulerSvc)
 	cacheHandler := handler.NewCacheHandler(cacheSvc)
 	blockRuleHandler := handler.NewBlockRuleHandler(blockRuleSvc, auditSvc)
 	publicRepoHandler := handler.NewPublicRepoHandler(repoSvc)
@@ -207,26 +221,18 @@ func main() {
 	scanner := service.NewSecurityScanner(scanRepo, packageRepo, blockRuleRepo)
 	securityHandler := handler.NewSecurityHandler(scanner)
 
-	// 初始化备份服务
-	backupRepo := repository.NewBackupRepository(db)
-	backupSvc := service.NewBackupService(backupRepo, cfg.Storage.Local.BasePath, cfg.Storage.Local.BasePath+"/backups")
+	// 初始化备份服务 handler
 	backupHandler := handler.NewBackupHandler(backupSvc)
 
-	// 初始化 Webhook 服务
-	webhookRepo := repository.NewWebhookRepository(db)
-	webhookSvc := service.NewWebhookService(webhookRepo)
+	// 初始化 Webhook 服务 handler
 	webhookHandler := handler.NewWebhookHandler(webhookSvc)
 
-	// 初始化系统配置服务
-	systemConfigSvc := service.NewSystemConfigService(systemConfigRepo)
+	// 初始化系统配置服务 handler
 	systemConfigHandler := handler.NewSystemConfigHandler(systemConfigSvc)
 	systemInfoHandler := handler.NewSystemInfoHandler(version, buildTime, time.Now().Unix())
 
 	// 初始化文件浏览服务
 	fileBrowseHandler := handler.NewFileBrowseHandler(cfg.Storage.Local.BasePath)
-
-	// 初始化调度器服务
-	schedulerSvc := service.NewSchedulerService(backupSvc, systemConfigSvc, webhookSvc, metadataSyncSvc, repoRepo)
 
 	// 初始化迁移服务
 	migrationSvc := migration.NewMigrationService(db)
