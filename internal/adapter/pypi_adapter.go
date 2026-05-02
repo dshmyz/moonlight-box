@@ -235,6 +235,12 @@ func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
 	filename := c.Param("filename")
 	slog.Info("DownloadPackage called", "filename", filename)
 
+	// 检查是否是校验文件请求
+	if strings.HasSuffix(filename, ".sha256") {
+		a.handleChecksumRequest(c, filename)
+		return
+	}
+
 	actualFilename := filepath.Base(filename)
 	name, version := parseWheelFilename(actualFilename)
 	slog.Info("Parsed filename", "name", name, "version", version, "actualFilename", actualFilename)
