@@ -130,6 +130,9 @@ func (a *MavenAdapter) RegisterRoutes(r *gin.RouterGroup, authMw gin.HandlerFunc
 			upload.PUT("/*path", a.UploadArtifact)
 		}
 	}
+
+	// 添加索引端点
+	r.GET("/index", a.handleIndexRequest)
 }
 
 func (a *MavenAdapter) handleRequest(c *gin.Context) {
