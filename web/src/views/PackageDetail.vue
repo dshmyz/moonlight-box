@@ -3,17 +3,31 @@
     <template v-if="!loading && pkg">
       <PackageHeader :pkg="pkg" />
 
-      <VersionTable
-        :versions="versions"
-        :selected-version="selectedVersion"
-        :show-admin-actions="isAdminRoute"
-        @select="handleSelectVersion"
-        @download="handleDownload"
-        @deprecate="handleDeprecate"
-        @restore="handleRestore"
-        @yank="handleYank"
-        @delete="handleDelete"
-      />
+      <!-- 修改版本列表布局 -->
+      <div class="version-section">
+        <div class="version-list-wrapper">
+          <VersionTable
+            :versions="versions"
+            :selected-version="selectedVersion"
+            :show-admin-actions="isAdminRoute"
+            @select="handleSelectVersion"
+            @showDetail="handleShowDetail"
+            @download="handleDownload"
+            @deprecate="handleDeprecate"
+            @restore="handleRestore"
+            @yank="handleYank"
+            @delete="handleDelete"
+          />
+        </div>
+
+        <!-- 添加详情面板 -->
+        <div v-if="selectedVersionForDetail" class="version-detail-wrapper">
+          <VersionDetailPanel
+            :version="selectedVersionForDetail"
+            @close="handleCloseDetail"
+          />
+        </div>
+      </div>
 
       <el-row :gutter="24">
         <el-col :xs="24" :lg="16">
@@ -36,98 +50,202 @@ import PackageHeader from '@/components/package-detail/PackageHeader.vue'
 import PackageUsageGuide from '@/components/package-detail/PackageUsageGuide.vue'
 import VersionTable from '@/components/package-detail/VersionTable.vue'
 import PackageInfoSidebar from '@/components/package-detail/PackageInfoSidebar.vue'
+import VersionDetailPanel from '@/components/package-detail/VersionDetailPanel.vue'
 import { ElMessage } from 'element-plus'
-import { packageApi } from '@/api/package'
+import { packageApi, type Package, type PackageVersion } from '@/api/package'
 
 const route = useRoute()
 const loading = ref(false)
 
-// 判断是否为管理后台路由
 const isAdminRoute = computed(() => {
   return route.path.startsWith('/admin')
 })
 
-interface PackageInfo {
-  id: number
-  name: string
-  type: string
-  description: string
-  latest_version: string
-  download_count: number
-  repository: string
-  license: string
-}
-
-interface VersionInfo {
-  version: string
-  published_at: string
-  downloads: number
-  is_latest: boolean
-  size: number
-  checksum: string
-  status: string
-}
-
-const pkg = ref<PackageInfo | null>(null)
-const versions = ref<VersionInfo[]>([])
+const pkg = ref<(Package & { repository?: string }) | null>(null)
+const versions = ref<PackageVersion[]>([])
 const selectedVersion = ref('')
+const selectedVersionForDetail = ref<PackageVersion | null>(null)
+
+async function loadPackageDetail() {
+  const pkgType = route.params.type as string
+  const pkgName = route.params.name as string
+  if (!pkgType || !pkgName) return
+
+  loading.value = true
+  try {
+    const searchResult = await packageApi.search({
+      q: pkgName,
+      type: pkgType,
+      page: 1,
+      page_size: 1,
+    })
+    const found = searchResult.list?.find(
+      (p) => p.name === pkgName && p.type === pkgType
+    )
+    if (found) {
+      pkg.value = { 
+        ...found, 
+        repository: found.repository_name && found.repository_name.trim() !== '' 
+          ? found.repository_name 
+          : 'default' 
+      }
+    }
+  } catch (error) {
+    console.error('Failed to load package info:', error)
+  }
+
+  try {
+    const versionResult = await packageApi.getVersions(pkgType, pkgName)
+    const versionList = versionResult.versions || []
+    versions.value = versionList
+    if (versionList.length > 0) {
+      const latest = versionList.find((v) => v.status === 'published')
+      selectedVersion.value = latest?.version || versionList[0].version
+      if (pkg.value && !pkg.value.latest_version) {
+        pkg.value.latest_version = selectedVersion.value
+      }
+    }
+  } catch (error) {
+    console.error('Failed to load versions:', error)
+    if (!pkg.value) {
+      ElMessage.error('加载包详情失败')
+    }
+  }
+
+  if (!pkg.value && versions.value.length > 0) {
+    pkg.value = {
+      id: 0,
+      name: pkgName,
+      display_name: pkgName,
+      type: pkgType,
+      description: '',
+      download_count: 0,
+      updated_at: '',
+      repository: 'default',
+    }
+  }
+
+  loading.value = false
+}
 
 function handleSelectVersion(version: string) {
   selectedVersion.value = version
 }
 
-function handleDownload(version: VersionInfo) {
-  ElMessage.info(`正在下载 ${pkg.value?.name}@${version.version}`)
+function handleShowDetail(version: PackageVersion) {
+  selectedVersionForDetail.value = version
 }
 
-async function handleDeprecate(data: { version: string; reason: string }) {
-  try {
-    const versionInfo = versions.value.find(v => v.version === data.version)
-    if (versionInfo) {
-      // 这里需要版本ID，暂时使用版本号作为标识
-      // 实际使用时需要从 API 返回的数据中获取版本 ID
-      ElMessage.success(`版本 ${data.version} 已废弃`)
-      versionInfo.status = 'deprecated'
+function handleCloseDetail() {
+  selectedVersionForDetail.value = null
+}
+
+async function handleDownload(version: PackageVersion & { selectedFile?: any }) {
+  if (!pkg.value || !version.files || version.files.length === 0) {
+    ElMessage.error('没有可下载的文件')
+    return
+  }
+
+  let file = version.selectedFile || version.files[0]
+  
+  if (!version.selectedFile && pkg.value.type === 'maven') {
+    const primaryFile = version.files.find(f => f.file_type === 'primary')
+    if (primaryFile) {
+      file = primaryFile
     }
+  }
+  
+  let downloadUrl = ''
+  let downloadFilename = file.filename
+  
+  if (pkg.value.type === 'go') {
+    downloadUrl = `/repo/${pkg.value.repository}/${pkg.value.name}/@v/${version.version}.zip`
+    downloadFilename = `${version.version}.zip`
+  } else if (pkg.value.type === 'maven') {
+    const parts = pkg.value.name.split(':')
+    if (parts.length === 2) {
+      const groupPath = parts[0].replace(/\./g, '/')
+      const extension = file.filename.endsWith('.pom') ? 'pom' : 
+                       file.filename.endsWith('-sources.jar') ? 'sources.jar' :
+                       file.filename.endsWith('-javadoc.jar') ? 'javadoc.jar' : 'jar'
+      downloadUrl = `/repo/${pkg.value.repository}/${groupPath}/${parts[1]}/${version.version}/${file.filename}`
+      downloadFilename = file.filename
+    } else {
+      downloadUrl = `/repo/${pkg.value.repository}/${pkg.value.name}/${version.version}/${file.filename}`
+    }
+  } else if (pkg.value.type === 'pypi') {
+    downloadUrl = `/repo/${pkg.value.repository}/packages/${file.filename}`
+  } else {
+    downloadUrl = `/repo/${pkg.value.repository}/${pkg.value.name}/-/${file.filename}`
+  }
+  
+  try {
+    ElMessage.info(`开始下载 ${pkg.value.name}@${version.version} - ${file.filename}`)
+    
+    const response = await fetch(downloadUrl)
+    if (!response.ok) {
+      throw new Error(`下载失败: ${response.status} ${response.statusText}`)
+    }
+    
+    const blob = await response.blob()
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = downloadFilename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    
+    ElMessage.success(`下载完成 ${file.filename}`)
+  } catch (error) {
+    console.error('Download failed:', error)
+    ElMessage.error(`下载失败: ${error}`)
+  }
+}
+
+async function handleDeprecate(data: { id: number; version: string; reason: string }) {
+  try {
+    await packageApi.deprecateVersion(data.id, data.reason)
+    const target = versions.value.find((v) => v.id === data.id)
+    if (target) target.status = 'deprecated'
+    ElMessage.success(`版本 ${data.version} 已废弃`)
   } catch (error) {
     ElMessage.error('废弃版本失败')
     console.error('Failed to deprecate version:', error)
   }
 }
 
-async function handleRestore(data: { version: string }) {
+async function handleRestore(data: { id: number; version: string }) {
   try {
-    const versionInfo = versions.value.find(v => v.version === data.version)
-    if (versionInfo) {
-      ElMessage.success(`版本 ${data.version} 已恢复`)
-      versionInfo.status = 'published'
-    }
+    await packageApi.restoreVersion(data.id)
+    const target = versions.value.find((v) => v.id === data.id)
+    if (target) target.status = 'published'
+    ElMessage.success(`版本 ${data.version} 已恢复`)
   } catch (error) {
     ElMessage.error('恢复版本失败')
     console.error('Failed to restore version:', error)
   }
 }
 
-async function handleYank(data: { version: string }) {
+async function handleYank(data: { id: number; version: string }) {
   try {
-    const versionInfo = versions.value.find(v => v.version === data.version)
-    if (versionInfo) {
-      ElMessage.success(`版本 ${data.version} 已撤回`)
-      versionInfo.status = 'yanked'
-    }
+    await packageApi.yankVersion(data.id)
+    const target = versions.value.find((v) => v.id === data.id)
+    if (target) target.status = 'yanked'
+    ElMessage.success(`版本 ${data.version} 已撤回`)
   } catch (error) {
     ElMessage.error('撤回版本失败')
     console.error('Failed to yank version:', error)
   }
 }
 
-async function handleDelete(data: { version: string }) {
+async function handleDelete(data: { id: number; version: string }) {
   try {
-    const index = versions.value.findIndex(v => v.version === data.version)
-    if (index !== -1) {
-      versions.value.splice(index, 1)
-      ElMessage.success(`版本 ${data.version} 已删除`)
-    }
+    await packageApi.deleteVersion(data.id)
+    const index = versions.value.findIndex((v) => v.id === data.id)
+    if (index !== -1) versions.value.splice(index, 1)
+    ElMessage.success(`版本 ${data.version} 已删除`)
   } catch (error) {
     ElMessage.error('删除版本失败')
     console.error('Failed to delete version:', error)
@@ -135,33 +253,33 @@ async function handleDelete(data: { version: string }) {
 }
 
 onMounted(() => {
-  loading.value = true
-  setTimeout(() => {
-    pkg.value = {
-      id: 1,
-      name: route.params.name as string,
-      type: route.params.type as string,
-      description: 'A modern JavaScript utility library delivering modularity, performance & extras. This package provides a wide range of functions for common programming tasks.',
-      latest_version: '4.17.21',
-      download_count: 50000000,
-      repository: 'npm-virtual',
-      license: 'MIT',
-    }
-    versions.value = [
-      { version: '4.17.21', published_at: '2024-01-15', downloads: 50000000, is_latest: true, size: 832848, checksum: 'a324d7e46e299e0de3b', status: 'published' },
-      { version: '4.17.20', published_at: '2023-06-10', downloads: 20000000, is_latest: false, size: 831200, checksum: 'b534e8f57f309f1ec4c', status: 'published' },
-      { version: '4.17.19', published_at: '2023-01-05', downloads: 8000000, is_latest: false, size: 829600, checksum: 'c745f9g68g410g2fd5d', status: 'published' },
-      { version: '4.17.15', published_at: '2022-09-20', downloads: 3000000, is_latest: false, size: 824000, checksum: 'd856g0h79h521h3ge6e', status: 'deprecated' },
-      { version: '4.17.10', published_at: '2022-03-15', downloads: 1500000, is_latest: false, size: 818400, checksum: 'e967h1i80i632i4hf7f', status: 'yanked' },
-    ]
-    selectedVersion.value = pkg.value.latest_version
-    loading.value = false
-  }, 500)
+  loadPackageDetail()
 })
 </script>
 
 <style scoped>
 .package-detail-page {
   min-height: 400px;
+}
+
+.version-section {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+@media (max-width: 1200px) {
+  .version-section {
+    grid-template-columns: 1fr;
+  }
+}
+
+.version-list-wrapper {
+  min-width: 0;
+}
+
+.version-detail-wrapper {
+  min-width: 0;
 }
 </style>
