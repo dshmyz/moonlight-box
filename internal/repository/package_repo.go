@@ -263,3 +263,12 @@ func (r *PackageRepository) IncrementDownloadCount(pkgID uint, versionID uint, f
 		return nil
 	})
 }
+
+func (r *PackageRepository) FindFilesByFilename(filename string) ([]model.PackageFile, error) {
+	var files []model.PackageFile
+	err := r.db.Where("filename = ?", filename).Find(&files).Error
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
+}
