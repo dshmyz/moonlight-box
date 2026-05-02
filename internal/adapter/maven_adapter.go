@@ -302,6 +302,18 @@ func groupArtifactToName(groupArtifact string) string {
 	return groupId + ":" + artifactId
 }
 
+// groupArtifactToStorageName 将groupArtifact路径转换为存储名称格式
+// 例如: "com/test/lib" -> "com.test/lib"
+func groupArtifactToStorageName(groupArtifact string) string {
+	parts := strings.Split(groupArtifact, "/")
+	if len(parts) < 2 {
+		return groupArtifact
+	}
+	groupId := strings.Join(parts[:len(parts)-1], ".")
+	artifactId := parts[len(parts)-1]
+	return groupId + "/" + artifactId
+}
+
 func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
 	// 检查是否是校验文件请求
 	if strings.HasSuffix(fullPath, ".sha1") || strings.HasSuffix(fullPath, ".md5") {
@@ -319,8 +331,11 @@ func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
 	filename := parts[len(parts)-1]
 	groupArtifact := strings.Join(parts[:len(parts)-2], "/")
 
+	// 转换为存储名称格式
+	storageName := groupArtifactToStorageName(groupArtifact)
 	storageVersion := version + "/" + filename
-	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "maven", groupArtifact, storageVersion)
+
+	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "maven", storageName, storageVersion)
 	if err == nil {
 		defer content.Close()
 
@@ -349,7 +364,7 @@ func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
 			defer result.Content.Close()
 			body, readErr := io.ReadAll(result.Content)
 			if readErr == nil {
-				storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "maven", groupArtifact, version, bytes.NewReader(body), result.Size)
+				storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "maven", storageName, version, bytes.NewReader(body), result.Size)
 				if storeErr == nil {
 					pkgName := groupArtifactToName(groupArtifact)
 					a.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
@@ -368,7 +383,7 @@ func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
 						SizeBytes:   result.Size,
 					})
 				}
-				localContent, localSize, localErr := a.storageSvc.GetPackage(c.Request.Context(), "maven", groupArtifact, storageVersion)
+				localContent, localSize, localErr := a.storageSvc.GetPackage(c.Request.Context(), "maven", storageName, storageVersion)
 				if localErr == nil {
 					defer localContent.Close()
 					c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
@@ -410,9 +425,12 @@ func (a *MavenAdapter) handleChecksumRequest(c *gin.Context, fullPath string) {
 
 	groupArtifact := strings.Join(parts[:len(parts)-2], "/")
 	version := parts[len(parts)-2]
+
+	// 转换为存储名称格式
+	storageName := groupArtifactToStorageName(groupArtifact)
 	storageVersion := version + "/" + actualFilename
 
-	content, _, err := a.storageSvc.GetPackage(c.Request.Context(), "maven", groupArtifact, storageVersion)
+	content, _, err := a.storageSvc.GetPackage(c.Request.Context(), "maven", storageName, storageVersion)
 
 	if err != nil {
 		if a.proxyRouter != nil {
@@ -603,7 +621,7 @@ func (a *MavenAdapter) Upload(ctx context.Context, req *UploadRequest) (*Package
 		actualVersion = version
 	}
 
-	storageKey, err := a.storageSvc.StorePackage(ctx, "maven", name, actualVersion, reader, req.Size)
+	storageKey, err := a.storageSvc.StorePackage(ctx, "maven", name, storageVersion, reader, req.Size)
 	if err != nil {
 		return nil, err
 	}
@@ -611,6 +629,7 @@ func (a *MavenAdapter) Upload(ctx context.Context, req *UploadRequest) (*Package
 	pkg, ver, _, err := a.pkgRepo.StorePackageFile(ctx, &model.Package{
 		Name:           name,
 		Type:           model.PackageTypeMaven,
+		RepositoryID:   req.RepositoryID,
 		RepositoryType: model.RepoTypeLocal,
 		CreatedBy:      req.UploadedBy,
 	}, &model.PackageVersion{
@@ -693,6 +712,12 @@ func (a *MavenAdapter) ListVersions(ctx context.Context, name string) ([]string,
 func (a *MavenAdapter) HandleRepoRequest(c *gin.Context, repo *model.Repository, path string) {
 	c.Set("repo", repo)
 
+	// 处理索引请求
+	if strings.HasSuffix(path, "/index") || path == "index" {
+		a.handleIndexRequest(c)
+		return
+	}
+
 	if strings.HasSuffix(path, "maven-metadata.xml") {
 		a.handleMetadataXML(c, path)
 		return
@@ -732,7 +757,8 @@ func (a *MavenAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository)
 			"filename":   filename,
 			"repo_name":  repo.Name,
 		},
-		UploadedBy: userID,
+		UploadedBy:   userID,
+		RepositoryID: repo.ID,
 	}
 
 	result, err := a.Upload(c.Request.Context(), req)

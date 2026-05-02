@@ -22,12 +22,13 @@ type PackageIdentity struct {
 }
 
 type UploadRequest struct {
-	Package    interface{}
-	Filename   string
-	Size       int64
-	Checksum   string
-	Metadata   map[string]interface{}
-	UploadedBy uint
+	Package      interface{}
+	Filename     string
+	Size         int64
+	Checksum     string
+	Metadata     map[string]interface{}
+	UploadedBy   uint
+	RepositoryID uint
 }
 
 type PackageContent struct {
