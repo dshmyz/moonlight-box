@@ -15,6 +15,7 @@ type Config struct {
 	Cache    CacheConfig    `mapstructure:"cache"`
 	Logging  LoggingConfig  `mapstructure:"logging"`
 	Proxy    ProxyConfig    `mapstructure:"proxy"`
+	AI       AIConfig       `mapstructure:"ai"` // AI 配置
 }
 
 type ServerConfig struct {
@@ -79,11 +80,56 @@ type LoggingConfig struct {
 }
 
 type ProxyConfig struct {
-	DefaultTimeout     time.Duration `mapstructure:"default_timeout"`
-	ConnectTimeout     time.Duration `mapstructure:"connect_timeout"`
-	LargeFileThreshold int64         `mapstructure:"large_file_threshold"`
-	MaxRedirects       int           `mapstructure:"max_redirects"`
-	InsecureSkipVerify bool          `mapstructure:"insecure_skip_verify"`
+	DefaultTimeout     time.Duration     `mapstructure:"default_timeout"`
+	ConnectTimeout     time.Duration     `mapstructure:"connect_timeout"`
+	LargeFileThreshold int64             `mapstructure:"large_file_threshold"`
+	MaxRedirects       int               `mapstructure:"max_redirects"`
+	InsecureSkipVerify bool              `mapstructure:"insecure_skip_verify"`
+	DNSMapping         map[string]string `mapstructure:"dns_mapping"`
+}
+
+// AI 配置
+type AIConfig struct {
+	Enabled     bool              `mapstructure:"enabled"`
+	Provider    string            `mapstructure:"provider"`
+	BaseURL     string            `mapstructure:"base_url"`
+	APIKey      string            `mapstructure:"api_key"`
+	Model       string            `mapstructure:"model"`
+	MaxTokens   int               `mapstructure:"max_tokens"`
+	Temperature float64           `mapstructure:"temperature"`
+	Timeout     time.Duration     `mapstructure:"timeout"`
+	Tools       AIToolsConfig     `mapstructure:"tools"`
+	RateLimit   AIRateLimitConfig `mapstructure:"rate_limit"`
+	Cache       AICacheConfig     `mapstructure:"cache"`
+	Session     AISessionConfig   `mapstructure:"session"`
+}
+
+// AI 工具配置
+type AIToolsConfig struct {
+	Enabled          bool     `mapstructure:"enabled"`
+	AllowedTools     []string `mapstructure:"allowed_tools"`
+	MaxExecutionTime int      `mapstructure:"max_execution_time"`
+	EnableAuditLog   bool     `mapstructure:"enable_audit_log"`
+}
+
+// AI 限流配置
+type AIRateLimitConfig struct {
+	RequestsPerMinute int `mapstructure:"requests_per_minute"`
+	RequestsPerDay    int `mapstructure:"requests_per_day"`
+	TokensPerDay      int `mapstructure:"tokens_per_day"`
+}
+
+// AI 缓存配置
+type AICacheConfig struct {
+	Enabled bool          `mapstructure:"enabled"`
+	TTL     time.Duration `mapstructure:"ttl"`
+	MaxSize int           `mapstructure:"max_size"`
+}
+
+// AI 会话配置
+type AISessionConfig struct {
+	MaxAge      time.Duration `mapstructure:"max_age"`
+	MaxMessages int           `mapstructure:"max_messages"`
 }
 
 var globalConfig *Config
