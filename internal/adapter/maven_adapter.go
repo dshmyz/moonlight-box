@@ -490,6 +490,39 @@ func (a *MavenAdapter) generateIndex(packages []model.Package, repoName string) 
 	return index
 }
 
+func (a *MavenAdapter) handleIndexRequest(c *gin.Context) {
+	var repo *model.Repository
+	if r, ok := c.Get("repo"); ok {
+		repo = r.(*model.Repository)
+	}
+
+	if repo == nil {
+		response.NotFound(c, "repository not found")
+		return
+	}
+
+	var packages []model.Package
+	err := a.pkgRepo.DB().
+		Preload("Versions").
+		Where("repository_id = ?", repo.ID).
+		Find(&packages).
+		Error
+
+	if err != nil {
+		response.InternalError(c, "failed to query packages")
+		return
+	}
+
+	index := a.generateIndex(packages, repo.Name)
+
+	accept := c.GetHeader("Accept")
+	if strings.Contains(accept, "application/xml") {
+		c.XML(200, index)
+	} else {
+		c.JSON(200, index)
+	}
+}
+
 func (a *MavenAdapter) UploadArtifact(c *gin.Context) {
 	userID := c.GetUint("userID")
 
