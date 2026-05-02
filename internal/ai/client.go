@@ -93,25 +93,27 @@ func (c *AIClient) Call(ctx context.Context, req *models.ChatRequest) (*models.C
 	return &chatResp, nil
 }
 
-// StreamCallback 是流式响应的回调函数类型
-type StreamCallback func(chunk *models.StreamChunk) error
+// Stream 执行流式 AI 请求，返回一个channel持续推送响应块
+func (c *AIClient) Stream(ctx context.Context, req *models.ChatRequest) (<-chan *models.StreamChunk, error) {
+	// 创建channel，缓冲大小为100
+	ch := make(chan *models.StreamChunk, 100)
 
-// Stream 执行流式 AI 请求
-func (c *AIClient) Stream(ctx context.Context, req *models.ChatRequest, callback StreamCallback) error {
 	// 确保请求是流式的
 	req.Stream = true
 
 	// 序列化请求
 	reqBody, err := json.Marshal(req)
 	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
+		close(ch)
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	// 创建 HTTP 请求
 	url := strings.TrimSuffix(c.config.BaseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		close(ch)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// 设置请求头
@@ -122,65 +124,83 @@ func (c *AIClient) Stream(ctx context.Context, req *models.ChatRequest, callback
 	// 发送请求
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
+		close(ch)
+		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer resp.Body.Close()
 
 	// 检查错误响应
 	if resp.StatusCode != http.StatusOK {
 		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		close(ch)
 		if err != nil {
-			return fmt.Errorf("API returned status %d, failed to read error response: %w", resp.StatusCode, err)
+			return nil, fmt.Errorf("API returned status %d, failed to read error response: %w", resp.StatusCode, err)
 		}
 
 		var errResp ErrorResponse
 		if err := json.Unmarshal(respBody, &errResp); err == nil && errResp.Error.Message != "" {
-			return fmt.Errorf("API error: %s (type: %s, code: %s)",
+			return nil, fmt.Errorf("API error: %s (type: %s, code: %s)",
 				errResp.Error.Message, errResp.Error.Type, errResp.Error.Code)
 		}
-		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	// 读取 SSE 流
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
+	// 启动goroutine读取流式响应
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
 
-		// 跳过空行
-		if line == "" {
-			continue
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// 跳过空行
+			if line == "" {
+				continue
+			}
+
+			// 检查是否是数据行
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+
+			// 提取数据部分
+			data := strings.TrimPrefix(line, "data: ")
+
+			// 检查是否是结束标记
+			if data == "[DONE]" {
+				return
+			}
+
+			// 解析流式响应块
+			var chunk models.StreamChunk
+			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				// JSON解析错误，发送错误chunk通知调用者
+				select {
+				case ch <- &models.StreamChunk{Error: err}:
+				case <-ctx.Done():
+				}
+				return
+			}
+
+			// 发送到channel或检查context是否已取消
+			select {
+			case ch <- &chunk:
+			case <-ctx.Done():
+				return
+			}
 		}
 
-		// 检查是否是数据行
-		if !strings.HasPrefix(line, "data: ") {
-			continue
+		// 检查scanner错误（网络错误、读取超时等）
+		if err := scanner.Err(); err != nil {
+			select {
+			case ch <- &models.StreamChunk{Error: err}:
+			case <-ctx.Done():
+			}
 		}
+	}()
 
-		// 提取数据部分
-		data := strings.TrimPrefix(line, "data: ")
-
-		// 检查是否是结束标记
-		if data == "[DONE]" {
-			break
-		}
-
-		// 解析流式响应块
-		var chunk models.StreamChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			return fmt.Errorf("failed to unmarshal stream chunk: %w", err)
-		}
-
-		// 调用回调函数
-		if err := callback(&chunk); err != nil {
-			return fmt.Errorf("callback error: %w", err)
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error reading stream: %w", err)
-	}
-
-	return nil
+	return ch, nil
 }
 
 // Close 关闭客户端（当前不需要清理资源，但保留接口以便将来扩展）

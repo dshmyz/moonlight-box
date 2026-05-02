@@ -67,8 +67,9 @@ const loadLogs = async () => {
     const res = await request.get('/block-rules/logs', {
       params: { page: currentPage.value, page_size: pageSize },
     })
-    logs.value = res.data?.items || []
-    total.value = res.data?.pagination?.total || 0
+    const data = res as any
+    logs.value = data?.items || []
+    total.value = data?.pagination?.total || 0
   } catch (err) {
     console.error('加载阻断日志失败:', err)
     ElMessage.error('加载阻断日志失败')

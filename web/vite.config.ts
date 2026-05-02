@@ -16,6 +16,10 @@ export default defineConfig({
         target: 'http://localhost:9081',
         changeOrigin: true,
       },
+      '/repo': {
+        target: 'http://localhost:9081',
+        changeOrigin: true,
+      },
       '/npm': {
         target: 'http://localhost:9081',
         changeOrigin: true,

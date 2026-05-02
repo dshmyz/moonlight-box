@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/adapter"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
-	"github.com/gin-gonic/gin"
 )
 
 type RepoRouter struct {

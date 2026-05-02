@@ -3,8 +3,8 @@ package handler
 import (
 	"strconv"
 
-	"github.com/moonlight-box/registry/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/moonlight-box/registry/internal/service"
 )
 
 // PackageSearchHandler 包搜索处理器

@@ -92,3 +92,12 @@ func (r *RepositoryRepository) FindVirtualByPackageType(pkgType string) (*model.
 	}
 	return &repo, nil
 }
+
+// FindMetadataSyncEnabled 查找所有启用元数据同步的代理仓库
+func (r *RepositoryRepository) FindMetadataSyncEnabled() ([]model.Repository, error) {
+	var repos []model.Repository
+	err := r.db.Where("type = ? AND enabled = ? AND metadata_sync_enabled = ?",
+		model.RepoTypeProxy, true, true).
+		Find(&repos).Error
+	return repos, err
+}

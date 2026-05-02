@@ -170,3 +170,7 @@ func (s *S3Storage) List(ctx context.Context, prefix string) ([]Entry, error) {
 func (s *S3Storage) Close() error {
 	return nil
 }
+
+func (s *S3Storage) BasePath() string {
+	return s.basePath
+}

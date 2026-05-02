@@ -225,7 +225,7 @@ const loadRules = async () => {
     if (searchName.value) params.package_name = searchName.value
     if (filterPkgType.value) params.package_type = filterPkgType.value
     const res = await blockRuleApi.list(params)
-    rules.value = res.data || []
+    rules.value = res || []
   } catch {
     ElMessage.error('加载阻断规则失败')
   } finally {
@@ -337,7 +337,7 @@ const handleBatchImport = async () => {
   importing.value = true
   try {
     const res = await blockRuleApi.batchImport({ rules: parsedRules })
-    const { success, failed, total } = res.data || {}
+    const { success, failed, total } = res || {}
     if (failed === 0) {
       ElMessage.success(`成功导入 ${success} 条规则`)
     } else {
@@ -427,7 +427,7 @@ const handleFileChange = (file: UploadFile) => {
 const handleDownloadTemplate = async () => {
   try {
     const res = await blockRuleApi.downloadTemplate()
-    const blob = new Blob([res.data as BlobPart], { type: 'text/csv;charset=utf-8' })
+    const blob = new Blob([res as BlobPart], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url

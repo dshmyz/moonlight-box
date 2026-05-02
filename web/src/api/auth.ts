@@ -4,10 +4,13 @@ export const authApi = {
   login(username: string, password: string) {
     return request.post('/auth/login', { username, password })
   },
-  getCASConfig() {
-    return request.get('/auth/cas/config')
+  logout() {
+    return request.post('/auth/logout')
   },
-  casCallback(ticket: string) {
-    return request.get('/auth/cas/callback', { params: { ticket } })
+  refreshToken() {
+    return request.post('/auth/refresh')
+  },
+  getProfile() {
+    return request.get('/auth/profile')
   },
 }

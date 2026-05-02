@@ -219,7 +219,7 @@ func (a *GenericAdapter) Upload(ctx context.Context, req *UploadRequest) (*Packa
 		return nil, err
 	}
 
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(ctx, &model.Package{
+	pkg, ver, _, err := a.pkgRepo.StorePackageFile(ctx, &model.Package{
 		Name:           path,
 		Type:           model.PackageTypeGeneric,
 		RepositoryType: model.RepoTypeLocal,
@@ -227,10 +227,14 @@ func (a *GenericAdapter) Upload(ctx context.Context, req *UploadRequest) (*Packa
 	}, &model.PackageVersion{
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: storageKey,
-		SizeBytes:   req.Size,
+		StoragePath: filepath.Dir(storageKey),
 		PublishedBy: req.UploadedBy,
 		Metadata:    marshalMetadata(req.Metadata),
+	}, &model.PackageFile{
+		Filename:    filepath.Base(path),
+		FileType:    model.FileTypePrimary,
+		StoragePath: storageKey,
+		SizeBytes:   req.Size,
 	})
 	if err != nil {
 		a.storageSvc.DeletePackage(ctx, "generic", path, "1.0.0")
@@ -239,6 +243,7 @@ func (a *GenericAdapter) Upload(ctx context.Context, req *UploadRequest) (*Packa
 
 	return &PackageVersionResult{
 		PackageID:  pkg.ID,
+		VersionID:  ver.ID,
 		Version:    "1.0.0",
 		StorageKey: storageKey,
 		Size:       req.Size,

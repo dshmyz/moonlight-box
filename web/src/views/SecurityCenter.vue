@@ -133,14 +133,14 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
-import request from '@/api/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { securityApi, type SecurityStats, type Vulnerability, type ScanResult } from '@/api/security'
 
 const activeTab = ref('vulnerabilities')
 const loading = ref(false)
-const stats = ref<Record<string, number>>({})
-const vulnerabilities = ref<any[]>([])
-const scanResults = ref<any[]>([])
+const stats = ref<SecurityStats>({} as SecurityStats)
+const vulnerabilities = ref<Vulnerability[]>([])
+const scanResults = ref<ScanResult[]>([])
 const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
@@ -174,12 +174,10 @@ function formatDate(d: string): string {
 
 async function loadStats() {
   try {
-    const res = await request.get('/api/v1/security/statistics')
-    if (res.data.code === 200) {
-      stats.value = res.data.data
-    }
-  } catch (e: any) {
-    console.error(e)
+    const res = await securityApi.getStatistics()
+    stats.value = res || ({} as SecurityStats)
+  } catch {
+    console.error('Failed to load security stats')
   }
 }
 
@@ -190,13 +188,11 @@ async function loadVulnerabilities() {
     if (filterSeverity.value) params.severity = filterSeverity.value
     if (filterPkgType.value) params.pkg_type = filterPkgType.value
 
-    const res = await request.get('/api/v1/security/vulnerabilities', { params })
-    if (res.data.code === 200) {
-      vulnerabilities.value = res.data.data.items || []
-      total.value = res.data.data.pagination.total || 0
-    }
-  } catch (e: any) {
-    console.error(e)
+    const res = await securityApi.listVulnerabilities(params)
+    vulnerabilities.value = res?.items || []
+    total.value = res?.pagination?.total || 0
+  } catch {
+    console.error('Failed to load vulnerabilities')
   } finally {
     loading.value = false
   }
@@ -205,12 +201,11 @@ async function loadVulnerabilities() {
 async function loadScanResults() {
   loading.value = true
   try {
-    const res = await request.get('/api/v1/security/dashboard')
-    if (res.data.code === 200) {
-      scanResults.value = res.data.data.recent_vulnerabilities || []
-    }
-  } catch (e: any) {
-    console.error(e)
+    const res = await securityApi.getDashboard()
+    const data = res as any
+    scanResults.value = data?.recent_vulnerabilities || []
+  } catch {
+    console.error('Failed to load scan results')
   } finally {
     loading.value = false
   }
@@ -226,7 +221,7 @@ async function triggerFullScan() {
     await ElMessageBox.confirm('确定要触发全量扫描吗？这可能需要较长时间。', '确认', {
       type: 'warning',
     })
-    await request.post('/api/v1/security/scan/full')
+    await securityApi.triggerFullScan()
     ElMessage.success('全量扫描已触发')
     loadStats()
   } catch (e: any) {
@@ -239,7 +234,7 @@ async function triggerFullScan() {
 async function blockCVE(cve: string) {
   try {
     await ElMessageBox.confirm(`确定要阻断 ${cve} 相关的包吗？`, '确认', { type: 'warning' })
-    await request.post(`/api/v1/security/block/${cve}`)
+    await securityApi.blockByCVE(cve)
     ElMessage.success('阻断规则已创建')
   } catch (e: any) {
     if (e !== 'cancel') {

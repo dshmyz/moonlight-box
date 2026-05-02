@@ -24,13 +24,13 @@ type NexusRepository struct {
 }
 
 type NexusComponent struct {
-	ID         string            `json:"id"`
-	Repository string            `json:"repository"`
-	Format     string            `json:"format"`
-	Group      string            `json:"group"`
-	Name       string            `json:"name"`
-	Version    string            `json:"version"`
-	Assets     []NexusAsset      `json:"assets"`
+	ID         string       `json:"id"`
+	Repository string       `json:"repository"`
+	Format     string       `json:"format"`
+	Group      string       `json:"group"`
+	Name       string       `json:"name"`
+	Version    string       `json:"version"`
+	Assets     []NexusAsset `json:"assets"`
 }
 
 type NexusAsset struct {

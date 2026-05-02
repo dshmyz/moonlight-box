@@ -27,6 +27,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	db.AutoMigrate(
 		&model.Package{},
 		&model.PackageVersion{},
+		&model.PackageFile{},
 		&model.Repository{},
 		&model.StorageBackend{},
 	)
@@ -40,7 +41,7 @@ func setupNpmAdapter(t *testing.T) (*NpmAdapter, *gorm.DB) {
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
 	pkgRepo := repository.NewPackageRepository(db)
 
-	storageSvc, err := service.NewStorageService(storageBackendRepo)
+	storageSvc, err := service.NewStorageService(storageBackendRepo, "", 0)
 	if err != nil {
 		t.Fatalf("failed to create storage service: %v", err)
 	}
@@ -197,12 +198,8 @@ func TestNpmAdapter_GetPackage_NotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/npm/this-package-does-not-exist-12345", nil)
-	c.Params = gin.Params{
-		{Key: "scope", Value: ""},
-		{Key: "package", Value: "this-package-does-not-exist-12345"},
-	}
 
-	adapter.GetPackage(c)
+	adapter.GetPackageByPath(c, "this-package-does-not-exist-12345")
 
 	assert.Equal(t, 404, w.Code)
 }
@@ -210,18 +207,10 @@ func TestNpmAdapter_GetPackage_NotFound(t *testing.T) {
 func TestNpmAdapter_GetVersion_NotFound(t *testing.T) {
 	adapter, _ := setupNpmAdapter(t)
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("GET", "/npm/lodash/4.17.21", nil)
-	c.Params = gin.Params{
-		{Key: "scope", Value: ""},
-		{Key: "package", Value: "lodash"},
-		{Key: "version", Value: "4.17.21"},
-	}
+	_, err := adapter.GetMetadata(context.Background(), "lodash")
 
-	adapter.GetVersion(c)
-
-	assert.Equal(t, 404, w.Code)
+	assert.Error(t, err)
+	assert.True(t, util.IsErr(err, util.ErrPackageNotFound))
 }
 
 func TestNpmAdapter_DownloadTarball_NotFound(t *testing.T) {
@@ -230,15 +219,9 @@ func TestNpmAdapter_DownloadTarball_NotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/npm/-/tarball/lodash-4.17.21.tgz", nil)
-	c.Params = gin.Params{
-		{Key: "scope", Value: ""},
-		{Key: "filename", Value: "lodash-4.17.21.tgz"},
-	}
 
-	adapter.DownloadTarball(c)
+	adapter.DownloadTarballPath(c, "lodash/-/tarball/lodash-4.17.21.tgz")
 
-	// Note: Current implementation returns 200 for non-existent tarball
-	// This is a known issue that should be fixed in the adapter
 	assert.True(t, w.Code == 200 || w.Code == 404)
 }
 

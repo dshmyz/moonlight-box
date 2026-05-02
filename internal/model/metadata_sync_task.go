@@ -7,9 +7,9 @@ type MetadataSyncTask struct {
 	RepositoryID uint       `json:"repository_id" gorm:"index"`
 	Repository   Repository `json:"repository" gorm:"foreignKey:RepositoryID"`
 
-	Status          string     `json:"status" gorm:"size:20;default:'pending'"`
-	StartedAt       *time.Time `json:"started_at"`
-	CompletedAt     *time.Time `json:"completed_at"`
+	Status      string     `json:"status" gorm:"size:20;default:'pending'"`
+	StartedAt   *time.Time `json:"started_at"`
+	CompletedAt *time.Time `json:"completed_at"`
 
 	TotalPackages   int `json:"total_packages"`
 	SyncedPackages  int `json:"synced_packages"`

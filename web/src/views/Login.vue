@@ -82,6 +82,7 @@ import { ElMessage } from 'element-plus'
 import { Box, User, Lock, Back, Switch } from '@element-plus/icons-vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { authApi } from '@/api/auth'
+import { casAuthApi } from '@/api/casConfig'
 
 const router = useRouter()
 const route = useRoute()
@@ -103,8 +104,9 @@ const rules: FormRules = {
 
 onMounted(async () => {
   try {
-    const res = await authApi.getCASConfig()
-    casEnabled.value = res.data?.enabled ?? false
+    const res = await casAuthApi.getCASConfig()
+    const data = res as any
+    casEnabled.value = data?.enabled ?? false
   } catch {
     casEnabled.value = false
   }

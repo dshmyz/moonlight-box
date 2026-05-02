@@ -19,8 +19,8 @@
         </el-table-column>
         <el-table-column prop="status" label="状态" width="100" align="center">
           <template #default="{ row }">
-            <el-tag :type="getStatusType(row.status)" size="small">
-              {{ getStatusLabel(row.status) }}
+            <el-tag :type="getVersionStatusColor(row.status)" size="small">
+              {{ getVersionStatusLabel(row.status) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -50,7 +50,8 @@
 import { ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { packageApi, type PackageVersion } from '@/api/package'
-import { formatDate, formatNumber } from '@/utils/format'
+import { formatDate, formatNumber, formatSize } from '@/utils/format'
+import { getVersionStatusColor, getVersionStatusLabel } from '@/constants/package'
 
 const props = defineProps<{
   modelValue: boolean
@@ -92,32 +93,6 @@ async function loadVersions() {
 
 function handleClose() {
   visible.value = false
-}
-
-function getStatusType(status: string) {
-  const map: Record<string, string> = {
-    published: 'success',
-    deprecated: 'warning',
-    yanked: 'danger',
-    draft: 'info',
-  }
-  return map[status] || 'info'
-}
-
-function getStatusLabel(status: string) {
-  const map: Record<string, string> = {
-    published: '已发布',
-    deprecated: '已弃用',
-    yanked: '已撤回',
-    draft: '草稿',
-  }
-  return map[status] || status
-}
-
-function formatSize(bytes: number) {
-  if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1)} MB`
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${bytes} B`
 }
 </script>
 

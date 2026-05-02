@@ -21,16 +21,16 @@ const (
 )
 
 type StorageBackend struct {
-	ID          uint               `gorm:"primaryKey" json:"id"`
-	Name        string             `gorm:"uniqueIndex;size:50;not null" json:"name"`
-	Type        StorageBackendType `gorm:"size:20;not null" json:"type"`
-	Description string             `gorm:"size:255" json:"description,omitempty"`
-	ConfigJSON  string             `gorm:"column:config;type:text" json:"-"`
-	IsDefault   bool               `gorm:"default:false" json:"is_default"`
+	ID          uint                 `gorm:"primaryKey" json:"id"`
+	Name        string               `gorm:"uniqueIndex;size:50;not null" json:"name"`
+	Type        StorageBackendType   `gorm:"size:20;not null" json:"type"`
+	Description string               `gorm:"size:255" json:"description,omitempty"`
+	ConfigJSON  string               `gorm:"column:config;type:text" json:"-"`
+	IsDefault   bool                 `gorm:"default:false" json:"is_default"`
 	Status      StorageBackendStatus `gorm:"size:20;default:active" json:"status"`
-	IsActive    bool               `gorm:"default:true" json:"is_active"`
-	CreatedAt   time.Time          `json:"created_at"`
-	UpdatedAt   time.Time          `json:"updated_at"`
+	IsActive    bool                 `gorm:"default:true" json:"is_active"`
+	CreatedAt   time.Time            `json:"created_at"`
+	UpdatedAt   time.Time            `json:"updated_at"`
 
 	Config StorageBackendConfig `gorm:"-" json:"config"`
 }

@@ -4,7 +4,7 @@
       <template #default="{ row }">
         <div>
           <div class="package-name" @click="$emit('view-detail', row)">
-            {{ row.name }}
+            {{ row.display_name || row.name }}
           </div>
           <div class="package-description">{{ row.description || '暂无描述' }}</div>
         </div>
@@ -14,6 +14,13 @@
       <template #default="{ row }">
         <el-tag :type="getTypeTag(row.type)" size="small">
           {{ row.type }}
+        </el-tag>
+      </template>
+    </el-table-column>
+    <el-table-column prop="repository_type" label="来源" width="80" align="center">
+      <template #default="{ row }">
+        <el-tag :type="row.repository_type === 'proxy' ? 'warning' : 'success'" size="small">
+          {{ row.repository_type === 'proxy' ? '代理' : '本地' }}
         </el-tag>
       </template>
     </el-table-column>

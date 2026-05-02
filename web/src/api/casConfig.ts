@@ -19,3 +19,12 @@ export const casConfigApi = {
     return request.delete('/cas/config')
   },
 }
+
+export const casAuthApi = {
+  getCASConfig() {
+    return request.get('/auth/cas/config')
+  },
+  casCallback(ticket: string) {
+    return request.get('/auth/cas/callback', { params: { ticket } })
+  },
+}

@@ -60,7 +60,7 @@ func (r *StorageBackendRepository) FindDefault() (*model.StorageBackend, error) 
 
 func (r *StorageBackendRepository) SetDefault(id uint) error {
 	return r.db.Model(&model.StorageBackend{}).Updates(map[string]interface{}{
-		"is_default":  gorm.Expr("CASE WHEN id = ? THEN ? ELSE ? END", id, true, false),
+		"is_default": gorm.Expr("CASE WHEN id = ? THEN ? ELSE ? END", id, true, false),
 	}).Error
 }
 

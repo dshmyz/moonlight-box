@@ -48,7 +48,7 @@ func (h *CASHandler) Callback(c *gin.Context) {
 
 func (h *CASHandler) Config(c *gin.Context) {
 	Success(c, gin.H{
-		"enabled":  h.casService.IsEnabled(),
+		"enabled":   h.casService.IsEnabled(),
 		"login_url": h.casService.GetLoginURL(""),
 	})
 }

@@ -15,19 +15,12 @@
     >
       <el-table-column prop="version" label="版本号" min-width="140">
         <template #default="{ row }">
-          <div class="version-cell">
-            <el-button 
-              link 
-              :type="selectedVersion === row.version ? 'primary' : 'default'"
-              @click.stop="handleVersionClick(row)"
-            >
-              {{ row.version }}
-              <el-icon v-if="selectedVersion === row.version"><Check /></el-icon>
-            </el-button>
-            <el-tag v-if="row.is_latest" type="primary" size="small" effect="plain" class="latest-tag">
-              Latest
-            </el-tag>
-          </div>
+          <span class="version-text" :class="{ 'version-selected': row.version === selectedVersion }">
+            {{ row.version }}
+          </span>
+          <el-tag v-if="row.is_latest" type="primary" size="small" effect="plain" class="latest-tag">
+            Latest
+          </el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="status" label="状态" width="100" align="center">
@@ -140,7 +133,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Download, Check } from '@element-plus/icons-vue'
+import { Download } from '@element-plus/icons-vue'
 import { formatNumber, formatSize, formatDate } from '@/utils/format'
 import { getVersionStatusColor, getVersionStatusLabel } from '@/constants/package'
 import type { PackageVersion, PackageFile } from '@/api/package'
@@ -152,13 +145,12 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  download: [version: PackageVersion & { selectedFile?: PackageFile }]
+  download: [version: PackageVersion]
   select: [version: string]
   deprecate: [data: { id: number; version: string; reason: string }]
   restore: [data: { id: number; version: string }]
   yank: [data: { id: number; version: string }]
   delete: [data: { id: number; version: string }]
-  showDetail: [version: PackageVersion]
 }>()
 
 const pageSize = 10
@@ -171,11 +163,6 @@ const pagedVersions = computed(() => {
 
 function handleRowClick(row: PackageVersion) {
   emit('select', row.version)
-}
-
-function handleVersionClick(row: PackageVersion) {
-  emit('select', row.version)
-  emit('showDetail', row)
 }
 
 function handleDeprecate(row: PackageVersion) {
@@ -256,12 +243,6 @@ function handleFileDownload(row: PackageVersion, file: PackageFile) {
   color: #909399;
 }
 
-.version-cell {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .version-text {
   font-weight: 500;
   color: #303133;
@@ -326,9 +307,5 @@ function handleFileDownload(row: PackageVersion, file: PackageFile) {
 
 :deep(.el-table__row) {
   cursor: pointer;
-}
-
-:deep(.el-table__row.selected) {
-  background-color: #e3f2fd;
 }
 </style>

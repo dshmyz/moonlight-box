@@ -1,8 +1,8 @@
 package handler
 
 import (
-	"github.com/moonlight-box/registry/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/moonlight-box/registry/internal/service"
 )
 
 // DashboardHandler 仪表盘处理器

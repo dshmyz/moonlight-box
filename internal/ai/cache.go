@@ -24,8 +24,8 @@ type ResponseCache struct {
 
 // cacheEntry 缓存条目
 type cacheEntry struct {
-	query    string
-	response string
+	query     string
+	response  string
 	createdAt time.Time
 }
 

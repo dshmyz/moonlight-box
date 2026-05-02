@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import request from '@/api/request'
 import { authApi } from '@/api/auth'
+import { casAuthApi } from '@/api/casConfig'
 
 interface UserInfo {
   id: number
@@ -20,7 +21,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function login(username: string, password: string) {
     const res = await authApi.login(username, password)
-    const data = res.data as any
+    const data = res as any
     
     token.value = data.access_token
     user.value = data.user
@@ -30,8 +31,8 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function casLogin(ticket: string) {
-    const res = await authApi.casCallback(ticket)
-    const data = res.data as any
+    const res = await casAuthApi.casCallback(ticket)
+    const data = res as any
     if (!data || !data.access_token) {
       throw new Error(data?.message || 'CAS 登录失败')
     }
@@ -56,7 +57,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function fetchProfile() {
     try {
       const res = await request.get('/auth/profile')
-      user.value = res.data
+      user.value = res as any
     } catch {
       token.value = ''
       localStorage.removeItem('token')

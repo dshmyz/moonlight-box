@@ -3,32 +3,17 @@
     <template v-if="!loading && pkg">
       <PackageHeader :pkg="pkg" />
 
-      <!-- 修改版本列表布局 -->
-      <div class="version-section">
-        <div class="version-list-wrapper">
-          <VersionTable
-            :versions="versions"
-            :selected-version="selectedVersion"
-            :show-admin-actions="isAdminRoute"
-            @select="handleSelectVersion"
-            @showDetail="handleShowDetail"
-            @download="handleDownload"
-            @deprecate="handleDeprecate"
-            @restore="handleRestore"
-            @yank="handleYank"
-            @delete="handleDelete"
-          />
-        </div>
-
-        <!-- 添加详情面板 -->
-        <div v-if="selectedVersionForDetail" class="version-detail-wrapper">
-          <VersionDetailPanel
-            :version="selectedVersionForDetail"
-            :pkg="pkg"
-            @close="handleCloseDetail"
-          />
-        </div>
-      </div>
+      <VersionTable
+        :versions="versions"
+        :selected-version="selectedVersion"
+        :show-admin-actions="isAdminRoute"
+        @select="handleSelectVersion"
+        @download="handleDownload"
+        @deprecate="handleDeprecate"
+        @restore="handleRestore"
+        @yank="handleYank"
+        @delete="handleDelete"
+      />
 
       <el-row :gutter="24">
         <el-col :xs="24" :lg="16">
@@ -51,7 +36,6 @@ import PackageHeader from '@/components/package-detail/PackageHeader.vue'
 import PackageUsageGuide from '@/components/package-detail/PackageUsageGuide.vue'
 import VersionTable from '@/components/package-detail/VersionTable.vue'
 import PackageInfoSidebar from '@/components/package-detail/PackageInfoSidebar.vue'
-import VersionDetailPanel from '@/components/package-detail/VersionDetailPanel.vue'
 import { ElMessage } from 'element-plus'
 import { packageApi, type Package, type PackageVersion } from '@/api/package'
 
@@ -65,7 +49,6 @@ const isAdminRoute = computed(() => {
 const pkg = ref<(Package & { repository?: string }) | null>(null)
 const versions = ref<PackageVersion[]>([])
 const selectedVersion = ref('')
-const selectedVersionForDetail = ref<PackageVersion | null>(null)
 
 async function loadPackageDetail() {
   const pkgType = route.params.type as string
@@ -133,14 +116,6 @@ function handleSelectVersion(version: string) {
   selectedVersion.value = version
 }
 
-function handleShowDetail(version: PackageVersion) {
-  selectedVersionForDetail.value = version
-}
-
-function handleCloseDetail() {
-  selectedVersionForDetail.value = null
-}
-
 async function handleDownload(version: PackageVersion & { selectedFile?: any }) {
   if (!pkg.value || !version.files || version.files.length === 0) {
     ElMessage.error('没有可下载的文件')
@@ -166,6 +141,9 @@ async function handleDownload(version: PackageVersion & { selectedFile?: any }) 
     const parts = pkg.value.name.split(':')
     if (parts.length === 2) {
       const groupPath = parts[0].replace(/\./g, '/')
+      const extension = file.filename.endsWith('.pom') ? 'pom' : 
+                       file.filename.endsWith('-sources.jar') ? 'sources.jar' :
+                       file.filename.endsWith('-javadoc.jar') ? 'javadoc.jar' : 'jar'
       downloadUrl = `/repo/${pkg.value.repository}/${groupPath}/${parts[1]}/${version.version}/${file.filename}`
       downloadFilename = file.filename
     } else {
@@ -258,26 +236,5 @@ onMounted(() => {
 <style scoped>
 .package-detail-page {
   min-height: 400px;
-}
-
-.version-section {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  margin-bottom: 24px;
-}
-
-@media (max-width: 1200px) {
-  .version-section {
-    grid-template-columns: 1fr;
-  }
-}
-
-.version-list-wrapper {
-  min-width: 0;
-}
-
-.version-detail-wrapper {
-  min-width: 0;
 }
 </style>

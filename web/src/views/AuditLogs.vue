@@ -105,11 +105,10 @@ async function loadLogs() {
     if (filterAction.value) params.action = filterAction.value
     if (filterIP.value) params.ip_address = filterIP.value
 
-    const res = await request.get('/api/v1/audit/logs', { params })
-    if (res.data.code === 200) {
-      logs.value = res.data.data.items || []
-      total.value = res.data.data.pagination?.total || 0
-    }
+    const res = await request.get('/audit/logs', { params })
+    const data = res as any
+    logs.value = data?.items || []
+    total.value = data?.pagination?.total || 0
   } catch (e: any) {
     console.error(e)
   } finally {

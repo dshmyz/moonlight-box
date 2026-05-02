@@ -3,9 +3,9 @@ package handler
 import (
 	"fmt"
 
+	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/service"
-	"github.com/gin-gonic/gin"
 )
 
 type PublicRepoHandler struct {
@@ -17,15 +17,15 @@ func NewPublicRepoHandler(repoSvc *service.RepositoryService) *PublicRepoHandler
 }
 
 type RepoConfigResponse struct {
-	Name         string                `json:"name"`
-	DisplayName  string                `json:"display_name"`
-	Description  string                `json:"description"`
-	Type         model.RepositoryType  `json:"type"`
-	PackageType  string                `json:"package_type"`
-	Enabled      bool                  `json:"enabled"`
-	RemoteURL    string                `json:"remote_url,omitempty"`
-	RegistryURL  string                `json:"registry_url"`
-	ConfigGuide  []ConfigStep          `json:"config_guide"`
+	Name        string               `json:"name"`
+	DisplayName string               `json:"display_name"`
+	Description string               `json:"description"`
+	Type        model.RepositoryType `json:"type"`
+	PackageType string               `json:"package_type"`
+	Enabled     bool                 `json:"enabled"`
+	RemoteURL   string               `json:"remote_url,omitempty"`
+	RegistryURL string               `json:"registry_url"`
+	ConfigGuide []ConfigStep         `json:"config_guide"`
 }
 
 type ConfigStep struct {
@@ -75,26 +75,7 @@ func (h *PublicRepoHandler) GetRepoConfig(c *gin.Context) {
 }
 
 func buildRegistryURL(baseURL string, repo *model.Repository) string {
-	switch repo.PackageType {
-	case "npm":
-		return fmt.Sprintf("%s/npm/", baseURL)
-	case "maven":
-		return fmt.Sprintf("%s/maven2/", baseURL)
-	case "pypi":
-		return fmt.Sprintf("%s/pypi/simple/", baseURL)
-	case "go":
-		return fmt.Sprintf("%s/go/", baseURL)
-	case "nuget":
-		return fmt.Sprintf("%s/nuget/v3/index.json", baseURL)
-	case "yum":
-		return fmt.Sprintf("%s/yum/%s/", baseURL, repo.Name)
-	case "apt":
-		return fmt.Sprintf("%s/apt/", baseURL)
-	case "generic":
-		return fmt.Sprintf("%s/files/", baseURL)
-	default:
-		return fmt.Sprintf("%s/", baseURL)
-	}
+	return fmt.Sprintf("%s/repo/%s/", baseURL, repo.Name)
 }
 
 func buildConfigGuide(baseURL string, repo *model.Repository) []ConfigStep {

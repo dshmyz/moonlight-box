@@ -22,14 +22,14 @@ type sanitizationRule struct {
 // SanitizerConfig 脱敏器配置
 type SanitizerConfig struct {
 	// 是否启用各种脱敏规则
-	EnablePassword  bool
-	EnableAPIKey    bool
-	EnableToken     bool
-	EnableIP        bool
-	EnableEmail     bool
-	EnablePhone     bool
-	EnableIDCard    bool
-	EnableBankCard  bool
+	EnablePassword bool
+	EnableAPIKey   bool
+	EnableToken    bool
+	EnableIP       bool
+	EnableEmail    bool
+	EnablePhone    bool
+	EnableIDCard   bool
+	EnableBankCard bool
 	// 自定义规则
 	CustomRules []CustomSanitizationRule
 }
@@ -44,14 +44,14 @@ type CustomSanitizationRule struct {
 // DefaultSanitizerConfig 返回默认配置
 func DefaultSanitizerConfig() *SanitizerConfig {
 	return &SanitizerConfig{
-		EnablePassword:  true,
-		EnableAPIKey:    true,
-		EnableToken:     true,
-		EnableIP:        true,
-		EnableEmail:     true,
-		EnablePhone:     true,
-		EnableIDCard:    true,
-		EnableBankCard:  true,
+		EnablePassword: true,
+		EnableAPIKey:   true,
+		EnableToken:    true,
+		EnableIP:       true,
+		EnableEmail:    true,
+		EnablePhone:    true,
+		EnableIDCard:   true,
+		EnableBankCard: true,
 	}
 }
 

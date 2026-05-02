@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/moonlight-box/registry/internal/adapter"
+	"github.com/moonlight-box/registry/internal/ai"
+	"github.com/moonlight-box/registry/internal/ai/tools"
 	"github.com/moonlight-box/registry/internal/config"
 	"github.com/moonlight-box/registry/internal/database"
 	"github.com/moonlight-box/registry/internal/handler"
@@ -158,7 +160,19 @@ func main() {
 
 	repoSvc := service.NewRepositoryService(repoRepo, groupRepo, db)
 	blockRuleSvc := service.NewBlockRuleService(blockRuleRepo, auditSvc)
-	repoHandler := handler.NewRepositoryHandler(repoSvc)
+
+	// 初始化元数据同步服务
+	metadataSyncTaskRepo := repository.NewMetadataSyncTaskRepository(db)
+	metadataSyncSvc := service.NewMetadataSyncService(db, metadataSyncTaskRepo, repoRepo, packageRepo)
+
+	// 注册适配器到元数据同步服务
+	for _, adap := range adapters {
+		if syncer, ok := adap.(types.MetadataSyncer); ok {
+			metadataSyncSvc.RegisterAdapter(string(adap.Type()), syncer)
+		}
+	}
+
+	repoHandler := handler.NewRepositoryHandler(repoSvc, metadataSyncSvc, nil)
 	cacheHandler := handler.NewCacheHandler(cacheSvc)
 	blockRuleHandler := handler.NewBlockRuleHandler(blockRuleSvc, auditSvc)
 	publicRepoHandler := handler.NewPublicRepoHandler(repoSvc)
@@ -212,15 +226,60 @@ func main() {
 	fileBrowseHandler := handler.NewFileBrowseHandler(cfg.Storage.Local.BasePath)
 
 	// 初始化调度器服务
-	schedulerSvc := service.NewSchedulerService(backupSvc, systemConfigSvc, webhookSvc)
+	schedulerSvc := service.NewSchedulerService(backupSvc, systemConfigSvc, webhookSvc, metadataSyncSvc, repoRepo)
 
 	// 初始化迁移服务
 	migrationSvc := migration.NewMigrationService(db)
 	migrationWorker := migration.NewMigrationWorker(migrationSvc, 5)
 	migrationHandler := handler.NewMigrationHandler(migrationSvc, migrationWorker)
 
+	// 初始化AI服务
+	var aiService *ai.AIService
+	var aiHandler *handler.AIHandler
+	if cfg.AI.Enabled {
+		// 创建AI服务
+		aiService = ai.NewAIService(&cfg.AI, db, auditRepo)
+
+		// 注册工具
+		toolContext := &tools.ToolContext{
+			DB:      db,
+			Config:  cfg,
+			LogPath: cfg.Logging.Output,
+		}
+
+		// 日志查询工具 - 所有用户可用
+		logQueryTool := tools.NewLogQueryTool()
+		logQueryTool.SetContext(toolContext)
+		aiService.RegisterTool(logQueryTool, []string{})
+
+		// 数据库查询工具 - 所有用户可用
+		dbQueryTool := tools.NewDBQueryTool()
+		dbQueryTool.SetContext(toolContext)
+		aiService.RegisterTool(dbQueryTool, []string{})
+
+		// 包信息查询工具 - 所有用户可用
+		packageInfoTool := tools.NewPackageInfoTool()
+		packageInfoTool.SetContext(toolContext)
+		aiService.RegisterTool(packageInfoTool, []string{})
+
+		// 安全分析工具 - 管理员和安全管理员可用
+		securityTool := tools.NewSecurityTool()
+		securityTool.SetContext(toolContext)
+		aiService.RegisterTool(securityTool, []string{"admin", "security_admin"})
+
+		// 代码生成工具 - 所有用户可用
+		codeGenTool := tools.NewCodeGenTool()
+		codeGenTool.SetContext(toolContext)
+		aiService.RegisterTool(codeGenTool, []string{})
+
+		// 创建AI处理器
+		aiHandler = handler.NewAIHandler(aiService)
+
+		fmt.Println("AI服务已启用")
+	}
+
 	// 创建路由器
-	router := setupRouter(cfg, authService, adapters, repoHandler, cacheHandler, blockRuleHandler, searchHandler, dashboardHandler, casHandler, casAdminHandler, blockRuleSvc, storageBackendHandler, securityHandler, auditLogHandler, userHandler, pkgVersionHandler, roleRepo, publicRepoHandler, backupHandler, webhookHandler, systemConfigHandler, systemInfoHandler, fileBrowseHandler, repoSvc, migrationHandler)
+	router := setupRouter(cfg, authService, adapters, repoHandler, cacheHandler, blockRuleHandler, searchHandler, dashboardHandler, casHandler, casAdminHandler, blockRuleSvc, storageBackendHandler, securityHandler, auditLogHandler, userHandler, pkgVersionHandler, roleRepo, publicRepoHandler, backupHandler, webhookHandler, systemConfigHandler, systemInfoHandler, fileBrowseHandler, repoSvc, migrationHandler, aiHandler)
 
 	// 设置 Webhook 服务到适配器
 	for _, adap := range adapters {
@@ -234,6 +293,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to start scheduler: %v\n", err)
 	}
 	defer schedulerSvc.Stop()
+
+	// 启动AI服务
+	if aiService != nil {
+		defer aiService.Stop()
+	}
 
 	// 创建 HTTP 服务器
 	srv := &http.Server{
@@ -266,7 +330,7 @@ func main() {
 	fmt.Println("Server exited")
 }
 
-func setupRouter(cfg *config.Config, authService *service.AuthService, adapters []adapter.Adapter, repoHandler *handler.RepositoryHandler, cacheHandler *handler.CacheHandler, blockRuleHandler *handler.BlockRuleHandler, searchHandler *handler.PackageSearchHandler, dashboardHandler *handler.DashboardHandler, casHandler *handler.CASHandler, casAdminHandler *handler.CASAdminHandler, blockRuleSvc *service.BlockRuleService, storageBackendHandler *handler.StorageBackendHandler, securityHandler *handler.SecurityHandler, auditLogHandler *handler.AuditLogHandler, userHandler *handler.UserHandler, pkgVersionHandler *handler.PackageVersionHandler, roleRepo *repository.RoleRepository, publicRepoHandler *handler.PublicRepoHandler, backupHandler *handler.BackupHandler, webhookHandler *handler.WebhookHandler, systemConfigHandler *handler.SystemConfigHandler, systemInfoHandler *handler.SystemInfoHandler, fileBrowseHandler *handler.FileBrowseHandler, repoSvc *service.RepositoryService, migrationHandler *handler.MigrationHandler) *gin.Engine {
+func setupRouter(cfg *config.Config, authService *service.AuthService, adapters []adapter.Adapter, repoHandler *handler.RepositoryHandler, cacheHandler *handler.CacheHandler, blockRuleHandler *handler.BlockRuleHandler, searchHandler *handler.PackageSearchHandler, dashboardHandler *handler.DashboardHandler, casHandler *handler.CASHandler, casAdminHandler *handler.CASAdminHandler, blockRuleSvc *service.BlockRuleService, storageBackendHandler *handler.StorageBackendHandler, securityHandler *handler.SecurityHandler, auditLogHandler *handler.AuditLogHandler, userHandler *handler.UserHandler, pkgVersionHandler *handler.PackageVersionHandler, roleRepo *repository.RoleRepository, publicRepoHandler *handler.PublicRepoHandler, backupHandler *handler.BackupHandler, webhookHandler *handler.WebhookHandler, systemConfigHandler *handler.SystemConfigHandler, systemInfoHandler *handler.SystemInfoHandler, fileBrowseHandler *handler.FileBrowseHandler, repoSvc *service.RepositoryService, migrationHandler *handler.MigrationHandler, aiHandler *handler.AIHandler) *gin.Engine {
 	r := gin.New()
 
 	// 全局中间件
@@ -299,6 +363,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 		// 包搜索（公开）
 		api.GET("/packages/search", searchHandler.Search)
+		api.GET("/packages/:type/versions", pkgVersionHandler.ListVersions)
 
 		// 公开路由 (无需认证)
 		public := api.Group("/auth")
@@ -449,7 +514,6 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 			}
 
 			// 包版本管理
-			protected.GET("/packages/:type/:name/versions", pkgVersionHandler.ListVersions)
 			protected.POST("/packages/versions/:id/deprecate", middleware.RequirePermission(roleRepo, "npm", "write"), pkgVersionHandler.DeprecateVersion)
 			protected.POST("/packages/versions/:id/restore", middleware.RequirePermission(roleRepo, "npm", "write"), pkgVersionHandler.RestoreVersion)
 			protected.POST("/packages/versions/:id/yank", middleware.RequirePermission(roleRepo, "npm", "write"), pkgVersionHandler.YankVersion)
@@ -518,6 +582,36 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 				migrationGroup.POST("/nexus", migrationHandler.CreateMigration)
 				migrationGroup.GET("/:id/status", migrationHandler.GetMigrationStatus)
 				migrationGroup.POST("/:id/cancel", migrationHandler.CancelMigration)
+			}
+
+			// AI服务
+			if aiHandler != nil {
+				ai := protected.Group("/ai")
+				{
+					// 聊天接口 - 所有认证用户可用
+					ai.POST("/chat", aiHandler.Chat)
+
+					// 工具列表 - 所有认证用户可用
+					ai.GET("/tools", aiHandler.ListTools)
+
+					// 会话管理 - 所有认证用户可用
+					ai.DELETE("/sessions/:id", aiHandler.DeleteSession)
+
+					// 限流状态 - 所有认证用户可用
+					ai.GET("/rate-limit", aiHandler.GetRateLimitStatus)
+
+					// 服务统计 - 管理员可用
+					ai.GET("/stats", middleware.RequirePermission(roleRepo, "system", "admin"), aiHandler.GetStats)
+
+					// 缓存统计 - 管理员可用
+					ai.GET("/cache/stats", middleware.RequirePermission(roleRepo, "system", "admin"), aiHandler.GetCacheStats)
+
+					// 审计日志 - 管理员可用
+					ai.GET("/audit-logs", middleware.RequirePermission(roleRepo, "system", "admin"), aiHandler.GetAuditLogs)
+
+					// 健康检查 - 所有认证用户可用
+					ai.GET("/health", aiHandler.HealthCheck)
+				}
 			}
 		}
 	}

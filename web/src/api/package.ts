@@ -3,7 +3,7 @@ import request from './request'
 export interface Package {
   id: number
   name: string
-  display_name?: string
+  display_name: string
   type: string
   description: string
   latest_version?: string
@@ -40,11 +40,6 @@ export interface PackageFile {
   download_count: number
 }
 
-export interface PackageDependency {
-  name: string
-  version: string
-}
-
 export interface PackageVersion {
   id: number
   package_id: number
@@ -59,7 +54,6 @@ export interface PackageVersion {
   checksum_sha256?: string
   checksum_md5?: string
   files?: PackageFile[]
-  dependencies?: PackageDependency[]
 }
 
 export interface VersionListResponse {

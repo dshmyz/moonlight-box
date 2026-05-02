@@ -88,7 +88,7 @@ const loadRepos = async () => {
   loading.value = true
   try {
     const res = await repositoryApi.list()
-    repos.value = res.data || []
+    repos.value = res || []
   } catch (err) {
     ElMessage.error('加载仓库列表失败')
   } finally {

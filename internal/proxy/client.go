@@ -15,15 +15,35 @@ type TransportManager struct {
 	secureTransport   *http.Transport
 	insecureTransport *http.Transport
 	connectTimeout    time.Duration
+	dnsResolver       *DNSResolver
 }
 
 // NewTransportManager 创建 TransportManager
-func NewTransportManager(connectTimeout time.Duration) *TransportManager {
+func NewTransportManager(connectTimeout time.Duration, dnsResolver *DNSResolver) *TransportManager {
 	baseTransport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   connectTimeout,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+
+			resolvedIP, err := dnsResolver.Resolve(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+
+			resolvedHost, resolvedPort, err := net.SplitHostPort(resolvedIP)
+			if err != nil {
+				resolvedHost = resolvedIP
+				resolvedPort = port
+			}
+
+			dialer := &net.Dialer{
+				Timeout:   connectTimeout,
+				KeepAlive: 30 * time.Second,
+			}
+			return dialer.DialContext(ctx, network, net.JoinHostPort(resolvedHost, resolvedPort))
+		},
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,
@@ -38,6 +58,7 @@ func NewTransportManager(connectTimeout time.Duration) *TransportManager {
 		secureTransport:   baseTransport,
 		insecureTransport: insecureTransport,
 		connectTimeout:    connectTimeout,
+		dnsResolver:       dnsResolver,
 	}
 }
 
@@ -104,6 +125,8 @@ func (c *RemoteClient) Get(ctx context.Context, url string, opts RequestOptions,
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 
+	req.Header.Set("User-Agent", "Moonlight-Registry/1.0")
+
 	if auth != nil {
 		if err := auth.Apply(req); err != nil {
 			return nil, fmt.Errorf("应用认证信息失败: %w", err)
@@ -151,6 +174,8 @@ func (c *RemoteClient) GetStream(ctx context.Context, url string, opts RequestOp
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
+
+	req.Header.Set("User-Agent", "Moonlight-Registry/1.0")
 
 	if auth != nil {
 		if err := auth.Apply(req); err != nil {
