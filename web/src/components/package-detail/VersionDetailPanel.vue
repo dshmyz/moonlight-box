@@ -87,14 +87,18 @@ async function copyInstallCommand() {
       textarea.value = command
       document.body.appendChild(textarea)
       textarea.select()
-      document.execCommand('copy')
+      const success = document.execCommand('copy')
       document.body.removeChild(textarea)
+      
+      if (success) {
+        ElMessage.success('安装命令已复制')
+      } else {
+        ElMessage.error('复制失败，请手动复制')
+      }
+    } else {
+      await navigator.clipboard.writeText(command)
       ElMessage.success('安装命令已复制')
-      return
     }
-    
-    await navigator.clipboard.writeText(command)
-    ElMessage.success('安装命令已复制')
   } catch (error) {
     console.error('Failed to copy:', error)
     ElMessage.error('复制失败，请手动复制')
