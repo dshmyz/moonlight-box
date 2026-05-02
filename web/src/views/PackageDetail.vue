@@ -24,6 +24,7 @@
         <div v-if="selectedVersionForDetail" class="version-detail-wrapper">
           <VersionDetailPanel
             :version="selectedVersionForDetail"
+            :pkg="pkg"
             @close="handleCloseDetail"
           />
         </div>
@@ -165,9 +166,6 @@ async function handleDownload(version: PackageVersion & { selectedFile?: any }) 
     const parts = pkg.value.name.split(':')
     if (parts.length === 2) {
       const groupPath = parts[0].replace(/\./g, '/')
-      const extension = file.filename.endsWith('.pom') ? 'pom' : 
-                       file.filename.endsWith('-sources.jar') ? 'sources.jar' :
-                       file.filename.endsWith('-javadoc.jar') ? 'javadoc.jar' : 'jar'
       downloadUrl = `/repo/${pkg.value.repository}/${groupPath}/${parts[1]}/${version.version}/${file.filename}`
       downloadFilename = file.filename
     } else {

@@ -20,6 +20,25 @@
       </div>
 
       <div class="section">
+        <h5>快速操作</h5>
+        <div class="quick-actions">
+          <el-button size="small" @click="copyInstallCommand">
+            复制安装命令
+          </el-button>
+        </div>
+      </div>
+
+      <div v-if="version.dependencies && version.dependencies.length > 0" class="section">
+        <h5>依赖</h5>
+        <div class="dependency-list">
+          <div v-for="dep in version.dependencies" :key="dep.name" class="dependency-item">
+            <span class="name">{{ dep.name }}</span>
+            <span class="version">{{ dep.version }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
         <h5>文件列表</h5>
         <div class="file-list">
           <div v-for="file in version.files" :key="file.id" class="file-item">
@@ -34,16 +53,51 @@
 
 <script setup lang="ts">
 import { Close } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { formatNumber, formatSize, formatDate } from '@/utils/format'
-import type { PackageVersion } from '@/api/package'
+import type { PackageVersion, Package } from '@/api/package'
 
-defineProps<{
+const props = defineProps<{
   version: PackageVersion | null
+  pkg: Package | null
 }>()
 
 defineEmits<{
   close: []
 }>()
+
+function copyInstallCommand() {
+  const command = getInstallCommand()
+  if (command) {
+    navigator.clipboard.writeText(command)
+    ElMessage.success('安装命令已复制')
+  }
+}
+
+function getInstallCommand(): string {
+  if (!props.version || !props.pkg) return ''
+  
+  switch (props.pkg.type) {
+    case 'npm':
+      return `npm install ${props.pkg.name}@${props.version.version}`
+    case 'maven':
+      const parts = props.pkg.name.split(':')
+      if (parts.length === 2) {
+        return `<dependency>
+  <groupId>${parts[0]}</groupId>
+  <artifactId>${parts[1]}</artifactId>
+  <version>${props.version.version}</version>
+</dependency>`
+      }
+      return ''
+    case 'pypi':
+      return `pip install ${props.pkg.name}==${props.version.version}`
+    case 'go':
+      return `go get ${props.pkg.name}@${props.version.version}`
+    default:
+      return ''
+  }
+}
 </script>
 
 <style scoped>
@@ -98,6 +152,28 @@ defineEmits<{
 .section h5 {
   margin: 0 0 8px 0;
   font-size: 14px;
+}
+
+.quick-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.dependency-list {
+  background: #f5f5f5;
+  border-radius: 4px;
+  padding: 8px;
+}
+
+.dependency-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.dependency-item .version {
+  color: #666;
 }
 
 .file-list {

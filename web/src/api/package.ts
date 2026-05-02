@@ -3,6 +3,7 @@ import request from './request'
 export interface Package {
   id: number
   name: string
+  display_name: string
   type: string
   description: string
   latest_version?: string
@@ -10,6 +11,7 @@ export interface Package {
   updated_at: string
   repository_id?: number
   repository_type?: string
+  repository_name?: string
   homepage?: string
   license?: string
   created_by?: number
@@ -24,19 +26,40 @@ export interface SearchResponse {
   search_time_ms: number
 }
 
+export type PackageFileType = 'primary' | 'pom' | 'sources' | 'javadoc' | 'metadata' | 'other'
+
+export interface PackageFile {
+  id: number
+  version_id: number
+  filename: string
+  file_type: PackageFileType
+  storage_path: string
+  size_bytes: number
+  checksum_sha256?: string
+  checksum_md5?: string
+  download_count: number
+}
+
+export interface PackageDependency {
+  name: string
+  version: string
+}
+
 export interface PackageVersion {
   id: number
   package_id: number
   version: string
   status: string
   storage_path: string
-  size_bytes: number
-  checksum_sha256?: string
-  checksum_md5?: string
   published_at: string
   published_by: number
   metadata?: string
   download_count: number
+  size_bytes?: number
+  checksum_sha256?: string
+  checksum_md5?: string
+  files?: PackageFile[]
+  dependencies?: PackageDependency[]
 }
 
 export interface VersionListResponse {
@@ -51,7 +74,7 @@ export const packageApi = {
   },
 
   getVersions(type: string, name: string) {
-    return request.get<VersionListResponse>(`/packages/${type}/${encodeURIComponent(name)}/versions`)
+    return request.get<VersionListResponse>(`/packages/${type}/versions`, { params: { name } })
   },
 
   deprecateVersion(versionId: number, reason: string) {
