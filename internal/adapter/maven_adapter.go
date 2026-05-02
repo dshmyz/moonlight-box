@@ -3,6 +3,9 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -685,4 +688,13 @@ func parseSnapshotVersion(version string) (baseVersion, timestamp string, buildN
 func isSnapshotTimestampVersion(version string) bool {
 	matched, _ := regexp.MatchString(`^\d+\.\d+\.\d+-\d{8}\.\d{6}-\d+$`, version)
 	return matched
+}
+
+func calculateChecksum(data []byte, checksumType string) string {
+	if checksumType == "sha1" {
+		hash := sha1.Sum(data)
+		return hex.EncodeToString(hash[:])
+	}
+	hash := md5.Sum(data)
+	return hex.EncodeToString(hash[:])
 }
