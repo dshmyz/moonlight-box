@@ -25,6 +25,19 @@
         </template>
       </el-table-column>
       <el-table-column prop="package_type" label="包类型" width="100" />
+      <el-table-column label="同步状态" width="200">
+        <template #default="{ row }">
+          <div v-if="row.type === 'proxy' && row.metadata_sync_enabled">
+            <el-tag :type="getSyncStatusType(row.last_sync_status)">
+              {{ getSyncStatusText(row.last_sync_status) }}
+            </el-tag>
+            <div class="sync-time" v-if="row.last_metadata_sync_at">
+              {{ formatTime(row.last_metadata_sync_at) }}
+            </div>
+          </div>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="remote_url" label="远程地址" show-overflow-tooltip />
       <el-table-column prop="enabled" label="状态" width="80">
         <template #default="{ row }">
@@ -33,14 +46,25 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="200">
+      <el-table-column label="操作" width="300">
         <template #default="{ row }">
-          <el-button size="small" @click="openEditDialog(row)">编辑</el-button>
-          <el-popconfirm title="确定删除此仓库?" @confirm="deleteRepo(row.name)">
-            <template #reference>
-              <el-button size="small" type="danger">删除</el-button>
-            </template>
-          </el-popconfirm>
+          <el-button-group>
+            <el-button size="small" @click="openEditDialog(row)">编辑</el-button>
+            <el-button
+              v-if="row.type === 'proxy'"
+              size="small"
+              type="primary"
+              @click="handleSyncMetadata(row)"
+              :loading="row.syncing"
+            >
+              同步元数据
+            </el-button>
+            <el-popconfirm title="确定删除此仓库?" @confirm="deleteRepo(row.name)">
+              <template #reference>
+                <el-button size="small" type="danger">删除</el-button>
+              </template>
+            </el-popconfirm>
+          </el-button-group>
         </template>
       </el-table-column>
     </el-table>
@@ -60,11 +84,15 @@ import { ElMessage } from 'element-plus'
 import { repositoryApi, type Repository } from '@/api/repository'
 import RepositoryFormDialog from '@/components/repository/RepositoryFormDialog.vue'
 
+interface LocalRepository extends Repository {
+  syncing?: boolean
+}
+
 const loading = ref(false)
 const activeTab = ref('all')
 const showDialog = ref(false)
 const editingRepo = ref<Repository | null>(null)
-const repos = ref<Repository[]>([])
+const repos = ref<LocalRepository[]>([])
 
 const filteredRepos = computed(() => {
   if (activeTab.value === 'all') return repos.value
@@ -120,6 +148,77 @@ const deleteRepo = async (name: string) => {
   }
 }
 
+const handleSyncMetadata = async (repo: LocalRepository) => {
+  try {
+    repo.syncing = true
+    const task = await repositoryApi.triggerSync(repo.name)
+
+    ElMessage.success('同步任务已启动')
+
+    // 轮询任务状态
+    pollSyncTaskStatus(task.id)
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.message || '启动同步失败')
+  } finally {
+    repo.syncing = false
+  }
+}
+
+const pollSyncTaskStatus = async (taskId: number) => {
+  const poll = async () => {
+    try {
+      const task = await repositoryApi.getSyncTaskStatus(String(taskId))
+
+      if (task.status === 'running') {
+        setTimeout(poll, 2000)
+      } else {
+        // 刷新仓库列表
+        await loadRepos()
+
+        if (task.status === 'completed') {
+          ElMessage.success(`同步完成：${task.synced_packages}/${task.total_packages} 个包`)
+        } else if (task.status === 'failed') {
+          ElMessage.error(`同步失败：${task.error_message}`)
+        }
+      }
+    } catch (error) {
+      console.error('Failed to poll task status:', error)
+    }
+  }
+
+  poll()
+}
+
+const getSyncStatusType = (status: string) => {
+  switch (status) {
+    case 'success':
+      return 'success'
+    case 'failed':
+      return 'danger'
+    case 'partial':
+      return 'warning'
+    default:
+      return 'info'
+  }
+}
+
+const getSyncStatusText = (status: string) => {
+  switch (status) {
+    case 'success':
+      return '成功'
+    case 'failed':
+      return '失败'
+    case 'partial':
+      return '部分成功'
+    default:
+      return '未同步'
+  }
+}
+
+const formatTime = (time: string) => {
+  return new Date(time).toLocaleString('zh-CN')
+}
+
 onMounted(loadRepos)
 </script>
 
@@ -139,5 +238,11 @@ onMounted(loadRepos)
   margin: 0;
   font-size: 20px;
   font-weight: 600;
+}
+
+.sync-time {
+  font-size: 12px;
+  color: #86909c;
+  margin-top: 4px;
 }
 </style>
