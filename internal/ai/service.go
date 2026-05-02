@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -187,9 +188,12 @@ func (s *AIService) chatWithToolLoop(ctx context.Context, req *models.ChatReques
 	var totalUsage UsageInfo
 
 	for i := 0; i < maxIterations; i++ {
+		log.Printf("[AI] 第%d轮调用，消息数: %d", i+1, len(req.Messages))
+		
 		// 调用AI
 		resp, err := s.client.Call(ctx, req)
 		if err != nil {
+			log.Printf("[AI] AI调用失败: %v", err)
 			return "", nil, nil, fmt.Errorf("AI调用失败: %w", err)
 		}
 
@@ -202,6 +206,7 @@ func (s *AIService) chatWithToolLoop(ctx context.Context, req *models.ChatReques
 
 		// 检查响应
 		if len(resp.Choices) == 0 {
+			log.Printf("[AI] AI返回空响应")
 			return "", toolCallsInfo, &totalUsage, fmt.Errorf("AI返回空响应")
 		}
 
@@ -211,8 +216,11 @@ func (s *AIService) chatWithToolLoop(ctx context.Context, req *models.ChatReques
 		// 检查是否有工具调用
 		if len(message.ToolCalls) == 0 {
 			// 没有工具调用，返回最终响应
+			log.Printf("[AI] 没有工具调用，返回最终响应，内容长度: %d", len(message.Content))
 			return message.Content, toolCallsInfo, &totalUsage, nil
 		}
+
+		log.Printf("[AI] 检测到%d个工具调用", len(message.ToolCalls))
 
 		// 处理工具调用
 		assistantMsg := models.Message{
@@ -224,9 +232,12 @@ func (s *AIService) chatWithToolLoop(ctx context.Context, req *models.ChatReques
 
 		// 执行每个工具调用
 		for _, toolCall := range message.ToolCalls {
+			log.Printf("[AI] 执行工具: %s", toolCall.Function.Name)
+			
 			// 解析参数
 			params, err := ParseToolCallParams(toolCall.Function.Arguments)
 			if err != nil {
+				log.Printf("[AI] 解析工具参数失败: %v, 参数: %s", err, string(toolCall.Function.Arguments))
 				return "", toolCallsInfo, &totalUsage, fmt.Errorf("解析工具参数失败: %w", err)
 			}
 
@@ -238,9 +249,11 @@ func (s *AIService) chatWithToolLoop(ctx context.Context, req *models.ChatReques
 			// 执行工具
 			result, err := s.toolManager.ExecuteTool(ctx, toolCall.Function.Name, params, user)
 			if err != nil {
+				log.Printf("[AI] 工具执行失败: %v", err)
 				toolCallInfo.Error = err.Error()
 				result = fmt.Sprintf("工具执行失败: %s", err.Error())
 			} else {
+				log.Printf("[AI] 工具执行成功，结果长度: %d", len(result))
 				// 对工具结果进行脱敏
 				result = s.sanitizer.SanitizeToolResult(toolCall.Function.Name, result)
 				toolCallInfo.Result = result
@@ -258,6 +271,7 @@ func (s *AIService) chatWithToolLoop(ctx context.Context, req *models.ChatReques
 		}
 	}
 
+	log.Printf("[AI] 工具调用次数超过限制")
 	return "", toolCallsInfo, &totalUsage, fmt.Errorf("工具调用次数超过限制")
 }
 

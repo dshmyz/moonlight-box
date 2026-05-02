@@ -407,6 +407,8 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 				reposWrite.POST("", repoHandler.Create)
 				reposWrite.PUT("/:name", repoHandler.Update)
 				reposWrite.POST("/:name/members", repoHandler.AddMember)
+				reposWrite.POST("/:name/metadata-sync", repoHandler.TriggerMetadataSync)
+				reposWrite.PUT("/:name/metadata-sync-config", repoHandler.UpdateMetadataSyncConfig)
 			}
 			reposDelete := protected.Group("/repositories")
 			reposDelete.Use(middleware.RequirePermission(roleRepo, "repositories", "delete"))

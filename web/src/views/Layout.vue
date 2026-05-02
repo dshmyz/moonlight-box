@@ -7,6 +7,9 @@
         <router-view />
       </el-main>
     </el-container>
+    
+    <!-- AI助手悬浮按钮 -->
+    <AIAssistant />
   </el-container>
 </template>
 
@@ -14,6 +17,7 @@
 import { ref } from 'vue'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
+import AIAssistant from '@/components/ai/AIAssistant.vue'
 
 const isCollapsed = ref(false)
 

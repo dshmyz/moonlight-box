@@ -191,21 +191,26 @@ func (h *RepositoryHandler) RemoveMember(c *gin.Context) {
 
 // TriggerMetadataSync 手动触发元数据同步
 func (h *RepositoryHandler) TriggerMetadataSync(c *gin.Context) {
-	repoIDStr := c.Param("id")
-	repoID, err := strconv.ParseUint(repoIDStr, 10, 32)
+	name := c.Param("name")
+
+	repo, err := h.svc.Get(name)
 	if err != nil {
-		BadRequest(c, "Invalid repository ID", err.Error())
+		NotFound(c, "Repository not found")
 		return
 	}
 
-	// 获取用户ID
+	if repo.Type != model.RepoTypeProxy {
+		BadRequest(c, "Only proxy repository supports metadata sync", "")
+		return
+	}
+
 	userID, exists := c.Get("userID")
 	if !exists {
 		Unauthorized(c, "User not authenticated")
 		return
 	}
 
-	task, err := h.metadataSyncSvc.TriggerManualSync(uint(repoID), userID.(uint))
+	task, err := h.metadataSyncSvc.TriggerManualSync(repo.ID, userID.(uint))
 	if err != nil {
 		InternalError(c, err.Error())
 		return
@@ -275,12 +280,7 @@ func (h *RepositoryHandler) CancelSyncTask(c *gin.Context) {
 
 // UpdateMetadataSyncConfig 更新元数据同步配置
 func (h *RepositoryHandler) UpdateMetadataSyncConfig(c *gin.Context) {
-	repoIDStr := c.Param("id")
-	repoID, err := strconv.ParseUint(repoIDStr, 10, 32)
-	if err != nil {
-		BadRequest(c, "Invalid repository ID", err.Error())
-		return
-	}
+	name := c.Param("name")
 
 	var req struct {
 		Enabled  bool `json:"enabled"`
@@ -293,7 +293,7 @@ func (h *RepositoryHandler) UpdateMetadataSyncConfig(c *gin.Context) {
 	}
 
 	// 获取仓库信息
-	repo, err := h.svc.GetByID(uint(repoID))
+	repo, err := h.svc.Get(name)
 	if err != nil {
 		NotFound(c, "Repository not found")
 		return
@@ -317,12 +317,12 @@ func (h *RepositoryHandler) UpdateMetadataSyncConfig(c *gin.Context) {
 			if interval <= 0 {
 				interval = time.Hour
 			}
-			if err := h.schedulerSvc.ScheduleMetadataSync(uint(repoID), interval); err != nil {
+			if err := h.schedulerSvc.ScheduleMetadataSync(repo.ID, interval); err != nil {
 				InternalError(c, err.Error())
 				return
 			}
 		} else {
-			if err := h.schedulerSvc.RemoveMetadataSync(uint(repoID)); err != nil {
+			if err := h.schedulerSvc.RemoveMetadataSync(repo.ID); err != nil {
 				// 任务可能不存在，忽略错误
 			}
 		}

@@ -334,9 +334,22 @@ func (al *AuditLogger) Count() int {
 
 // ParseToolCallParams 解析工具调用参数
 func ParseToolCallParams(arguments json.RawMessage) (map[string]interface{}, error) {
+	// 首先尝试直接解析为 map
 	var params map[string]interface{}
-	if err := json.Unmarshal(arguments, &params); err != nil {
+	if err := json.Unmarshal(arguments, &params); err == nil {
+		return params, nil
+	}
+
+	// 如果失败，尝试解析为字符串，然后再解析为 map
+	var argString string
+	if err := json.Unmarshal(arguments, &argString); err != nil {
 		return nil, fmt.Errorf("failed to parse tool call arguments: %w", err)
 	}
+
+	// 将字符串解析为 map
+	if err := json.Unmarshal([]byte(argString), &params); err != nil {
+		return nil, fmt.Errorf("failed to parse tool call arguments string: %w", err)
+	}
+
 	return params, nil
 }
