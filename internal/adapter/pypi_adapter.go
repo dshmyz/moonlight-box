@@ -317,6 +317,53 @@ func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
 	c.Data(200, contentType, body)
 }
 
+func (a *PyPIAdapter) handleChecksumRequest(c *gin.Context, filename string) {
+	// 移除 .sha256 后缀获取实际文件名
+	actualFilename := strings.TrimSuffix(filename, ".sha256")
+
+	// 从数据库查找文件记录
+	files, err := a.pkgRepo.FindFilesByFilename(actualFilename)
+	if err != nil || len(files) == 0 {
+		response.NotFound(c, "checksum not found")
+		return
+	}
+
+	// 获取第一个匹配的文件
+	file := files[0]
+	if file.ChecksumSHA256 == "" {
+		// 如果数据库中没有校验和，尝试从存储中读取文件并计算
+		name, _ := parseWheelFilename(actualFilename)
+		if name == "" {
+			response.NotFound(c, "invalid filename")
+			return
+		}
+
+		content, _, err := a.storageSvc.GetPackage(c.Request.Context(), "pypi", name, actualFilename)
+		if err != nil {
+			response.NotFound(c, "file not found")
+			return
+		}
+		defer content.Close()
+
+		// 计算SHA256
+		body, err := io.ReadAll(content)
+		if err != nil {
+			response.InternalError(c, "failed to read file")
+			return
+		}
+
+		hash := sha256.Sum256(body)
+		checksum := hex.EncodeToString(hash[:])
+
+		// 返回校验和
+		c.Data(200, "text/plain", []byte(checksum))
+		return
+	}
+
+	// 返回数据库中的校验和
+	c.Data(200, "text/plain", []byte(file.ChecksumSHA256))
+}
+
 func (a *PyPIAdapter) JSONAPI(c *gin.Context) {
 	pkgName := c.Param("package")
 	version := c.Param("version")
