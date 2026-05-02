@@ -361,6 +361,69 @@ func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
 	response.NotFound(c, "artifact not found")
 }
 
+func (a *MavenAdapter) handleChecksumRequest(c *gin.Context, fullPath string) {
+	parts := strings.Split(fullPath, "/")
+	if len(parts) < 4 {
+		response.NotFound(c, "checksum not found")
+		return
+	}
+
+	filename := parts[len(parts)-1]
+
+	var checksumType string
+	var actualFilename string
+
+	if strings.HasSuffix(filename, ".sha1") {
+		checksumType = "sha1"
+		actualFilename = strings.TrimSuffix(filename, ".sha1")
+	} else if strings.HasSuffix(filename, ".md5") {
+		checksumType = "md5"
+		actualFilename = strings.TrimSuffix(filename, ".md5")
+	} else {
+		response.NotFound(c, "checksum not found")
+		return
+	}
+
+	groupArtifact := strings.Join(parts[:len(parts)-2], "/")
+	version := parts[len(parts)-2]
+	storageVersion := version + "/" + actualFilename
+
+	content, _, err := a.storageSvc.GetPackage(c.Request.Context(), "maven", groupArtifact, storageVersion)
+
+	if err != nil {
+		if a.proxyRouter != nil {
+			urlBuilder := func(repo *model.Repository, pkgName, pkgVersion string) string {
+				baseURL := strings.TrimSuffix(repo.RemoteURL, "/")
+				return fmt.Sprintf("%s/%s/%s/%s", baseURL, groupArtifact, version, actualFilename)
+			}
+
+			var repo *model.Repository
+			if r, ok := c.Get("repo"); ok {
+				repo = r.(*model.Repository)
+			}
+
+			result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "maven", groupArtifact, version, urlBuilder)
+			if resolveErr == nil && result != nil {
+				defer result.Content.Close()
+				body, readErr := io.ReadAll(result.Content)
+				if readErr == nil {
+					checksum := calculateChecksum(body, checksumType)
+					c.String(200, "%s  %s", checksum, actualFilename)
+					return
+				}
+			}
+		}
+		response.NotFound(c, "file not found")
+		return
+	}
+	defer content.Close()
+
+	body, _ := io.ReadAll(content)
+	checksum := calculateChecksum(body, checksumType)
+
+	c.String(200, "%s  %s", checksum, actualFilename)
+}
+
 func (a *MavenAdapter) UploadArtifact(c *gin.Context) {
 	userID := c.GetUint("userID")
 
