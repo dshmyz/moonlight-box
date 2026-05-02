@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 
+	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/types"
 
 	"github.com/gin-gonic/gin"
@@ -18,4 +19,11 @@ type Adapter interface {
 	GetMetadata(ctx context.Context, name string) (*types.PackageMeta, error)
 	Delete(ctx context.Context, identity *types.PackageIdentity) error
 	ListVersions(ctx context.Context, name string) ([]string, error)
+}
+
+type RepoAwareAdapter interface {
+	Adapter
+	HandleRepoRequest(c *gin.Context, repo *model.Repository, path string)
+	HandleRepoPublish(c *gin.Context, repo *model.Repository)
+	HandleRepoDelete(c *gin.Context, repo *model.Repository)
 }

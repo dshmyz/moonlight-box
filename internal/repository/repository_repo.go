@@ -31,6 +31,16 @@ func (r *RepositoryRepository) FindByName(name string) (*model.Repository, error
 	return &repo, nil
 }
 
+// FindByID 根据ID查找仓库
+func (r *RepositoryRepository) FindByID(id uint) (*model.Repository, error) {
+	var repo model.Repository
+	err := r.db.First(&repo, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &repo, nil
+}
+
 // List 列出仓库，支持过滤
 func (r *RepositoryRepository) List(filter map[string]interface{}) ([]model.Repository, error) {
 	var repos []model.Repository

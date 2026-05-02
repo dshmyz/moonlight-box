@@ -55,6 +55,7 @@ type VersionInfo struct {
 
 type PackageVersionResult struct {
 	PackageID  uint
+	VersionID  uint
 	Version    string
 	StorageKey string
 	Size       int64
@@ -71,4 +72,17 @@ type Adapter interface {
 	GetMetadata(ctx context.Context, name string) (*PackageMeta, error)
 	Delete(ctx context.Context, identity *PackageIdentity) error
 	ListVersions(ctx context.Context, name string) ([]string, error)
+}
+
+// SyncResult 同步结果
+type SyncResult struct {
+	Total   int
+	Synced  int
+	Failed  int
+	Skipped int
+}
+
+// MetadataSyncer 元数据同步器接口
+type MetadataSyncer interface {
+	SyncMetadata(ctx context.Context, repo interface{}) (*SyncResult, error)
 }
