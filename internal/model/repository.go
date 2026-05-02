@@ -42,6 +42,14 @@ type Repository struct {
 	PackageTypes string `json:"package_types" gorm:"type:text"`
 
 	Members []RepositoryGroup `json:"members,omitempty" gorm:"foreignKey:VirtualRepoID"`
+
+	// 元数据同步配置
+	MetadataSyncEnabled  bool       `json:"metadata_sync_enabled" gorm:"default:false"`
+	MetadataSyncInterval int        `json:"metadata_sync_interval" gorm:"default:3600"`
+	SyncMode            string     `json:"sync_mode" gorm:"size:20;default:'metadata_only'"`
+	LastMetadataSyncAt  *time.Time `json:"last_metadata_sync_at"`
+	LastSyncStatus      string     `json:"last_sync_status" gorm:"size:20;default:''"`
+	LastSyncError       string     `json:"last_sync_error" gorm:"type:text"`
 }
 
 // GetAuthConfig 解析认证配置JSON字符串为结构体
