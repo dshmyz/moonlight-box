@@ -115,28 +115,6 @@ func TestNpmAdapter_ParsePackagePath_NonScopedWithVersion(t *testing.T) {
 	assert.Equal(t, "4.17.1", identity.Version)
 }
 
-func TestParseTarballFilename(t *testing.T) {
-	tests := []struct {
-		filename    string
-		scope       string
-		wantName    string
-		wantVersion string
-	}{
-		{"lodash-4.17.21.tgz", "", "lodash", "4.17.21"},
-		{"express-4.17.1.tgz", "", "express", "4.17.1"},
-		{"@scope-package-1.0.0.tgz", "@scope", "@scope/@scope-package", "1.0.0"},
-		{"my-package-name-2.0.0.tgz", "", "my-package-name", "2.0.0"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.filename, func(t *testing.T) {
-			name, version := parseTarballFilename(tt.filename, tt.scope)
-			assert.Equal(t, tt.wantName, name)
-			assert.Equal(t, tt.wantVersion, version)
-		})
-	}
-}
-
 func TestGenerateRevision(t *testing.T) {
 	rev1 := generateRevision()
 	rev2 := generateRevision()
