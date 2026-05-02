@@ -137,29 +137,44 @@ func (a *MavenAdapter) handleMetadataXML(c *gin.Context, fullPath string) {
 	artifactID := parts[len(parts)-1]
 	name := groupID + "/" + artifactID
 
-	versions, err := a.ListVersions(c.Request.Context(), name)
+	var repo *model.Repository
+	if r, ok := c.Get("repo"); ok {
+		repo = r.(*model.Repository)
+	}
+
+	pkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypeMaven)
+
+	needRefresh := false
 	if err != nil {
-		if a.proxyRouter != nil {
-			urlBuilder := func(repo *model.Repository, pkgName, pkgVersion string) string {
-				baseURL := strings.TrimSuffix(repo.RemoteURL, "/")
-				return fmt.Sprintf("%s/%s/maven-metadata.xml", baseURL, group)
-			}
+		needRefresh = true
+	} else if repo != nil && repo.Type == model.RepoTypeProxy {
+		cacheTTL := time.Duration(repo.CacheTTLSeconds) * time.Second
+		if time.Since(pkg.UpdatedAt) > cacheTTL {
+			needRefresh = true
+		}
+	}
 
-			var repo *model.Repository
-			if r, ok := c.Get("repo"); ok {
-				repo = r.(*model.Repository)
-			}
+	if needRefresh && repo != nil && repo.Type == model.RepoTypeProxy && a.proxyRouter != nil {
+		urlBuilder := func(repo *model.Repository, pkgName, pkgVersion string) string {
+			baseURL := strings.TrimSuffix(repo.RemoteURL, "/")
+			return fmt.Sprintf("%s/%s/maven-metadata.xml", baseURL, group)
+		}
 
-			result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "maven", name, "", urlBuilder)
-			if resolveErr == nil && result != nil {
-				defer result.Content.Close()
-				body, readErr := io.ReadAll(result.Content)
-				if readErr == nil {
-					c.Data(200, "application/xml", body)
-					return
-				}
+		result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "maven", name, "", urlBuilder)
+		if resolveErr == nil && result != nil {
+			defer result.Content.Close()
+			body, readErr := io.ReadAll(result.Content)
+			if readErr == nil {
+				go a.updatePackageMetadata(context.Background(), name, body, repo.ID)
+
+				c.Data(200, "application/xml", body)
+				return
 			}
 		}
+	}
+
+	versions, err := a.ListVersions(c.Request.Context(), name)
+	if err != nil {
 		response.NotFound(c, "metadata not found")
 		return
 	}
@@ -192,8 +207,10 @@ func (a *MavenAdapter) handleMetadataXML(c *gin.Context, fullPath string) {
 
 	if len(snapshotVersions) > 0 {
 		latestSnapshot := snapshotVersions[len(snapshotVersions)-1]
-		pkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypeMaven)
-		if err == nil {
+		if pkg == nil {
+			pkg, _ = a.pkgRepo.FindByNameAndType(name, model.PackageTypeMaven)
+		}
+		if pkg != nil {
 			for _, ver := range pkg.Versions {
 				if ver.Version == latestSnapshot {
 					metadata.Version = latestSnapshot
@@ -218,6 +235,40 @@ func (a *MavenAdapter) handleMetadataXML(c *gin.Context, fullPath string) {
 	}
 
 	c.XML(200, metadata)
+}
+
+func (a *MavenAdapter) updatePackageMetadata(ctx context.Context, name string, metadataXML []byte, repoID uint) error {
+	var metadata MavenMetadata
+	if err := xml.Unmarshal(metadataXML, &metadata); err != nil {
+		return err
+	}
+
+	now := time.Now()
+	pkg, _, err := a.pkgRepo.CreateOrUpdate(ctx, &model.Package{
+		Name:           name,
+		Type:           model.PackageTypeMaven,
+		RepositoryID:   repoID,
+		RepositoryType: model.RepoTypeProxy,
+		MetadataSynced: true,
+		MetadataSyncAt: &now,
+	}, nil)
+
+	if err != nil {
+		return err
+	}
+
+	if err := a.pkgRepo.DB().Model(pkg).Update("updated_at", now).Error; err != nil {
+		return err
+	}
+
+	for _, version := range metadata.Versioning.Versions.Version {
+		a.pkgRepo.CreateOrUpdate(ctx, pkg, &model.PackageVersion{
+			Version: version,
+			Status:  model.StatusPublished,
+		})
+	}
+
+	return nil
 }
 
 func groupArtifactToName(groupArtifact string) string {
@@ -473,6 +524,12 @@ func (a *MavenAdapter) ListVersions(ctx context.Context, name string) ([]string,
 
 func (a *MavenAdapter) HandleRepoRequest(c *gin.Context, repo *model.Repository, path string) {
 	c.Set("repo", repo)
+
+	if strings.HasSuffix(path, "maven-metadata.xml") {
+		a.handleMetadataXML(c, path)
+		return
+	}
+
 	a.handleDownloadArtifact(c, path)
 }
 
