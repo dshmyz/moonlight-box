@@ -15,45 +15,72 @@
     >
       <el-table-column prop="version" label="版本号" min-width="140">
         <template #default="{ row }">
-          <span class="version-text" :class="{ 'version-selected': row.version === selectedVersion }">
-            {{ row.version }}
-          </span>
-          <el-tag v-if="row.is_latest" type="primary" size="small" effect="plain" class="latest-tag">
-            Latest
-          </el-tag>
+          <div class="version-cell">
+            <el-button 
+              link 
+              :type="selectedVersion === row.version ? 'primary' : 'default'"
+              @click.stop="handleVersionClick(row)"
+            >
+              {{ row.version }}
+              <el-icon v-if="selectedVersion === row.version"><Check /></el-icon>
+            </el-button>
+            <el-tag v-if="row.is_latest" type="primary" size="small" effect="plain" class="latest-tag">
+              Latest
+            </el-tag>
+          </div>
         </template>
       </el-table-column>
       <el-table-column prop="status" label="状态" width="100" align="center">
         <template #default="{ row }">
-          <el-tag :type="getStatusType(row.status)" size="small">
-            {{ getStatusLabel(row.status) }}
+          <el-tag :type="getVersionStatusColor(row.status)" size="small">
+            {{ getVersionStatusLabel(row.status) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="published_at" label="发布时间" width="120" />
-      <el-table-column prop="size" label="大小" width="90" align="right">
+      <el-table-column prop="published_at" label="发布时间" width="120">
         <template #default="{ row }">
-          <span class="size-text">{{ formatSize(row.size) }}</span>
+          {{ formatDate(row.published_at) }}
         </template>
       </el-table-column>
-      <el-table-column prop="downloads" label="下载量" width="90" align="right">
+      <el-table-column label="大小" width="90" align="right">
         <template #default="{ row }">
-          <span class="downloads-text">{{ formatNumber(row.downloads) }}</span>
+          <span class="size-text">{{ formatSize(row.files && row.files.length > 0 ? row.files[0].size_bytes : row.size_bytes) }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="checksum" label="SHA256" min-width="120">
+      <el-table-column label="下载量" width="90" align="right">
         <template #default="{ row }">
-          <el-tooltip :content="row.checksum" placement="top" :show-after="300">
-            <span class="checksum-text" @click.stop="copyChecksum(row.checksum)">{{ row.checksum }}</span>
+          <span class="downloads-text">{{ formatNumber(row.download_count) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="SHA256" min-width="120">
+        <template #default="{ row }">
+          <el-tooltip :content="row.checksum_sha256 || ''" placement="top" :show-after="300">
+            <span class="checksum-text" @click.stop="copyChecksum(row.checksum_sha256 || '')">{{ row.checksum_sha256 || '-' }}</span>
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column label="操作" :width="showAdminActions ? '240' : '80'" fixed="right" align="center">
+      <el-table-column label="文件" min-width="200">
+        <template #default="{ row }">
+          <div v-if="row.files && row.files.length > 0" class="files-list">
+            <div v-for="file in row.files" :key="file.id" class="file-item">
+              <el-button 
+                size="small" 
+                type="primary" 
+                link 
+                @click.stop="handleFileDownload(row, file)"
+              >
+                <el-icon><Download /></el-icon>
+                {{ file.filename }}
+              </el-button>
+              <span class="file-size">({{ formatSize(file.size_bytes) }})</span>
+            </div>
+          </div>
+          <span v-else class="no-files">-</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" :width="showAdminActions ? '200' : '80'" fixed="right" align="center">
         <template #default="{ row }">
           <div class="action-buttons">
-            <el-button size="small" type="primary" link @click.stop="$emit('download', row)">
-              下载
-            </el-button>
             <template v-if="showAdminActions">
               <el-button
                 v-if="row.status === 'published'"
@@ -113,28 +140,25 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Download, Check } from '@element-plus/icons-vue'
+import { formatNumber, formatSize, formatDate } from '@/utils/format'
+import { getVersionStatusColor, getVersionStatusLabel } from '@/constants/package'
+import type { PackageVersion, PackageFile } from '@/api/package'
 
 const props = defineProps<{
-  versions: Array<{
-    version: string
-    published_at: string
-    downloads: number
-    is_latest?: boolean
-    size: number
-    checksum: string
-    status: string
-  }>
+  versions: PackageVersion[]
   selectedVersion: string
   showAdminActions?: boolean
 }>()
 
 const emit = defineEmits<{
-  download: [version: { version: string; published_at: string; downloads: number; is_latest?: boolean; size: number; checksum: string; status: string }]
+  download: [version: PackageVersion & { selectedFile?: PackageFile }]
   select: [version: string]
-  deprecate: [version: { version: string }]
-  restore: [version: { version: string }]
-  yank: [version: { version: string }]
-  delete: [version: { version: string }]
+  deprecate: [data: { id: number; version: string; reason: string }]
+  restore: [data: { id: number; version: string }]
+  yank: [data: { id: number; version: string }]
+  delete: [data: { id: number; version: string }]
+  showDetail: [version: PackageVersion]
 }>()
 
 const pageSize = 10
@@ -145,98 +169,68 @@ const pagedVersions = computed(() => {
   return props.versions.slice(start, start + pageSize)
 })
 
-function handleRowClick(row: { version: string }) {
+function handleRowClick(row: PackageVersion) {
   emit('select', row.version)
 }
 
-function handleDeprecate(row: { version: string }) {
+function handleVersionClick(row: PackageVersion) {
+  emit('select', row.version)
+  emit('showDetail', row)
+}
+
+function handleDeprecate(row: PackageVersion) {
   ElMessageBox.prompt('请输入废弃原因', '废弃版本', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
     inputPattern: /.+/,
     inputErrorMessage: '废弃原因不能为空',
   }).then(({ value }) => {
-    emit('deprecate', { version: row.version, reason: value })
-  }).catch(() => {
-    // 用户取消
-  })
+    emit('deprecate', { id: row.id, version: row.version, reason: value })
+  }).catch(() => {})
 }
 
-function handleRestore(row: { version: string }) {
+function handleRestore(row: PackageVersion) {
   ElMessageBox.confirm('确定要恢复此版本吗？', '恢复版本', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
     type: 'warning',
   }).then(() => {
-    emit('restore', row)
-  }).catch(() => {
-    // 用户取消
-  })
+    emit('restore', { id: row.id, version: row.version })
+  }).catch(() => {})
 }
 
-function handleYank(row: { version: string }) {
+function handleYank(row: PackageVersion) {
   ElMessageBox.confirm('撤回后此版本将无法下载，确定要撤回吗？', '撤回版本', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
     type: 'warning',
   }).then(() => {
-    emit('yank', row)
-  }).catch(() => {
-    // 用户取消
-  })
+    emit('yank', { id: row.id, version: row.version })
+  }).catch(() => {})
 }
 
-function handleDelete(row: { version: string }) {
+function handleDelete(row: PackageVersion) {
   ElMessageBox.confirm('删除后无法恢复，确定要删除此版本吗？', '删除版本', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
     type: 'error',
   }).then(() => {
-    emit('delete', row)
-  }).catch(() => {
-    // 用户取消
-  })
-}
-
-function getStatusType(status: string) {
-  const map: Record<string, string> = {
-    published: 'success',
-    deprecated: 'warning',
-    yanked: 'danger',
-    draft: 'info',
-  }
-  return map[status] || 'info'
-}
-
-function getStatusLabel(status: string) {
-  const map: Record<string, string> = {
-    published: '已发布',
-    deprecated: '已弃用',
-    yanked: '已撤回',
-    draft: '草稿',
-  }
-  return map[status] || status
-}
-
-function formatNumber(num: number) {
-  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`
-  return String(num)
-}
-
-function formatSize(bytes: number) {
-  if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1)} MB`
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${bytes} B`
+    emit('delete', { id: row.id, version: row.version })
+  }).catch(() => {})
 }
 
 async function copyChecksum(checksum: string) {
+  if (!checksum) return
   try {
     await navigator.clipboard.writeText(checksum)
     ElMessage.success('校验和已复制')
   } catch {
     ElMessage.error('复制失败')
   }
+}
+
+function handleFileDownload(row: PackageVersion, file: PackageFile) {
+  emit('download', { ...row, selectedFile: file })
 }
 </script>
 
@@ -260,6 +254,12 @@ async function copyChecksum(checksum: string) {
 .version-count {
   font-size: 13px;
   color: #909399;
+}
+
+.version-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .version-text {
@@ -289,31 +289,46 @@ async function copyChecksum(checksum: string) {
   font-size: 12px;
   color: #909399;
   cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: inline-block;
-  max-width: 120px;
+  transition: color 0.2s;
 }
 
 .checksum-text:hover {
   color: #409eff;
 }
 
-.pagination-wrapper {
+.files-list {
   display: flex;
-  justify-content: center;
-  margin-top: 16px;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-size {
+  font-size: 12px;
+  color: #909399;
+}
+
+.no-files {
+  color: #c0c4cc;
 }
 
 .action-buttons {
   display: flex;
-  gap: 4px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: center;
 }
 
 :deep(.el-table__row) {
   cursor: pointer;
+}
+
+:deep(.el-table__row.selected) {
+  background-color: #e3f2fd;
 }
 </style>
