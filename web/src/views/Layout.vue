@@ -38,11 +38,11 @@ function toggleCollapse() {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #f5f7fa;
+  background: var(--color-bg-page);
 }
 
 .app-main {
-  padding: 24px;
+  padding: var(--spacing-2xl);
   overflow-y: auto;
   flex: 1;
 }
