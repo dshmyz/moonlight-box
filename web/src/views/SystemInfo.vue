@@ -2,9 +2,9 @@
   <div class="system-info">
     <div class="page-header">
       <h2>系统信息</h2>
-      <el-button @click="loadSystemInfo" :loading="loading">
+      <CustomButton @click="loadSystemInfo" :loading="loading">
         <el-icon><Refresh /></el-icon> 刷新
-      </el-button>
+      </CustomButton>
     </div>
 
     <el-row :gutter="20">
@@ -116,6 +116,7 @@ import { ref, onMounted } from 'vue'
 import { Refresh, InfoFilled, Monitor, Cpu, Connection, CircleCheck } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { systemApi, type SystemInfo } from '@/api/system'
+import CustomButton from '@/components/ui/CustomButton.vue'
 
 const loading = ref(false)
 const systemInfo = ref<SystemInfo>({

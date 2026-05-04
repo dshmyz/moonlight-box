@@ -192,14 +192,14 @@ onMounted(() => {
 
 .filter-bar {
   display: flex;
-  gap: 12px;
-  margin-bottom: 20px;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-xl);
   align-items: center;
   flex-wrap: wrap;
 }
 
 .pagination-wrapper {
-  margin-top: 20px;
+  margin-top: var(--spacing-xl);
   display: flex;
   justify-content: flex-end;
 }

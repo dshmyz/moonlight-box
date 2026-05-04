@@ -2,9 +2,9 @@
   <div class="system-config">
     <div class="page-header">
       <h2>系统配置</h2>
-      <el-button type="primary" @click="saveConfigs" :loading="saving">
+      <CustomButton type="primary" @click="saveConfigs" :loading="saving">
         <el-icon><Check /></el-icon> 保存配置
-      </el-button>
+      </CustomButton>
     </div>
 
     <el-tabs v-model="activeCategory" type="border-card">
@@ -35,7 +35,7 @@
               />
             </template>
             <template v-else>
-              <el-input v-model="configValues[config.key]" />
+              <CustomInput v-model="configValues[config.key]" />
             </template>
             <div class="config-key">配置键: {{ config.key }}</div>
           </el-form-item>
@@ -50,6 +50,8 @@ import { ref, computed, onMounted } from 'vue'
 import { Check } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { systemApi, type SystemConfig } from '@/api/system'
+import CustomButton from '@/components/ui/CustomButton.vue'
+import CustomInput from '@/components/ui/CustomInput.vue'
 
 const loading = ref(false)
 const saving = ref(false)

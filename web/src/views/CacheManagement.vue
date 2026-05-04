@@ -3,9 +3,9 @@
     <div class="page-header">
       <h2>缓存管理</h2>
       <div>
-        <el-button type="warning" @click="handleClearCache" :loading="clearing">
+        <CustomButton type="secondary" @click="handleClearCache" :loading="clearing">
           清空缓存
-        </el-button>
+        </CustomButton>
       </div>
     </div>
 
@@ -44,14 +44,14 @@
       </template>
       <el-form :inline="true" :model="invalidateForm">
         <el-form-item label="匹配模式">
-          <el-input
+          <CustomInput
             v-model="invalidateForm.pattern"
             placeholder="proxy:*:lodash:*"
-            @keyup.enter="handleInvalidate"
+            @enter="handleInvalidate"
           />
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" @click="handleInvalidate">使缓存失效</el-button>
+          <CustomButton type="primary" @click="handleInvalidate">使缓存失效</CustomButton>
         </el-form-item>
       </el-form>
     </el-card>
@@ -62,6 +62,8 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { cacheApi } from '@/api/cache'
+import CustomButton from '@/components/ui/CustomButton.vue'
+import CustomInput from '@/components/ui/CustomInput.vue'
 
 const loading = ref(false)
 const clearing = ref(false)

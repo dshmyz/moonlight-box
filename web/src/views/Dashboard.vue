@@ -25,7 +25,7 @@
         </el-col>
       </el-row>
 
-      <el-row :gutter="16" style="margin-top: 20px;">
+      <el-row :gutter="16" class="chart-row">
         <el-col :span="16">
           <DownloadChart :data="stats.downloads_last_7_days" />
         </el-col>
@@ -34,7 +34,7 @@
         </el-col>
       </el-row>
 
-      <el-row :gutter="16" style="margin-top: 20px;">
+      <el-row :gutter="16" class="activity-row">
         <el-col :xs="24" :md="14">
           <TopPackages :packages="stats.top_packages" />
         </el-col>
@@ -111,21 +111,29 @@ onMounted(loadStats)
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: var(--spacing-2xl);
 }
+
 .page-header h2 {
-  font-size: 20px;
-  font-weight: 600;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
   margin: 0;
-  color: #303133;
+  color: var(--color-text-primary);
 }
+
 .section-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #303133;
-  margin: 0 0 16px;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  margin: 0 0 var(--spacing-lg);
 }
+
 .repo-grid {
-  margin-bottom: 8px;
+  margin-bottom: var(--spacing-sm);
+}
+
+.chart-row,
+.activity-row {
+  margin-top: var(--spacing-xl);
 }
 </style>
