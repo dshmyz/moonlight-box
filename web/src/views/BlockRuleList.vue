@@ -165,11 +165,11 @@
       </el-tabs>
 
       <template #footer>
-        <el-button @click="showImportDialog = false">取消</el-button>
-        <el-button type="primary" @click="handleBatchImport" :loading="importing"
+        <CustomButton @click="showImportDialog = false">取消</CustomButton>
+        <CustomButton type="primary" @click="handleBatchImport" :loading="importing"
           :disabled="importTab === 'file' && parsedPreview.length === 0 && importText.length === 0">
           导入
-        </el-button>
+        </CustomButton>
       </template>
     </el-dialog>
   </div>

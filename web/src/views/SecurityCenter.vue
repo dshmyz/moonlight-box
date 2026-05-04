@@ -2,9 +2,9 @@
   <div class="security-center">
     <div class="page-header">
       <h2>安全中心</h2>
-      <el-button type="primary" @click="triggerFullScan">
+      <CustomButton type="primary" @click="triggerFullScan">
         <el-icon><Refresh /></el-icon> 全量扫描
-      </el-button>
+      </CustomButton>
     </div>
 
     <el-row :gutter="16" class="stat-cards">
@@ -37,20 +37,34 @@
     <el-tabs v-model="activeTab">
       <el-tab-pane label="漏洞列表" name="vulnerabilities">
         <div class="filter-bar">
-          <el-select v-model="filterSeverity" placeholder="严重等级" clearable style="width: 140px" @change="loadVulnerabilities">
-            <el-option label="严重" value="critical" />
-            <el-option label="高危" value="high" />
-            <el-option label="中危" value="medium" />
-            <el-option label="低危" value="low" />
-          </el-select>
-          <el-select v-model="filterPkgType" placeholder="包类型" clearable style="width: 120px" @change="loadVulnerabilities">
-            <el-option label="npm" value="npm" />
-            <el-option label="maven" value="maven" />
-            <el-option label="pypi" value="pypi" />
-            <el-option label="go" value="go" />
-            <el-option label="nuget" value="nuget" />
-          </el-select>
-          <el-button type="primary" @click="loadVulnerabilities">搜索</el-button>
+          <CustomSelect 
+            v-model="filterSeverity" 
+            placeholder="严重等级" 
+            clearable 
+            style="width: 140px" 
+            @change="loadVulnerabilities"
+            :options="[
+              { label: '严重', value: 'critical' },
+              { label: '高危', value: 'high' },
+              { label: '中危', value: 'medium' },
+              { label: '低危', value: 'low' }
+            ]"
+          />
+          <CustomSelect 
+            v-model="filterPkgType" 
+            placeholder="包类型" 
+            clearable 
+            style="width: 120px" 
+            @change="loadVulnerabilities"
+            :options="[
+              { label: 'npm', value: 'npm' },
+              { label: 'maven', value: 'maven' },
+              { label: 'pypi', value: 'pypi' },
+              { label: 'go', value: 'go' },
+              { label: 'nuget', value: 'nuget' }
+            ]"
+          />
+          <CustomButton type="primary" @click="loadVulnerabilities">搜索</CustomButton>
         </div>
 
         <el-table :data="vulnerabilities" v-loading="loading" style="width: 100%">
@@ -135,6 +149,8 @@ import { ref, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { securityApi, type SecurityStats, type Vulnerability, type ScanResult } from '@/api/security'
+import CustomButton from '@/components/ui/CustomButton.vue'
+import CustomSelect from '@/components/ui/CustomSelect.vue'
 
 const activeTab = ref('vulnerabilities')
 const loading = ref(false)

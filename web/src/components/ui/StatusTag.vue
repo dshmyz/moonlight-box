@@ -33,17 +33,17 @@ const statusText = computed(() => {
 }
 
 .status-tag--online {
-  background: #dcfce7;
-  color: #15803d;
+  background: var(--color-success-light);
+  color: var(--color-success-dark);
 }
 
 .status-tag--offline {
-  background: #fee2e2;
-  color: #991b1b;
+  background: var(--color-danger-light);
+  color: var(--color-danger-dark);
 }
 
 .status-tag--maintenance {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--color-warning-light);
+  color: var(--color-warning-dark);
 }
 </style>
