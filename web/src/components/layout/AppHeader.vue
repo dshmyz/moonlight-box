@@ -27,7 +27,7 @@
       </el-tooltip>
       <el-dropdown trigger="click" @command="handleCommand">
         <span class="user-info">
-          <el-avatar :size="30" class="user-avatar">
+          <el-avatar :size="32" class="user-avatar">
             {{ userInitial }}
           </el-avatar>
           <span class="username">{{ authStore.user?.display_name || authStore.user?.username || '用户' }}</span>
@@ -127,73 +127,73 @@ async function handleCommand(command: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid #e8e8e8;
-  background: #fff;
-  padding: 0 20px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-card);
+  padding: 0 var(--spacing-2xl);
   height: 56px;
 }
 
 .header-left {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--spacing-lg);
 }
 
 .collapse-btn {
   cursor: pointer;
   font-size: 18px;
-  color: #666;
-  transition: color 0.2s;
+  color: var(--color-text-secondary);
+  transition: color var(--transition-fast);
 }
 
 .collapse-btn:hover {
-  color: #303133;
+  color: var(--color-text-primary);
 }
 
 .header-right {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--spacing-lg);
 }
 
 .header-link {
   display: flex;
   align-items: center;
-  gap: 4px;
-  color: #606266;
+  gap: var(--spacing-xs);
+  color: var(--color-text-secondary);
   text-decoration: none;
-  font-size: 13px;
-  transition: color 0.2s;
+  font-size: var(--font-size-sm);
+  transition: color var(--transition-fast);
 }
 
 .header-link:hover {
-  color: #409eff;
+  color: var(--color-primary);
 }
 
 .user-info {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--spacing-sm);
   cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 6px;
-  transition: background-color 0.2s;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-lg);
+  transition: background-color var(--transition-fast);
 }
 
 .user-info:hover {
-  background-color: #f5f7fa;
+  background-color: var(--color-bg-hover);
 }
 
 .user-avatar {
-  background: linear-gradient(135deg, #409eff 0%, #337ecc 100%);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 600;
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
+  color: var(--color-text-inverse);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
 }
 
 .username {
-  font-size: 14px;
-  color: #303133;
+  font-size: var(--font-size-base);
+  color: var(--color-text-primary);
   max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -202,21 +202,21 @@ async function handleCommand(command: string) {
 
 .arrow-icon {
   font-size: 12px;
-  color: #909399;
+  color: var(--color-text-tertiary);
 }
 
 :deep(.el-breadcrumb__inner a) {
-  color: #606266;
+  color: var(--color-text-secondary);
   text-decoration: none;
 }
 
 :deep(.el-breadcrumb__inner a:hover) {
-  color: #409eff;
+  color: var(--color-primary);
 }
 
 :deep(.el-dropdown-menu__item) {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--spacing-sm);
 }
 </style>
