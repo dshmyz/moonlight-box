@@ -125,12 +125,13 @@ const activeMenu = computed(() => route.path)
 
 <style scoped>
 .app-sidebar {
-  background: #1a1c23;
-  transition: width 0.3s ease;
+  background: var(--color-bg-sidebar);
+  transition: width var(--transition-slow);
   overflow: hidden;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  border-right: 1px solid var(--color-border);
 }
 
 .sidebar-logo {
@@ -138,29 +139,29 @@ const activeMenu = computed(() => route.path)
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  padding: 0 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  gap: var(--spacing-md);
+  padding: 0 var(--spacing-lg);
+  border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
 }
 
 .logo-icon {
-  width: 28px;
-  height: 28px;
-  background: linear-gradient(135deg, #409eff 0%, #337ecc 100%);
-  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--color-text-inverse);
   font-size: 15px;
   flex-shrink: 0;
 }
 
 .logo-text {
-  font-size: 16px;
-  font-weight: 700;
-  color: #fff;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
   white-space: nowrap;
   letter-spacing: -0.3px;
 }
@@ -169,47 +170,45 @@ const activeMenu = computed(() => route.path)
   border-right: none;
   background: transparent;
   flex: 1;
-  padding-top: 8px;
+  padding-top: var(--spacing-sm);
   overflow-y: auto;
 }
 
 .sidebar-menu :deep(.el-menu-item) {
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-base);
+  border-radius: var(--radius-lg);
+  margin: 0 var(--spacing-sm);
+  padding-left: var(--spacing-xl) !important;
 }
 
 .sidebar-menu :deep(.el-menu-item:hover) {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
 }
 
 .sidebar-menu :deep(.el-menu-item.is-active) {
-  background: rgba(64, 158, 255, 0.2);
-  color: #409eff;
+  background: var(--color-bg-active);
+  color: var(--color-primary);
+  font-weight: var(--font-weight-medium);
 }
 
 .sidebar-menu :deep(.el-menu-item.is-active::before) {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 20px;
-  background: #409eff;
-  border-radius: 0 2px 2px 0;
+  display: none;
 }
 
 .sidebar-menu :deep(.el-sub-menu__title) {
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-base);
 }
 
 .sidebar-menu :deep(.el-sub-menu__title:hover) {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
 }
 
 .sidebar-menu :deep(.el-sub-menu .el-menu) {
-  background: rgba(0, 0, 0, 0.15);
+  background: transparent;
 }
 
 .sidebar-menu :deep(.el-sub-menu .el-menu .el-menu-item) {
@@ -218,6 +217,6 @@ const activeMenu = computed(() => route.path)
 }
 
 .sidebar-menu :deep(.el-menu--collapse) {
-  padding-top: 8px;
+  padding-top: var(--spacing-sm);
 }
 </style>
