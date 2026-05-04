@@ -65,7 +65,7 @@ func setupNpmAdapter(t *testing.T) (*NpmAdapter, *gorm.DB) {
 
 	auditSvc := service.NewAuditService()
 
-	adapter := NewNpmAdapter(pkgRepo, storageSvc, auditSvc, nil)
+	adapter := NewNpmAdapter(pkgRepo, storageSvc, auditSvc, nil, nil)
 	return adapter, db
 }
 

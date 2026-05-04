@@ -57,7 +57,7 @@ func setupPyPIAdapter(t *testing.T) (*PyPIAdapter, *gorm.DB) {
 
 	auditSvc := service.NewAuditService()
 
-	adapter := NewPyPIAdapter(pkgRepo, storageSvc, auditSvc, nil)
+	adapter := NewPyPIAdapter(pkgRepo, storageSvc, auditSvc, nil, nil)
 	return adapter, db
 }
 
