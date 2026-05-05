@@ -192,36 +192,36 @@ onMounted(() => {
 }
 
 .search-input {
-  width: 480px;
+  width: 100%;
 }
 
 .search-input :deep(.el-input__wrapper) {
   border-radius: 8px;
-  border: 2px solid #e2e8f0;
+  border: 1px solid #e5e7eb;
   box-shadow: none;
-  padding: 6px 12px;
-  background: #fafbfc;
-  transition: all 0.25s ease;
+  padding: 0 14px;
+  height: 40px;
+  background: #fafafa;
+  transition: all 0.2s;
 }
 
-.search-input :deep(.el-input__wrapper:hover) {
-  border-color: #0f172a;
-  background: #ffffff;
+.search-input :deep(.el-input__wrapper:hover),
+.search-input :deep(.el-input__wrapper.is-focus) {
+  border-color: #2563eb;
+  background: #fff;
 }
 
 .search-input :deep(.el-input__wrapper.is-focus) {
-  border-color: #0f172a;
-  background: #ffffff;
-  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
 
 .search-input :deep(.el-input__inner) {
   font-size: 14px;
-  color: #0f172a;
+  color: #374151;
 }
 
 .search-input :deep(.el-input__prefix) {
-  color: #94a3b8;
+  color: #9ca3af;
 }
 
 .search-input :deep(.el-input__prefix-inner > .el-icon) {
@@ -229,31 +229,25 @@ onMounted(() => {
 }
 
 .search-input :deep(.el-input-group__append) {
-  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-  color: #ffffff;
+  background: #2563eb;
   border: none;
   border-radius: 0 8px 8px 0;
-  font-weight: 600;
-  font-size: 14px;
-  padding: 0 28px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  letter-spacing: 0.5px;
+  padding: 0 16px;
 }
 
 .search-input :deep(.el-input-group__append:hover) {
-  background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+  background: #1d4ed8;
 }
 
 .search-input :deep(.el-input-group__append:active) {
-  transform: scale(0.97);
+  transform: scale(0.98);
 }
 
 .search-input :deep(.el-input-group__append .el-button) {
   background: transparent;
   border: none;
   color: #ffffff;
-  font-weight: 600;
+  font-weight: 500;
   font-size: 14px;
   padding: 0;
   height: auto;
