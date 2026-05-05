@@ -114,7 +114,7 @@ const pathSegments = computed(() => {
 const loadDirectory = async (path: string) => {
   loading.value = true
   try {
-    const response = await fileApi.browse(path)
+    const response = await fileApi.browse(path) as any
     files.value = response.files || []
     currentPath.value = path
   } catch (error: any) {
@@ -156,7 +156,7 @@ const formatSize = (bytes: number) => {
 
 const downloadFile = async (row: FileInfo) => {
   try {
-    const response = await fileApi.download(row.path)
+    const response = await fileApi.download(row.path) as any
     const url = window.URL.createObjectURL(new Blob([response.data]))
     const link = document.createElement('a')
     link.href = url

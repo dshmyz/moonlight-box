@@ -48,14 +48,15 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { authApi, type UserProfile } from '@/api/auth'
+import { authApi } from '@/api/auth'
+import request from '@/api/request'
 import CustomButton from '@/components/ui/CustomButton.vue'
 import CustomInput from '@/components/ui/CustomInput.vue'
 import CustomCard from '@/components/ui/CustomCard.vue'
 import CustomTag from '@/components/ui/CustomTag.vue'
 
 const loading = ref(false)
-const profile = ref<UserProfile | null>(null)
+const profile = ref<any>(null)
 const profileForm = ref({ display_name: '', email: '' })
 const passwordForm = ref({ old_password: '', new_password: '' })
 const confirmPassword = ref('')
@@ -63,7 +64,7 @@ const confirmPassword = ref('')
 async function loadProfile() {
   loading.value = true
   try {
-    const res = await authApi.getProfile()
+    const res = await authApi.getProfile() as any
     profile.value = res || null
     if (res) {
       profileForm.value = {
@@ -80,7 +81,7 @@ async function loadProfile() {
 
 async function saveProfile() {
   try {
-    const res = await authApi.updateProfile(profileForm.value)
+    const res = await request.put('/auth/profile', profileForm.value) as any
     profile.value = res || null
     ElMessage.success('个人信息更新成功')
   } catch {
@@ -103,7 +104,7 @@ async function changePassword() {
   }
 
   try {
-    await authApi.changePassword(passwordForm.value)
+    await request.put('/auth/password', passwordForm.value)
     ElMessage.success('密码修改成功')
     passwordForm.value = { old_password: '', new_password: '' }
     confirmPassword.value = ''

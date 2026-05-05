@@ -145,7 +145,7 @@ const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 const keyword = ref('')
-const filterActive = ref<boolean | null>(null)
+const filterActive = ref<string | number | undefined>('')
 
 const createVisible = ref(false)
 const createForm = ref({ username: '', password: '', display_name: '', email: '' })
@@ -155,8 +155,9 @@ const currentUser = ref<any>(null)
 const selectedRoles = ref<number[]>([])
 
 const statusOptions = [
-  { label: '启用', value: true },
-  { label: '禁用', value: false },
+  { label: '全部', value: '' },
+  { label: '启用', value: 'true' },
+  { label: '禁用', value: 'false' },
 ]
 
 const tableColumns = [
@@ -180,7 +181,7 @@ async function loadUsers() {
   try {
     const params: Record<string, any> = { page: page.value, page_size: pageSize.value }
     if (keyword.value) params.keyword = keyword.value
-    if (filterActive.value !== null) params.is_active = filterActive.value
+    if (filterActive.value !== '' && filterActive.value !== undefined) params.is_active = filterActive.value === 'true'
 
     const res = await request.get('/users', { params })
     const data = res as any

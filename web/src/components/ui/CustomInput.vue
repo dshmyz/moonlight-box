@@ -1,5 +1,24 @@
 <template>
-  <div class="custom-input-wrapper" :class="{ 'is-disabled': disabled }">
+  <div
+    v-if="type === 'textarea'"
+    class="custom-textarea-wrapper"
+    :class="{ 'is-disabled': disabled }"
+  >
+    <textarea
+      ref="textareaRef"
+      :value="modelValue"
+      :placeholder="placeholder"
+      :disabled="disabled"
+      :readonly="readonly"
+      :maxlength="maxlength"
+      :rows="rows"
+      class="custom-textarea"
+      @input="handleInput"
+      @focus="handleFocus"
+      @blur="handleBlur"
+    />
+  </div>
+  <div v-else class="custom-input-wrapper" :class="{ 'is-disabled': disabled }">
     <div class="custom-input-prefix" v-if="$slots.prefix || prefixIcon">
       <slot name="prefix">
         <component v-if="prefixIcon" :is="prefixIcon" class="custom-input-icon" />
@@ -81,9 +100,10 @@ interface Props {
   maxlength?: number
   prefixIcon?: Component
   suffixIcon?: Component
+  rows?: number
 }
 
-const props = withDefaults(defineProps<Props>(), {
+withDefaults(defineProps<Props>(), {
   modelValue: '',
   type: 'text',
   placeholder: '',
@@ -91,6 +111,7 @@ const props = withDefaults(defineProps<Props>(), {
   readonly: false,
   clearable: false,
   showPasswordToggle: true,
+  rows: 3,
 })
 
 const emit = defineEmits<{
@@ -103,10 +124,11 @@ const emit = defineEmits<{
 }>()
 
 const inputRef = ref<HTMLInputElement>()
+const textareaRef = ref<HTMLTextAreaElement>()
 const showPassword = ref(false)
 
 const handleInput = (event: Event) => {
-  const target = event.target as HTMLInputElement
+  const target = event.target as HTMLInputElement | HTMLTextAreaElement
   emit('update:modelValue', target.value)
   emit('input', event)
 }
@@ -135,16 +157,19 @@ const togglePassword = () => {
 
 const focus = () => {
   inputRef.value?.focus()
+  textareaRef.value?.focus()
 }
 
 const blur = () => {
   inputRef.value?.blur()
+  textareaRef.value?.blur()
 }
 
 defineExpose({
   focus,
   blur,
   inputRef,
+  textareaRef,
 })
 </script>
 
@@ -238,6 +263,47 @@ defineExpose({
 .custom-input-clear:hover,
 .custom-input-password-toggle:hover {
   color: #0f172a;
+}
+
+.custom-textarea-wrapper {
+  display: inline-flex;
+  width: 100%;
+}
+
+.custom-textarea {
+  width: 100%;
+  padding: 10px 14px;
+  font-size: var(--font-size-base);
+  color: #0f172a;
+  background: #fafbfc;
+  border: 2px solid #e2e8f0;
+  border-radius: var(--radius-lg);
+  outline: none;
+  transition: all var(--transition-base);
+  font-family: inherit;
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.custom-textarea::placeholder {
+  color: #94a3b8;
+}
+
+.custom-textarea:hover:not(:disabled):not(:focus) {
+  border-color: #0f172a;
+  background: #ffffff;
+}
+
+.custom-textarea:focus {
+  border-color: #0f172a;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
+}
+
+.custom-textarea:disabled {
+  background: #f1f5f9;
+  color: #94a3b8;
+  cursor: not-allowed;
 }
 
 .is-disabled {

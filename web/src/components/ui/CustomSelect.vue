@@ -113,8 +113,8 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 const emit = defineEmits<{
-  'update:modelValue': [value: string | number | string[] | number[]]
-  change: [value: string | number | string[] | number[]]
+  'update:modelValue': [value: string | number | Array<string | number>]
+  change: [value: string | number | Array<string | number>]
 }>()
 
 const selectRef = ref<HTMLElement>()
@@ -125,7 +125,7 @@ const searchQuery = ref('')
 const selectedOptions = computed(() => {
   if (props.multiple) {
     const values = Array.isArray(props.modelValue) ? props.modelValue : []
-    return props.options.filter((opt) => values.includes(opt.value))
+    return props.options.filter((opt) => (values as (string | number)[]).includes(opt.value))
   }
   const option = props.options.find((opt) => opt.value === props.modelValue)
   return option ? [option] : []
@@ -154,7 +154,7 @@ const filteredOptions = computed(() => {
 
 const isSelected = (option: Option) => {
   if (props.multiple) {
-    const values = Array.isArray(props.modelValue) ? props.modelValue : []
+    const values = Array.isArray(props.modelValue) ? (props.modelValue as (string | number)[]) : []
     return values.includes(option.value)
   }
   return props.modelValue === option.value
@@ -164,7 +164,7 @@ const selectOption = (option: Option) => {
   if (option.disabled) return
 
   if (props.multiple) {
-    const values = Array.isArray(props.modelValue) ? [...props.modelValue] : []
+    const values = Array.isArray(props.modelValue) ? [...(props.modelValue as (string | number)[])] : []
     const index = values.indexOf(option.value)
 
     if (index > -1) {
@@ -184,7 +184,7 @@ const selectOption = (option: Option) => {
 
 const removeOption = (option: Option) => {
   if (props.multiple && Array.isArray(props.modelValue)) {
-    const values = props.modelValue.filter((v) => v !== option.value)
+    const values = (props.modelValue as (string | number)[]).filter((v) => v !== option.value)
     emit('update:modelValue', values)
     emit('change', values)
   }

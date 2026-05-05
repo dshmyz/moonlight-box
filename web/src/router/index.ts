@@ -113,6 +113,30 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '审计日志' },
       },
       {
+        path: 'proxy-download-logs',
+        name: 'ProxyDownloadLogs',
+        component: () => import('@/views/ProxyDownloadLogs.vue'),
+        meta: { title: '代理下载日志' },
+      },
+      {
+        path: 'roles',
+        name: 'RoleManagement',
+        component: () => import('@/views/RoleManagement.vue'),
+        meta: { title: '角色管理' },
+      },
+      {
+        path: 'profile',
+        name: 'ProfileSettings',
+        component: () => import('@/views/ProfileSettings.vue'),
+        meta: { title: '个人设置' },
+      },
+      {
+        path: 'help',
+        name: 'HelpCenter',
+        component: () => import('@/views/HelpCenter.vue'),
+        meta: { title: '帮助中心' },
+      },
+      {
         path: 'backups',
         name: 'BackupManagement',
         component: () => import('@/views/BackupManagement.vue'),
