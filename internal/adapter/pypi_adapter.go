@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
@@ -25,10 +24,13 @@ import (
 
 type PyPIAdapter struct {
 	*BaseAdapter
-	pkgRepo     *repository.PackageRepository
-	storageSvc  *service.StorageService
-	auditSvc    *service.AuditService
-	proxyRouter *proxy.ProxyRouter
+	pkgRepo          *repository.PackageRepository
+	storageSvc       *service.StorageService
+	auditSvc         *service.AuditService
+	proxyRouter      *proxy.ProxyRouter
+	proxyDownloadSvc *service.ProxyDownloadService
+	uploadSvc        *service.UploadService
+	logRepo          *repository.ProxyDownloadLogRepository
 }
 
 func NewPyPIAdapter(
@@ -36,13 +38,17 @@ func NewPyPIAdapter(
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
 	proxyRouter *proxy.ProxyRouter,
+	logRepo *repository.ProxyDownloadLogRepository,
 ) *PyPIAdapter {
 	return &PyPIAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
-		pkgRepo:     pkgRepo,
-		storageSvc:  storageSvc,
-		auditSvc:    auditSvc,
-		proxyRouter: proxyRouter,
+		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc),
+		pkgRepo:          pkgRepo,
+		storageSvc:       storageSvc,
+		auditSvc:         auditSvc,
+		proxyRouter:      proxyRouter,
+		proxyDownloadSvc: service.NewProxyDownloadService(pkgRepo, storageSvc, proxyRouter, logRepo),
+		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
+		logRepo:          logRepo,
 	}
 }
 
@@ -140,7 +146,11 @@ func (a *PyPIAdapter) packageFilesJSON(c *gin.Context, pkgName string) {
 		if util.IsErr(err, util.ErrPackageNotFound) {
 			if a.proxyRouter != nil {
 				urlBuilder := func(repo *model.Repository, name, _ string) string {
-					return fmt.Sprintf("%s/%s/", strings.TrimSuffix(repo.RemoteURL, "/"), normalizePackageName(name))
+					base := strings.TrimSuffix(repo.RemoteURL, "/")
+					if !strings.HasSuffix(base, "/simple") {
+						base = base + "/simple"
+					}
+					return fmt.Sprintf("%s/%s/", base, normalizePackageName(name))
 				}
 
 				var repo *model.Repository
@@ -192,7 +202,11 @@ func (a *PyPIAdapter) packageFilesHTML(c *gin.Context, pkgName string) {
 		if util.IsErr(err, util.ErrPackageNotFound) {
 			if a.proxyRouter != nil {
 				urlBuilder := func(repo *model.Repository, name, _ string) string {
-					return fmt.Sprintf("%s/simple/%s/", strings.TrimSuffix(repo.RemoteURL, "/"), normalizePackageName(name))
+					base := strings.TrimSuffix(repo.RemoteURL, "/")
+					if !strings.HasSuffix(base, "/simple") {
+						base = base + "/simple"
+					}
+					return fmt.Sprintf("%s/%s/", base, normalizePackageName(name))
 				}
 
 				var repo *model.Repository
@@ -498,53 +512,37 @@ func (a *PyPIAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageV
 		return nil, fmt.Errorf("missing name or version")
 	}
 
-	// 读取文件内容
 	content, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
-	// 计算SHA256
-	hash := sha256.Sum256(content)
-	checksum := hex.EncodeToString(hash[:])
-
-	// 存储文件
-	storageKey, err := a.storageSvc.StorePackage(ctx, "pypi", name, filename, bytes.NewReader(content), int64(len(content)))
-	if err != nil {
-		return nil, err
-	}
-
-	pkg, ver, _, err := a.pkgRepo.StorePackageFile(ctx, &model.Package{
+	result, err := a.uploadSvc.Upload(ctx, &service.UploadContext{
+		PkgType:        "pypi",
 		Name:           name,
-		Type:           model.PackageTypePyPI,
-		Description:    getDescription(req.Metadata),
-		RepositoryType: model.RepoTypeLocal,
-		CreatedBy:      req.UploadedBy,
-	}, &model.PackageVersion{
-		Version:     version,
-		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
-		PublishedBy: req.UploadedBy,
-		Metadata:    marshalMetadata(req.Metadata),
-	}, &model.PackageFile{
+		Version:        version,
+		StorageVersion: filename,
 		Filename:       filename,
+		Content:        content,
+		Size:           int64(len(content)),
+		PackageType:    model.PackageTypePyPI,
+		RepositoryType: model.RepoTypeLocal,
+		UploadedBy:     req.UploadedBy,
+		Metadata:       req.Metadata,
 		FileType:       model.FileTypePrimary,
-		StoragePath:    storageKey,
-		SizeBytes:      int64(len(content)),
-		ChecksumSHA256: checksum,
 	})
 
 	if err != nil {
-		a.storageSvc.DeletePackage(ctx, "pypi", name, filename)
 		return nil, err
 	}
 
 	return &PackageVersionResult{
-		PackageID:  pkg.ID,
-		VersionID:  ver.ID,
-		Version:    version,
-		StorageKey: storageKey,
-		Size:       int64(len(content)),
+		PackageID:  result.PackageID,
+		VersionID:  result.VersionID,
+		Version:    result.Version,
+		StorageKey: result.StorageKey,
+		Size:       result.Size,
+		Checksum:   result.ChecksumSHA256,
 	}, nil
 }
 
@@ -562,28 +560,7 @@ func (a *PyPIAdapter) Download(ctx context.Context, identity *PackageIdentity) (
 }
 
 func (a *PyPIAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
-	pkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypePyPI)
-	if err != nil {
-		return nil, err
-	}
-
-	meta := &PackageMeta{
-		ID:          pkg.ID,
-		Name:        pkg.Name,
-		Type:        PyPIType,
-		Description: pkg.Description,
-	}
-
-	for _, ver := range pkg.Versions {
-		meta.Versions = append(meta.Versions, VersionInfo{
-			Version:       ver.Version,
-			PublishedAt:   ver.PublishedAt.Format(time.RFC3339),
-			Size:          ver.SizeBytes,
-			DownloadCount: int64(ver.DownloadCount),
-		})
-	}
-
-	return meta, nil
+	return a.BaseAdapter.GetPackageMetadata(ctx, name, model.PackageTypePyPI, PyPIType)
 }
 
 func (a *PyPIAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
@@ -678,6 +655,11 @@ func (a *PyPIAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) 
 		return
 	}
 
+	a.TriggerWebhook(model.WebhookEventPackageUploaded, name, version, repo.Name, map[string]interface{}{
+		"size":     header.Size,
+		"filename": header.Filename,
+	})
+
 	c.JSON(200, gin.H{
 		"success": true,
 		"result":  result,
@@ -705,6 +687,8 @@ func (a *PyPIAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) {
 		response.InternalError(c, err.Error())
 		return
 	}
+
+	a.TriggerWebhook(model.WebhookEventPackageDeleted, name, version, repo.Name, nil)
 
 	c.JSON(200, gin.H{"ok": true})
 }

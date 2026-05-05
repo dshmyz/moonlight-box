@@ -97,6 +97,79 @@ func (h *AuthHandler) Profile(c *gin.Context) {
 	Success(c, user.ToDTO())
 }
 
+// @Summary 更新用户信息
+// @Tags Auth
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body UpdateProfileRequest true "更新信息"
+// @Success 200 {object} Response{data=model.UserDTO}
+// @Router /api/v1/auth/profile [put]
+func (h *AuthHandler) UpdateProfile(c *gin.Context) {
+	userID := c.GetUint("userID")
+
+	var req struct {
+		Email       string `json:"email"`
+		DisplayName string `json:"display_name"`
+		AvatarURL   string `json:"avatar_url"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		BadRequest(c, "invalid request body", err.Error())
+		return
+	}
+
+	user, err := h.authService.GetUserByID(userID)
+	if err != nil {
+		NotFound(c, "user not found")
+		return
+	}
+
+	if req.Email != "" {
+		user.Email = req.Email
+	}
+	if req.DisplayName != "" {
+		user.DisplayName = req.DisplayName
+	}
+	if req.AvatarURL != "" {
+		user.AvatarURL = req.AvatarURL
+	}
+
+	if err := h.authService.UpdateUser(user); err != nil {
+		InternalError(c, "failed to update profile")
+		return
+	}
+
+	Success(c, user.ToDTO())
+}
+
+// @Summary 修改密码
+// @Tags Auth
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param body body ChangePasswordRequest true "密码信息"
+// @Success 200 {object} Response
+// @Router /api/v1/auth/password [put]
+func (h *AuthHandler) ChangePassword(c *gin.Context) {
+	userID := c.GetUint("userID")
+
+	var req struct {
+		OldPassword string `json:"old_password" binding:"required"`
+		NewPassword string `json:"new_password" binding:"required,min=6"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		BadRequest(c, "invalid request body", err.Error())
+		return
+	}
+
+	if err := h.authService.ChangePassword(userID, req.OldPassword, req.NewPassword); err != nil {
+		BadRequest(c, "failed to change password", err.Error())
+		return
+	}
+
+	Success(c, gin.H{"message": "password changed successfully"})
+}
+
 func extractTokenFromContext(c *gin.Context) string {
 	authHeader := c.GetHeader("Authorization")
 	if authHeader == "" {

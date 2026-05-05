@@ -8,7 +8,7 @@ import (
 )
 
 func AutoMigrate() error {
-	if err := DB.AutoMigrate(
+	return DB.AutoMigrate(
 		&model.User{},
 		&model.Role{},
 		&model.Permission{},
@@ -16,7 +16,6 @@ func AutoMigrate() error {
 		&model.RolePermission{},
 		&model.Package{},
 		&model.PackageVersion{},
-		&model.PackageFile{},
 		&model.PackageDependency{},
 		&model.AuditLog{},
 		&model.CacheEntry{},
@@ -24,80 +23,7 @@ func AutoMigrate() error {
 		&model.Repository{},
 		&model.RepositoryGroup{},
 		&model.BlockRule{},
-		&model.ScanResult{},
-		&model.Vulnerability{},
-		&model.StorageBackend{},
-		&model.Backup{},
-		&model.Webhook{},
-		&model.WebhookDelivery{},
-		&model.MigrationTask{},
-	); err != nil {
-		return err
-	}
-
-	// 添加元数据同步相关字段
-	if err := DB.AutoMigrate(&model.MetadataSyncTask{}); err != nil {
-		return err
-	}
-
-	// 为 Repository 表添加新字段
-	if !DB.Migrator().HasColumn(&model.Repository{}, "metadata_sync_enabled") {
-		if err := DB.Exec("ALTER TABLE repositories ADD COLUMN metadata_sync_enabled BOOLEAN DEFAULT FALSE").Error; err != nil {
-			return err
-		}
-	}
-
-	if !DB.Migrator().HasColumn(&model.Repository{}, "metadata_sync_interval") {
-		if err := DB.Exec("ALTER TABLE repositories ADD COLUMN metadata_sync_interval INT DEFAULT 3600").Error; err != nil {
-			return err
-		}
-	}
-
-	if !DB.Migrator().HasColumn(&model.Repository{}, "sync_mode") {
-		if err := DB.Exec("ALTER TABLE repositories ADD COLUMN sync_mode VARCHAR(20) DEFAULT 'metadata_only'").Error; err != nil {
-			return err
-		}
-	}
-
-	if !DB.Migrator().HasColumn(&model.Repository{}, "last_metadata_sync_at") {
-		if err := DB.Exec("ALTER TABLE repositories ADD COLUMN last_metadata_sync_at TIMESTAMP NULL").Error; err != nil {
-			return err
-		}
-	}
-
-	if !DB.Migrator().HasColumn(&model.Repository{}, "last_sync_status") {
-		if err := DB.Exec("ALTER TABLE repositories ADD COLUMN last_sync_status VARCHAR(20) DEFAULT ''").Error; err != nil {
-			return err
-		}
-	}
-
-	if !DB.Migrator().HasColumn(&model.Repository{}, "last_sync_error") {
-		if err := DB.Exec("ALTER TABLE repositories ADD COLUMN last_sync_error TEXT").Error; err != nil {
-			return err
-		}
-	}
-
-	// 为 Package 表添加新字段
-	if !DB.Migrator().HasColumn(&model.Package{}, "metadata_synced") {
-		if err := DB.Exec("ALTER TABLE packages ADD COLUMN metadata_synced BOOLEAN DEFAULT FALSE").Error; err != nil {
-			return err
-		}
-	}
-
-	if !DB.Migrator().HasColumn(&model.Package{}, "metadata_sync_at") {
-		if err := DB.Exec("ALTER TABLE packages ADD COLUMN metadata_sync_at TIMESTAMP NULL").Error; err != nil {
-			return err
-		}
-	}
-
-	// 为 PackageVersion 表添加新字段
-	if !DB.Migrator().HasColumn(&model.PackageVersion{}, "files_downloaded") {
-		if err := DB.Exec("ALTER TABLE package_versions ADD COLUMN files_downloaded BOOLEAN DEFAULT FALSE").Error; err != nil {
-			return err
-		}
-	}
-
-	return nil
+	)
 }
 
 func SeedData() error {
@@ -204,10 +130,10 @@ func SeedData() error {
 		return err
 	}
 
-	// 创建测试包数据（已禁用，需要时手动添加）
-	// if err := seedTestPackages(); err != nil {
-	// 	return err
-	// }
+	// 创建测试包数据
+	if err := seedTestPackages(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -410,28 +336,16 @@ func insertPackage(repo *model.Repository, userID uint, pkgType model.PackageTyp
 
 	for i, ver := range versions {
 		version := model.PackageVersion{
-			PackageID:   pkg.ID,
-			Version:     ver,
-			Status:      model.StatusPublished,
-			StoragePath: fmt.Sprintf("%s/%s/%s", pkgType, name, ver),
-			PublishedBy: userID,
+			PackageID:      pkg.ID,
+			Version:        ver,
+			Status:         model.StatusPublished,
+			StoragePath:    fmt.Sprintf("%s/%s/%s", pkgType, name, ver),
+			SizeBytes:      int64(100000 + i*50000),
+			ChecksumSHA256: fmt.Sprintf("sha256-%s-%d", name, i),
+			PublishedBy:    userID,
 		}
 
 		if err := DB.Create(&version).Error; err != nil {
-			return err
-		}
-
-		// 创建主文件记录
-		file := model.PackageFile{
-			VersionID:      version.ID,
-			Filename:       fmt.Sprintf("%s-%s.pkg", name, ver),
-			FileType:       model.FileTypePrimary,
-			StoragePath:    fmt.Sprintf("%s/%s/%s/%s-%s.pkg", pkgType, name, ver, name, ver),
-			SizeBytes:      int64(100000 + i*50000),
-			ChecksumSHA256: fmt.Sprintf("sha256-%s-%d", name, i),
-		}
-
-		if err := DB.Create(&file).Error; err != nil {
 			return err
 		}
 	}
@@ -452,35 +366,35 @@ func seedDefaultRepositories() error {
 			Enabled:     true,
 		},
 		{
-			Name:              "npm-proxy-cn",
-			DisplayName:       "NPM 国内代理",
-			Description:       "国内 npm 镜像源代理",
-			Type:              model.RepoTypeProxy,
-			PackageType:       string(model.PackageTypeNPM),
-			Enabled:           true,
-			RemoteURL:         "https://registry.npmmirror.com",
-			AuthType:          "none",
-			ProxyPriority:     1,
-			CacheEnabled:      true,
-			CacheTTLSeconds:   86400,
-			TimeoutSeconds:    30,
-			MaxRedirects:      5,
+			Name:           "npm-proxy-cn",
+			DisplayName:    "NPM 国内代理",
+			Description:    "国内 npm 镜像源代理",
+			Type:           model.RepoTypeProxy,
+			PackageType:    string(model.PackageTypeNPM),
+			Enabled:        true,
+			RemoteURL:      "https://registry.npmmirror.com",
+			AuthType:       "none",
+			ProxyPriority:  1,
+			CacheEnabled:   true,
+			CacheTTLSeconds: 86400,
+			TimeoutSeconds: 30,
+			MaxRedirects:   5,
 			FailureCacheRules: `[{"status_code": 404, "ttl_seconds": 300}, {"status_code_range": [500, 599], "ttl_seconds": 60}]`,
 		},
 		{
-			Name:              "npm-proxy-official",
-			DisplayName:       "NPM 官方代理",
-			Description:       "npm 官方仓库代理",
-			Type:              model.RepoTypeProxy,
-			PackageType:       string(model.PackageTypeNPM),
-			Enabled:           true,
-			RemoteURL:         "https://registry.npmjs.org",
-			AuthType:          "none",
-			ProxyPriority:     2,
-			CacheEnabled:      true,
-			CacheTTLSeconds:   86400,
-			TimeoutSeconds:    30,
-			MaxRedirects:      5,
+			Name:           "npm-proxy-official",
+			DisplayName:    "NPM 官方代理",
+			Description:    "npm 官方仓库代理",
+			Type:           model.RepoTypeProxy,
+			PackageType:    string(model.PackageTypeNPM),
+			Enabled:        true,
+			RemoteURL:      "https://registry.npmjs.org",
+			AuthType:       "none",
+			ProxyPriority:  2,
+			CacheEnabled:   true,
+			CacheTTLSeconds: 86400,
+			TimeoutSeconds: 30,
+			MaxRedirects:   5,
 			FailureCacheRules: `[{"status_code": 404, "ttl_seconds": 300}, {"status_code_range": [500, 599], "ttl_seconds": 60}]`,
 		},
 		{
@@ -506,35 +420,35 @@ func seedDefaultRepositories() error {
 			Enabled:     true,
 		},
 		{
-			Name:              "maven-proxy-aliyun",
-			DisplayName:       "Maven 阿里云代理",
-			Description:       "阿里云 Maven 镜像代理",
-			Type:              model.RepoTypeProxy,
-			PackageType:       string(model.PackageTypeMaven),
-			Enabled:           true,
-			RemoteURL:         "https://maven.aliyun.com/repository/public",
-			AuthType:          "none",
-			ProxyPriority:     1,
-			CacheEnabled:      true,
-			CacheTTLSeconds:   86400,
-			TimeoutSeconds:    30,
-			MaxRedirects:      5,
+			Name:           "maven-proxy-aliyun",
+			DisplayName:    "Maven 阿里云代理",
+			Description:    "阿里云 Maven 镜像代理",
+			Type:           model.RepoTypeProxy,
+			PackageType:    string(model.PackageTypeMaven),
+			Enabled:        true,
+			RemoteURL:      "https://maven.aliyun.com/repository/public",
+			AuthType:       "none",
+			ProxyPriority:  1,
+			CacheEnabled:   true,
+			CacheTTLSeconds: 86400,
+			TimeoutSeconds: 30,
+			MaxRedirects:   5,
 			FailureCacheRules: `[{"status_code": 404, "ttl_seconds": 300}, {"status_code_range": [500, 599], "ttl_seconds": 60}]`,
 		},
 		{
-			Name:              "maven-proxy-central",
-			DisplayName:       "Maven Central 代理",
-			Description:       "Maven Central 官方仓库代理",
-			Type:              model.RepoTypeProxy,
-			PackageType:       string(model.PackageTypeMaven),
-			Enabled:           true,
-			RemoteURL:         "https://repo.maven.apache.org/maven2",
-			AuthType:          "none",
-			ProxyPriority:     2,
-			CacheEnabled:      true,
-			CacheTTLSeconds:   86400,
-			TimeoutSeconds:    30,
-			MaxRedirects:      5,
+			Name:           "maven-proxy-central",
+			DisplayName:    "Maven Central 代理",
+			Description:    "Maven Central 官方仓库代理",
+			Type:           model.RepoTypeProxy,
+			PackageType:    string(model.PackageTypeMaven),
+			Enabled:        true,
+			RemoteURL:      "https://repo.maven.apache.org/maven2",
+			AuthType:       "none",
+			ProxyPriority:  2,
+			CacheEnabled:   true,
+			CacheTTLSeconds: 86400,
+			TimeoutSeconds: 30,
+			MaxRedirects:   5,
 			FailureCacheRules: `[{"status_code": 404, "ttl_seconds": 300}, {"status_code_range": [500, 599], "ttl_seconds": 60}]`,
 		},
 		{

@@ -20,3 +20,4 @@ var Forbidden = response.Forbidden
 var NotFound = response.NotFound
 var InternalError = response.InternalError
 var Conflict = response.Conflict
+var ErrorResponse = response.ErrorResponse

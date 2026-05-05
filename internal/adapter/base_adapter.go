@@ -4,16 +4,19 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"time"
 
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
+	"github.com/moonlight-box/registry/internal/types"
 )
 
 type BaseAdapter struct {
 	pkgRepo    *repository.PackageRepository
 	storageSvc *service.StorageService
+	webhookSvc *service.WebhookService
 }
 
 func NewBaseAdapter(pkgRepo *repository.PackageRepository, storageSvc *service.StorageService) *BaseAdapter {
@@ -21,6 +24,26 @@ func NewBaseAdapter(pkgRepo *repository.PackageRepository, storageSvc *service.S
 		pkgRepo:    pkgRepo,
 		storageSvc: storageSvc,
 	}
+}
+
+func (b *BaseAdapter) SetWebhookService(webhookSvc *service.WebhookService) {
+	b.webhookSvc = webhookSvc
+}
+
+func (b *BaseAdapter) TriggerWebhook(event model.WebhookEvent, pkgName, version, repoName string, extraData map[string]interface{}) {
+	if b.webhookSvc == nil {
+		return
+	}
+
+	payload := &service.WebhookPayload{
+		Event:       string(event),
+		Timestamp:   time.Now().Format(time.RFC3339),
+		PackageName: pkgName,
+		Version:     version,
+		Repository:  repoName,
+		Data:        extraData,
+	}
+	b.webhookSvc.TriggerEvent(event, payload)
 }
 
 type ProxyPackageInfo struct {
@@ -31,6 +54,68 @@ type ProxyPackageInfo struct {
 	Content     []byte
 	Size        int64
 	Metadata    map[string]interface{}
+}
+
+type LocalPackageResult struct {
+	Content   io.ReadCloser
+	Size      int64
+	Found     bool
+	PkgID     uint
+	VersionID uint
+	FileID    uint
+}
+
+func (b *BaseAdapter) GetLocalPackage(ctx context.Context, pkgType, name, version string) (*LocalPackageResult, error) {
+	content, size, err := b.storageSvc.GetPackage(ctx, pkgType, name, version)
+	if err != nil {
+		return &LocalPackageResult{Found: false}, nil
+	}
+
+	return &LocalPackageResult{
+		Content: content,
+		Size:    size,
+		Found:   true,
+	}, nil
+}
+
+func (b *BaseAdapter) GetLocalPackageWithIDs(ctx context.Context, pkgType model.PackageType, name, version, filename string) (*LocalPackageResult, error) {
+	content, size, err := b.storageSvc.GetPackage(ctx, string(pkgType), name, version)
+	if err != nil {
+		return &LocalPackageResult{Found: false}, nil
+	}
+
+	pkg, err := b.pkgRepo.FindByNameAndType(name, pkgType)
+	if err != nil {
+		return &LocalPackageResult{
+			Content: content,
+			Size:    size,
+			Found:   true,
+		}, nil
+	}
+
+	var versionID uint
+	var fileID uint
+	for _, v := range pkg.Versions {
+		if v.Version == version {
+			versionID = v.ID
+			for _, f := range v.Files {
+				if f.Filename == filename {
+					fileID = f.ID
+					break
+				}
+			}
+			break
+		}
+	}
+
+	return &LocalPackageResult{
+		Content:   content,
+		Size:      size,
+		Found:     true,
+		PkgID:     pkg.ID,
+		VersionID: versionID,
+		FileID:    fileID,
+	}, nil
 }
 
 func (b *BaseAdapter) StoreProxyPackage(ctx context.Context, info *ProxyPackageInfo) (string, error) {
@@ -78,7 +163,6 @@ func (b *BaseAdapter) StoreProxyPackageFromResult(ctx context.Context, pkgType m
 	return b.StoreProxyPackage(ctx, info)
 }
 
-// IncrementDownloadCountForPackage 增加包的下载计数
 func (b *BaseAdapter) IncrementDownloadCountForPackage(pkgName string, pkgType model.PackageType, version string, filename string) {
 	pkg, err := b.pkgRepo.FindByNameAndType(pkgName, pkgType)
 	if err != nil {
@@ -96,4 +180,41 @@ func (b *BaseAdapter) IncrementDownloadCountForPackage(pkgName string, pkgType m
 			return
 		}
 	}
+}
+
+func (b *BaseAdapter) GetPackageMetadata(ctx context.Context, name string, pkgType model.PackageType, typeStr types.PackageType) (*types.PackageMeta, error) {
+	pkg, err := b.pkgRepo.FindByNameAndType(name, pkgType)
+	if err != nil {
+		return nil, err
+	}
+
+	meta := &types.PackageMeta{
+		ID:          pkg.ID,
+		Name:        pkg.Name,
+		Type:        typeStr,
+		Description: pkg.Description,
+	}
+
+	for _, ver := range pkg.Versions {
+		var totalSize int64
+		for _, f := range ver.Files {
+			totalSize += f.SizeBytes
+		}
+		meta.Versions = append(meta.Versions, types.VersionInfo{
+			Version:       ver.Version,
+			PublishedAt:   ver.PublishedAt.Format(time.RFC3339),
+			Size:          totalSize,
+			DownloadCount: int64(ver.DownloadCount),
+		})
+	}
+
+	return meta, nil
+}
+
+func (b *BaseAdapter) GetPackageRepository() *repository.PackageRepository {
+	return b.pkgRepo
+}
+
+func (b *BaseAdapter) GetStorageService() *service.StorageService {
+	return b.storageSvc
 }

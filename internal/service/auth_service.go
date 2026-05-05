@@ -231,3 +231,7 @@ func (s *AuthService) ChangePassword(userID uint, oldPassword, newPassword strin
 func (s *AuthService) GetUserByID(userID uint) (*model.User, error) {
 	return s.userRepo.FindByID(userID)
 }
+
+func (s *AuthService) UpdateUser(user *model.User) error {
+	return s.userRepo.Update(user)
+}

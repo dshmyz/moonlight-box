@@ -122,3 +122,11 @@ func InternalError(c *gin.Context, message string) {
 		Message: message,
 	})
 }
+
+// ErrorResponse 返回自定义状态码的错误响应
+func ErrorResponse(c *gin.Context, statusCode int, message string) {
+	c.JSON(statusCode, Response{
+		Code:    statusCode,
+		Message: message,
+	})
+}

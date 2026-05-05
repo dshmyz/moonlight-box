@@ -29,37 +29,37 @@ func (i *ConfigInitializer) InitializeDefaultConfigs() error {
 		description string
 		isSensitive bool
 	}{
-		{"system.name", "Moonlight Registry", "string", "general", "System name", false},
-		{"system.description", "Enterprise Package Registry", "string", "general", "System description", false},
-		{"system.version", "1.0.0", "string", "general", "System version", false},
+		{"system.name", "Moonlight Registry", "string", "general", "系统名称", false},
+		{"system.description", "Enterprise Package Registry", "string", "general", "系统描述", false},
+		{"system.version", "1.0.0", "string", "general", "系统版本", false},
 
-		{"backup.enabled", "true", "bool", "storage", "Enable automatic backup", false},
-		{"backup.schedule", "0 2 * * *", "string", "storage", "Backup cron schedule (daily at 2 AM)", false},
-		{"backup.retention_days", "30", "int", "storage", "Backup retention days", false},
-		{"backup.max_count", "10", "int", "storage", "Maximum backup count", false},
+		{"backup.enabled", "true", "bool", "storage", "启用自动备份", false},
+		{"backup.schedule", "0 2 * * *", "string", "storage", "备份计划（每天凌晨2点）", false},
+		{"backup.retention_days", "30", "int", "storage", "备份保留天数", false},
+		{"backup.max_count", "10", "int", "storage", "最大备份数量", false},
 
-		{"security.scan_on_upload", "true", "bool", "security", "Scan packages on upload", false},
-		{"security.block_critical", "true", "bool", "security", "Block packages with critical vulnerabilities", false},
-		{"security.block_high", "true", "bool", "security", "Block packages with high vulnerabilities", false},
-		{"security.block_medium", "false", "bool", "security", "Block packages with medium vulnerabilities", false},
+		{"security.scan_on_upload", "true", "bool", "security", "上传时扫描包", false},
+		{"security.block_critical", "true", "bool", "security", "阻止严重漏洞包", false},
+		{"security.block_high", "true", "bool", "security", "阻止高危漏洞包", false},
+		{"security.block_medium", "false", "bool", "security", "阻止中危漏洞包", false},
 
-		{"cache.enabled", "true", "bool", "cache", "Enable proxy cache", false},
-		{"cache.default_ttl", "24h", "string", "cache", "Default cache TTL", false},
-		{"cache.max_size_gb", "100", "int", "cache", "Maximum cache size in GB", false},
+		{"cache.enabled", "true", "bool", "cache", "启用代理缓存", false},
+		{"cache.default_ttl", "24h", "string", "cache", "默认缓存时间", false},
+		{"cache.max_size_gb", "100", "int", "cache", "最大缓存大小(GB)", false},
 
-		{"webhook.enabled", "true", "bool", "network", "Enable webhook notifications", false},
-		{"webhook.timeout", "10s", "string", "network", "Webhook request timeout", false},
-		{"webhook.retry_count", "3", "int", "network", "Webhook retry count", false},
+		{"webhook.enabled", "true", "bool", "network", "启用Webhook通知", false},
+		{"webhook.timeout", "10s", "string", "network", "Webhook请求超时时间", false},
+		{"webhook.retry_count", "3", "int", "network", "Webhook重试次数", false},
 
-		{"storage.default_backend", "local", "string", "storage", "Default storage backend", false},
-		{"storage.max_file_size", "1073741824", "int", "storage", "Maximum file size in bytes (1GB)", false},
+		{"storage.default_backend", "local", "string", "storage", "默认存储后端", false},
+		{"storage.max_file_size", "1073741824", "int", "storage", "最大文件大小(字节)", false},
 
-		{"auth.token_expiry", "24h", "string", "security", "JWT token expiry time", false},
-		{"auth.refresh_token_expiry", "168h", "string", "security", "Refresh token expiry time (7 days)", false},
-		{"auth.max_login_attempts", "5", "int", "security", "Maximum login attempts before lockout", false},
+		{"auth.token_expiry", "24h", "string", "security", "JWT令牌过期时间", false},
+		{"auth.refresh_token_expiry", "168h", "string", "security", "刷新令牌过期时间(7天)", false},
+		{"auth.max_login_attempts", "5", "int", "security", "最大登录尝试次数", false},
 
-		{"metrics.enabled", "true", "bool", "general", "Enable Prometheus metrics", false},
-		{"metrics.path", "/metrics", "string", "general", "Prometheus metrics endpoint path", false},
+		{"metrics.enabled", "true", "bool", "general", "启用Prometheus监控", false},
+		{"metrics.path", "/metrics", "string", "general", "Prometheus监控路径", false},
 	}
 
 	for _, config := range defaultConfigs {

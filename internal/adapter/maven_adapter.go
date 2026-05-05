@@ -26,10 +26,13 @@ import (
 
 type MavenAdapter struct {
 	*BaseAdapter
-	pkgRepo     *repository.PackageRepository
-	storageSvc  *service.StorageService
-	auditSvc    *service.AuditService
-	proxyRouter *proxy.ProxyRouter
+	pkgRepo          *repository.PackageRepository
+	storageSvc       *service.StorageService
+	auditSvc         *service.AuditService
+	proxyRouter      *proxy.ProxyRouter
+	proxyDownloadSvc *service.ProxyDownloadService
+	uploadSvc        *service.UploadService
+	logRepo          *repository.ProxyDownloadLogRepository
 }
 
 type MavenMetadata struct {
@@ -103,13 +106,17 @@ func NewMavenAdapter(
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
 	proxyRouter *proxy.ProxyRouter,
+	logRepo *repository.ProxyDownloadLogRepository,
 ) *MavenAdapter {
 	return &MavenAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
-		pkgRepo:     pkgRepo,
-		storageSvc:  storageSvc,
-		auditSvc:    auditSvc,
-		proxyRouter: proxyRouter,
+		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc),
+		pkgRepo:          pkgRepo,
+		storageSvc:       storageSvc,
+		auditSvc:         auditSvc,
+		proxyRouter:      proxyRouter,
+		proxyDownloadSvc: service.NewProxyDownloadService(pkgRepo, storageSvc, proxyRouter, logRepo),
+		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
+		logRepo:          logRepo,
 	}
 }
 
@@ -187,6 +194,13 @@ func (a *MavenAdapter) handleMetadataXML(c *gin.Context, fullPath string) {
 			body, readErr := io.ReadAll(result.Content)
 			if readErr == nil {
 				go a.updatePackageMetadata(context.Background(), name, body, repo.ID)
+
+				// 缓存到本地
+				storageName := groupArtifactToStorageName(group)
+				storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "maven", storageName, "maven-metadata.xml", bytes.NewReader(body), int64(len(body)))
+				if storeErr == nil {
+					_ = storageKey
+				}
 
 				c.Data(200, "application/xml", body)
 				return
@@ -283,7 +297,7 @@ func (a *MavenAdapter) updatePackageMetadata(ctx context.Context, name string, m
 	}
 
 	for _, version := range metadata.Versioning.Versions.Version {
-		a.pkgRepo.CreateOrUpdate(ctx, pkg, &model.PackageVersion{
+		a.pkgRepo.CreateOrUpdateMetadata(ctx, pkg, &model.PackageVersion{
 			Version: version,
 			Status:  model.StatusPublished,
 		})
@@ -303,15 +317,16 @@ func groupArtifactToName(groupArtifact string) string {
 }
 
 // groupArtifactToStorageName 将groupArtifact路径转换为存储名称格式
-// 例如: "com/test/lib" -> "com.test/lib"
+// 例如: "com.google.guava/guava" -> "com/google/guava/guava"
+// groupId部分使用点分隔，需要转换为斜杠分隔符
 func groupArtifactToStorageName(groupArtifact string) string {
-	parts := strings.Split(groupArtifact, "/")
+	parts := strings.SplitN(groupArtifact, "/", 2)
 	if len(parts) < 2 {
-		return groupArtifact
+		return strings.ReplaceAll(groupArtifact, ".", "/")
 	}
-	groupId := strings.Join(parts[:len(parts)-1], ".")
-	artifactId := parts[len(parts)-1]
-	return groupId + "/" + artifactId
+	// 将groupId部分的点转为斜杠，保留artifactId
+	groupId := strings.ReplaceAll(parts[0], ".", "/")
+	return groupId + "/" + parts[1]
 }
 
 func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
@@ -621,41 +636,37 @@ func (a *MavenAdapter) Upload(ctx context.Context, req *UploadRequest) (*Package
 		actualVersion = version
 	}
 
-	storageKey, err := a.storageSvc.StorePackage(ctx, "maven", name, storageVersion, reader, req.Size)
+	content, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read content: %w", err)
 	}
 
-	pkg, ver, _, err := a.pkgRepo.StorePackageFile(ctx, &model.Package{
+	result, err := a.uploadSvc.Upload(ctx, &service.UploadContext{
+		PkgType:        "maven",
 		Name:           name,
-		Type:           model.PackageTypeMaven,
-		RepositoryID:   req.RepositoryID,
+		Version:        version,
+		StorageVersion: storageVersion,
+		Filename:       filename,
+		Content:        content,
+		Size:           req.Size,
+		PackageType:    model.PackageTypeMaven,
 		RepositoryType: model.RepoTypeLocal,
-		CreatedBy:      req.UploadedBy,
-	}, &model.PackageVersion{
-		Version:     version,
-		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
-		PublishedBy: req.UploadedBy,
-		Metadata:    marshalMetadata(req.Metadata),
-	}, &model.PackageFile{
-		Filename:    filename,
-		FileType:    getMavenFileType(filename),
-		StoragePath: storageKey,
-		SizeBytes:   req.Size,
+		RepositoryID:   req.RepositoryID,
+		UploadedBy:     req.UploadedBy,
+		Metadata:       req.Metadata,
+		FileType:       getMavenFileType(filename),
 	})
 
 	if err != nil {
-		a.storageSvc.DeletePackage(ctx, "maven", name, storageVersion)
 		return nil, err
 	}
 
 	return &PackageVersionResult{
-		PackageID:  pkg.ID,
-		VersionID:  ver.ID,
-		Version:    version,
-		StorageKey: storageKey,
-		Size:       req.Size,
+		PackageID:  result.PackageID,
+		VersionID:  result.VersionID,
+		Version:    result.Version,
+		StorageKey: result.StorageKey,
+		Size:       result.Size,
 	}, nil
 }
 
@@ -673,32 +684,7 @@ func (a *MavenAdapter) Download(ctx context.Context, identity *PackageIdentity) 
 }
 
 func (a *MavenAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
-	pkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypeMaven)
-	if err != nil {
-		return nil, err
-	}
-
-	meta := &PackageMeta{
-		ID:          pkg.ID,
-		Name:        name,
-		Type:        MavenType,
-		Description: pkg.Description,
-	}
-
-	for _, ver := range pkg.Versions {
-		var totalSize int64
-		for _, f := range ver.Files {
-			totalSize += f.SizeBytes
-		}
-		meta.Versions = append(meta.Versions, VersionInfo{
-			Version:       ver.Version,
-			PublishedAt:   ver.PublishedAt.Format(time.RFC3339),
-			Size:          totalSize,
-			DownloadCount: int64(ver.DownloadCount),
-		})
-	}
-
-	return meta, nil
+	return a.BaseAdapter.GetPackageMetadata(ctx, name, model.PackageTypeMaven, MavenType)
 }
 
 func (a *MavenAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
@@ -766,8 +752,14 @@ func (a *MavenAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository)
 		response.InternalError(c, err.Error())
 		return
 	}
-
 	_ = result
+
+	name := groupID + ":" + artifactID
+	a.TriggerWebhook(model.WebhookEventPackageUploaded, name, version, repo.Name, map[string]interface{}{
+		"filename":  filename,
+		"packaging": getPackaging(filename),
+	})
+
 	c.Status(200)
 }
 
@@ -794,6 +786,8 @@ func (a *MavenAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) 
 		response.InternalError(c, err.Error())
 		return
 	}
+
+	a.TriggerWebhook(model.WebhookEventPackageDeleted, name, version, repo.Name, nil)
 
 	c.JSON(200, gin.H{"ok": true})
 }

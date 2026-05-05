@@ -56,8 +56,9 @@ func setupPyPIAdapter(t *testing.T) (*PyPIAdapter, *gorm.DB) {
 	storageSvc.RefreshBackends()
 
 	auditSvc := service.NewAuditService()
+	logRepo := repository.NewProxyDownloadLogRepository(db)
 
-	adapter := NewPyPIAdapter(pkgRepo, storageSvc, auditSvc, nil, nil)
+	adapter := NewPyPIAdapter(pkgRepo, storageSvc, auditSvc, nil, logRepo)
 	return adapter, db
 }
 
@@ -303,11 +304,11 @@ func TestPyPIAdapter_PackageFiles(t *testing.T) {
 	db.Create(version)
 
 	file := &model.PackageFile{
-		VersionID:    version.ID,
-		Filename:     "Flask-2.0.0-py3-none-any.whl",
-		FileType:     model.FileTypePrimary,
-		StoragePath:  "pypi/flask/2.0.0/Flask-2.0.0-py3-none-any.whl",
-		SizeBytes:    1000,
+		VersionID:   version.ID,
+		Filename:    "Flask-2.0.0-py3-none-any.whl",
+		FileType:    model.FileTypePrimary,
+		StoragePath: "pypi/flask/2.0.0/Flask-2.0.0-py3-none-any.whl",
+		SizeBytes:   1000,
 	}
 	db.Create(file)
 
