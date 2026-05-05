@@ -2,81 +2,64 @@
   <div class="backup-management">
     <div class="page-header">
       <h2>备份管理</h2>
-      <el-button type="primary" @click="showCreateDialog">
-        <el-icon><Plus /></el-icon> 创建备份
-      </el-button>
+      <CustomButton type="primary" :icon="Plus" @click="showCreateDialog">
+        创建备份
+      </CustomButton>
     </div>
 
-    <el-table :data="backups" v-loading="loading" style="width: 100%">
-      <el-table-column prop="id" label="ID" width="80" />
-      <el-table-column prop="name" label="备份名称" min-width="180" />
-      <el-table-column prop="description" label="描述" min-width="200">
-        <template #default="{ row }">
-          {{ row.description || '-' }}
-        </template>
-      </el-table-column>
-      <el-table-column prop="size" label="大小" width="120">
-        <template #default="{ row }">
-          {{ formatSize(row.size) }}
-        </template>
-      </el-table-column>
-      <el-table-column prop="status" label="状态" width="120">
-        <template #default="{ row }">
-          <el-tag :type="getStatusType(row.status)" size="small">
-            {{ getStatusText(row.status) }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="created_at" label="创建时间" width="180">
-        <template #default="{ row }">
-          {{ formatDate(row.created_at) }}
-        </template>
-      </el-table-column>
-      <el-table-column prop="created_by" label="创建人" width="120">
-        <template #default="{ row }">
-          {{ row.created_by || '-' }}
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="200" fixed="right">
-        <template #default="{ row }">
-          <el-button
+    <CustomTable :columns="columns" :data="backups" :loading="loading" row-key="id">
+      <template #description="{ row }">
+        {{ row.description || '-' }}
+      </template>
+      <template #size="{ row }">
+        {{ formatSize(row.size) }}
+      </template>
+      <template #status="{ row }">
+        <CustomTag :type="getStatusType(row.status)" size="small">
+          {{ getStatusText(row.status) }}
+        </CustomTag>
+      </template>
+      <template #created_at="{ row }">
+        {{ formatDate(row.created_at) }}
+      </template>
+      <template #created_by="{ row }">
+        {{ row.created_by || '-' }}
+      </template>
+      <template #actions="{ row }">
+        <div class="action-buttons">
+          <CustomButton
             size="small"
             type="primary"
             @click="handleRestore(row)"
             :disabled="row.status !== 'completed'"
           >
             恢复
-          </el-button>
-          <el-button
+          </CustomButton>
+          <CustomButton
             size="small"
-            type="danger"
+            type="outline"
             @click="handleDelete(row)"
           >
             删除
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+          </CustomButton>
+        </div>
+      </template>
+    </CustomTable>
 
-    <el-dialog v-model="createVisible" title="创建备份" width="500px">
+    <CustomDialog v-model="createVisible" title="创建备份" width="500px">
       <el-form :model="createForm" :rules="createRules" ref="createFormRef" label-width="80px">
         <el-form-item label="名称" prop="name">
-          <el-input v-model="createForm.name" placeholder="请输入备份名称" />
+          <CustomInput v-model="createForm.name" placeholder="请输入备份名称" />
         </el-form-item>
         <el-form-item label="描述" prop="description">
-          <el-input
-            v-model="createForm.description"
-            type="textarea"
-            :rows="3"
-            placeholder="请输入备份描述（可选）"
-          />
+          <CustomInput v-model="createForm.description" placeholder="请输入备份描述（可选）" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createVisible = false">取消</el-button>
-        <el-button type="primary" @click="createBackup" :loading="creating">确定</el-button>
+        <CustomButton type="secondary" @click="createVisible = false">取消</CustomButton>
+        <CustomButton type="primary" @click="createBackup" :loading="creating">确定</CustomButton>
       </template>
-    </el-dialog>
+    </CustomDialog>
   </div>
 </template>
 
@@ -85,6 +68,11 @@ import { ref, onMounted } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { backupApi, type Backup } from '@/api/backup'
+import CustomButton from '@/components/ui/CustomButton.vue'
+import CustomTable from '@/components/ui/CustomTable.vue'
+import CustomTag from '@/components/ui/CustomTag.vue'
+import CustomDialog from '@/components/ui/CustomDialog.vue'
+import CustomInput from '@/components/ui/CustomInput.vue'
 
 const loading = ref(false)
 const creating = ref(false)
@@ -104,6 +92,17 @@ const createRules: FormRules = {
   ],
 }
 
+const columns = [
+  { prop: 'id', label: 'ID', width: '80px' },
+  { prop: 'name', label: '备份名称' },
+  { prop: 'description', label: '描述' },
+  { prop: 'size', label: '大小', width: '120px' },
+  { prop: 'status', label: '状态', width: '120px' },
+  { prop: 'created_at', label: '创建时间', width: '180px' },
+  { prop: 'created_by', label: '创建人', width: '120px' },
+  { prop: 'actions', label: '操作', width: '200px' },
+]
+
 /** 格式化文件大小 */
 const formatSize = (bytes: number): string => {
   if (!bytes || bytes < 0) return '0 B'
@@ -120,8 +119,8 @@ const formatDate = (date: string): string => {
 }
 
 /** 获取状态类型 */
-const getStatusType = (status: string): string => {
-  const typeMap: Record<string, string> = {
+const getStatusType = (status: string): 'default' | 'primary' | 'success' | 'warning' | 'danger' | 'info' => {
+  const typeMap: Record<string, 'default' | 'primary' | 'success' | 'warning' | 'danger' | 'info'> = {
     pending: 'info',
     creating: 'warning',
     completed: 'success',
@@ -233,19 +232,25 @@ onMounted(loadBackups)
 
 <style scoped>
 .backup-management {
-  padding: 20px;
+  padding: var(--spacing-xl);
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: var(--spacing-2xl);
 }
 
 .page-header h2 {
   margin: 0;
-  font-size: 22px;
-  font-weight: 600;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.action-buttons {
+  display: flex;
+  gap: var(--spacing-sm);
 }
 </style>

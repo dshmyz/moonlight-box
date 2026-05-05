@@ -9,52 +9,38 @@
       </div>
     </div>
 
-    <el-row :gutter="20">
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-number">{{ stats.total_entries }}</div>
-          <div class="stat-label">缓存条目数</div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-number">{{ formatSize(stats.total_size) }}</div>
-          <div class="stat-label">缓存大小</div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-number">{{ stats.expired_entries }}</div>
-          <div class="stat-label">过期条目</div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-number">{{ stats.max_size_gb }} GB</div>
-          <div class="stat-label">最大容量</div>
-        </el-card>
-      </el-col>
-    </el-row>
+    <div class="stats-grid">
+      <CustomCard hoverable class="stat-card">
+        <div class="stat-number">{{ stats.total_entries }}</div>
+        <div class="stat-label">缓存条目数</div>
+      </CustomCard>
+      <CustomCard hoverable class="stat-card">
+        <div class="stat-number">{{ formatSize(stats.total_size) }}</div>
+        <div class="stat-label">缓存大小</div>
+      </CustomCard>
+      <CustomCard hoverable class="stat-card">
+        <div class="stat-number">{{ stats.expired_entries }}</div>
+        <div class="stat-label">过期条目</div>
+      </CustomCard>
+      <CustomCard hoverable class="stat-card">
+        <div class="stat-number">{{ stats.max_size_gb }} GB</div>
+        <div class="stat-label">最大容量</div>
+      </CustomCard>
+    </div>
 
-    <el-card class="invalidate-card">
-      <template #header>
-        <div class="card-header">
-          <span>缓存失效</span>
-        </div>
-      </template>
-      <el-form :inline="true" :model="invalidateForm">
-        <el-form-item label="匹配模式">
+    <CustomCard title="缓存失效" class="invalidate-card">
+      <div class="invalidate-form">
+        <div class="form-item">
+          <label class="form-label">匹配模式</label>
           <CustomInput
             v-model="invalidateForm.pattern"
             placeholder="proxy:*:lodash:*"
             @enter="handleInvalidate"
           />
-        </el-form-item>
-        <el-form-item>
-          <CustomButton type="primary" @click="handleInvalidate">使缓存失效</CustomButton>
-        </el-form-item>
-      </el-form>
-    </el-card>
+        </div>
+        <CustomButton type="primary" @click="handleInvalidate">使缓存失效</CustomButton>
+      </div>
+    </CustomCard>
   </div>
 </template>
 
@@ -62,6 +48,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { cacheApi } from '@/api/cache'
+import CustomCard from '@/components/ui/CustomCard.vue'
 import CustomButton from '@/components/ui/CustomButton.vue'
 import CustomInput from '@/components/ui/CustomInput.vue'
 
@@ -142,44 +129,64 @@ onMounted(loadStats)
 
 <style scoped>
 .cache-management {
-  padding: 20px;
+  padding: var(--spacing-xl);
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: var(--spacing-xl);
 }
 
 .page-header h2 {
   margin: 0;
-  font-size: 20px;
-  font-weight: 600;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--spacing-xl);
 }
 
 .stat-card {
   text-align: center;
 }
 
-.stat-card .stat-number {
-  font-size: 28px;
-  font-weight: bold;
-  color: #409eff;
+.stat-number {
+  font-size: var(--font-size-3xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
 }
 
-.stat-card .stat-label {
-  font-size: 14px;
-  color: #909399;
-  margin-top: 8px;
+.stat-label {
+  font-size: var(--font-size-base);
+  color: var(--color-text-tertiary);
+  margin-top: var(--spacing-sm);
 }
 
 .invalidate-card {
-  margin-top: 20px;
+  margin-top: var(--spacing-xl);
 }
 
-.card-header {
-  font-size: 16px;
-  font-weight: 600;
+.invalidate-form {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--spacing-lg);
+}
+
+.form-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.form-label {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
 }
 </style>

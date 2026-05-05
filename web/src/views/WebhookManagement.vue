@@ -2,82 +2,71 @@
   <div class="webhook-management">
     <div class="page-header">
       <h2>Webhook 管理</h2>
-      <el-button type="primary" @click="showCreateDialog">
-        <el-icon><Plus /></el-icon> 创建 Webhook
-      </el-button>
+      <CustomButton type="primary" :icon="Plus" @click="showCreateDialog">
+        创建 Webhook
+      </CustomButton>
     </div>
 
-    <el-table :data="webhooks" v-loading="loading" style="width: 100%">
-      <el-table-column prop="id" label="ID" width="80" />
-      <el-table-column prop="name" label="名称" min-width="150" />
-      <el-table-column prop="url" label="URL" min-width="250">
-        <template #default="{ row }">
-          <el-tooltip :content="row.url" placement="top">
-            <span class="url-text">{{ row.url }}</span>
-          </el-tooltip>
-        </template>
-      </el-table-column>
-      <el-table-column prop="events" label="事件" min-width="200">
-        <template #default="{ row }">
-          <el-tag
-            v-for="event in (row.events || '').split(',').slice(0, 3)"
-            :key="event"
-            size="small"
-            style="margin-right: 4px; margin-bottom: 4px"
-          >
-            {{ event }}
-          </el-tag>
-          <el-tag v-if="(row.events || '').split(',').length > 3" size="small" type="info">
-            +{{ (row.events || '').split(',').length - 3 }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="status" label="状态" width="100">
-        <template #default="{ row }">
-          <el-tag :type="row.status === 'active' ? 'success' : 'danger'" size="small">
-            {{ row.status === 'active' ? '启用' : '禁用' }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="created_at" label="创建时间" width="180">
-        <template #default="{ row }">
-          {{ formatDate(row.created_at) }}
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="280" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" @click="showEditDialog(row)">编辑</el-button>
-          <el-button size="small" type="success" @click="testWebhook(row)" :loading="row.testing">
+    <CustomTable :columns="webhookColumns" :data="webhooks" :loading="loading" row-key="id">
+      <template #url="{ row }">
+        <el-tooltip :content="row.url" placement="top">
+          <span class="url-text">{{ row.url }}</span>
+        </el-tooltip>
+      </template>
+      <template #events="{ row }">
+        <CustomTag
+          v-for="event in (row.events || '').split(',').slice(0, 3)"
+          :key="event"
+          size="small"
+          class="event-tag"
+        >
+          {{ event }}
+        </CustomTag>
+        <CustomTag v-if="(row.events || '').split(',').length > 3" size="small" type="info">
+          +{{ (row.events || '').split(',').length - 3 }}
+        </CustomTag>
+      </template>
+      <template #status="{ row }">
+        <CustomTag :type="row.status === 'active' ? 'success' : 'danger'" size="small">
+          {{ row.status === 'active' ? '启用' : '禁用' }}
+        </CustomTag>
+      </template>
+      <template #created_at="{ row }">
+        {{ formatDate(row.created_at) }}
+      </template>
+      <template #actions="{ row }">
+        <div class="action-buttons">
+          <CustomButton size="small" type="secondary" @click="showEditDialog(row)">编辑</CustomButton>
+          <CustomButton size="small" type="secondary" :loading="row.testing" @click="testWebhook(row)">
             测试
-          </el-button>
-          <el-button size="small" type="info" @click="showDeliveryDialog(row)">
+          </CustomButton>
+          <CustomButton size="small" type="outline" @click="showDeliveryDialog(row)">
             历史
-          </el-button>
-          <el-button size="small" type="danger" @click="handleDelete(row)">
+          </CustomButton>
+          <CustomButton size="small" type="outline" class="button-danger" @click="handleDelete(row)">
             删除
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+          </CustomButton>
+        </div>
+      </template>
+    </CustomTable>
 
     <!-- 创建/编辑对话框 -->
-    <el-dialog
+    <CustomDialog
       v-model="dialogVisible"
       :title="isEdit ? '编辑 Webhook' : '创建 Webhook'"
       width="600px"
     >
       <el-form :model="formData" :rules="formRules" ref="formRef" label-width="80px">
         <el-form-item label="名称" prop="name">
-          <el-input v-model="formData.name" placeholder="请输入 Webhook 名称" />
+          <CustomInput v-model="formData.name" placeholder="请输入 Webhook 名称" />
         </el-form-item>
         <el-form-item label="URL" prop="url">
-          <el-input v-model="formData.url" placeholder="请输入 Webhook URL" />
+          <CustomInput v-model="formData.url" placeholder="请输入 Webhook URL" />
         </el-form-item>
         <el-form-item label="密钥" prop="secret">
-          <el-input
+          <CustomInput
             v-model="formData.secret"
             type="password"
-            show-password
             placeholder="请输入密钥（可选）"
           />
         </el-form-item>
@@ -96,35 +85,27 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitForm" :loading="submitting">确定</el-button>
+        <CustomButton type="secondary" @click="dialogVisible = false">取消</CustomButton>
+        <CustomButton type="primary" :loading="submitting" @click="submitForm">确定</CustomButton>
       </template>
-    </el-dialog>
+    </CustomDialog>
 
     <!-- 交付历史对话框 -->
-    <el-dialog v-model="deliveryVisible" title="交付历史" width="800px">
-      <el-table :data="deliveries" v-loading="deliveryLoading" style="width: 100%">
-        <el-table-column prop="id" label="ID" width="80" />
-        <el-table-column prop="event" label="事件" width="150" />
-        <el-table-column prop="response_code" label="HTTP 状态" width="100">
-          <template #default="{ row }">
-            <el-tag :type="row.response_code >= 200 && row.response_code < 300 ? 'success' : 'danger'" size="small">
-              {{ row.response_code }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="duration" label="响应时间" width="120">
-          <template #default="{ row }">
-            {{ row.duration }} ms
-          </template>
-        </el-table-column>
-        <el-table-column prop="created_at" label="交付时间" min-width="180">
-          <template #default="{ row }">
-            {{ formatDate(row.created_at) }}
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-dialog>
+    <CustomDialog v-model="deliveryVisible" title="交付历史" width="800px">
+      <CustomTable :columns="deliveryColumns" :data="deliveries" :loading="deliveryLoading" row-key="id">
+        <template #response_code="{ row }">
+          <CustomTag :type="row.response_code >= 200 && row.response_code < 300 ? 'success' : 'danger'" size="small">
+            {{ row.response_code }}
+          </CustomTag>
+        </template>
+        <template #duration="{ row }">
+          {{ row.duration }} ms
+        </template>
+        <template #created_at="{ row }">
+          {{ formatDate(row.created_at) }}
+        </template>
+      </CustomTable>
+    </CustomDialog>
   </div>
 </template>
 
@@ -133,6 +114,11 @@ import { ref, onMounted } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { webhookApi, type Webhook, type WebhookDelivery } from '@/api/webhook'
+import CustomButton from '@/components/ui/CustomButton.vue'
+import CustomTable from '@/components/ui/CustomTable.vue'
+import CustomTag from '@/components/ui/CustomTag.vue'
+import CustomDialog from '@/components/ui/CustomDialog.vue'
+import CustomInput from '@/components/ui/CustomInput.vue'
 
 const loading = ref(false)
 const submitting = ref(false)
@@ -167,6 +153,26 @@ const formRules: FormRules = {
     { required: true, message: '请至少选择一个事件', trigger: 'change', type: 'array', min: 1 },
   ],
 }
+
+/** Webhook 列表列定义 */
+const webhookColumns = [
+  { prop: 'id', label: 'ID', width: '80px' },
+  { prop: 'name', label: '名称' },
+  { prop: 'url', label: 'URL' },
+  { prop: 'events', label: '事件' },
+  { prop: 'status', label: '状态', width: '100px' },
+  { prop: 'created_at', label: '创建时间', width: '180px' },
+  { prop: 'actions', label: '操作', width: '280px' },
+]
+
+/** 交付历史列定义 */
+const deliveryColumns = [
+  { prop: 'id', label: 'ID', width: '80px' },
+  { prop: 'event', label: '事件', width: '150px' },
+  { prop: 'response_code', label: 'HTTP 状态', width: '100px' },
+  { prop: 'duration', label: '响应时间', width: '120px' },
+  { prop: 'created_at', label: '交付时间' },
+]
 
 /** 格式化日期 */
 const formatDate = (date: string): string => {
@@ -307,20 +313,21 @@ onMounted(loadWebhooks)
 
 <style scoped>
 .webhook-management {
-  padding: 20px;
+  padding: var(--spacing-lg);
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: var(--spacing-xl);
 }
 
 .page-header h2 {
   margin: 0;
-  font-size: 22px;
-  font-weight: 600;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
 }
 
 .url-text {
@@ -329,11 +336,35 @@ onMounted(loadWebhooks)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--color-text-primary);
+}
+
+.event-tag {
+  margin-right: var(--spacing-xs);
+  margin-bottom: var(--spacing-xs);
+}
+
+.action-buttons {
+  display: flex;
+  gap: var(--spacing-xs);
+  flex-wrap: wrap;
+}
+
+/* 删除按钮危险样式 */
+:deep(.custom-button.button-danger) {
+  color: var(--color-danger-dark, #dc2626);
+  border-color: var(--color-danger-dark, #dc2626);
+}
+
+:deep(.custom-button.button-danger:hover:not(:disabled)) {
+  background: var(--color-danger-dark, #dc2626);
+  color: #ffffff;
+  border-color: var(--color-danger-dark, #dc2626);
 }
 
 :deep(.el-checkbox-group) {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: var(--spacing-md);
 }
 </style>
