@@ -142,11 +142,11 @@ const emptyConfig = {
   obs: { endpoint: '', access_key_id: '', secret_access_key: '', bucket: '', base_path: '', max_size_gb: 1000 },
 }
 
-const form = reactive<Partial<StorageBackend>>({
+const form = reactive({
   name: '',
-  type: 'local',
+  type: 'local' as string,
   description: '',
-  config: { ...emptyConfig },
+  config: { ...emptyConfig } as any,
   is_active: true,
   is_default: false,
 })
@@ -169,7 +169,7 @@ async function loadStorages() {
   loading.value = true
   try {
     const res = await storageBackendApi.list()
-    storages.value = res || []
+    storages.value = (res as any) || []
   } catch {
     ElMessage.error('加载存储列表失败')
   } finally {
@@ -202,8 +202,8 @@ async function handleSubmit() {
 
   saving.value = true
   try {
-    if (isEdit.value && form.id) {
-      await storageBackendApi.update(form.id, form)
+    if (isEdit.value && (form as any).id) {
+      await storageBackendApi.update((form as any).id, form)
       ElMessage.success('更新成功')
     } else {
       await storageBackendApi.create(form)

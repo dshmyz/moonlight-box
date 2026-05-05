@@ -117,7 +117,7 @@ async function loadRepoConfig() {
 
   try {
     const res = await publicRepoApi.getRepoConfig(name)
-    repoConfig.value = res.data
+    repoConfig.value = (res as any).data
   } catch (e: any) {
     error.value = e.response?.data?.message || '加载仓库配置失败'
   } finally {

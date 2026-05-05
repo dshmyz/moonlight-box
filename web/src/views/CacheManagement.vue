@@ -54,7 +54,14 @@ import CustomInput from '@/components/ui/CustomInput.vue'
 
 const loading = ref(false)
 const clearing = ref(false)
-const stats = ref({
+interface CacheStats {
+  total_entries: number
+  total_size: number
+  expired_entries: number
+  max_size_gb: number
+}
+
+const stats = ref<CacheStats>({
   total_entries: 0,
   total_size: 0,
   expired_entries: 0,
@@ -79,7 +86,7 @@ const loadStats = async () => {
   loading.value = true
   try {
     const res = await cacheApi.getStats()
-    stats.value = res || {}
+    stats.value = (res as CacheStats) || { total_entries: 0, total_size: 0, expired_entries: 0, max_size_gb: 0 }
   } catch {
     ElMessage.error('加载缓存统计失败')
   } finally {

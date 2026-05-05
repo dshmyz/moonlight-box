@@ -284,6 +284,7 @@ async function blockCVE(cve: string) {
 onMounted(() => {
   loadStats()
   loadVulnerabilities()
+  loadScanResults()
 })
 </script>
 

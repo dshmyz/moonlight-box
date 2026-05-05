@@ -47,7 +47,7 @@ const casConfig = ref<CASConfig>({ ...defaultCASConfig })
 async function loadConfig() {
   loading.value = true
   try {
-    const res = await casConfigApi.getConfig()
+    const res = await casConfigApi.getConfig() as any
     if (res.data) {
       casConfig.value = { ...defaultCASConfig, ...res.data }
     } else {

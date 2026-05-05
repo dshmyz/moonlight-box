@@ -47,6 +47,10 @@
           <el-icon><Lock /></el-icon>
           <template #title>阻断规则</template>
         </el-menu-item>
+        <el-menu-item index="/admin/proxy-download-logs">
+          <el-icon><Download /></el-icon>
+          <template #title>代理下载日志</template>
+        </el-menu-item>
       </el-sub-menu>
 
       <el-sub-menu index="storage">
@@ -77,6 +81,10 @@
           <el-icon><User /></el-icon>
           <template #title>用户管理</template>
         </el-menu-item>
+        <el-menu-item index="/admin/roles">
+          <el-icon><UserFilled /></el-icon>
+          <template #title>角色管理</template>
+        </el-menu-item>
         <el-menu-item index="/admin/audit">
           <el-icon><Document /></el-icon>
           <template #title>审计日志</template>
@@ -106,6 +114,16 @@
           <template #title>CAS 设置</template>
         </el-menu-item>
       </el-sub-menu>
+
+      <el-menu-item index="/admin/profile">
+        <el-icon><UserFilled /></el-icon>
+        <template #title>个人设置</template>
+      </el-menu-item>
+
+      <el-menu-item index="/admin/help">
+        <el-icon><QuestionFilled /></el-icon>
+        <template #title>帮助中心</template>
+      </el-menu-item>
     </el-menu>
   </el-aside>
 </template>
@@ -113,7 +131,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Odometer, Box, Files, Coin, Lock, Setting, FolderOpened, WarnTriangleFilled, User, Document, Download, Link, Tools, InfoFilled, Folder, Upload } from '@element-plus/icons-vue'
+import { Odometer, Box, Files, Coin, Lock, Setting, FolderOpened, WarnTriangleFilled, User, UserFilled, Document, Download, Link, Tools, InfoFilled, Folder, Upload, QuestionFilled } from '@element-plus/icons-vue'
 
 defineProps<{
   isCollapsed: boolean
