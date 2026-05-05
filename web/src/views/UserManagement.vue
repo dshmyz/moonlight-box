@@ -2,52 +2,77 @@
   <div class="user-management">
     <div class="page-header">
       <h2>用户管理</h2>
-      <el-button type="primary" @click="showCreateDialog">
-        <el-icon><Plus /></el-icon> 创建用户
-      </el-button>
+      <CustomButton type="primary" @click="showCreateDialog">
+        <template #icon>
+          <Plus />
+        </template>
+        创建用户
+      </CustomButton>
     </div>
 
     <div class="filter-bar">
-      <el-input v-model="keyword" placeholder="搜索用户名" clearable style="width: 200px" @keyup.enter="loadUsers" @clear="loadUsers" />
-      <el-select v-model="filterActive" placeholder="状态" clearable style="width: 100px" @change="loadUsers">
-        <el-option label="启用" :value="true" />
-        <el-option label="禁用" :value="false" />
-      </el-select>
-      <el-button type="primary" @click="loadUsers">搜索</el-button>
+      <CustomInput
+        v-model="keyword"
+        placeholder="搜索用户名"
+        clearable
+        style="width: 200px"
+        @keyup.enter="loadUsers"
+        @clear="loadUsers"
+      />
+      <CustomSelect
+        v-model="filterActive"
+        placeholder="状态"
+        clearable
+        style="width: 100px"
+        :options="statusOptions"
+        @change="loadUsers"
+      />
+      <CustomButton type="primary" @click="loadUsers">搜索</CustomButton>
     </div>
 
-    <el-table :data="users" v-loading="loading" style="width: 100%">
-      <el-table-column prop="id" label="ID" width="60" />
-      <el-table-column prop="username" label="用户名" width="150" />
-      <el-table-column prop="display_name" label="显示名称" width="150" />
-      <el-table-column prop="email" label="邮箱" min-width="180" />
-      <el-table-column prop="is_active" label="状态" width="80">
-        <template #default="{ row }">
-          <el-tag :type="row.is_active ? 'success' : 'danger'" size="small">
-            {{ row.is_active ? '启用' : '禁用' }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="created_at" label="创建时间" width="180">
-        <template #default="{ row }">
-          {{ formatDate(row.created_at) }}
-        </template>
-      </el-table-column>
-      <el-table-column label="角色" min-width="200">
-        <template #default="{ row }">
-          <el-tag v-for="role in row.roles" :key="role.id" size="small" style="margin-right: 4px">{{ role.name }}</el-tag>
+    <CustomTable
+      :columns="tableColumns"
+      :data="users"
+      :loading="loading"
+      row-key="id"
+    >
+      <template #is_active="{ row }">
+        <CustomTag :type="row.is_active ? 'success' : 'danger'" size="small">
+          {{ row.is_active ? '启用' : '禁用' }}
+        </CustomTag>
+      </template>
+
+      <template #created_at="{ row }">
+        {{ formatDate(row.created_at) }}
+      </template>
+
+      <template #roles="{ row }">
+        <div class="role-tags">
+          <CustomTag
+            v-for="role in row.roles"
+            :key="role.id"
+            size="small"
+            type="primary"
+          >
+            {{ role.name }}
+          </CustomTag>
           <span v-if="!row.roles || row.roles.length === 0" class="text-muted">未分配</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="200" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" @click="showRoleDialog(row)">分配角色</el-button>
-          <el-button size="small" :type="row.is_active ? 'warning' : 'success'" @click="toggleActive(row)">
+        </div>
+      </template>
+
+      <template #operations="{ row }">
+        <div class="operation-buttons">
+          <CustomButton size="small" @click="showRoleDialog(row)">分配角色</CustomButton>
+          <CustomButton
+            size="small"
+            :type="row.is_active ? 'outline' : 'primary'"
+            @click="toggleActive(row)"
+          >
             {{ row.is_active ? '禁用' : '启用' }}
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+          </CustomButton>
+        </div>
+      </template>
+    </CustomTable>
 
     <el-pagination
       v-if="total > pageSize"
@@ -59,28 +84,28 @@
       @current-change="handlePageChange"
     />
 
-    <el-dialog v-model="createVisible" title="创建用户" width="500px">
+    <CustomDialog v-model="createVisible" title="创建用户" width="500px">
       <el-form :model="createForm" label-width="80px">
         <el-form-item label="用户名">
-          <el-input v-model="createForm.username" />
+          <CustomInput v-model="createForm.username" />
         </el-form-item>
         <el-form-item label="密码">
-          <el-input v-model="createForm.password" type="password" show-password />
+          <CustomInput v-model="createForm.password" type="password" />
         </el-form-item>
         <el-form-item label="显示名称">
-          <el-input v-model="createForm.display_name" />
+          <CustomInput v-model="createForm.display_name" />
         </el-form-item>
         <el-form-item label="邮箱">
-          <el-input v-model="createForm.email" />
+          <CustomInput v-model="createForm.email" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createVisible = false">取消</el-button>
-        <el-button type="primary" @click="createUser">确定</el-button>
+        <CustomButton @click="createVisible = false">取消</CustomButton>
+        <CustomButton type="primary" @click="createUser">确定</CustomButton>
       </template>
-    </el-dialog>
+    </CustomDialog>
 
-    <el-dialog v-model="roleVisible" title="分配角色" width="500px">
+    <CustomDialog v-model="roleVisible" title="分配角色" width="500px">
       <el-form label-width="80px">
         <el-form-item label="用户">
           <span>{{ currentUser?.username }}</span>
@@ -94,10 +119,10 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="roleVisible = false">取消</el-button>
-        <el-button type="primary" @click="assignRoles">确定</el-button>
+        <CustomButton @click="roleVisible = false">取消</CustomButton>
+        <CustomButton type="primary" @click="assignRoles">确定</CustomButton>
       </template>
-    </el-dialog>
+    </CustomDialog>
   </div>
 </template>
 
@@ -106,6 +131,12 @@ import { ref, onMounted } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
 import request from '@/api/request'
 import { ElMessage } from 'element-plus'
+import CustomButton from '@/components/ui/CustomButton.vue'
+import CustomInput from '@/components/ui/CustomInput.vue'
+import CustomSelect from '@/components/ui/CustomSelect.vue'
+import CustomTable from '@/components/ui/CustomTable.vue'
+import CustomTag from '@/components/ui/CustomTag.vue'
+import CustomDialog from '@/components/ui/CustomDialog.vue'
 
 const loading = ref(false)
 const users = ref<any[]>([])
@@ -122,6 +153,22 @@ const createForm = ref({ username: '', password: '', display_name: '', email: ''
 const roleVisible = ref(false)
 const currentUser = ref<any>(null)
 const selectedRoles = ref<number[]>([])
+
+const statusOptions = [
+  { label: '启用', value: true },
+  { label: '禁用', value: false },
+]
+
+const tableColumns = [
+  { prop: 'id', label: 'ID', width: '60px' },
+  { prop: 'username', label: '用户名', width: '150px' },
+  { prop: 'display_name', label: '显示名称', width: '150px' },
+  { prop: 'email', label: '邮箱' },
+  { prop: 'is_active', label: '状态', width: '80px' },
+  { prop: 'created_at', label: '创建时间', width: '180px' },
+  { prop: 'roles', label: '角色' },
+  { prop: 'operations', label: '操作', width: '200px' },
+]
 
 function formatDate(d: string): string {
   if (!d) return '-'
@@ -212,35 +259,46 @@ onMounted(() => {
 
 <style scoped>
 .user-management {
-  padding: 20px;
+  padding: var(--spacing-xl);
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: var(--spacing-2xl);
 }
 
 .page-header h2 {
   margin: 0;
-  font-size: 22px;
-  font-weight: 600;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
 }
 
 .filter-bar {
   display: flex;
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-xl);
 }
 
 .pagination {
-  margin-top: 16px;
+  margin-top: var(--spacing-xl);
   display: flex;
   justify-content: flex-end;
 }
 
 .text-muted {
-  color: #909399;
+  color: var(--color-text-tertiary);
+}
+
+.role-tags {
+  display: flex;
+  gap: var(--spacing-xs);
+  flex-wrap: wrap;
+}
+
+.operation-buttons {
+  display: flex;
+  gap: var(--spacing-sm);
 }
 </style>

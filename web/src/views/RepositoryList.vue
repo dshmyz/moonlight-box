@@ -1,73 +1,68 @@
 <template>
   <div class="repository-list">
     <div class="page-header">
+
       <h2>仓库管理</h2>
-      <el-button type="primary" @click="openCreateDialog">
-        <el-icon><Plus /></el-icon> 创建仓库
-      </el-button>
+      <CustomButton type="primary" @click="openCreateDialog">
+        <template #icon>
+          <Plus />
+        </template>
+        创建仓库
+      </CustomButton>
     </div>
 
-    <el-tabs v-model="activeTab">
-      <el-tab-pane label="全部" name="all" />
-      <el-tab-pane label="Local" name="local" />
-      <el-tab-pane label="Proxy" name="proxy" />
-      <el-tab-pane label="Virtual" name="virtual" />
-    </el-tabs>
+    <CustomTabs v-model="activeTab" :tabs="tabOptions" />
 
-    <el-table :data="filteredRepos" v-loading="loading" style="width: 100%">
-      <el-table-column prop="name" label="仓库名称" width="180" />
-      <el-table-column prop="display_name" label="显示名称" />
-      <el-table-column prop="type" label="类型" width="100">
-        <template #default="{ row }">
-          <el-tag :type="getTypeTag(row.type)" size="small">
-            {{ row.type }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="package_type" label="包类型" width="100" />
-      <el-table-column label="同步状态" width="200">
-        <template #default="{ row }">
-          <div v-if="row.type === 'proxy' && row.metadata_sync_enabled">
-            <el-tag :type="getSyncStatusType(row.last_sync_status)">
-              {{ getSyncStatusText(row.last_sync_status) }}
-            </el-tag>
-            <div class="sync-time" v-if="row.last_metadata_sync_at">
-              {{ formatTime(row.last_metadata_sync_at) }}
-            </div>
+    <CustomTable
+      :columns="tableColumns"
+      :data="filteredRepos"
+      :loading="loading"
+      row-key="name"
+    >
+      <template #type="{ row }">
+        <CustomTag :type="getTypeTag(row.type)" size="small">
+          {{ row.type }}
+        </CustomTag>
+      </template>
+
+      <template #sync_status="{ row }">
+        <div v-if="row.type === 'proxy' && row.metadata_sync_enabled">
+          <CustomTag :type="getSyncStatusType(row.last_sync_status)" size="small">
+            {{ getSyncStatusText(row.last_sync_status) }}
+          </CustomTag>
+          <div class="sync-time" v-if="row.last_metadata_sync_at">
+            {{ formatTime(row.last_metadata_sync_at) }}
           </div>
-          <span v-else>-</span>
-        </template>
-      </el-table-column>
-      <el-table-column prop="remote_url" label="远程地址" show-overflow-tooltip />
-      <el-table-column prop="enabled" label="状态" width="80">
-        <template #default="{ row }">
-          <el-tag :type="row.enabled ? 'success' : 'danger'" size="small">
-            {{ row.enabled ? '启用' : '禁用' }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="300">
-        <template #default="{ row }">
-          <el-button-group>
-            <el-button size="small" @click="openEditDialog(row)">编辑</el-button>
-            <el-button
-              v-if="row.type === 'proxy'"
-              size="small"
-              type="primary"
-              @click="handleSyncMetadata(row)"
-              :loading="row.syncing"
-            >
-              同步元数据
-            </el-button>
-            <el-popconfirm title="确定删除此仓库?" @confirm="deleteRepo(row.name)">
-              <template #reference>
-                <el-button size="small" type="danger">删除</el-button>
-              </template>
-            </el-popconfirm>
-          </el-button-group>
-        </template>
-      </el-table-column>
-    </el-table>
+        </div>
+        <span v-else>-</span>
+      </template>
+
+      <template #enabled="{ row }">
+        <CustomTag :type="row.enabled ? 'success' : 'danger'" size="small">
+          {{ row.enabled ? '启用' : '禁用' }}
+        </CustomTag>
+      </template>
+
+      <template #operations="{ row }">
+        <div class="operation-buttons">
+          <CustomButton size="small" @click="openEditDialog(row)">编辑</CustomButton>
+          <CustomButton
+            v-if="row.type === 'proxy'"
+            size="small"
+            type="primary"
+            @click="handleSyncMetadata(row)"
+            :loading="row.syncing"
+          >
+            同步元数据
+          </CustomButton>
+          <el-popconfirm title="确定删除此仓库?" @confirm="deleteRepo(row.name)">
+            <template #reference>
+              <CustomButton size="small" type="outline">删除</CustomButton>
+            </template>
+          </el-popconfirm>
+        </div>
+      </template>
+    </CustomTable>
 
     <RepositoryFormDialog
       v-model="showDialog"
@@ -83,6 +78,10 @@ import { Plus } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { repositoryApi, type Repository } from '@/api/repository'
 import RepositoryFormDialog from '@/components/repository/RepositoryFormDialog.vue'
+import CustomButton from '@/components/ui/CustomButton.vue'
+import CustomTable from '@/components/ui/CustomTable.vue'
+import CustomTag from '@/components/ui/CustomTag.vue'
+import CustomTabs from '@/components/ui/CustomTabs.vue'
 
 interface LocalRepository extends Repository {
   syncing?: boolean
@@ -93,6 +92,24 @@ const activeTab = ref('all')
 const showDialog = ref(false)
 const editingRepo = ref<Repository | null>(null)
 const repos = ref<LocalRepository[]>([])
+
+const tabOptions = [
+  { name: 'all', label: '全部' },
+  { name: 'local', label: 'Local' },
+  { name: 'proxy', label: 'Proxy' },
+  { name: 'virtual', label: 'Virtual' },
+]
+
+const tableColumns = [
+  { prop: 'name', label: '仓库名称', width: '180px' },
+  { prop: 'display_name', label: '显示名称' },
+  { prop: 'type', label: '类型', width: '100px' },
+  { prop: 'package_type', label: '包类型', width: '100px' },
+  { prop: 'sync_status', label: '同步状态', width: '200px' },
+  { prop: 'remote_url', label: '远程地址' },
+  { prop: 'enabled', label: '状态', width: '80px' },
+  { prop: 'operations', label: '操作', width: '300px' },
+]
 
 const filteredRepos = computed(() => {
   if (activeTab.value === 'all') return repos.value
@@ -244,5 +261,11 @@ onMounted(loadRepos)
   font-size: var(--font-size-xs);
   color: var(--color-text-tertiary);
   margin-top: var(--spacing-xs);
+}
+
+.operation-buttons {
+  display: flex;
+  gap: var(--spacing-sm);
+  align-items: center;
 }
 </style>

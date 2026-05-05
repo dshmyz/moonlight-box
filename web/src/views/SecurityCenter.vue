@@ -3,144 +3,119 @@
     <div class="page-header">
       <h2>安全中心</h2>
       <CustomButton type="primary" @click="triggerFullScan">
-        <el-icon><Refresh /></el-icon> 全量扫描
+        <template #icon>
+          <Refresh />
+        </template>
+        全量扫描
       </CustomButton>
     </div>
 
-    <el-row :gutter="16" class="stat-cards">
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-value">{{ stats.total_scans || 0 }}</div>
-          <div class="stat-label">已扫描包</div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card critical">
-          <div class="stat-value">{{ stats.critical || 0 }}</div>
-          <div class="stat-label">严重漏洞</div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card high">
-          <div class="stat-value">{{ stats.high || 0 }}</div>
-          <div class="stat-label">高危漏洞</div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card medium">
-          <div class="stat-value">{{ (stats.medium || 0) + (stats.low || 0) }}</div>
-          <div class="stat-label">中低危漏洞</div>
-        </el-card>
-      </el-col>
-    </el-row>
+    <div class="stat-cards">
+      <CustomCard hoverable class="stat-card">
+        <div class="stat-value">{{ stats.total_scans || 0 }}</div>
+        <div class="stat-label">已扫描包</div>
+      </CustomCard>
+      <CustomCard hoverable class="stat-card critical">
+        <div class="stat-value">{{ stats.critical || 0 }}</div>
+        <div class="stat-label">严重漏洞</div>
+      </CustomCard>
+      <CustomCard hoverable class="stat-card high">
+        <div class="stat-value">{{ stats.high || 0 }}</div>
+        <div class="stat-label">高危漏洞</div>
+      </CustomCard>
+      <CustomCard hoverable class="stat-card medium">
+        <div class="stat-value">{{ (stats.medium || 0) + (stats.low || 0) }}</div>
+        <div class="stat-label">中低危漏洞</div>
+      </CustomCard>
+    </div>
 
-    <el-tabs v-model="activeTab">
-      <el-tab-pane label="漏洞列表" name="vulnerabilities">
-        <div class="filter-bar">
-          <CustomSelect 
-            v-model="filterSeverity" 
-            placeholder="严重等级" 
-            clearable 
-            style="width: 140px" 
-            @change="loadVulnerabilities"
-            :options="[
-              { label: '严重', value: 'critical' },
-              { label: '高危', value: 'high' },
-              { label: '中危', value: 'medium' },
-              { label: '低危', value: 'low' }
-            ]"
-          />
-          <CustomSelect 
-            v-model="filterPkgType" 
-            placeholder="包类型" 
-            clearable 
-            style="width: 120px" 
-            @change="loadVulnerabilities"
-            :options="[
-              { label: 'npm', value: 'npm' },
-              { label: 'maven', value: 'maven' },
-              { label: 'pypi', value: 'pypi' },
-              { label: 'go', value: 'go' },
-              { label: 'nuget', value: 'nuget' }
-            ]"
-          />
-          <CustomButton type="primary" @click="loadVulnerabilities">搜索</CustomButton>
-        </div>
+    <CustomTabs v-model="activeTab" :tabs="tabOptions" />
 
-        <el-table :data="vulnerabilities" v-loading="loading" style="width: 100%">
-          <el-table-column prop="cve_id" label="CVE" width="160">
-            <template #default="{ row }">
-              <el-link type="primary" :href="row.references" target="_blank">{{ row.cve_id }}</el-link>
-            </template>
-          </el-table-column>
-          <el-table-column prop="severity" label="严重等级" width="100">
-            <template #default="{ row }">
-              <el-tag :type="severityTagType(row.severity)" size="small">
-                {{ severityLabel(row.severity) }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="cvss_score" label="CVSS" width="80">
-            <template #default="{ row }">
-              <span :class="`cvss-${row.severity}`">{{ row.cvss_score }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column prop="title" label="漏洞名称" min-width="220" show-overflow-tooltip />
-          <el-table-column prop="dependency_name" label="依赖包" min-width="150" />
-          <el-table-column prop="current_version" label="当前版本" width="100" />
-          <el-table-column prop="fixed_version" label="修复版本" width="100">
-            <template #default="{ row }">
-              <el-tag v-if="row.fixed_version" type="success" size="small">{{ row.fixed_version }}</el-tag>
-              <span v-else>-</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="100" fixed="right">
-            <template #default="{ row }">
-              <el-button size="small" type="danger" @click="blockCVE(row.cve_id)">阻断</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-
-        <el-pagination
-          v-if="total > pageSize"
-          :current-page="page"
-          :page-size="pageSize"
-          :total="total"
-          layout="total, prev, pager, next"
-          class="pagination"
-          @current-change="handlePageChange"
+    <template v-if="activeTab === 'vulnerabilities'">
+      <div class="filter-bar">
+        <CustomSelect
+          v-model="filterSeverity"
+          placeholder="严重等级"
+          clearable
+          style="width: 140px"
+          @change="loadVulnerabilities"
+          :options="severityOptions"
         />
-      </el-tab-pane>
+        <CustomSelect
+          v-model="filterPkgType"
+          placeholder="包类型"
+          clearable
+          style="width: 120px"
+          @change="loadVulnerabilities"
+          :options="pkgTypeOptions"
+        />
+        <CustomButton type="primary" @click="loadVulnerabilities">搜索</CustomButton>
+      </div>
 
-      <el-tab-pane label="扫描结果" name="scanResults">
-        <el-table :data="scanResults" v-loading="loading" style="width: 100%">
-          <el-table-column prop="id" label="ID" width="60" />
-          <el-table-column prop="version_id" label="版本 ID" width="100" />
-          <el-table-column prop="scan_status" label="状态" width="100">
-            <template #default="{ row }">
-              <el-tag :type="scanStatusType(row.scan_status)" size="small">
-                {{ scanStatusLabel(row.scan_status) }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="total_vulnerabilities" label="漏洞数" width="90" />
-          <el-table-column prop="critical_count" label="严重" width="80">
-            <template #default="{ row }">
-              <span v-if="row.critical_count > 0" class="text-danger">{{ row.critical_count }}</span>
-              <span v-else>{{ row.critical_count }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column prop="high_count" label="高危" width="80" />
-          <el-table-column prop="medium_count" label="中危" width="80" />
-          <el-table-column prop="low_count" label="低危" width="80" />
-          <el-table-column prop="scanned_at" label="扫描时间" width="180">
-            <template #default="{ row }">
-              {{ formatDate(row.scanned_at) }}
-            </template>
-          </el-table-column>
-        </el-table>
-      </el-tab-pane>
-    </el-tabs>
+      <CustomTable
+        :columns="vulnColumns"
+        :data="vulnerabilities"
+        :loading="loading"
+        row-key="cve_id"
+      >
+        <template #cve_id="{ row }">
+          <a :href="row.references" target="_blank" class="cve-link">{{ row.cve_id }}</a>
+        </template>
+
+        <template #severity="{ row }">
+          <CustomTag :type="severityTagType(row.severity)" size="small">
+            {{ severityLabel(row.severity) }}
+          </CustomTag>
+        </template>
+
+        <template #cvss_score="{ row }">
+          <span :class="`cvss-${row.severity}`">{{ row.cvss_score }}</span>
+        </template>
+
+        <template #fixed_version="{ row }">
+          <CustomTag v-if="row.fixed_version" type="success" size="small">{{ row.fixed_version }}</CustomTag>
+          <span v-else>-</span>
+        </template>
+
+        <template #operations="{ row }">
+          <CustomButton size="small" type="outline" @click="blockCVE(row.cve_id)">阻断</CustomButton>
+        </template>
+      </CustomTable>
+
+      <el-pagination
+        v-if="total > pageSize"
+        :current-page="page"
+        :page-size="pageSize"
+        :total="total"
+        layout="total, prev, pager, next"
+        class="pagination"
+        @current-change="handlePageChange"
+      />
+    </template>
+
+    <template v-if="activeTab === 'scanResults'">
+      <CustomTable
+        :columns="scanColumns"
+        :data="scanResults"
+        :loading="loading"
+        row-key="id"
+      >
+        <template #scan_status="{ row }">
+          <CustomTag :type="scanStatusType(row.scan_status)" size="small">
+            {{ scanStatusLabel(row.scan_status) }}
+          </CustomTag>
+        </template>
+
+        <template #critical_count="{ row }">
+          <span v-if="row.critical_count > 0" class="text-danger">{{ row.critical_count }}</span>
+          <span v-else>{{ row.critical_count }}</span>
+        </template>
+
+        <template #scanned_at="{ row }">
+          {{ formatDate(row.scanned_at) }}
+        </template>
+      </CustomTable>
+    </template>
   </div>
 </template>
 
@@ -151,6 +126,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { securityApi, type SecurityStats, type Vulnerability, type ScanResult } from '@/api/security'
 import CustomButton from '@/components/ui/CustomButton.vue'
 import CustomSelect from '@/components/ui/CustomSelect.vue'
+import CustomTable from '@/components/ui/CustomTable.vue'
+import CustomTag from '@/components/ui/CustomTag.vue'
+import CustomTabs from '@/components/ui/CustomTabs.vue'
+import CustomCard from '@/components/ui/CustomCard.vue'
 
 const activeTab = ref('vulnerabilities')
 const loading = ref(false)
@@ -163,18 +142,61 @@ const total = ref(0)
 const filterSeverity = ref('')
 const filterPkgType = ref('')
 
+const tabOptions = [
+  { name: 'vulnerabilities', label: '漏洞列表' },
+  { name: 'scanResults', label: '扫描结果' },
+]
+
+const severityOptions = [
+  { label: '严重', value: 'critical' },
+  { label: '高危', value: 'high' },
+  { label: '中危', value: 'medium' },
+  { label: '低危', value: 'low' },
+]
+
+const pkgTypeOptions = [
+  { label: 'npm', value: 'npm' },
+  { label: 'maven', value: 'maven' },
+  { label: 'pypi', value: 'pypi' },
+  { label: 'go', value: 'go' },
+  { label: 'nuget', value: 'nuget' },
+]
+
+const vulnColumns = [
+  { prop: 'cve_id', label: 'CVE', width: '160px' },
+  { prop: 'severity', label: '严重等级', width: '100px' },
+  { prop: 'cvss_score', label: 'CVSS', width: '80px' },
+  { prop: 'title', label: '漏洞名称' },
+  { prop: 'dependency_name', label: '依赖包' },
+  { prop: 'current_version', label: '当前版本', width: '100px' },
+  { prop: 'fixed_version', label: '修复版本', width: '100px' },
+  { prop: 'operations', label: '操作', width: '100px' },
+]
+
+const scanColumns = [
+  { prop: 'id', label: 'ID', width: '60px' },
+  { prop: 'version_id', label: '版本 ID', width: '100px' },
+  { prop: 'scan_status', label: '状态', width: '100px' },
+  { prop: 'total_vulnerabilities', label: '漏洞数', width: '90px' },
+  { prop: 'critical_count', label: '严重', width: '80px' },
+  { prop: 'high_count', label: '高危', width: '80px' },
+  { prop: 'medium_count', label: '中危', width: '80px' },
+  { prop: 'low_count', label: '低危', width: '80px' },
+  { prop: 'scanned_at', label: '扫描时间', width: '180px' },
+]
+
 function severityLabel(s: string): string {
   const map: Record<string, string> = { critical: '严重', high: '高危', medium: '中危', low: '低危' }
   return map[s] || s
 }
 
-function severityTagType(s: string): string {
-  const map: Record<string, string> = { critical: 'danger', high: 'warning', medium: 'info', low: 'success' }
+function severityTagType(s: string): 'default' | 'primary' | 'success' | 'warning' | 'danger' | 'info' {
+  const map: Record<string, 'default' | 'primary' | 'success' | 'warning' | 'danger' | 'info'> = { critical: 'danger', high: 'warning', medium: 'info', low: 'success' }
   return map[s] || 'info'
 }
 
-function scanStatusType(s: string): string {
-  const map: Record<string, string> = { completed: 'success', scanning: 'warning', failed: 'danger', pending: 'info' }
+function scanStatusType(s: string): 'default' | 'primary' | 'success' | 'warning' | 'danger' | 'info' {
+  const map: Record<string, 'default' | 'primary' | 'success' | 'warning' | 'danger' | 'info'> = { completed: 'success', scanning: 'warning', failed: 'danger', pending: 'info' }
   return map[s] || 'info'
 }
 
@@ -267,79 +289,91 @@ onMounted(() => {
 
 <style scoped>
 .security-center {
-  padding: 20px;
+  padding: var(--spacing-xl);
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: var(--spacing-2xl);
 }
 
 .page-header h2 {
   margin: 0;
-  font-size: 22px;
-  font-weight: 600;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
 }
 
 .stat-cards {
-  margin-bottom: 24px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-2xl);
 }
 
 .stat-card {
   text-align: center;
-  padding: 8px 0;
+  padding: var(--spacing-lg) var(--spacing-xl);
 }
 
 .stat-value {
-  font-size: 32px;
-  font-weight: 700;
-  color: #303133;
+  font-size: var(--font-size-3xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
 }
 
 .stat-label {
-  font-size: 14px;
-  color: #909399;
-  margin-top: 4px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+  margin-top: var(--spacing-xs);
 }
 
 .stat-card.critical .stat-value {
-  color: #f56c6c;
+  color: var(--color-danger);
 }
 
 .stat-card.high .stat-value {
-  color: #e6a23c;
+  color: var(--color-warning);
 }
 
 .stat-card.medium .stat-value {
-  color: #909399;
+  color: var(--color-text-tertiary);
 }
 
 .filter-bar {
   display: flex;
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-xl);
 }
 
 .pagination {
-  margin-top: 16px;
+  margin-top: var(--spacing-xl);
   display: flex;
   justify-content: flex-end;
 }
 
 .cvss-critical {
-  color: #f56c6c;
-  font-weight: 700;
+  color: var(--color-danger);
+  font-weight: var(--font-weight-bold);
 }
 
 .cvss-high {
-  color: #e6a23c;
-  font-weight: 600;
+  color: var(--color-warning);
+  font-weight: var(--font-weight-semibold);
 }
 
 .text-danger {
-  color: #f56c6c;
-  font-weight: 600;
+  color: var(--color-danger);
+  font-weight: var(--font-weight-semibold);
+}
+
+.cve-link {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.cve-link:hover {
+  text-decoration: underline;
 }
 </style>

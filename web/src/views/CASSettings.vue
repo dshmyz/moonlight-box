@@ -4,27 +4,21 @@
       <h2>系统设置</h2>
     </div>
 
-    <el-card class="settings-card">
-      <template #header>
-        <div class="card-header">
-          <span>CAS 单点登录配置</span>
-        </div>
-      </template>
-
+    <CustomCard title="CAS 单点登录配置" hoverable class="settings-card">
       <CASConfigForm v-model="casConfig" />
 
       <div class="form-actions">
-        <el-button type="primary" @click="handleSave" :loading="saving">
+        <CustomButton type="primary" @click="handleSave" :loading="saving">
           保存配置
-        </el-button>
-        <el-button @click="handleReset" :loading="loading">
+        </CustomButton>
+        <CustomButton type="secondary" @click="handleReset" :loading="loading">
           重置
-        </el-button>
-        <el-button type="danger" @click="handleDelete" :loading="deleting">
+        </CustomButton>
+        <CustomButton type="outline" @click="handleDelete" :loading="deleting">
           删除配置
-        </el-button>
+        </CustomButton>
       </div>
-    </el-card>
+    </CustomCard>
   </div>
 </template>
 
@@ -33,6 +27,8 @@ import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import CASConfigForm from '@/components/settings/CASConfigForm.vue'
 import { casConfigApi, type CASConfig } from '@/api/casConfig'
+import CustomCard from '@/components/ui/CustomCard.vue'
+import CustomButton from '@/components/ui/CustomButton.vue'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -106,17 +102,17 @@ onMounted(loadConfig)
 
 <style scoped>
 .settings-page {
-  padding: 24px;
+  padding: var(--spacing-xl);
 }
 
 .page-header {
-  margin-bottom: 24px;
+  margin-bottom: var(--spacing-2xl);
 }
 
 .page-header h2 {
-  font-size: 20px;
-  font-weight: 600;
-  color: #303133;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
   margin: 0;
 }
 
@@ -124,14 +120,11 @@ onMounted(loadConfig)
   max-width: 800px;
 }
 
-.card-header {
-  font-size: 16px;
-  font-weight: 600;
-}
-
 .form-actions {
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px solid #ebeef5;
+  margin-top: var(--spacing-2xl);
+  padding-top: var(--spacing-lg);
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  gap: var(--spacing-md);
 }
 </style>

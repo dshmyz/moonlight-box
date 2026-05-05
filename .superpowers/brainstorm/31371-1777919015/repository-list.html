@@ -1,0 +1,183 @@
+<h2>仓库管理页面设计</h2>
+<p class="subtitle">现代简约风格 · 卡片式布局</p>
+
+<div class="mockup">
+  <div class="mockup-header">仓库管理列表页面</div>
+  <div class="mockup-body">
+    <div class="mock-nav" style="background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 24px;display:flex;align-items:center;justify-content:space-between;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <div style="width:32px;height:32px;background:linear-gradient(135deg,#3b82f6,#2563eb);border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;">M</div>
+        <span style="font-weight:600;font-size:16px;color:#111827;">Moonlight</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <span style="color:#6b7280;font-size:14px;">admin</span>
+        <div style="width:32px;height:32px;background:#dbeafe;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#3b82f6;font-weight:500;">A</div>
+      </div>
+    </div>
+    
+    <div style="display:flex;height:450px;">
+      <div class="mock-sidebar" style="background:#fafafa;border-right:1px solid #e5e7eb;width:220px;padding:16px;">
+        <div style="padding:10px 12px;color:#6b7280;border-radius:8px;font-size:14px;">📊 仪表盘</div>
+        <div style="padding:10px 12px;margin-top:4px;color:#6b7280;border-radius:8px;font-size:14px;">📦 包管理</div>
+        <div style="padding:10px 12px;margin-top:4px;background:#eff6ff;color:#3b82f6;border-radius:8px;font-weight:500;font-size:14px;">🗂️ 仓库管理</div>
+        <div style="padding:10px 12px;margin-top:4px;color:#6b7280;border-radius:8px;font-size:14px;">👥 用户管理</div>
+        <div style="padding:10px 12px;margin-top:4px;color:#6b7280;border-radius:8px;font-size:14px;">⚙️ 系统设置</div>
+      </div>
+      
+      <div class="mock-content" style="flex:1;background:#f9fafb;padding:24px;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
+          <h2 style="margin:0;font-size:24px;font-weight:600;color:#111827;">仓库管理</h2>
+          <button class="mock-button" style="background:#3b82f6;color:#fff;border:none;padding:8px 16px;border-radius:8px;font-size:14px;font-weight:500;">+ 新建仓库</button>
+        </div>
+        
+        <div style="background:#fff;padding:16px;border-radius:12px;border:1px solid #e5e7eb;margin-bottom:16px;">
+          <div style="display:flex;gap:12px;align-items:center;">
+            <div style="flex:1;position:relative;">
+              <input class="mock-input" type="text" placeholder="搜索仓库名称..." style="width:100%;padding:8px 12px 8px 36px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;">
+              <span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#9ca3af;">🔍</span>
+            </div>
+            <select style="padding:8px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;background:#fff;color:#374151;">
+              <option>所有类型</option>
+              <option>NPM</option>
+              <option>PyPI</option>
+              <option>Maven</option>
+            </select>
+            <select style="padding:8px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;background:#fff;color:#374151;">
+              <option>所有状态</option>
+              <option>在线</option>
+              <option>离线</option>
+            </select>
+          </div>
+        </div>
+        
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;">
+          <div style="background:#fff;padding:20px;border-radius:12px;border:1px solid #e5e7eb;transition:all 0.2s;">
+            <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:12px;">
+              <div style="display:flex;align-items:center;gap:12px;">
+                <div style="width:48px;height:48px;background:linear-gradient(135deg,#dbeafe,#bfdbfe);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:24px;">📦</div>
+                <div>
+                  <div style="font-weight:600;font-size:16px;color:#111827;">npm-proxy</div>
+                  <div style="font-size:13px;color:#6b7280;margin-top:2px;">NPM 代理仓库</div>
+                </div>
+              </div>
+              <span style="background:#dcfce7;color:#15803d;padding:4px 10px;border-radius:12px;font-size:12px;font-weight:500;">在线</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:16px;">
+              <div>
+                <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">包数量</div>
+                <div style="font-size:18px;font-weight:600;color:#111827;">456</div>
+              </div>
+              <div>
+                <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">存储大小</div>
+                <div style="font-size:18px;font-weight:600;color:#111827;">12.3 GB</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button style="flex:1;padding:8px;border:1px solid #d1d5db;background:#fff;border-radius:6px;font-size:13px;color:#374151;cursor:pointer;">配置</button>
+              <button style="flex:1;padding:8px;border:1px solid #d1d5db;background:#fff;border-radius:6px;font-size:13px;color:#374151;cursor:pointer;">浏览</button>
+            </div>
+          </div>
+          
+          <div style="background:#fff;padding:20px;border-radius:12px;border:1px solid #e5e7eb;transition:all 0.2s;">
+            <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:12px;">
+              <div style="display:flex;align-items:center;gap:12px;">
+                <div style="width:48px;height:48px;background:linear-gradient(135deg,#dcfce7,#bbf7d0);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:24px;">🐍</div>
+                <div>
+                  <div style="font-weight:600;font-size:16px;color:#111827;">pypi-proxy</div>
+                  <div style="font-size:13px;color:#6b7280;margin-top:2px;">PyPI 代理仓库</div>
+                </div>
+              </div>
+              <span style="background:#dcfce7;color:#15803d;padding:4px 10px;border-radius:12px;font-size:12px;font-weight:500;">在线</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:16px;">
+              <div>
+                <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">包数量</div>
+                <div style="font-size:18px;font-weight:600;color:#111827;">234</div>
+              </div>
+              <div>
+                <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">存储大小</div>
+                <div style="font-size:18px;font-weight:600;color:#111827;">8.7 GB</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button style="flex:1;padding:8px;border:1px solid #d1d5db;background:#fff;border-radius:6px;font-size:13px;color:#374151;cursor:pointer;">配置</button>
+              <button style="flex:1;padding:8px;border:1px solid #d1d5db;background:#fff;border-radius:6px;font-size:13px;color:#374151;cursor:pointer;">浏览</button>
+            </div>
+          </div>
+          
+          <div style="background:#fff;padding:20px;border-radius:12px;border:1px solid #e5e7eb;transition:all 0.2s;">
+            <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:12px;">
+              <div style="display:flex;align-items:center;gap:12px;">
+                <div style="width:48px;height:48px;background:linear-gradient(135deg,#fef3c7,#fde68a);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:24px;">☕</div>
+                <div>
+                  <div style="font-weight:600;font-size:16px;color:#111827;">maven-proxy</div>
+                  <div style="font-size:13px;color:#6b7280;margin-top:2px;">Maven 代理仓库</div>
+                </div>
+              </div>
+              <span style="background:#dcfce7;color:#15803d;padding:4px 10px;border-radius:12px;font-size:12px;font-weight:500;">在线</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:16px;">
+              <div>
+                <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">包数量</div>
+                <div style="font-size:18px;font-weight:600;color:#111827;">189</div>
+              </div>
+              <div>
+                <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">存储大小</div>
+                <div style="font-size:18px;font-weight:600;color:#111827;">23.1 GB</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button style="flex:1;padding:8px;border:1px solid #d1d5db;background:#fff;border-radius:6px;font-size:13px;color:#374151;cursor:pointer;">配置</button>
+              <button style="flex:1;padding:8px;border:1px solid #d1d5db;background:#fff;border-radius:6px;font-size:13px;color:#374151;cursor:pointer;">浏览</button>
+            </div>
+          </div>
+          
+          <div style="background:#fff;padding:20px;border-radius:12px;border:1px solid #e5e7eb;transition:all 0.2s;">
+            <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:12px;">
+              <div style="display:flex;align-items:center;gap:12px;">
+                <div style="width:48px;height:48px;background:linear-gradient(135deg,#fce7f3,#fbcfe8);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:24px;">💎</div>
+                <div>
+                  <div style="font-weight:600;font-size:16px;color:#111827;">gem-proxy</div>
+                  <div style="font-size:13px;color:#6b7280;margin-top:2px;">RubyGems 代理仓库</div>
+                </div>
+              </div>
+              <span style="background:#fee2e2;color:#991b1b;padding:4px 10px;border-radius:12px;font-size:12px;font-weight:500;">离线</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:16px;">
+              <div>
+                <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">包数量</div>
+                <div style="font-size:18px;font-weight:600;color:#111827;">67</div>
+              </div>
+              <div>
+                <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">存储大小</div>
+                <div style="font-size:18px;font-weight:600;color:#111827;">3.2 GB</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button style="flex:1;padding:8px;border:1px solid #d1d5db;background:#fff;border-radius:6px;font-size:13px;color:#374151;cursor:pointer;">配置</button>
+              <button style="flex:1;padding:8px;border:1px solid #d1d5db;background:#fff;border-radius:6px;font-size:13px;color:#374151;cursor:pointer;">浏览</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:32px;">
+  <h3>设计亮点</h3>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:16px;">
+    <div style="background:#f9fafb;padding:16px;border-radius:8px;border:1px solid #e5e7eb;">
+      <div style="color:#3b82f6;font-weight:600;margin-bottom:8px;">🎴 卡片式布局</div>
+      <div style="font-size:14px;color:#6b7280;line-height:1.6;">每个仓库独立卡片,信息一目了然,视觉更清晰</div>
+    </div>
+    <div style="background:#f9fafb;padding:16px;border-radius:8px;border:1px solid #e5e7eb;">
+      <div style="color:#10b981;font-weight:600;margin-bottom:8px;">🎨 彩色图标</div>
+      <div style="font-size:14px;color:#6b7280;line-height:1.6;">不同类型仓库使用不同颜色和图标,快速识别</div>
+    </div>
+    <div style="background:#f9fafb;padding:16px;border-radius:8px;border:1px solid #e5e7eb;">
+      <div style="color:#f59e0b;font-weight:600;margin-bottom:8px;">📊 关键指标</div>
+      <div style="font-size:14px;color:#6b7280;line-height:1.6;">包数量、存储大小等关键数据直接展示在卡片上</div>
+    </div>
+  </div>
+</div>

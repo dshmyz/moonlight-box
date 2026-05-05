@@ -7,116 +7,83 @@
       </CustomButton>
     </div>
 
-    <el-row :gutter="20">
-      <el-col :span="12">
-        <el-card class="info-card">
-          <template #header>
-            <div class="card-header">
-              <el-icon><InfoFilled /></el-icon>
-              <span>版本信息</span>
-            </div>
-          </template>
-          <el-descriptions :column="1" border>
-            <el-descriptions-item label="版本号">
-              {{ systemInfo.version || '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="Go 版本">
-              {{ systemInfo.go_version || '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="构建时间">
-              {{ systemInfo.build_time || '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="Git Commit">
-              <el-tooltip :content="systemInfo.git_commit" placement="top" v-if="systemInfo.git_commit">
-                <span class="commit-hash">{{ systemInfo.git_commit?.substring(0, 8) }}</span>
-              </el-tooltip>
-              <span v-else>-</span>
-            </el-descriptions-item>
-          </el-descriptions>
-        </el-card>
-      </el-col>
+    <div class="info-grid">
+      <CustomCard title="版本信息">
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="版本号">
+            {{ systemInfo.version || '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="Go 版本">
+            {{ systemInfo.go_version || '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="构建时间">
+            {{ systemInfo.build_time || '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="Git Commit">
+            <el-tooltip :content="systemInfo.git_commit" placement="top" v-if="systemInfo.git_commit">
+              <span class="commit-hash">{{ systemInfo.git_commit?.substring(0, 8) }}</span>
+            </el-tooltip>
+            <span v-else>-</span>
+          </el-descriptions-item>
+        </el-descriptions>
+      </CustomCard>
 
-      <el-col :span="12">
-        <el-card class="info-card">
-          <template #header>
-            <div class="card-header">
-              <el-icon><Monitor /></el-icon>
-              <span>运行环境</span>
-            </div>
-          </template>
-          <el-descriptions :column="1" border>
-            <el-descriptions-item label="操作系统">
-              {{ systemInfo.os || '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="架构">
-              {{ systemInfo.arch || '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="CPU 核心数">
-              {{ systemInfo.cpu_count || '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="运行时长">
-              {{ formatUptime(systemInfo.uptime) }}
-            </el-descriptions-item>
-          </el-descriptions>
-        </el-card>
-      </el-col>
-    </el-row>
+      <CustomCard title="运行环境">
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="操作系统">
+            {{ systemInfo.os || '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="架构">
+            {{ systemInfo.arch || '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="CPU 核心数">
+            {{ systemInfo.cpu_count || '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="运行时长">
+            {{ formatUptime(systemInfo.uptime) }}
+          </el-descriptions-item>
+        </el-descriptions>
+      </CustomCard>
 
-    <el-row :gutter="20" style="margin-top: 20px">
-      <el-col :span="12">
-        <el-card class="info-card">
-          <template #header>
-            <div class="card-header">
-              <el-icon><Cpu /></el-icon>
-              <span>资源使用</span>
-            </div>
-          </template>
-          <div class="resource-item">
-            <div class="resource-label">内存使用</div>
-            <el-progress
-              :percentage="systemInfo.memory_usage || 0"
-              :color="getProgressColor(systemInfo.memory_usage)"
-            />
-          </div>
-          <div class="resource-item">
-            <div class="resource-label">Goroutine 数量</div>
-            <div class="resource-value">{{ systemInfo.goroutine_count || 0 }}</div>
-          </div>
-        </el-card>
-      </el-col>
+      <CustomCard title="资源使用">
+        <div class="resource-item">
+          <div class="resource-label">内存使用</div>
+          <el-progress
+            :percentage="systemInfo.memory_usage || 0"
+            :color="getProgressColor(systemInfo.memory_usage)"
+          />
+        </div>
+        <div class="resource-item">
+          <div class="resource-label">Goroutine 数量</div>
+          <div class="resource-value">{{ systemInfo.goroutine_count || 0 }}</div>
+        </div>
+      </CustomCard>
 
-      <el-col :span="12">
-        <el-card class="info-card">
-          <template #header>
-            <div class="card-header">
-              <el-icon><Connection /></el-icon>
-              <span>系统状态</span>
-            </div>
-          </template>
-          <div class="status-item">
-            <el-icon class="status-icon success"><CircleCheck /></el-icon>
-            <span>系统运行正常</span>
-          </div>
-          <div class="status-item">
-            <el-icon class="status-icon success"><CircleCheck /></el-icon>
-            <span>数据库连接正常</span>
-          </div>
-          <div class="status-item">
-            <el-icon class="status-icon success"><CircleCheck /></el-icon>
-            <span>存储服务正常</span>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
+      <CustomCard title="系统状态">
+        <div class="status-item">
+          <el-icon class="status-icon success"><CircleCheck /></el-icon>
+          <span>系统运行正常</span>
+        </div>
+        <div class="status-item">
+          <el-icon class="status-icon success"><CircleCheck /></el-icon>
+          <span>数据库连接正常</span>
+        </div>
+        <div class="status-item">
+          <el-icon class="status-icon success"><CircleCheck /></el-icon>
+          <span>存储服务正常</span>
+        </div>
+      </CustomCard>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { Refresh, InfoFilled, Monitor, Cpu, Connection, CircleCheck } from '@element-plus/icons-vue'
+import { Refresh, CircleCheck } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { systemApi, type SystemInfo } from '@/api/system'
 import CustomButton from '@/components/ui/CustomButton.vue'
+import CustomCard from '@/components/ui/CustomCard.vue'
 
 const loading = ref(false)
 const systemInfo = ref<SystemInfo>({
@@ -152,9 +119,9 @@ const formatUptime = (seconds: number): string => {
 
 /** 获取进度条颜色 */
 const getProgressColor = (percentage: number): string => {
-  if (percentage < 50) return '#67c23a'
-  if (percentage < 80) return '#e6a23c'
-  return '#f56c6c'
+  if (percentage < 50) return 'var(--color-success)'
+  if (percentage < 80) return 'var(--color-warning)'
+  return 'var(--color-danger)'
 }
 
 /** 加载系统信息 */
@@ -175,43 +142,39 @@ onMounted(loadSystemInfo)
 
 <style scoped>
 .system-info {
-  padding: 20px;
+  padding: var(--spacing-xl);
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: var(--spacing-2xl);
 }
 
 .page-header h2 {
   margin: 0;
-  font-size: 22px;
-  font-weight: 600;
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
 }
 
-.info-card {
-  height: 100%;
-}
-
-.card-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 16px;
-  font-weight: 600;
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--spacing-xl);
 }
 
 .commit-hash {
   font-family: monospace;
-  background: #f5f7fa;
-  padding: 2px 8px;
-  border-radius: 4px;
+  background: var(--color-bg-hover);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
 }
 
 .resource-item {
-  margin-bottom: 20px;
+  margin-bottom: var(--spacing-xl);
 }
 
 .resource-item:last-child {
@@ -219,23 +182,24 @@ onMounted(loadSystemInfo)
 }
 
 .resource-label {
-  font-size: 14px;
-  color: #606266;
-  margin-bottom: 8px;
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-sm);
 }
 
 .resource-value {
-  font-size: 24px;
-  font-weight: bold;
-  color: #409eff;
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
 }
 
 .status-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  font-size: 14px;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+  font-size: var(--font-size-base);
+  color: var(--color-text-primary);
 }
 
 .status-item:last-child {
@@ -243,10 +207,10 @@ onMounted(loadSystemInfo)
 }
 
 .status-icon {
-  font-size: 18px;
+  font-size: var(--font-size-lg);
 }
 
 .status-icon.success {
-  color: #67c23a;
+  color: var(--color-success);
 }
 </style>

@@ -1,10 +1,10 @@
 <template>
   <div class="file-browser">
-    <el-card class="browser-card">
+    <CustomCard title="文件浏览器" hoverable class="browser-card">
       <template #header>
         <div class="card-header">
           <span class="title">文件浏览器</span>
-          <el-button @click="refresh" :icon="Refresh" circle />
+          <CustomButton :icon="Refresh" size="small" @click="refresh" />
         </div>
       </template>
 
@@ -24,65 +24,48 @@
         </el-breadcrumb>
       </div>
 
-      <el-table
-        :data="files"
-        v-loading="loading"
-        @row-click="handleRowClick"
-        style="width: 100%"
-        :row-class-name="getRowClassName"
-      >
-        <el-table-column label="名称" min-width="300">
-          <template #default="{ row }">
-            <div class="file-name">
-              <el-icon :size="20" :color="getFileIconColor(row)">
-                <component :is="getFileIcon(row)" />
-              </el-icon>
-              <span>{{ row.name }}</span>
-            </div>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="大小" width="120">
-          <template #default="{ row }">
-            <span v-if="!row.is_dir">{{ formatSize(row.size) }}</span>
-            <span v-else class="directory-label">-</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="修改时间" width="180">
-          <template #default="{ row }">
-            {{ row.mod_time }}
-          </template>
-        </el-table-column>
-
-        <el-table-column label="操作" width="150" align="center">
-          <template #default="{ row }">
-            <el-button
-              v-if="!row.is_dir"
-              link
-              type="primary"
-              @click.stop="downloadFile(row)"
-            >
-              <el-icon><Download /></el-icon>
-              下载
-            </el-button>
-            <el-button
-              v-else
-              link
-              type="primary"
-              @click.stop="navigateTo(row.path)"
-            >
-              <el-icon><FolderOpened /></el-icon>
-              打开
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <CustomTable :columns="columns" :data="files" :loading="loading" row-key="path">
+        <template #name="{ row }">
+          <div class="file-name" @click="row.is_dir && navigateTo(row.path)">
+            <el-icon :size="20" :color="getFileIconColor(row)">
+              <component :is="getFileIcon(row)" />
+            </el-icon>
+            <span>{{ row.name }}</span>
+          </div>
+        </template>
+        <template #size="{ row }">
+          <span v-if="!row.is_dir">{{ formatSize(row.size) }}</span>
+          <span v-else class="directory-label">-</span>
+        </template>
+        <template #mod_time="{ row }">
+          {{ row.mod_time }}
+        </template>
+        <template #actions="{ row }">
+          <CustomButton
+            v-if="!row.is_dir"
+            type="text"
+            size="small"
+            @click.stop="downloadFile(row)"
+          >
+            <el-icon><Download /></el-icon>
+            下载
+          </CustomButton>
+          <CustomButton
+            v-else
+            type="text"
+            size="small"
+            @click.stop="navigateTo(row.path)"
+          >
+            <el-icon><FolderOpened /></el-icon>
+            打开
+          </CustomButton>
+        </template>
+      </CustomTable>
 
       <div class="footer-info">
         <span>共 {{ files.length }} 个项目</span>
       </div>
-    </el-card>
+    </CustomCard>
   </div>
 </template>
 
@@ -98,6 +81,9 @@ import {
   FolderOpened,
 } from '@element-plus/icons-vue'
 import { fileApi } from '@/api/file'
+import CustomCard from '@/components/ui/CustomCard.vue'
+import CustomButton from '@/components/ui/CustomButton.vue'
+import CustomTable from '@/components/ui/CustomTable.vue'
 
 interface FileInfo {
   name: string
@@ -110,6 +96,13 @@ interface FileInfo {
 const loading = ref(false)
 const currentPath = ref('/')
 const files = ref<FileInfo[]>([])
+
+const columns = [
+  { prop: 'name', label: '名称' },
+  { prop: 'size', label: '大小', width: '120px' },
+  { prop: 'mod_time', label: '修改时间', width: '180px' },
+  { prop: 'actions', label: '操作', width: '150px', align: 'center' as const },
+]
 
 const pathSegments = computed(() => {
   if (currentPath.value === '/' || currentPath.value === '') {
@@ -143,16 +136,6 @@ const navigateToSegment = (index: number) => {
 
 const refresh = () => {
   loadDirectory(currentPath.value)
-}
-
-const handleRowClick = (row: FileInfo) => {
-  if (row.is_dir) {
-    navigateTo(row.path)
-  }
-}
-
-const getRowClassName = ({ row }: { row: FileInfo }) => {
-  return row.is_dir ? 'directory-row' : 'file-row'
 }
 
 const getFileIcon = (row: FileInfo) => {
@@ -195,7 +178,7 @@ onMounted(() => {
 
 <style scoped>
 .file-browser {
-  padding: 20px;
+  padding: var(--spacing-xl);
 }
 
 .browser-card {
@@ -209,20 +192,21 @@ onMounted(() => {
 }
 
 .card-header .title {
-  font-size: 18px;
-  font-weight: bold;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
 }
 
 .breadcrumb-container {
-  margin-bottom: 20px;
-  padding: 15px;
-  background-color: #f5f7fa;
-  border-radius: 4px;
+  margin-bottom: var(--spacing-lg);
+  padding: var(--spacing-md);
+  background-color: var(--color-bg-hover);
+  border-radius: var(--radius-sm);
 }
 
 .breadcrumb-link {
   cursor: pointer;
-  color: #409eff;
+  color: var(--color-primary);
 }
 
 .breadcrumb-link:hover {
@@ -232,31 +216,19 @@ onMounted(() => {
 .file-name {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--spacing-sm);
   cursor: pointer;
 }
 
 .directory-label {
-  color: #909399;
-}
-
-.directory-row {
-  cursor: pointer;
-}
-
-.directory-row:hover {
-  background-color: #f5f7fa;
-}
-
-.file-row:hover {
-  background-color: #f5f7fa;
+  color: var(--color-text-tertiary);
 }
 
 .footer-info {
-  margin-top: 20px;
-  padding-top: 15px;
-  border-top: 1px solid #ebeef5;
-  color: #909399;
-  font-size: 14px;
+  margin-top: var(--spacing-lg);
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-sm);
 }
 </style>

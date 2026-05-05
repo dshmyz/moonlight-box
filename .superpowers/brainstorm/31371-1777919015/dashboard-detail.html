@@ -1,0 +1,196 @@
+<h2>仪表盘页面详细设计</h2>
+<p class="subtitle">现代简约风格 · 数据可视化增强</p>
+
+<div class="mockup">
+  <div class="mockup-header">仪表盘完整布局</div>
+  <div class="mockup-body">
+    <div class="mock-nav" style="background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 24px;display:flex;align-items:center;justify-content:space-between;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <div style="width:32px;height:32px;background:linear-gradient(135deg,#3b82f6,#2563eb);border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;">M</div>
+        <span style="font-weight:600;font-size:16px;color:#111827;">Moonlight</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <span style="color:#6b7280;font-size:14px;">admin</span>
+        <div style="width:32px;height:32px;background:#dbeafe;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#3b82f6;font-weight:500;">A</div>
+      </div>
+    </div>
+    
+    <div style="display:flex;height:450px;">
+      <div class="mock-sidebar" style="background:#fafafa;border-right:1px solid #e5e7eb;width:220px;padding:16px;">
+        <div style="padding:10px 12px;background:#eff6ff;color:#3b82f6;border-radius:8px;font-weight:500;font-size:14px;">📊 仪表盘</div>
+        <div style="padding:10px 12px;margin-top:4px;color:#6b7280;border-radius:8px;font-size:14px;">📦 包管理</div>
+        <div style="padding:10px 12px;margin-top:4px;color:#6b7280;border-radius:8px;font-size:14px;">🗂️ 仓库管理</div>
+        <div style="padding:10px 12px;margin-top:4px;color:#6b7280;border-radius:8px;font-size:14px;">👥 用户管理</div>
+        <div style="padding:10px 12px;margin-top:4px;color:#6b7280;border-radius:8px;font-size:14px;">⚙️ 系统设置</div>
+      </div>
+      
+      <div class="mock-content" style="flex:1;background:#f9fafb;padding:24px;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
+          <h2 style="margin:0;font-size:24px;font-weight:600;color:#111827;">概览</h2>
+          <button class="mock-button" style="background:#3b82f6;color:#fff;border:none;padding:8px 16px;border-radius:8px;font-size:14px;font-weight:500;">刷新数据</button>
+        </div>
+        
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px;">
+          <div style="background:linear-gradient(135deg,#eff6ff,#dbeafe);padding:20px;border-radius:12px;border:1px solid #bfdbfe;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+              <span style="color:#3b82f6;font-size:13px;font-weight:500;">总仓库数</span>
+              <span style="color:#60a5fa;font-size:18px;">📊</span>
+            </div>
+            <div style="font-size:28px;font-weight:700;color:#1e40af;">12</div>
+            <div style="color:#60a5fa;font-size:12px;margin-top:4px;display:flex;align-items:center;gap:4px;">
+              <span>↑</span>
+              <span>2 本月新增</span>
+            </div>
+          </div>
+          
+          <div style="background:linear-gradient(135deg,#f0fdf4,#dcfce7);padding:20px;border-radius:12px;border:1px solid #bbf7d0;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+              <span style="color:#16a34a;font-size:13px;font-weight:500;">总包数量</span>
+              <span style="color:#4ade80;font-size:18px;">📦</span>
+            </div>
+            <div style="font-size:28px;font-weight:700;color:#15803d;">1,234</div>
+            <div style="color:#4ade80;font-size:12px;margin-top:4px;display:flex;align-items:center;gap:4px;">
+              <span>↑</span>
+              <span>156 本周新增</span>
+            </div>
+          </div>
+          
+          <div style="background:linear-gradient(135deg,#fef3c7,#fde68a);padding:20px;border-radius:12px;border:1px solid #fcd34d;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+              <span style="color:#d97706;font-size:13px;font-weight:500;">下载量</span>
+              <span style="color:#fbbf24;font-size:18px;">⬇️</span>
+            </div>
+            <div style="font-size:28px;font-weight:700;color:#92400e;">45.2K</div>
+            <div style="color:#f59e0b;font-size:12px;margin-top:4px;display:flex;align-items:center;gap:4px;">
+              <span>↑</span>
+              <span>12% 较上周</span>
+            </div>
+          </div>
+          
+          <div style="background:linear-gradient(135deg,#fce7f3,#fbcfe8);padding:20px;border-radius:12px;border:1px solid #f9a8d4;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+              <span style="color:#db2777;font-size:13px;font-weight:500;">缓存命中率</span>
+              <span style="color:#ec4899;font-size:18px;">⚡</span>
+            </div>
+            <div style="font-size:28px;font-weight:700;color:#9f1239;">89.5%</div>
+            <div style="color:#f472b6;font-size:12px;margin-top:4px;display:flex;align-items:center;gap:4px;">
+              <span>↑</span>
+              <span>3.2% 较昨日</span>
+            </div>
+          </div>
+        </div>
+        
+        <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:24px;">
+          <div style="background:#fff;padding:20px;border-radius:12px;border:1px solid #e5e7eb;">
+            <h3 style="margin:0 0 16px;font-size:16px;font-weight:600;color:#111827;">下载趋势 (最近7天)</h3>
+            <div style="height:120px;display:flex;align-items:end;gap:8px;">
+              <div style="flex:1;background:linear-gradient(to top,#3b82f6,#60a5fa);border-radius:4px 4px 0 0;height:60%;"></div>
+              <div style="flex:1;background:linear-gradient(to top,#3b82f6,#60a5fa);border-radius:4px 4px 0 0;height:75%;"></div>
+              <div style="flex:1;background:linear-gradient(to top,#3b82f6,#60a5fa);border-radius:4px 4px 0 0;height:45%;"></div>
+              <div style="flex:1;background:linear-gradient(to top,#3b82f6,#60a5fa);border-radius:4px 4px 0 0;height:90%;"></div>
+              <div style="flex:1;background:linear-gradient(to top,#3b82f6,#60a5fa);border-radius:4px 4px 0 0;height:65%;"></div>
+              <div style="flex:1;background:linear-gradient(to top,#3b82f6,#60a5fa);border-radius:4px 4px 0 0;height:80%;"></div>
+              <div style="flex:1;background:linear-gradient(to top,#3b82f6,#60a5fa);border-radius:4px 4px 0 0;height:95%;"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:12px;color:#6b7280;">
+              <span>周一</span>
+              <span>周二</span>
+              <span>周三</span>
+              <span>周四</span>
+              <span>周五</span>
+              <span>周六</span>
+              <span>周日</span>
+            </div>
+          </div>
+          
+          <div style="background:#fff;padding:20px;border-radius:12px;border:1px solid #e5e7eb;">
+            <h3 style="margin:0 0 16px;font-size:16px;font-weight:600;color:#111827;">存储使用</h3>
+            <div style="display:flex;align-items:center;justify-content:center;height:120px;">
+              <div style="position:relative;width:100px;height:100px;">
+                <svg viewBox="0 0 36 36" style="transform:rotate(-90deg);">
+                  <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#e5e7eb" stroke-width="3"/>
+                  <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#3b82f6" stroke-width="3" stroke-dasharray="68, 100"/>
+                </svg>
+                <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;">
+                  <div style="font-size:20px;font-weight:700;color:#111827;">68%</div>
+                  <div style="font-size:11px;color:#6b7280;">已使用</div>
+                </div>
+              </div>
+            </div>
+            <div style="text-align:center;margin-top:12px;font-size:13px;color:#6b7280;">
+              <div>已用: 68.2 GB</div>
+              <div>总计: 100 GB</div>
+            </div>
+          </div>
+        </div>
+        
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+          <div style="background:#fff;padding:20px;border-radius:12px;border:1px solid #e5e7eb;">
+            <h3 style="margin:0 0 16px;font-size:16px;font-weight:600;color:#111827;">热门包 Top 5</h3>
+            <div style="space-y:12px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f3f4f6;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <span style="color:#6b7280;font-size:12px;">1</span>
+                  <span style="font-size:14px;color:#111827;font-weight:500;">react</span>
+                </div>
+                <span style="font-size:13px;color:#6b7280;">2,345 下载</span>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f3f4f6;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <span style="color:#6b7280;font-size:12px;">2</span>
+                  <span style="font-size:14px;color:#111827;font-weight:500;">vue</span>
+                </div>
+                <span style="font-size:13px;color:#6b7280;">1,890 下载</span>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <span style="color:#6b7280;font-size:12px;">3</span>
+                  <span style="font-size:14px;color:#111827;font-weight:500;">axios</span>
+                </div>
+                <span style="font-size:13px;color:#6b7280;">1,567 下载</span>
+              </div>
+            </div>
+          </div>
+          
+          <div style="background:#fff;padding:20px;border-radius:12px;border:1px solid #e5e7eb;">
+            <h3 style="margin:0 0 16px;font-size:16px;font-weight:600;color:#111827;">最近活动</h3>
+            <div style="space-y:12px;">
+              <div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid #f3f4f6;">
+                <div style="width:8px;height:8px;background:#3b82f6;border-radius:50%;margin-top:6px;"></div>
+                <div style="flex:1;">
+                  <div style="font-size:14px;color:#111827;">用户 admin 上传了包 lodash@4.17.21</div>
+                  <div style="font-size:12px;color:#6b7280;margin-top:2px;">2 分钟前</div>
+                </div>
+              </div>
+              <div style="display:flex;gap:12px;padding:8px 0;">
+                <div style="width:8px;height:8px;background:#10b981;border-radius:50%;margin-top:6px;"></div>
+                <div style="flex:1;">
+                  <div style="font-size:14px;color:#111827;">创建新仓库 npm-proxy</div>
+                  <div style="font-size:12px;color:#6b7280;margin-top:2px;">15 分钟前</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:32px;">
+  <h3>设计亮点</h3>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:16px;">
+    <div style="background:#f9fafb;padding:16px;border-radius:8px;border:1px solid #e5e7eb;">
+      <div style="color:#3b82f6;font-weight:600;margin-bottom:8px;">🎨 视觉层次</div>
+      <div style="font-size:14px;color:#6b7280;line-height:1.6;">渐变色卡片、清晰的字体层级、舒适的间距,让数据一目了然</div>
+    </div>
+    <div style="background:#f9fafb;padding:16px;border-radius:8px;border:1px solid #e5e7eb;">
+      <div style="color:#10b981;font-weight:600;margin-bottom:8px;">📊 数据可视化</div>
+      <div style="font-size:14px;color:#6b7280;line-height:1.6;">趋势图表、进度环图、排名列表,多种方式展示关键指标</div>
+    </div>
+    <div style="background:#f9fafb;padding:16px;border-radius:8px;border:1px solid #e5e7eb;">
+      <div style="color:#f59e0b;font-weight:600;margin-bottom:8px;">⚡ 交互体验</div>
+      <div style="font-size:14px;color:#6b7280;line-height:1.6;">快速刷新按钮、实时活动流、悬停效果,提升操作效率</div>
+    </div>
+  </div>
+</div>

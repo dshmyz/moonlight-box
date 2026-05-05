@@ -2,181 +2,180 @@
   <div class="block-rule-list">
     <div class="page-header">
       <h2>阻断规则</h2>
-      <div>
-        <el-button @click="showImportDialog = true">
-          <el-icon><Upload /></el-icon> 批量导入
-        </el-button>
-        <el-button type="primary" @click="openCreateDialog">
-          <el-icon><Plus /></el-icon> 创建规则
-        </el-button>
+      <div class="header-actions">
+        <CustomButton type="secondary" :icon="Upload" @click="showImportDialog = true">
+          批量导入
+        </CustomButton>
+        <CustomButton type="primary" :icon="Plus" @click="openCreateDialog">
+          创建规则
+        </CustomButton>
       </div>
     </div>
 
-    <el-tabs v-model="activeTab">
-      <el-tab-pane label="规则列表" name="rules">
-        <div class="filter-bar">
-          <el-input
-            v-model="searchName"
-            placeholder="搜索包名"
-            clearable
-            style="width: 200px"
-            @clear="loadRules"
-            @keyup.enter="loadRules"
+    <CustomTabs v-model="activeTab" :tabs="mainTabs" />
+
+    <div v-if="activeTab === 'rules'" class="tab-content">
+      <div class="filter-bar">
+        <CustomInput
+          v-model="searchName"
+          placeholder="搜索包名"
+          clearable
+          style="width: 200px"
+          @clear="loadRules"
+          @enter="loadRules"
+        />
+        <CustomSelect
+          v-model="filterPkgType"
+          :options="pkgTypeOptions"
+          placeholder="包类型"
+          style="width: 140px"
+          @change="loadRules"
+        />
+        <CustomButton type="primary" @click="loadRules">搜索</CustomButton>
+      </div>
+
+      <CustomTable :columns="ruleColumns" :data="rules" :loading="loading" row-key="id">
+        <template #match_type="{ row }">
+          <CustomTag :type="row.match_type === 'exact' ? 'primary' : 'warning'" size="small">
+            {{ row.match_type === 'exact' ? '精确' : '通配符' }}
+          </CustomTag>
+        </template>
+        <template #enabled="{ row }">
+          <el-switch
+            :model-value="row.enabled"
+            @change="(val: boolean) => toggleEnabled(row, val)"
           />
-          <el-select v-model="filterPkgType" placeholder="包类型" clearable style="width: 120px" @change="loadRules">
-            <el-option label="npm" value="npm" />
-            <el-option label="maven" value="maven" />
-          </el-select>
-          <el-button type="primary" @click="loadRules">搜索</el-button>
-        </div>
+        </template>
+        <template #created_at="{ row }">
+          {{ formatTime(row.created_at) }}
+        </template>
+        <template #actions="{ row }">
+          <div class="action-buttons">
+            <CustomButton size="small" type="secondary" @click="openEditDialog(row)">编辑</CustomButton>
+            <el-popconfirm title="确定删除此规则?" @confirm="deleteRule(row.id)">
+              <template #reference>
+                <CustomButton size="small" type="outline">删除</CustomButton>
+              </template>
+            </el-popconfirm>
+          </div>
+        </template>
+      </CustomTable>
+    </div>
 
-        <el-table :data="rules" v-loading="loading" style="width: 100%">
-          <el-table-column prop="package_name" label="包名" min-width="180" />
-          <el-table-column prop="version" label="版本" width="120" />
-          <el-table-column prop="match_type" label="匹配类型" width="110">
-            <template #default="{ row }">
-              <el-tag :type="row.match_type === 'exact' ? 'primary' : 'warning'" size="small">
-                {{ row.match_type === 'exact' ? '精确' : '通配符' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="package_type" label="包类型" width="100" />
-          <el-table-column prop="reason" label="阻断原因" min-width="200" show-overflow-tooltip />
-          <el-table-column prop="enabled" label="状态" width="80">
-            <template #default="{ row }">
-              <el-switch
-                :model-value="row.enabled"
-                @change="(val: boolean) => toggleEnabled(row, val)"
-              />
-            </template>
-          </el-table-column>
-          <el-table-column prop="created_at" label="创建时间" width="170">
-            <template #default="{ row }">
-              {{ formatTime(row.created_at) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="150" fixed="right">
-            <template #default="{ row }">
-              <el-button size="small" @click="openEditDialog(row)">编辑</el-button>
-              <el-popconfirm title="确定删除此规则?" @confirm="deleteRule(row.id)">
-                <template #reference>
-                  <el-button size="small" type="danger">删除</el-button>
-                </template>
-              </el-popconfirm>
-            </template>
-          </el-table-column>
-        </el-table>
-      </el-tab-pane>
+    <div v-if="activeTab === 'logs'" class="tab-content">
+      <BlockLogTable ref="logTableRef" />
+    </div>
 
-      <el-tab-pane label="阻断日志" name="logs">
-        <BlockLogTable ref="logTableRef" />
-      </el-tab-pane>
-    </el-tabs>
-
-    <el-dialog v-model="showDialog" :title="isEdit ? '编辑规则' : '创建规则'" width="520px" @close="resetForm">
+    <CustomDialog v-model="showDialog" :title="isEdit ? '编辑规则' : '创建规则'" width="520px">
       <BlockRuleForm
         v-if="showDialog"
         ref="ruleFormRef"
         v-model="formData"
       />
       <template #footer>
-        <el-button @click="showDialog = false">取消</el-button>
-        <el-button type="primary" @click="handleSubmit" :loading="submitting">确定</el-button>
+        <CustomButton type="secondary" @click="showDialog = false">取消</CustomButton>
+        <CustomButton type="primary" @click="handleSubmit" :loading="submitting">确定</CustomButton>
       </template>
-    </el-dialog>
+    </CustomDialog>
 
-    <el-dialog v-model="showImportDialog" title="批量导入" width="800px" @close="resetImport">
-      <el-tabs v-model="importTab">
-        <el-tab-pane label="粘贴文本" name="text">
-          <div class="import-desc">
-            <p>按以下 JSON 格式输入阻断规则：</p>
-            <el-alert type="info" :closable="false" show-icon>
-              <template #title>
-                <pre class="format-example">
+    <CustomDialog v-model="showImportDialog" title="批量导入" width="800px">
+      <CustomTabs v-model="importTab" :tabs="importTabs" />
+
+      <div v-if="importTab === 'text'" class="tab-content">
+        <div class="import-desc">
+          <p>按以下 JSON 格式输入阻断规则：</p>
+          <el-alert type="info" :closable="false" show-icon>
+            <template #title>
+              <pre class="format-example">
 [
   { "package_name": "lodash", "version": "4.17.20", "package_type": "npm", "reason": "安全漏洞" }
 ]
-                </pre>
-              </template>
-            </el-alert>
-          </div>
-          <el-input v-model="importText" type="textarea" :rows="12"
-            placeholder='[{"package_name":"lodash","version":"4.17.20","package_type":"npm","reason":"安全漏洞"}]' />
-        </el-tab-pane>
+              </pre>
+            </template>
+          </el-alert>
+        </div>
+        <textarea
+          v-model="importText"
+          class="custom-textarea"
+          :rows="12"
+          placeholder='[{"package_name":"lodash","version":"4.17.20","package_type":"npm","reason":"安全漏洞"}]'
+        />
+      </div>
 
-        <el-tab-pane label="粘贴表格" name="paste">
-          <div class="import-desc">
-            <p>从 Excel / Google Sheets 复制表格后直接粘贴到下方：</p>
-            <el-alert type="info" :closable="false" show-icon>
-              <template #title>
-                表头顺序：包名 | 版本 | 包类型(npm/maven) | 匹配类型(exact/wildcard) | 阻断原因
-              </template>
-            </el-alert>
-          </div>
-          <div
-            class="paste-area"
-            @paste="handlePaste"
-            contenteditable="true"
-            ref="pasteAreaRef"
-          >
-            点击此处并按 Ctrl+V 粘贴表格数据
-          </div>
-          <el-table v-if="parsedPreview.length > 0" :data="parsedPreview" size="small" style="margin-top: 12px" max-height="260">
-            <el-table-column prop="package_name" label="包名" width="150" />
-            <el-table-column prop="version" label="版本" width="100" />
-            <el-table-column prop="package_type" label="包类型" width="80" />
-            <el-table-column prop="match_type" label="匹配类型" width="100" />
-            <el-table-column prop="reason" label="阻断原因" min-width="180" show-overflow-tooltip />
-          </el-table>
-        </el-tab-pane>
+      <div v-if="importTab === 'paste'" class="tab-content">
+        <div class="import-desc">
+          <p>从 Excel / Google Sheets 复制表格后直接粘贴到下方：</p>
+          <el-alert type="info" :closable="false" show-icon>
+            <template #title>
+              表头顺序：包名 | 版本 | 包类型(npm/maven) | 匹配类型(exact/wildcard) | 阻断原因
+            </template>
+          </el-alert>
+        </div>
+        <div
+          class="paste-area"
+          @paste="handlePaste"
+          contenteditable="true"
+          ref="pasteAreaRef"
+        >
+          点击此处并按 Ctrl+V 粘贴表格数据
+        </div>
+        <CustomTable
+          v-if="parsedPreview.length > 0"
+          :columns="previewColumns"
+          :data="parsedPreview"
+          style="margin-top: var(--spacing-md)"
+        />
+      </div>
 
-        <el-tab-pane label="上传文件" name="file">
-          <div class="import-desc">
-            <p>上传 Excel (.xlsx/.xls) 文件：</p>
-            <div class="upload-actions">
-              <el-button type="primary" size="small" @click="handleDownloadTemplate">
-                <el-icon><Download /></el-icon> 下载模板
-              </el-button>
-            </div>
-            <el-alert type="info" :closable="false" show-icon style="margin-top: 8px">
-              <template #title>
-                表格第一行为表头，列顺序：包名 | 版本 | 包类型(npm/maven) | 匹配类型(exact/wildcard) | 阻断原因
-              </template>
-            </el-alert>
+      <div v-if="importTab === 'file'" class="tab-content">
+        <div class="import-desc">
+          <p>上传 Excel (.xlsx/.xls) 文件：</p>
+          <div class="upload-actions">
+            <CustomButton type="primary" size="small" :icon="Download" @click="handleDownloadTemplate">
+              下载模板
+            </CustomButton>
           </div>
-          <el-upload
-            class="upload-area"
-            drag
-            :auto-upload="false"
-            :on-change="handleFileChange"
-            accept=".xlsx,.xls"
-            :limit="1"
-          >
-            <div class="el-upload__text">拖拽文件到此处，或 <em>点击上传</em></div>
-          </el-upload>
-          <el-table v-if="parsedPreview.length > 0" :data="parsedPreview" size="small" style="margin-top: 12px" max-height="260">
-            <el-table-column prop="package_name" label="包名" width="150" />
-            <el-table-column prop="version" label="版本" width="100" />
-            <el-table-column prop="package_type" label="包类型" width="80" />
-            <el-table-column prop="match_type" label="匹配类型" width="100" />
-            <el-table-column prop="reason" label="阻断原因" min-width="180" show-overflow-tooltip />
-          </el-table>
-        </el-tab-pane>
-      </el-tabs>
+          <el-alert type="info" :closable="false" show-icon style="margin-top: var(--spacing-sm)">
+            <template #title>
+              表格第一行为表头，列顺序：包名 | 版本 | 包类型(npm/maven) | 匹配类型(exact/wildcard) | 阻断原因
+            </template>
+          </el-alert>
+        </div>
+        <el-upload
+          class="upload-area"
+          drag
+          :auto-upload="false"
+          :on-change="handleFileChange"
+          accept=".xlsx,.xls"
+          :limit="1"
+        >
+          <div class="el-upload__text">拖拽文件到此处，或 <em>点击上传</em></div>
+        </el-upload>
+        <CustomTable
+          v-if="parsedPreview.length > 0"
+          :columns="previewColumns"
+          :data="parsedPreview"
+          style="margin-top: var(--spacing-md)"
+        />
+      </div>
 
       <template #footer>
-        <CustomButton @click="showImportDialog = false">取消</CustomButton>
-        <CustomButton type="primary" @click="handleBatchImport" :loading="importing"
-          :disabled="importTab === 'file' && parsedPreview.length === 0 && importText.length === 0">
+        <CustomButton type="secondary" @click="showImportDialog = false">取消</CustomButton>
+        <CustomButton
+          type="primary"
+          @click="handleBatchImport"
+          :loading="importing"
+          :disabled="importTab === 'file' && parsedPreview.length === 0 && importText.length === 0"
+        >
           导入
         </CustomButton>
       </template>
-    </el-dialog>
+    </CustomDialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { Plus, Upload, Download } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import * as XLSX from 'xlsx'
@@ -184,7 +183,52 @@ import type { UploadFile } from 'element-plus'
 import { blockRuleApi, type BlockRule, type BlockRuleCreateParams } from '@/api/blockRule'
 import BlockRuleForm from '@/components/block-rule/BlockRuleForm.vue'
 import BlockLogTable from '@/components/block-rule/BlockLogTable.vue'
+import CustomButton from '@/components/ui/CustomButton.vue'
+import CustomTabs from '@/components/ui/CustomTabs.vue'
+import CustomInput from '@/components/ui/CustomInput.vue'
+import CustomSelect from '@/components/ui/CustomSelect.vue'
+import CustomTable from '@/components/ui/CustomTable.vue'
+import CustomTag from '@/components/ui/CustomTag.vue'
+import CustomDialog from '@/components/ui/CustomDialog.vue'
 
+// --- 数据定义 ---
+const mainTabs = [
+  { name: 'rules', label: '规则列表' },
+  { name: 'logs', label: '阻断日志' },
+]
+
+const importTabs = [
+  { name: 'text', label: '粘贴文本' },
+  { name: 'paste', label: '粘贴表格' },
+  { name: 'file', label: '上传文件' },
+]
+
+const pkgTypeOptions = [
+  { label: '全部类型', value: '' },
+  { label: 'npm', value: 'npm' },
+  { label: 'maven', value: 'maven' },
+]
+
+const ruleColumns = [
+  { prop: 'package_name', label: '包名', width: '180px' },
+  { prop: 'version', label: '版本', width: '120px' },
+  { prop: 'match_type', label: '匹配类型', width: '110px' },
+  { prop: 'package_type', label: '包类型', width: '100px' },
+  { prop: 'reason', label: '阻断原因' },
+  { prop: 'enabled', label: '状态', width: '80px', align: 'center' as const },
+  { prop: 'created_at', label: '创建时间', width: '170px' },
+  { prop: 'actions', label: '操作', width: '150px', align: 'center' as const },
+]
+
+const previewColumns = [
+  { prop: 'package_name', label: '包名', width: '150px' },
+  { prop: 'version', label: '版本', width: '100px' },
+  { prop: 'package_type', label: '包类型', width: '80px' },
+  { prop: 'match_type', label: '匹配类型', width: '100px' },
+  { prop: 'reason', label: '阻断原因' },
+]
+
+// --- 状态 ---
 const loading = ref(false)
 const submitting = ref(false)
 const importing = ref(false)
@@ -213,6 +257,16 @@ const formData = ref<BlockRuleCreateParams>({
 const ruleFormRef = ref<InstanceType<typeof BlockRuleForm> | null>(null)
 const logTableRef = ref<InstanceType<typeof BlockLogTable> | null>(null)
 
+// --- 对话框关闭时重置 ---
+watch(showDialog, (val) => {
+  if (!val) resetForm()
+})
+
+watch(showImportDialog, (val) => {
+  if (!val) resetImport()
+})
+
+// --- 方法 ---
 const formatTime = (t: string) => {
   if (!t) return ''
   return new Date(t).toLocaleString('zh-CN')
@@ -455,63 +509,109 @@ onMounted(loadRules)
 
 <style scoped>
 .block-rule-list {
-  padding: 20px;
+  padding: var(--spacing-xl);
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
+  margin-bottom: var(--spacing-xl);
 }
 
 .page-header h2 {
   margin: 0;
-  font-size: 20px;
-  font-weight: 600;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.header-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
+.tab-content {
+  margin-top: var(--spacing-lg);
 }
 
 .filter-bar {
   display: flex;
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
   align-items: center;
 }
 
+.action-buttons {
+  display: flex;
+  gap: var(--spacing-sm);
+  justify-content: center;
+}
+
 .import-desc {
-  margin-bottom: 12px;
+  margin-bottom: var(--spacing-md);
 }
 
 .import-desc p {
-  margin: 0 0 8px;
-  font-size: 14px;
-  color: #606266;
+  margin: 0 0 var(--spacing-sm);
+  font-size: var(--font-size-base);
+  color: var(--color-text-secondary);
 }
 
 .format-example {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-xs);
   line-height: 1.6;
   white-space: pre-wrap;
-  color: #409eff;
+  color: var(--color-primary);
+}
+
+.custom-textarea {
+  width: 100%;
+  padding: 10px 14px;
+  font-size: var(--font-size-base);
+  color: var(--color-text-primary);
+  background: #fafbfc;
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  outline: none;
+  transition: all var(--transition-base);
+  font-family: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.custom-textarea::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.custom-textarea:hover:not(:focus) {
+  border-color: var(--color-border-dark);
+  background: #ffffff;
+}
+
+.custom-textarea:focus {
+  border-color: var(--color-border-dark);
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
 }
 
 .paste-area {
   min-height: 80px;
-  padding: 12px;
-  border: 1px dashed #dcdfe6;
-  border-radius: 4px;
-  background: #fafafa;
-  color: #909399;
-  font-size: 13px;
+  padding: var(--spacing-md);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-page);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-sm);
   cursor: text;
   white-space: pre-wrap;
   word-break: break-all;
 }
 
 .paste-area:focus {
-  border-color: #409eff;
-  background: #fff;
+  border-color: var(--color-primary);
+  background: var(--color-bg-card);
   outline: none;
 }
 
@@ -522,6 +622,6 @@ onMounted(loadRules)
 .upload-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--spacing-sm);
 }
 </style>

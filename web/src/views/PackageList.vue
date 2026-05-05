@@ -1,16 +1,15 @@
 <template>
   <div class="package-list">
-    <el-card>
+    <CustomCard>
       <template #header>
         <div class="card-header">
           <span>包管理</span>
-          <el-button type="primary" size="small">上传包</el-button>
+          <CustomButton type="primary" size="small">上传包</CustomButton>
         </div>
       </template>
 
-      <!-- 搜索和过滤栏 -->
       <div class="filter-bar">
-        <el-input
+        <CustomInput
           v-model="searchQuery"
           placeholder="搜索包名或描述"
           clearable
@@ -18,36 +17,45 @@
           @input="handleSearch"
         >
           <template #prefix>
-            <el-icon><Search /></el-icon>
+            <Search />
           </template>
-        </el-input>
+        </CustomInput>
 
-        <el-select v-model="filterType" placeholder="包类型" clearable style="width: 150px" @change="handleFilter">
-          <el-option label="全部" value="" />
-          <el-option label="npm" value="npm" />
-          <el-option label="Maven" value="maven" />
-          <el-option label="PyPI" value="pypi" />
-          <el-option label="Go" value="go" />
-          <el-option label="NuGet" value="nuget" />
-        </el-select>
+        <CustomSelect
+          v-model="filterType"
+          placeholder="包类型"
+          clearable
+          style="width: 150px"
+          :options="typeOptions"
+          @change="handleFilter"
+        />
 
-        <el-select v-model="sortBy" placeholder="排序方式" style="width: 180px" @change="handleSort">
-          <el-option label="更新时间" value="updated_at" />
-          <el-option label="下载量" value="download_count" />
-          <el-option label="名称" value="name" />
-        </el-select>
+        <CustomSelect
+          v-model="sortBy"
+          placeholder="排序方式"
+          style="width: 180px"
+          :options="sortOptions"
+          @change="handleSort"
+        />
 
-        <el-radio-group v-model="viewMode" size="small">
-          <el-radio-button value="table">
-            <el-icon><List /></el-icon>
-          </el-radio-button>
-          <el-radio-button value="card">
-            <el-icon><Grid /></el-icon>
-          </el-radio-button>
-        </el-radio-group>
+        <div class="view-mode-toggle">
+          <CustomButton
+            :type="viewMode === 'table' ? 'primary' : 'secondary'"
+            size="small"
+            @click="viewMode = 'table'"
+          >
+            <FontAwesomeIcon icon="fa-solid fa-list" />
+          </CustomButton>
+          <CustomButton
+            :type="viewMode === 'card' ? 'primary' : 'secondary'"
+            size="small"
+            @click="viewMode = 'card'"
+          >
+            <FontAwesomeIcon icon="fa-solid fa-grip" />
+          </CustomButton>
+        </div>
       </div>
 
-      <!-- 表格视图 -->
       <PackageTable
         v-if="viewMode === 'table'"
         :packages="packages"
@@ -56,7 +64,6 @@
         @view-detail="handleViewDetail"
       />
 
-      <!-- 卡片视图 -->
       <PackageCards
         v-if="viewMode === 'card'"
         :packages="packages"
@@ -65,7 +72,6 @@
         @view-detail="handleViewDetail"
       />
 
-      <!-- 分页 -->
       <div class="pagination-wrapper">
         <el-pagination
           v-model:current-page="currentPage"
@@ -77,9 +83,8 @@
           @size-change="handleSizeChange"
         />
       </div>
-    </el-card>
+    </CustomCard>
 
-    <!-- 版本抽屉 -->
     <VersionDrawer
       v-model="showVersionDrawer"
       :package-type="selectedPackage?.type || ''"
@@ -91,10 +96,14 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Search, List, Grid } from '@element-plus/icons-vue'
+import { Search } from '@element-plus/icons-vue'
 import PackageTable from '@/components/package/PackageTable.vue'
 import PackageCards from '@/components/package/PackageCards.vue'
 import VersionDrawer from '@/components/package/VersionDrawer.vue'
+import CustomCard from '@/components/ui/CustomCard.vue'
+import CustomButton from '@/components/ui/CustomButton.vue'
+import CustomInput from '@/components/ui/CustomInput.vue'
+import CustomSelect from '@/components/ui/CustomSelect.vue'
 import { packageApi, type Package } from '@/api/package'
 import { ElMessage } from 'element-plus'
 
@@ -105,15 +114,28 @@ const currentPage = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 
-// 搜索和过滤
 const searchQuery = ref('')
 const filterType = ref('')
 const sortBy = ref('updated_at')
 const viewMode = ref<'table' | 'card'>('table')
 
-// 版本抽屉
 const showVersionDrawer = ref(false)
 const selectedPackage = ref<Package | null>(null)
+
+const typeOptions = [
+  { label: '全部', value: '' },
+  { label: 'npm', value: 'npm' },
+  { label: 'Maven', value: 'maven' },
+  { label: 'PyPI', value: 'pypi' },
+  { label: 'Go', value: 'go' },
+  { label: 'NuGet', value: 'nuget' },
+]
+
+const sortOptions = [
+  { label: '更新时间', value: 'updated_at' },
+  { label: '下载量', value: 'download_count' },
+  { label: '名称', value: 'name' },
+]
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -196,6 +218,11 @@ onMounted(() => {
   margin-bottom: var(--spacing-xl);
   align-items: center;
   flex-wrap: wrap;
+}
+
+.view-mode-toggle {
+  display: flex;
+  gap: var(--spacing-xs);
 }
 
 .pagination-wrapper {

@@ -2,53 +2,55 @@
   <div class="audit-logs">
     <div class="page-header">
       <h2>审计日志</h2>
-      <el-button @click="loadLogs">
-        <el-icon><Refresh /></el-icon> 刷新
-      </el-button>
+      <CustomButton type="secondary" :icon="Refresh" @click="loadLogs">刷新</CustomButton>
     </div>
 
     <div class="filter-bar">
-      <el-select v-model="filterAction" placeholder="操作类型" clearable style="width: 160px" @change="loadLogs">
-        <el-option label="登录" value="login" />
-        <el-option label="登出" value="logout" />
-        <el-option label="上传" value="package_upload" />
-        <el-option label="下载" value="package_download" />
-        <el-option label="删除" value="package_delete" />
-        <el-option label="阻断" value="block" />
-        <el-option label="创建用户" value="user_create" />
-        <el-option label="更新用户" value="user_update" />
-        <el-option label="配置变更" value="config_change" />
-      </el-select>
-      <el-input v-model="filterIP" placeholder="IP 地址" clearable style="width: 160px" @keyup.enter="loadLogs" @clear="loadLogs" />
-      <el-date-picker v-model="dateRange" type="daterange" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width: 240px" @change="loadLogs" />
-      <el-button type="primary" @click="loadLogs">搜索</el-button>
+      <CustomSelect
+        v-model="filterAction"
+        :options="actionOptions"
+        placeholder="操作类型"
+        style="width: 160px"
+        @change="loadLogs"
+      />
+      <CustomInput
+        v-model="filterIP"
+        placeholder="IP 地址"
+        clearable
+        style="width: 160px"
+        @enter="loadLogs"
+        @clear="loadLogs"
+      />
+      <el-date-picker
+        v-model="dateRange"
+        type="daterange"
+        range-separator="至"
+        start-placeholder="开始日期"
+        end-placeholder="结束日期"
+        style="width: 240px"
+        @change="loadLogs"
+      />
+      <CustomButton @click="loadLogs">搜索</CustomButton>
     </div>
 
-    <el-table :data="logs" v-loading="loading" style="width: 100%">
-      <el-table-column prop="id" label="ID" width="60" />
-      <el-table-column prop="action" label="操作" width="120">
-        <template #default="{ row }">
-          <el-tag :type="actionTagType(row.action)" size="small">{{ actionLabel(row.action) }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="resource_type" label="资源类型" width="110" />
-      <el-table-column prop="resource_name" label="资源名称" min-width="160" show-overflow-tooltip />
-      <el-table-column prop="ip_address" label="IP 地址" width="140" />
-      <el-table-column prop="response_status" label="状态码" width="80">
-        <template #default="{ row }">
-          <el-tag v-if="row.response_status" :type="row.response_status < 400 ? 'success' : 'danger'" size="small">
-            {{ row.response_status }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="user_agent" label="User Agent" min-width="180" show-overflow-tooltip />
-      <el-table-column prop="details" label="详情" min-width="180" show-overflow-tooltip />
-      <el-table-column prop="created_at" label="时间" width="180">
-        <template #default="{ row }">
-          {{ formatDate(row.created_at) }}
-        </template>
-      </el-table-column>
-    </el-table>
+    <CustomTable
+      :columns="columns"
+      :data="logs"
+      :loading="loading"
+      row-key="id"
+    >
+      <template #action="{ row }">
+        <CustomTag :type="actionTagType(row.action)" size="small">{{ actionLabel(row.action) }}</CustomTag>
+      </template>
+      <template #response_status="{ row }">
+        <CustomTag v-if="row.response_status" :type="row.response_status < 400 ? 'success' : 'danger'" size="small">
+          {{ row.response_status }}
+        </CustomTag>
+      </template>
+      <template #created_at="{ row }">
+        {{ formatDate(row.created_at) }}
+      </template>
+    </CustomTable>
 
     <el-pagination
       v-if="total > pageSize"
@@ -66,6 +68,11 @@
 import { ref, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import request from '@/api/request'
+import CustomButton from '@/components/ui/CustomButton.vue'
+import CustomSelect from '@/components/ui/CustomSelect.vue'
+import CustomInput from '@/components/ui/CustomInput.vue'
+import CustomTable from '@/components/ui/CustomTable.vue'
+import CustomTag from '@/components/ui/CustomTag.vue'
 
 const loading = ref(false)
 const logs = ref<any[]>([])
@@ -75,6 +82,31 @@ const total = ref(0)
 const filterAction = ref('')
 const filterIP = ref('')
 const dateRange = ref<[string, string] | null>(null)
+
+const actionOptions = [
+  { label: '全部', value: '' },
+  { label: '登录', value: 'login' },
+  { label: '登出', value: 'logout' },
+  { label: '上传', value: 'package_upload' },
+  { label: '下载', value: 'package_download' },
+  { label: '删除', value: 'package_delete' },
+  { label: '阻断', value: 'block' },
+  { label: '创建用户', value: 'user_create' },
+  { label: '更新用户', value: 'user_update' },
+  { label: '配置变更', value: 'config_change' },
+]
+
+const columns = [
+  { prop: 'id', label: 'ID', width: '60px' },
+  { prop: 'action', label: '操作', width: '120px' },
+  { prop: 'resource_type', label: '资源类型', width: '110px' },
+  { prop: 'resource_name', label: '资源名称', width: '160px' },
+  { prop: 'ip_address', label: 'IP 地址', width: '140px' },
+  { prop: 'response_status', label: '状态码', width: '80px' },
+  { prop: 'user_agent', label: 'User Agent', width: '180px' },
+  { prop: 'details', label: '详情', width: '180px' },
+  { prop: 'created_at', label: '时间', width: '180px' },
+]
 
 function formatDate(d: string): string {
   if (!d) return '-'
@@ -90,10 +122,10 @@ function actionLabel(action: string): string {
   return map[action] || action
 }
 
-function actionTagType(action: string): string {
-  const map: Record<string, string> = {
+function actionTagType(action: string): 'default' | 'primary' | 'success' | 'warning' | 'danger' | 'info' {
+  const map: Record<string, 'default' | 'primary' | 'success' | 'warning' | 'danger' | 'info'> = {
     login: 'success', logout: 'info', package_upload: 'primary',
-    package_download: '', package_delete: 'danger', block: 'danger',
+    package_download: 'default', package_delete: 'danger', block: 'danger',
   }
   return map[action] || 'info'
 }
@@ -128,31 +160,40 @@ onMounted(() => {
 
 <style scoped>
 .audit-logs {
-  padding: 20px;
+  padding: var(--spacing-xl);
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: var(--spacing-2xl);
 }
 
 .page-header h2 {
   margin: 0;
-  font-size: 22px;
-  font-weight: 600;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
 }
 
 .filter-bar {
   display: flex;
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-lg);
+  align-items: center;
 }
 
 .pagination {
-  margin-top: 16px;
+  margin-top: var(--spacing-lg);
   display: flex;
   justify-content: flex-end;
+}
+
+.audit-logs :deep(.custom-table td) {
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
