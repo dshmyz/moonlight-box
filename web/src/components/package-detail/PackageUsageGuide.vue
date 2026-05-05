@@ -95,11 +95,15 @@ const installCommands = computed<CommandItem[]>(() => {
         { label: 'pip (最新版)', command: `pip install ${name}` },
         { label: 'poetry', command: `poetry add ${name}==${version}` },
       ]
-    case 'maven2':
+    case 'maven2': {
+      const parts = name.split('/')
+      const groupId = parts[0] || name
+      const artifactId = parts[1] || name
+      const mavenCoord = `${groupId}:${artifactId}`
       return [
-        { label: 'Maven CLI', command: `mvn dependency:get -Dartifact=${name}:${version}` },
-        { label: 'Gradle (Groovy)', command: `implementation '${name}:${version}'` },
-        { label: 'Gradle (Kotlin)', command: `implementation("${name}:${version}")` },
+        { label: 'Maven CLI', command: `mvn dependency:get -Dartifact=${mavenCoord}:${version}` },
+        { label: 'Gradle (Groovy)', command: `implementation '${mavenCoord}:${version}'` },
+        { label: 'Gradle (Kotlin)', command: `implementation("${mavenCoord}:${version}")` },
       ]
     case 'go':
       return [
@@ -132,7 +136,7 @@ const configSnippets = computed<CodeItem[]>(() => {
 
   switch (t) {
     case 'maven2': {
-      const parts = name.split(':')
+      const parts = name.split('/')
       const groupId = parts[0] || name
       const artifactId = parts[1] || name
       return [
