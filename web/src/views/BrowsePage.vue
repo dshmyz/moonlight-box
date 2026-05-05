@@ -158,10 +158,10 @@ onMounted(() => {
 }
 
 .hero-section {
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 20px 24px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 0 0 20px;
   margin-bottom: 16px;
   display: flex;
   align-items: center;
@@ -170,16 +170,16 @@ onMounted(() => {
 }
 
 .page-title {
-  font-size: 28px;
-  font-weight: 800;
-  color: #0f172a;
-  margin: 0 0 6px;
-  letter-spacing: -0.8px;
-  line-height: 1.1;
+  font-size: 24px;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 0 0 4px;
+  letter-spacing: -0.3px;
+  line-height: 1.2;
 }
 
 .page-desc {
-  color: #64748b;
+  color: #6b7280;
   font-size: 14px;
   margin: 0;
   line-height: 1.5;
