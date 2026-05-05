@@ -275,7 +275,7 @@ func parseVersion(v string) []int {
 }
 
 func (s *SecurityScanner) ScanAllPackages(ctx context.Context) {
-	for _, pkgType := range []string{"npm", "maven2", "pypi", "go"} {
+	for _, pkgType := range []string{"npm", "maven", "pypi", "go"} {
 		packages, total, err := s.pkgRepo.List(1, 10000, pkgType, "")
 		if err != nil {
 			s.logger.Errorf("Failed to list %s packages: %v", pkgType, err)

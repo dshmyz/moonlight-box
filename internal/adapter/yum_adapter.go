@@ -29,6 +29,7 @@ type YumAdapter struct {
 	storageSvc  *service.StorageService
 	auditSvc    *service.AuditService
 	proxyRouter *proxy.ProxyRouter
+	uploadSvc   *service.UploadService
 }
 
 type RepoMD struct {
@@ -137,6 +138,7 @@ func NewYumAdapter(
 		storageSvc:  storageSvc,
 		auditSvc:    auditSvc,
 		proxyRouter: proxyRouter,
+		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
 	}
 }
 
@@ -356,39 +358,36 @@ func (a *YumAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageVe
 	arch := detectRpmArch(name)
 	storageKey := fmt.Sprintf("repos/%s/Packages/%s/%s", repo, arch, name)
 
-	_, err := a.storageSvc.StorePackage(ctx, "yum", repo+"/"+name, "1", reader, req.Size)
+	content, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read content: %w", err)
 	}
 
-	pkg, ver, _, err := a.pkgRepo.StorePackageFile(ctx, &model.Package{
+	uploadCtx := &service.UploadContext{
+		PkgType:        "yum",
 		Name:           name,
-		Type:           model.PackageTypeYum,
+		Version:        "1",
+		Filename:       name,
+		Content:        content,
+		Size:           req.Size,
+		PackageType:    model.PackageTypeYum,
 		RepositoryType: model.RepoTypeLocal,
-		CreatedBy:      req.UploadedBy,
-	}, &model.PackageVersion{
-		Version:     "1",
-		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
-		PublishedBy: req.UploadedBy,
-		Metadata:    marshalMetadata(req.Metadata),
-	}, &model.PackageFile{
-		Filename:    name,
-		FileType:    model.FileTypePrimary,
-		StoragePath: storageKey,
-		SizeBytes:   req.Size,
-	})
+		UploadedBy:     req.UploadedBy,
+		Metadata:       req.Metadata,
+		FileType:       model.FileTypePrimary,
+	}
+
+	result, err := a.uploadSvc.Upload(ctx, uploadCtx)
 	if err != nil {
-		a.storageSvc.DeletePackage(ctx, "yum", repo+"/"+name, "1")
 		return nil, err
 	}
 
 	return &PackageVersionResult{
-		PackageID:  pkg.ID,
-		VersionID:  ver.ID,
+		PackageID:  result.PackageID,
+		VersionID:  result.VersionID,
 		Version:    "1",
 		StorageKey: storageKey,
-		Size:       req.Size,
+		Size:       result.Size,
 	}, nil
 }
 

@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
@@ -20,6 +19,7 @@ import (
 )
 
 type GenericAdapter struct {
+	*BaseAdapter
 	pkgRepo    *repository.PackageRepository
 	storageSvc *service.StorageService
 	auditSvc   *service.AuditService
@@ -39,9 +39,10 @@ func NewGenericAdapter(
 	auditSvc *service.AuditService,
 ) *GenericAdapter {
 	return &GenericAdapter{
-		pkgRepo:    pkgRepo,
-		storageSvc: storageSvc,
-		auditSvc:   auditSvc,
+		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
+		pkgRepo:     pkgRepo,
+		storageSvc:  storageSvc,
+		auditSvc:    auditSvc,
 	}
 }
 
@@ -264,28 +265,7 @@ func (a *GenericAdapter) Download(ctx context.Context, identity *PackageIdentity
 }
 
 func (a *GenericAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
-	pkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypeGeneric)
-	if err != nil {
-		return nil, err
-	}
-
-	meta := &PackageMeta{
-		ID:          pkg.ID,
-		Name:        pkg.Name,
-		Type:        GenericType,
-		Description: pkg.Description,
-	}
-
-	for _, ver := range pkg.Versions {
-		meta.Versions = append(meta.Versions, VersionInfo{
-			Version:       ver.Version,
-			PublishedAt:   ver.PublishedAt.Format(time.RFC3339),
-			Size:          ver.SizeBytes,
-			DownloadCount: int64(ver.DownloadCount),
-		})
-	}
-
-	return meta, nil
+	return a.BaseAdapter.GetPackageMetadata(ctx, name, model.PackageTypeGeneric, GenericType)
 }
 
 func (a *GenericAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {

@@ -25,11 +25,13 @@ import (
 
 type NpmAdapter struct {
 	*BaseAdapter
-	pkgRepo     *repository.PackageRepository
-	storageSvc  *service.StorageService
-	auditSvc    *service.AuditService
-	proxyRouter *proxy.ProxyRouter
-	webhookSvc  *service.WebhookService
+	pkgRepo          *repository.PackageRepository
+	storageSvc       *service.StorageService
+	auditSvc         *service.AuditService
+	proxyRouter      *proxy.ProxyRouter
+	proxyDownloadSvc *service.ProxyDownloadService
+	uploadSvc        *service.UploadService
+	logRepo          *repository.ProxyDownloadLogRepository
 }
 
 type NpmPackageMetadata struct {
@@ -99,23 +101,58 @@ type NpmRepository struct {
 	URL  string `json:"url"`
 }
 
+type NpmSearchRequest struct {
+	Text string `form:"text" binding:"required"`
+	Size int    `form:"size" binding:"omitempty,min=1,max=100"`
+	From int    `form:"from" binding:"omitempty,min=0"`
+}
+
+type NpmSearchResponse struct {
+	Objects []NpmSearchObject `json:"objects"`
+	Total   int               `json:"total"`
+	Time    string            `json:"time"`
+}
+
+type NpmSearchObject struct {
+	Package NpmSearchPackage `json:"package"`
+	Score   NpmSearchScore   `json:"score"`
+}
+
+type NpmSearchPackage struct {
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Description string `json:"description,omitempty"`
+	Date        string `json:"date"`
+}
+
+type NpmSearchScore struct {
+	Detail NpmSearchScoreDetail `json:"detail"`
+	Final  float64              `json:"final"`
+}
+
+type NpmSearchScoreDetail struct {
+	Quality     float64 `json:"quality"`
+	Popularity  float64 `json:"popularity"`
+	Maintenance float64 `json:"maintenance"`
+}
+
 func NewNpmAdapter(
 	pkgRepo *repository.PackageRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
 	proxyRouter *proxy.ProxyRouter,
+	logRepo *repository.ProxyDownloadLogRepository,
 ) *NpmAdapter {
 	return &NpmAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
-		pkgRepo:     pkgRepo,
-		storageSvc:  storageSvc,
-		auditSvc:    auditSvc,
-		proxyRouter: proxyRouter,
+		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc),
+		pkgRepo:          pkgRepo,
+		storageSvc:       storageSvc,
+		auditSvc:         auditSvc,
+		proxyRouter:      proxyRouter,
+		proxyDownloadSvc: service.NewProxyDownloadService(pkgRepo, storageSvc, proxyRouter, logRepo),
+		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
+		logRepo:          logRepo,
 	}
-}
-
-func (a *NpmAdapter) SetWebhookService(webhookSvc *service.WebhookService) {
-	a.webhookSvc = webhookSvc
 }
 
 func (a *NpmAdapter) Type() PackageType   { return NpmType }
@@ -220,20 +257,10 @@ func (a *NpmAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) {
 
 	metrics.RecordUpload("npm", name, metadata.Version)
 
-	if a.webhookSvc != nil {
-		payload := &service.WebhookPayload{
-			Event:       string(model.WebhookEventPackageUploaded),
-			Timestamp:   time.Now().Format(time.RFC3339),
-			PackageName: name,
-			Version:     metadata.Version,
-			Repository:  repo.Name,
-			Data: map[string]interface{}{
-				"size":        req.Size,
-				"description": metadata.Description,
-			},
-		}
-		a.webhookSvc.TriggerEvent(model.WebhookEventPackageUploaded, payload)
-	}
+	a.TriggerWebhook(model.WebhookEventPackageUploaded, name, metadata.Version, repo.Name, map[string]interface{}{
+		"size":        req.Size,
+		"description": metadata.Description,
+	})
 
 	c.JSON(201, gin.H{
 		"ok":      true,
@@ -270,6 +297,8 @@ func (a *NpmAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) {
 		response.InternalError(c, err.Error())
 		return
 	}
+
+	a.TriggerWebhook(model.WebhookEventPackageDeleted, name, identity.Version, repo.Name, nil)
 
 	c.JSON(200, gin.H{"ok": true})
 }
@@ -500,6 +529,11 @@ func (a *NpmAdapter) ParsePackagePath(path string) (*PackageIdentity, error) {
 
 func (a *NpmAdapter) HandleNpmPath(c *gin.Context) {
 	fullPath := strings.TrimPrefix(c.Param("path"), "/")
+
+	if fullPath == "-/v1/search" {
+		a.HandleSearch(c)
+		return
+	}
 
 	if strings.Contains(fullPath, "/-/") {
 		a.DownloadTarballPath(c, fullPath)
@@ -737,41 +771,36 @@ func (a *NpmAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageVe
 		return nil, fmt.Errorf("missing name or version in metadata")
 	}
 
-	storageKey, err := a.storageSvc.StorePackage(ctx, "npm", name, version, reader, req.Size)
+	content, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read content: %w", err)
 	}
 
-	pkg, ver, _, err := a.pkgRepo.StorePackageFile(ctx, &model.Package{
+	result, err := a.uploadSvc.Upload(ctx, &service.UploadContext{
+		PkgType:        "npm",
 		Name:           name,
-		Type:           model.PackageTypeNPM,
-		Description:    getDescription(req.Metadata),
+		Version:        version,
+		StorageVersion: filepath.Join(version, "package.tgz"),
+		Filename:       "package.tgz",
+		Content:        content,
+		Size:           req.Size,
+		PackageType:    model.PackageTypeNPM,
 		RepositoryType: model.RepoTypeLocal,
-		CreatedBy:      req.UploadedBy,
-	}, &model.PackageVersion{
-		Version:     version,
-		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
-		PublishedBy: req.UploadedBy,
-		Metadata:    marshalMetadata(req.Metadata),
-	}, &model.PackageFile{
-		Filename:    "package.tgz",
-		FileType:    model.FileTypePrimary,
-		StoragePath: storageKey,
-		SizeBytes:   req.Size,
+		UploadedBy:     req.UploadedBy,
+		Metadata:       req.Metadata,
+		FileType:       model.FileTypePrimary,
 	})
 
 	if err != nil {
-		a.storageSvc.DeletePackage(ctx, "npm", name, version)
 		return nil, err
 	}
 
 	return &PackageVersionResult{
-		PackageID:  pkg.ID,
-		VersionID:  ver.ID,
-		Version:    version,
-		StorageKey: storageKey,
-		Size:       req.Size,
+		PackageID:  result.PackageID,
+		VersionID:  result.VersionID,
+		Version:    result.Version,
+		StorageKey: result.StorageKey,
+		Size:       result.Size,
 	}, nil
 }
 
@@ -792,32 +821,7 @@ func (a *NpmAdapter) Download(ctx context.Context, identity *PackageIdentity) (*
 }
 
 func (a *NpmAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
-	pkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypeNPM)
-	if err != nil {
-		return nil, err
-	}
-
-	meta := &PackageMeta{
-		ID:          pkg.ID,
-		Name:        pkg.Name,
-		Type:        NpmType,
-		Description: pkg.Description,
-	}
-
-	for _, ver := range pkg.Versions {
-		var totalSize int64
-		for _, f := range ver.Files {
-			totalSize += f.SizeBytes
-		}
-		meta.Versions = append(meta.Versions, VersionInfo{
-			Version:       ver.Version,
-			PublishedAt:   ver.PublishedAt.Format(time.RFC3339),
-			Size:          totalSize,
-			DownloadCount: int64(ver.DownloadCount),
-		})
-	}
-
-	return meta, nil
+	return a.BaseAdapter.GetPackageMetadata(ctx, name, model.PackageTypeNPM, NpmType)
 }
 
 func (a *NpmAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
@@ -867,7 +871,7 @@ func (a *NpmAdapter) syncFromProxy(ctx context.Context, name string, repo *model
 			"tarball":     verInfo.Dist.Tarball,
 		})
 
-		_, _, err := a.pkgRepo.CreateOrUpdate(ctx, pkg, &model.PackageVersion{
+		_, _, err := a.pkgRepo.CreateOrUpdateMetadata(ctx, pkg, &model.PackageVersion{
 			Version:     version,
 			Status:      model.StatusPublished,
 			PublishedAt: publishedAt,
@@ -1024,12 +1028,11 @@ func (a *NpmAdapter) SyncMetadata(ctx context.Context, repo interface{}) (*types
 				"shasum":      verInfo.Dist.Shasum,
 			})
 
-			a.pkgRepo.CreateOrUpdate(ctx, pkg, &model.PackageVersion{
-				Version:         version,
-				Status:          model.StatusPublished,
-				PublishedAt:     publishedAt,
-				Metadata:        versionMeta,
-				FilesDownloaded: false,
+			a.pkgRepo.CreateOrUpdateMetadata(ctx, pkg, &model.PackageVersion{
+				Version:     version,
+				Status:      model.StatusPublished,
+				PublishedAt: publishedAt,
+				Metadata:    versionMeta,
 			})
 		}
 
@@ -1057,4 +1060,81 @@ func (a *NpmAdapter) setAuthHeader(req *http.Request, cfg *model.ProxyAuthConfig
 			}
 		}
 	}
+}
+
+func (a *NpmAdapter) searchPackages(ctx context.Context, query string, size, from int) ([]model.Package, int, error) {
+	var packages []model.Package
+	var total int64
+
+	searchTerm := "%" + query + "%"
+	db := a.pkgRepo.DB().Model(&model.Package{}).
+		Where("type = ?", model.PackageTypeNPM).
+		Where("name LIKE ? OR description LIKE ?", searchTerm, searchTerm)
+
+	db.Count(&total)
+
+	err := db.Preload("Versions").
+		Order("updated_at DESC").
+		Offset(from).
+		Limit(size).
+		Find(&packages).Error
+
+	return packages, int(total), err
+}
+
+func (a *NpmAdapter) formatSearchResponse(packages []model.Package, total int) *NpmSearchResponse {
+	objects := make([]NpmSearchObject, 0, len(packages))
+
+	for _, pkg := range packages {
+		var latestVersion string
+		var updatedAt string
+		if len(pkg.Versions) > 0 {
+			latestVersion = pkg.Versions[0].Version
+			updatedAt = pkg.Versions[0].PublishedAt.Format(time.RFC3339)
+		}
+
+		objects = append(objects, NpmSearchObject{
+			Package: NpmSearchPackage{
+				Name:        pkg.Name,
+				Version:     latestVersion,
+				Description: pkg.Description,
+				Date:        updatedAt,
+			},
+			Score: NpmSearchScore{
+				Detail: NpmSearchScoreDetail{
+					Quality:     1.0,
+					Popularity:  1.0,
+					Maintenance: 1.0,
+				},
+				Final: 1.0,
+			},
+		})
+	}
+
+	return &NpmSearchResponse{
+		Objects: objects,
+		Total:   total,
+		Time:    time.Now().Format("Mon Jan 02 2006 15:04:05 GMT-0700"),
+	}
+}
+
+func (a *NpmAdapter) HandleSearch(c *gin.Context) {
+	var req NpmSearchRequest
+	if err := c.ShouldBindQuery(&req); err != nil {
+		response.BadRequest(c, "invalid search parameters", err.Error())
+		return
+	}
+
+	if req.Size == 0 {
+		req.Size = 20
+	}
+
+	packages, total, err := a.searchPackages(c.Request.Context(), req.Text, req.Size, req.From)
+	if err != nil {
+		response.InternalError(c, "search failed")
+		return
+	}
+
+	resp := a.formatSearchResponse(packages, total)
+	c.JSON(200, resp)
 }

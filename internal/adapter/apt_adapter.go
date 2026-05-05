@@ -22,9 +22,11 @@ import (
 )
 
 type AptAdapter struct {
+	*BaseAdapter
 	pkgRepo    *repository.PackageRepository
 	storageSvc *service.StorageService
 	auditSvc   *service.AuditService
+	uploadSvc  *service.UploadService
 }
 
 type AptReleaseFile struct {
@@ -69,9 +71,11 @@ func NewAptAdapter(
 	auditSvc *service.AuditService,
 ) *AptAdapter {
 	return &AptAdapter{
-		pkgRepo:    pkgRepo,
-		storageSvc: storageSvc,
-		auditSvc:   auditSvc,
+		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
+		pkgRepo:     pkgRepo,
+		storageSvc:  storageSvc,
+		auditSvc:    auditSvc,
+		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
 	}
 }
 
@@ -360,39 +364,37 @@ func (a *AptAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageVe
 	filename := fmt.Sprintf("%s_%s_amd64.deb", name, version)
 	storageVersion := fmt.Sprintf("pool/main/%s/%s/%s", firstLetter, name, filename)
 
-	storageKey, err := a.storageSvc.StorePackage(ctx, "apt", name, version, reader, req.Size)
+	content, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read content: %w", err)
 	}
 
-	pkg, ver, _, err := a.pkgRepo.StorePackageFile(ctx, &model.Package{
+	uploadCtx := &service.UploadContext{
+		PkgType:        "apt",
 		Name:           name,
-		Type:           model.PackageTypeApt,
+		Version:        version,
+		StorageVersion: storageVersion,
+		Filename:       filename,
+		Content:        content,
+		Size:           req.Size,
+		PackageType:    model.PackageTypeApt,
 		RepositoryType: model.RepoTypeLocal,
-		CreatedBy:      req.UploadedBy,
-	}, &model.PackageVersion{
-		Version:     version,
-		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
-		PublishedBy: req.UploadedBy,
-		Metadata:    marshalMetadata(req.Metadata),
-	}, &model.PackageFile{
-		Filename:    filename,
-		FileType:    model.FileTypePrimary,
-		StoragePath: storageKey,
-		SizeBytes:   req.Size,
-	})
+		UploadedBy:     req.UploadedBy,
+		Metadata:       req.Metadata,
+		FileType:       model.FileTypePrimary,
+	}
+
+	result, err := a.uploadSvc.Upload(ctx, uploadCtx)
 	if err != nil {
-		a.storageSvc.DeletePackage(ctx, "apt", name, storageVersion)
 		return nil, err
 	}
 
 	return &PackageVersionResult{
-		PackageID:  pkg.ID,
-		VersionID:  ver.ID,
-		Version:    version,
-		StorageKey: storageKey,
-		Size:       req.Size,
+		PackageID:  result.PackageID,
+		VersionID:  result.VersionID,
+		Version:    result.Version,
+		StorageKey: result.StorageKey,
+		Size:       result.Size,
 	}, nil
 }
 
@@ -410,28 +412,7 @@ func (a *AptAdapter) Download(ctx context.Context, identity *PackageIdentity) (*
 }
 
 func (a *AptAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
-	pkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypeApt)
-	if err != nil {
-		return nil, err
-	}
-
-	meta := &PackageMeta{
-		ID:          pkg.ID,
-		Name:        pkg.Name,
-		Type:        AptType,
-		Description: pkg.Description,
-	}
-
-	for _, ver := range pkg.Versions {
-		meta.Versions = append(meta.Versions, VersionInfo{
-			Version:       ver.Version,
-			PublishedAt:   ver.PublishedAt.Format(time.RFC3339),
-			Size:          ver.SizeBytes,
-			DownloadCount: int64(ver.DownloadCount),
-		})
-	}
-
-	return meta, nil
+	return a.BaseAdapter.GetPackageMetadata(ctx, name, model.PackageTypeApt, AptType)
 }
 
 func (a *AptAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {

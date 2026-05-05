@@ -3,6 +3,8 @@ package model
 import (
 	"encoding/json"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 type StorageBackendType string
@@ -35,14 +37,14 @@ type StorageBackend struct {
 	Config StorageBackendConfig `gorm:"-" json:"config"`
 }
 
-func (sb *StorageBackend) AfterFind() error {
+func (sb *StorageBackend) AfterFind(tx *gorm.DB) error {
 	if sb.ConfigJSON != "" {
 		return json.Unmarshal([]byte(sb.ConfigJSON), &sb.Config)
 	}
 	return nil
 }
 
-func (sb *StorageBackend) BeforeSave() error {
+func (sb *StorageBackend) BeforeSave(tx *gorm.DB) error {
 	if data, err := json.Marshal(sb.Config); err == nil {
 		sb.ConfigJSON = string(data)
 	}

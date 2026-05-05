@@ -57,8 +57,9 @@ func setupMavenAdapter(t *testing.T) (*MavenAdapter, *gorm.DB) {
 	storageSvc.RefreshBackends()
 
 	auditSvc := service.NewAuditService()
+	logRepo := repository.NewProxyDownloadLogRepository(db)
 
-	adapter := NewMavenAdapter(pkgRepo, storageSvc, auditSvc, nil, nil)
+	adapter := NewMavenAdapter(pkgRepo, storageSvc, auditSvc, nil, logRepo)
 	return adapter, db
 }
 

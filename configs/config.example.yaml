@@ -60,11 +60,11 @@ ai:
   tools:
     enabled: true
     allowed_tools:
-      - query_logs
-      - query_database
-      - query_package_info
-      - analyze_security
-      - generate_demo_code
+      - log_query
+      - db_query
+      - package_info
+      - security_analysis
+      - code_generator
     max_execution_time: 10
     enable_audit_log: true
   

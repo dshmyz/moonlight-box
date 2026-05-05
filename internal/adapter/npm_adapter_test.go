@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"mime/multipart"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -41,31 +42,38 @@ func setupNpmAdapter(t *testing.T) (*NpmAdapter, *gorm.DB) {
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
 	pkgRepo := repository.NewPackageRepository(db)
 
-	storageSvc, err := service.NewStorageService(storageBackendRepo, "", 0)
+	testDir, err := os.MkdirTemp("", "npm-test-*")
 	if err != nil {
-		t.Fatalf("failed to create storage service: %v", err)
+		t.Fatalf("failed to create temp dir: %v", err)
 	}
+	t.Cleanup(func() { os.RemoveAll(testDir) })
 
+	configJSON := `{"local":{"base_path":"` + testDir + `","max_size_gb":1}}`
 	backend := &model.StorageBackend{
-		Name:      "test-local",
-		Type:      model.StorageTypeLocal,
-		IsDefault: true,
-		Status:    model.StatusActive,
-		IsActive:  true,
+		Name:       "test-local",
+		Type:       model.StorageTypeLocal,
+		IsDefault:  true,
+		Status:     model.StatusActive,
+		IsActive:   true,
+		ConfigJSON: configJSON,
 		Config: model.StorageBackendConfig{
 			Local: &model.LocalConfig{
-				BasePath:  "/tmp/test-storage",
+				BasePath:  testDir,
 				MaxSizeGB: 1,
 			},
 		},
 	}
 	db.Create(backend)
 
-	storageSvc.RefreshBackends()
+	storageSvc, err := service.NewStorageService(storageBackendRepo, testDir, 1)
+	if err != nil {
+		t.Fatalf("failed to create storage service: %v", err)
+	}
 
 	auditSvc := service.NewAuditService()
+	logRepo := repository.NewProxyDownloadLogRepository(db)
 
-	adapter := NewNpmAdapter(pkgRepo, storageSvc, auditSvc, nil, nil)
+	adapter := NewNpmAdapter(pkgRepo, storageSvc, auditSvc, nil, logRepo)
 	return adapter, db
 }
 

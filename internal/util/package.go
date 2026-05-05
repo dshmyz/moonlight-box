@@ -7,7 +7,7 @@ func GenerateDisplayName(name, pkgType string) string {
 		return ""
 	}
 
-	if pkgType == "maven" {
+	if pkgType == "maven" || pkgType == "maven2" {
 		lastSlash := strings.LastIndex(name, "/")
 		if lastSlash > 0 {
 			groupId := strings.ReplaceAll(name[:lastSlash], "/", ".")

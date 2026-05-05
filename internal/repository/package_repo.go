@@ -28,6 +28,10 @@ func (r *PackageRepository) StorePackageFile(ctx context.Context, pkg *model.Pac
 		pkg.DisplayName = util.GenerateDisplayName(pkg.Name, string(pkg.Type))
 	}
 
+	if ver != nil && file != nil {
+		ver.FilesDownloaded = true
+	}
+
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		var existingPkg model.Package
 		result := tx.Where("name = ? AND type = ?", pkg.Name, pkg.Type).First(&existingPkg)
@@ -120,9 +124,63 @@ func (r *PackageRepository) StorePackageFileAndIncrementDownload(ctx context.Con
 }
 
 // CreateOrUpdate 兼容旧 API，内部调用 StorePackageFile
+// 注意：此方法假设文件已存储，会自动设置 FilesDownloaded = true
 func (r *PackageRepository) CreateOrUpdate(ctx context.Context, pkg *model.Package, ver *model.PackageVersion) (*model.Package, *model.PackageVersion, error) {
+	if ver != nil {
+		ver.FilesDownloaded = true
+	}
 	p, v, _, err := r.StorePackageFile(ctx, pkg, ver, nil)
 	return p, v, err
+}
+
+// CreateOrUpdateMetadata 创建或更新包版本的元数据（不涉及文件存储）
+func (r *PackageRepository) CreateOrUpdateMetadata(ctx context.Context, pkg *model.Package, ver *model.PackageVersion) (*model.Package, *model.PackageVersion, error) {
+	if pkg.DisplayName == "" {
+		pkg.DisplayName = util.GenerateDisplayName(pkg.Name, string(pkg.Type))
+	}
+
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		var existingPkg model.Package
+		result := tx.Where("name = ? AND type = ?", pkg.Name, pkg.Type).First(&existingPkg)
+		if result.Error != nil {
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				if err := tx.Create(pkg).Error; err != nil {
+					return err
+				}
+				existingPkg = *pkg
+			} else {
+				return result.Error
+			}
+		}
+		pkg.ID = existingPkg.ID
+
+		var existingVer model.PackageVersion
+		verResult := tx.Where("package_id = ? AND version = ?", existingPkg.ID, ver.Version).First(&existingVer)
+		if verResult.Error != nil {
+			if errors.Is(verResult.Error, gorm.ErrRecordNotFound) {
+				ver.PackageID = existingPkg.ID
+				if err := tx.Create(ver).Error; err != nil {
+					return err
+				}
+			} else {
+				return verResult.Error
+			}
+		} else {
+			ver.ID = existingVer.ID
+			ver.PackageID = existingPkg.ID
+			if err := tx.Model(&existingVer).Updates(ver).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return pkg, ver, nil
 }
 
 func (r *PackageRepository) FindByNameAndType(name string, pkgType model.PackageType) (*model.Package, error) {

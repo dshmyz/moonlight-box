@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/moonlight-box/registry/internal/config"
@@ -252,11 +253,15 @@ func (r *ProxyRouter) resolveProxyWithURL(ctx context.Context, repo *model.Repos
 	remoteURL := urlBuilder(repo, name, version)
 	cacheKey := fmt.Sprintf("proxy:%s:%s", repo.Name, remoteURL)
 
+	slog.Info("resolveProxyWithURL called", "repo", repo.Name, "remoteURL", remoteURL, "cacheKey", cacheKey)
+
 	cached, err := r.cache.Get(ctx, cacheKey)
 	if err == nil && cached != nil {
 		if cached.IsNegative {
+			slog.Warn("cache hit but negative", "cacheKey", cacheKey)
 			return nil, ErrPackageNotFound
 		}
+		slog.Info("cache hit", "cacheKey", cacheKey, "size", cached.Size)
 		return &RouteResult{
 			Source:     repo.Name,
 			SourceType: "proxy",
@@ -268,8 +273,11 @@ func (r *ProxyRouter) resolveProxyWithURL(ctx context.Context, repo *model.Repos
 		}, nil
 	}
 
+	slog.Info("cache miss, fetching from remote", "remoteURL", remoteURL)
+
 	authCfg, err := repo.GetAuthConfig()
 	if err != nil {
+		slog.Error("failed to get auth config", "error", err)
 		return nil, err
 	}
 
@@ -284,7 +292,9 @@ func (r *ProxyRouter) resolveProxyWithURL(ctx context.Context, repo *model.Repos
 
 	content, contentType, err := r.client.GetBytes(ctx, remoteURL, opts, toProxyAuthConfig(authCfg))
 	if err != nil {
+		slog.Error("failed to fetch from remote", "error", err, "remoteURL", remoteURL)
 		if remoteErr, ok := err.(*RemoteError); ok {
+			slog.Error("remote error details", "statusCode", remoteErr.StatusCode, "url", remoteErr.URL)
 			if failureRules.ShouldCache(remoteErr.StatusCode) {
 				ttl := failureRules.Match(remoteErr.StatusCode)
 				r.cache.SetNegative(ctx, cacheKey, time.Duration(ttl)*time.Second)
@@ -294,6 +304,8 @@ func (r *ProxyRouter) resolveProxyWithURL(ctx context.Context, repo *model.Repos
 		}
 		return nil, err
 	}
+
+	slog.Info("successfully fetched from remote", "remoteURL", remoteURL, "size", len(content), "contentType", contentType)
 
 	size := int64(len(content))
 	r.cache.Set(ctx, &CacheItem{

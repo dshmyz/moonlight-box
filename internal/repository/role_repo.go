@@ -70,3 +70,40 @@ func (r *RoleRepository) AssignRole(userID, roleID uint, assignedBy uint) error 
 func (r *RoleRepository) RemoveRole(userID, roleID uint) error {
 	return r.db.Where("user_id = ? AND role_id = ?", userID, roleID).Delete(&model.UserRole{}).Error
 }
+
+func (r *RoleRepository) Create(role *model.Role) error {
+	return r.db.Create(role).Error
+}
+
+func (r *RoleRepository) Update(role *model.Role) error {
+	return r.db.Save(role).Error
+}
+
+func (r *RoleRepository) Delete(id uint) error {
+	return r.db.Delete(&model.Role{}, id).Error
+}
+
+func (r *RoleRepository) IsRoleInUse(roleID uint) (bool, error) {
+	var count int64
+	err := r.db.Model(&model.UserRole{}).Where("role_id = ?", roleID).Count(&count).Error
+	return count > 0, err
+}
+
+func (r *RoleRepository) UpdateRolePermissions(roleID uint, permissionIDs []uint) error {
+	if err := r.db.Where("role_id = ?", roleID).Delete(&model.RolePermission{}).Error; err != nil {
+		return err
+	}
+	for _, permID := range permissionIDs {
+		rp := model.RolePermission{RoleID: roleID, PermissionID: permID}
+		if err := r.db.Create(&rp).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *RoleRepository) ListPermissions() ([]model.Permission, error) {
+	var perms []model.Permission
+	result := r.db.Find(&perms)
+	return perms, result.Error
+}

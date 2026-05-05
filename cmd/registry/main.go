@@ -92,6 +92,7 @@ func main() {
 	userRepo := repository.NewUserRepository(database.GetDB())
 	roleRepo := repository.NewRoleRepository(database.GetDB())
 	packageRepo := repository.NewPackageRepository(database.GetDB())
+	proxyDownloadLogRepo := repository.NewProxyDownloadLogRepository(database.GetDB())
 
 	// 初始化服务
 	authService := service.NewAuthService(userRepo, roleRepo, &cfg.Auth)
@@ -116,9 +117,9 @@ func main() {
 	}
 
 	// 初始化适配器（先创建，用于构建 adapter map）
-	npmAdapter := adapter.NewNpmAdapter(packageRepo, storageSvc, auditSvc, nil)
-	mavenAdapter := adapter.NewMavenAdapter(packageRepo, storageSvc, auditSvc, nil)
-	pypiAdapter := adapter.NewPyPIAdapter(packageRepo, storageSvc, auditSvc, nil)
+	npmAdapter := adapter.NewNpmAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo)
+	mavenAdapter := adapter.NewMavenAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo)
+	pypiAdapter := adapter.NewPyPIAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo)
 	goAdapter := adapter.NewGoAdapter(packageRepo, storageSvc, auditSvc, nil)
 	nugetAdapter := adapter.NewNuGetAdapter(packageRepo, storageSvc, auditSvc)
 	genericAdapter := adapter.NewGenericAdapter(packageRepo, storageSvc, auditSvc)
@@ -206,6 +207,7 @@ func main() {
 	auditRepo := repository.NewAuditRepository(db)
 	auditLogHandler := handler.NewAuditLogHandler(auditRepo)
 	userHandler := handler.NewUserHandler(userRepo, roleRepo)
+	roleHandler := handler.NewRoleHandler(roleRepo)
 	pkgVersionHandler := handler.NewPackageVersionHandler(packageRepo)
 
 	// 初始化 CAS 认证服务
@@ -285,7 +287,7 @@ func main() {
 	}
 
 	// 创建路由器
-	router := setupRouter(cfg, authService, adapters, repoHandler, cacheHandler, blockRuleHandler, searchHandler, dashboardHandler, casHandler, casAdminHandler, blockRuleSvc, storageBackendHandler, securityHandler, auditLogHandler, userHandler, pkgVersionHandler, roleRepo, publicRepoHandler, backupHandler, webhookHandler, systemConfigHandler, systemInfoHandler, fileBrowseHandler, repoSvc, migrationHandler, aiHandler)
+	router := setupRouter(cfg, authService, adapters, repoHandler, cacheHandler, blockRuleHandler, searchHandler, dashboardHandler, casHandler, casAdminHandler, blockRuleSvc, storageBackendHandler, securityHandler, auditLogHandler, userHandler, pkgVersionHandler, roleRepo, roleHandler, publicRepoHandler, backupHandler, webhookHandler, systemConfigHandler, systemInfoHandler, fileBrowseHandler, repoSvc, migrationHandler, aiHandler)
 
 	// 设置 Webhook 服务到适配器
 	for _, adap := range adapters {
@@ -336,7 +338,7 @@ func main() {
 	fmt.Println("Server exited")
 }
 
-func setupRouter(cfg *config.Config, authService *service.AuthService, adapters []adapter.Adapter, repoHandler *handler.RepositoryHandler, cacheHandler *handler.CacheHandler, blockRuleHandler *handler.BlockRuleHandler, searchHandler *handler.PackageSearchHandler, dashboardHandler *handler.DashboardHandler, casHandler *handler.CASHandler, casAdminHandler *handler.CASAdminHandler, blockRuleSvc *service.BlockRuleService, storageBackendHandler *handler.StorageBackendHandler, securityHandler *handler.SecurityHandler, auditLogHandler *handler.AuditLogHandler, userHandler *handler.UserHandler, pkgVersionHandler *handler.PackageVersionHandler, roleRepo *repository.RoleRepository, publicRepoHandler *handler.PublicRepoHandler, backupHandler *handler.BackupHandler, webhookHandler *handler.WebhookHandler, systemConfigHandler *handler.SystemConfigHandler, systemInfoHandler *handler.SystemInfoHandler, fileBrowseHandler *handler.FileBrowseHandler, repoSvc *service.RepositoryService, migrationHandler *handler.MigrationHandler, aiHandler *handler.AIHandler) *gin.Engine {
+func setupRouter(cfg *config.Config, authService *service.AuthService, adapters []adapter.Adapter, repoHandler *handler.RepositoryHandler, cacheHandler *handler.CacheHandler, blockRuleHandler *handler.BlockRuleHandler, searchHandler *handler.PackageSearchHandler, dashboardHandler *handler.DashboardHandler, casHandler *handler.CASHandler, casAdminHandler *handler.CASAdminHandler, blockRuleSvc *service.BlockRuleService, storageBackendHandler *handler.StorageBackendHandler, securityHandler *handler.SecurityHandler, auditLogHandler *handler.AuditLogHandler, userHandler *handler.UserHandler, pkgVersionHandler *handler.PackageVersionHandler, roleRepo *repository.RoleRepository, roleHandler *handler.RoleHandler, publicRepoHandler *handler.PublicRepoHandler, backupHandler *handler.BackupHandler, webhookHandler *handler.WebhookHandler, systemConfigHandler *handler.SystemConfigHandler, systemInfoHandler *handler.SystemInfoHandler, fileBrowseHandler *handler.FileBrowseHandler, repoSvc *service.RepositoryService, migrationHandler *handler.MigrationHandler, aiHandler *handler.AIHandler) *gin.Engine {
 	r := gin.New()
 
 	// 全局中间件
@@ -359,6 +361,9 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 	// Prometheus 指标端点
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
+
+	// 文档静态文件服务
+	r.Static("/docs", "./docs")
 
 	// API 路由组
 	api := r.Group("/api/v1")
@@ -392,6 +397,8 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 		{
 			protected.POST("/auth/logout", authHandler.Logout)
 			protected.GET("/auth/profile", authHandler.Profile)
+			protected.PUT("/auth/profile", authHandler.UpdateProfile)
+			protected.PUT("/auth/password", authHandler.ChangePassword)
 
 			// 仓库管理
 			repos := protected.Group("/repositories")
@@ -511,7 +518,17 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 				usersWrite.PUT("/:id/status", userHandler.UpdateStatus)
 				usersWrite.PUT("/:id/roles", userHandler.AssignRoles)
 			}
-			protected.GET("/roles", middleware.RequirePermission(roleRepo, "users", "read"), userHandler.ListRoles)
+			protected.GET("/roles", middleware.RequirePermission(roleRepo, "users", "read"), roleHandler.List)
+			protected.GET("/roles/permissions", middleware.RequirePermission(roleRepo, "users", "read"), roleHandler.ListPermissions)
+			protected.GET("/roles/:id", middleware.RequirePermission(roleRepo, "users", "read"), roleHandler.Get)
+			rolesWrite := protected.Group("/roles")
+			rolesWrite.Use(middleware.RequirePermission(roleRepo, "users", "write"))
+			{
+				rolesWrite.POST("", roleHandler.Create)
+				rolesWrite.PUT("/:id", roleHandler.Update)
+				rolesWrite.DELETE("/:id", roleHandler.Delete)
+				rolesWrite.PUT("/:id/permissions", roleHandler.UpdatePermissions)
+			}
 
 			// 审计日志
 			audit := protected.Group("/audit")
