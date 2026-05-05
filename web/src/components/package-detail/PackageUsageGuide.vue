@@ -105,6 +105,7 @@ const installCommands = computed<CommandItem[]>(() => {
         { label: 'Gradle (Groovy)', command: `implementation '${mavenCoord}:${version}'` },
         { label: 'Gradle (Kotlin)', command: `implementation("${mavenCoord}:${version}")` },
       ]
+    }
     case 'go':
       return [
         { label: 'go get', command: `go get ${name}@${version}` },
@@ -209,7 +210,7 @@ const usageExamples = computed<CodeItem[]>(() => {
       ]
     }
     case 'maven2': {
-      const parts = name.split(':')
+      const parts = name.split('/')
       return [
         {
           label: 'Java',
