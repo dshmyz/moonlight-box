@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -50,6 +51,8 @@ func (c *AIClient) Call(ctx context.Context, req *models.ChatRequest) (*models.C
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	log.Printf("[AI-DEBUG] 请求体: %s", string(reqBody))
+
 	// 创建 HTTP 请求
 	url := strings.TrimSuffix(c.config.BaseURL, "/") + "/chat/completions"
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
@@ -88,6 +91,19 @@ func (c *AIClient) Call(ctx context.Context, req *models.ChatRequest) (*models.C
 	var chatResp models.ChatResponse
 	if err := json.Unmarshal(respBody, &chatResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	// 打印完整的响应结构用于调试
+	respJSON, _ := json.Marshal(chatResp)
+	log.Printf("[AI-DEBUG] 完整响应: %s", string(respJSON))
+
+	if len(chatResp.Choices) > 0 && len(chatResp.Choices[0].Message.ToolCalls) > 0 {
+		log.Printf("[AI-DEBUG] 模型返回了 %d 个工具调用", len(chatResp.Choices[0].Message.ToolCalls))
+		for _, tc := range chatResp.Choices[0].Message.ToolCalls {
+			log.Printf("[AI-DEBUG] 工具调用: %s, 参数: %s", tc.Function.Name, string(tc.Function.Arguments))
+		}
+	} else if len(chatResp.Choices) > 0 {
+		log.Printf("[AI-DEBUG] 模型没有触发工具调用，finish_reason: %s, 内容: %s", chatResp.Choices[0].FinishReason, chatResp.Choices[0].Message.Content[:min(200, len(chatResp.Choices[0].Message.Content))])
 	}
 
 	return &chatResp, nil

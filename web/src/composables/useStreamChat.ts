@@ -1,7 +1,18 @@
 import { ref } from 'vue'
 import type { ChatRequest, ChatResponse } from '@/api/ai'
 
-export type StreamCallback = (chunk: string, done: boolean) => void
+export type StreamCallback = (content: string, done: boolean, toolCall?: ToolCallInfo) => void
+export type StatusCallback = (status: string, phase: string) => void
+
+export interface ToolCallInfo {
+  id?: string
+  name: string
+  params: Record<string, unknown>
+  result: string
+  error?: string
+}
+
+export type LoadingPhase = 'analyzing' | 'querying' | 'generating' | 'done'
 
 export function useStreamChat() {
   const isStreaming = ref(false)
@@ -10,6 +21,7 @@ export function useStreamChat() {
   const streamChat = async (
     request: ChatRequest,
     onChunk: StreamCallback,
+    onStatus?: StatusCallback,
     useStream: boolean = true
   ): Promise<ChatResponse | null> => {
     if (isStreaming.value) {
@@ -31,7 +43,7 @@ export function useStreamChat() {
             'Content-Type': 'application/json',
             ...(token ? { Authorization: `Bearer ${token}` } : {})
           },
-          body: JSON.stringify({ ...request, stream: true }),
+          body: JSON.stringify(request),
           signal: abortController.value.signal
         })
 
@@ -43,12 +55,14 @@ export function useStreamChat() {
         const decoder = new TextDecoder()
         let fullContent = ''
         let sessionId = ''
+        let hasToolCall = false
 
         if (reader) {
           while (true) {
             const { done, value } = await reader.read()
             
             if (done) {
+              onStatus?.('完成', 'done')
               onChunk(fullContent, true)
               break
             }
@@ -61,15 +75,39 @@ export function useStreamChat() {
                 try {
                   const data = JSON.parse(line.slice(6))
                   
+                  if (data.error) {
+                    throw new Error(data.error)
+                  }
+                  
                   if (data.session_id) {
                     sessionId = data.session_id
                   }
                   
+                  // 处理工具调用
+                  if (data.tool_call) {
+                    hasToolCall = true
+                    onStatus?.('正在查询阻断日志数据...', 'querying')
+                    onChunk(fullContent, false, data.tool_call)
+                  }
+                  
+                  // 处理文本内容
                   if (data.content) {
+                    if (hasToolCall && fullContent === '') {
+                      onStatus?.('正在生成分析结果...', 'generating')
+                    }
                     fullContent += data.content
                     onChunk(fullContent, false)
                   }
-                } catch (e) {
+                  
+                  // 处理完成信号
+                  if (data.done) {
+                    onStatus?.('完成', 'done')
+                    onChunk(fullContent, true)
+                  }
+                } catch (e: any) {
+                  if (e.message && !e.message.includes('Unexpected')) {
+                    throw e
+                  }
                   // Ignore parse errors
                 }
               }

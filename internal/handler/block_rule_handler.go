@@ -6,18 +6,20 @@ import (
 	"strconv"
 
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
 
 type BlockRuleHandler struct {
-	svc      *service.BlockRuleService
-	auditSvc *service.AuditService
+	svc       *service.BlockRuleService
+	auditSvc  *service.AuditService
+	auditRepo *repository.AuditRepository
 }
 
-func NewBlockRuleHandler(svc *service.BlockRuleService, auditSvc *service.AuditService) *BlockRuleHandler {
-	return &BlockRuleHandler{svc: svc, auditSvc: auditSvc}
+func NewBlockRuleHandler(svc *service.BlockRuleService, auditSvc *service.AuditService, auditRepo *repository.AuditRepository) *BlockRuleHandler {
+	return &BlockRuleHandler{svc: svc, auditSvc: auditSvc, auditRepo: auditRepo}
 }
 
 func (h *BlockRuleHandler) List(c *gin.Context) {
@@ -205,4 +207,21 @@ func (h *BlockRuleHandler) DownloadTemplate(c *gin.Context) {
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", url.QueryEscape("block_rule_template.csv")))
 	c.Header("Content-Transfer-Encoding", "binary")
 	c.String(200, csvContent)
+}
+
+func (h *BlockRuleHandler) GetBlockStats(c *gin.Context) {
+	hours := 24
+	if hStr := c.Query("hours"); hStr != "" {
+		if hVal, err := strconv.Atoi(hStr); err == nil && hVal > 0 && hVal <= 720 {
+			hours = hVal
+		}
+	}
+
+	stats, err := h.auditRepo.GetBlockStats(hours)
+	if err != nil {
+		InternalError(c, err.Error())
+		return
+	}
+
+	Success(c, stats)
 }

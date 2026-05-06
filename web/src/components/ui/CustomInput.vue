@@ -183,44 +183,42 @@ defineExpose({
 
 .custom-input {
   width: 100%;
-  padding: 10px 14px;
-  font-size: var(--font-size-base);
-  color: #0f172a;
-  background: #fafbfc;
-  border: 2px solid #e2e8f0;
-  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  font-size: 14px;
+  color: #111827;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
   outline: none;
-  transition: all var(--transition-base);
+  transition: all 0.25s ease;
   font-family: inherit;
 }
 
 .custom-input::placeholder {
-  color: #94a3b8;
+  color: #9ca3af;
 }
 
 .custom-input:hover:not(:disabled):not(:focus) {
-  border-color: #0f172a;
-  background: #ffffff;
+  border-color: #9ca3af;
 }
 
 .custom-input:focus {
-  border-color: #0f172a;
-  background: #ffffff;
-  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
 .custom-input:disabled {
-  background: #f1f5f9;
-  color: #94a3b8;
+  background: #f9fafb;
+  color: #9ca3af;
   cursor: not-allowed;
 }
 
 .custom-input.has-prefix {
-  padding-left: 40px;
+  padding-left: 36px;
 }
 
 .custom-input.has-suffix {
-  padding-right: 40px;
+  padding-right: 36px;
 }
 
 .custom-input-prefix,
@@ -229,21 +227,21 @@ defineExpose({
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #94a3b8;
+  color: #9ca3af;
   z-index: 1;
 }
 
 .custom-input-prefix {
-  left: var(--spacing-md);
+  left: 12px;
 }
 
 .custom-input-suffix {
-  right: var(--spacing-md);
-  gap: var(--spacing-xs);
+  right: 12px;
+  gap: 8px;
 }
 
 .custom-input-icon {
-  font-size: var(--font-size-lg);
+  font-size: 16px;
   display: inline-flex;
 }
 
@@ -255,14 +253,14 @@ defineExpose({
   padding: 0;
   border: none;
   background: transparent;
-  color: #94a3b8;
+  color: #9ca3af;
   cursor: pointer;
-  transition: color var(--transition-fast);
+  transition: color 0.2s ease;
 }
 
 .custom-input-clear:hover,
 .custom-input-password-toggle:hover {
-  color: #0f172a;
+  color: #374151;
 }
 
 .custom-textarea-wrapper {
@@ -272,37 +270,35 @@ defineExpose({
 
 .custom-textarea {
   width: 100%;
-  padding: 10px 14px;
-  font-size: var(--font-size-base);
-  color: #0f172a;
-  background: #fafbfc;
-  border: 2px solid #e2e8f0;
-  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  font-size: 14px;
+  color: #111827;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
   outline: none;
-  transition: all var(--transition-base);
+  transition: all 0.25s ease;
   font-family: inherit;
   resize: vertical;
   line-height: 1.6;
 }
 
 .custom-textarea::placeholder {
-  color: #94a3b8;
+  color: #9ca3af;
 }
 
 .custom-textarea:hover:not(:disabled):not(:focus) {
-  border-color: #0f172a;
-  background: #ffffff;
+  border-color: #9ca3af;
 }
 
 .custom-textarea:focus {
-  border-color: #0f172a;
-  background: #ffffff;
-  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
 .custom-textarea:disabled {
-  background: #f1f5f9;
-  color: #94a3b8;
+  background: #f9fafb;
+  color: #9ca3af;
   cursor: not-allowed;
 }
 

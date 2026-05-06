@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -135,6 +136,12 @@ func (s *AIService) Chat(ctx context.Context, userID uint, sessionID string, mes
 		return nil, fmt.Errorf("添加消息失败: %w", err)
 	}
 
+	// 重新获取会话（因为AddMessage修改的是内存中的session，而session是深拷贝）
+	session = s.sessionManager.GetSession(session.ID)
+	if session == nil {
+		return nil, fmt.Errorf("获取会话失败")
+	}
+
 	// 获取用户信息
 	user, err := s.getUser(userID)
 	if err != nil {
@@ -189,7 +196,7 @@ func (s *AIService) chatWithToolLoop(ctx context.Context, req *models.ChatReques
 
 	for i := 0; i < maxIterations; i++ {
 		log.Printf("[AI] 第%d轮调用，消息数: %d", i+1, len(req.Messages))
-		
+
 		// 调用AI
 		resp, err := s.client.Call(ctx, req)
 		if err != nil {
@@ -233,7 +240,7 @@ func (s *AIService) chatWithToolLoop(ctx context.Context, req *models.ChatReques
 		// 执行每个工具调用
 		for _, toolCall := range message.ToolCalls {
 			log.Printf("[AI] 执行工具: %s", toolCall.Function.Name)
-			
+
 			// 解析参数
 			params, err := ParseToolCallParams(toolCall.Function.Arguments)
 			if err != nil {
@@ -277,18 +284,26 @@ func (s *AIService) chatWithToolLoop(ctx context.Context, req *models.ChatReques
 
 // buildChatRequest 构建聊天请求
 func (s *AIService) buildChatRequest(session *Session, user *model.User) *models.ChatRequest {
-	// 复制会话消息
-	messages := make([]models.Message, len(session.Messages))
-	copy(messages, session.Messages)
+	messages := make([]models.Message, 0, len(session.Messages)+1)
 
-	// 添加系统提示词
-	systemPrompt := s.buildSystemPrompt(user)
-	messages = append([]models.Message{
-		{
+	// 检查是否有可用工具
+	hasTools := s.config.Tools.Enabled && s.toolManager.ToolCount() > 0
+
+	// 如果有工具可用，使用系统消息；否则不使用系统消息（避免模型不调用工具）
+	if hasTools {
+		systemPrompt := s.buildSystemPrompt(user)
+		messages = append(messages, models.Message{
 			Role:    "system",
 			Content: systemPrompt,
-		},
-	}, messages...)
+		})
+	}
+
+	for _, msg := range session.Messages {
+		messages = append(messages, models.Message{
+			Role:    msg.Role,
+			Content: msg.Content,
+		})
+	}
 
 	// 构建请求
 	req := &models.ChatRequest{
@@ -301,9 +316,10 @@ func (s *AIService) buildChatRequest(session *Session, user *model.User) *models
 		req.MaxTokens = &s.config.MaxTokens
 	}
 
-	// 添加工具定义
-	if s.config.Tools.Enabled && s.toolManager.ToolCount() > 0 {
+	// 添加工具
+	if hasTools {
 		req.Tools = s.toolManager.GetToolDefinitions()
+		req.ToolChoice = "auto"
 	}
 
 	return req
@@ -313,14 +329,7 @@ func (s *AIService) buildChatRequest(session *Session, user *model.User) *models
 func (s *AIService) buildSystemPrompt(user *model.User) string {
 	var sb strings.Builder
 
-	sb.WriteString("你是 Moonlight Registry 的AI助手，帮助用户管理和查询私有仓库。\n\n")
-
-	sb.WriteString("## 你的能力\n")
-	sb.WriteString("- 查询系统日志\n")
-	sb.WriteString("- 查询数据库统计信息\n")
-	sb.WriteString("- 查询包详细信息\n")
-	sb.WriteString("- 执行安全分析\n")
-	sb.WriteString("- 生成代码示例\n\n")
+	sb.WriteString("你是 Moonlight Registry 的AI助手。当用户的请求可以用工具完成时，必须调用相应的工具，不要直接回复。只有当用户问好或闲聊时，才直接回复。\n\n")
 
 	sb.WriteString("## 用户信息\n")
 	sb.WriteString(fmt.Sprintf("- 用户名: %s\n", user.Username))
@@ -334,8 +343,6 @@ func (s *AIService) buildSystemPrompt(user *model.User) string {
 
 	sb.WriteString("\n## 注意事项\n")
 	sb.WriteString("- 使用工具查询信息时，请确保参数正确\n")
-	sb.WriteString("- 如果不确定用户意图，请主动询问\n")
-	sb.WriteString("- 对于敏感操作，请确认用户权限\n")
 	sb.WriteString("- 回复使用中文，简洁明了\n")
 
 	return sb.String()
@@ -414,7 +421,7 @@ func (s *AIService) SetToolContext(ctx *tools.ToolContext) {
 	// 工具管理器会在执行工具时设置上下文
 }
 
-// StreamChat 流式聊天（预留接口）
+// StreamChat 流式聊天
 func (s *AIService) StreamChat(ctx context.Context, userID uint, sessionID string, message string) (<-chan *StreamChatChunk, error) {
 	// 检查限流
 	if !s.rateLimiter.Allow(userID) {
@@ -424,34 +431,324 @@ func (s *AIService) StreamChat(ctx context.Context, userID uint, sessionID strin
 	// 创建输出channel
 	output := make(chan *StreamChatChunk, 100)
 
+	// 获取或创建会话
+	session := s.sessionManager.GetOrCreateSession(userID, sessionID)
+
+	// 对用户消息进行脱敏
+	sanitizedMessage := s.sanitizer.Sanitize(message)
+
+	// 添加用户消息到会话
+	userMsg := models.Message{
+		Role:    "user",
+		Content: sanitizedMessage,
+	}
+	if err := s.sessionManager.AddMessage(session.ID, userMsg); err != nil {
+		return nil, fmt.Errorf("添加消息失败: %w", err)
+	}
+
+	// 重新获取会话
+	session = s.sessionManager.GetSession(session.ID)
+	if session == nil {
+		return nil, fmt.Errorf("获取会话失败")
+	}
+
+	// 获取用户信息
+	user, err := s.getUser(userID)
+	if err != nil {
+		return nil, fmt.Errorf("获取用户信息失败: %w", err)
+	}
+
+	// 构建AI请求
+	req := s.buildChatRequest(session, user)
+
 	// 启动goroutine处理流式响应
 	go func() {
 		defer close(output)
 
-		// 简单实现：调用Chat方法，然后一次性返回
-		// 完整实现需要使用client.Stream方法
-		resp, err := s.Chat(ctx, userID, sessionID, message)
+		// 设置流式标志
+		req.Stream = true
+
+		// 调用流式AI
+		stream, err := s.client.Stream(ctx, req)
 		if err != nil {
 			output <- &StreamChatChunk{Error: err}
 			return
 		}
 
-		output <- &StreamChatChunk{
-			SessionID: resp.SessionID,
-			Content:   resp.Message,
-			Done:      true,
+		var fullContent strings.Builder
+		var currentToolCall *models.ToolCall
+		var currentToolArgs strings.Builder
+		var toolCalls []models.ToolCall
+
+		for chunk := range stream {
+			if chunk.Error != nil {
+				output <- &StreamChatChunk{Error: chunk.Error}
+				return
+			}
+
+			if len(chunk.Choices) == 0 {
+				continue
+			}
+
+			choice := chunk.Choices[0]
+
+			// 处理工具调用
+			if len(choice.Delta.ToolCalls) > 0 {
+				for _, tc := range choice.Delta.ToolCalls {
+					if tc.ID != "" {
+						// 新的工具调用开始
+						if currentToolCall != nil {
+							// 保存上一个工具调用的参数
+							currentToolCall.Function.Arguments = json.RawMessage(currentToolArgs.String())
+							toolCalls = append(toolCalls, *currentToolCall)
+						}
+						currentToolCall = &models.ToolCall{
+							ID:   tc.ID,
+							Type: tc.Type,
+							Function: models.FunctionCall{
+								Name:      tc.Function.Name,
+								Arguments: tc.Function.Arguments,
+							},
+						}
+						currentToolArgs.Reset()
+						// 写入参数片段（解包引号）
+						if len(tc.Function.Arguments) > 0 {
+							writeToolArgs(&currentToolArgs, tc.Function.Arguments)
+						}
+					} else if currentToolCall != nil {
+						// 追加参数片段（解包引号）
+						if len(tc.Function.Arguments) > 0 {
+							writeToolArgs(&currentToolArgs, tc.Function.Arguments)
+						}
+					}
+				}
+				continue
+			}
+
+			// 处理文本内容（实时流式输出）
+			if choice.Delta.Content != "" {
+				fullContent.WriteString(choice.Delta.Content)
+				output <- &StreamChatChunk{
+					SessionID: session.ID,
+					Content:   choice.Delta.Content,
+					Done:      false,
+				}
+			}
+
+			// 检查是否完成
+			if choice.FinishReason == "stop" || choice.FinishReason == "tool_calls" {
+				// 保存最后一个工具调用
+				if currentToolCall != nil {
+					currentToolCall.Function.Arguments = json.RawMessage(currentToolArgs.String())
+					toolCalls = append(toolCalls, *currentToolCall)
+					currentToolCall = nil
+				}
+
+				// 如果有工具调用，执行工具
+				if len(toolCalls) > 0 {
+					// 先发送工具调用通知，让用户知道正在调用工具
+					for _, tc := range toolCalls {
+						output <- &StreamChatChunk{
+							SessionID: session.ID,
+							Content:   fmt.Sprintf("\n[正在调用工具: %s]\n", tc.Function.Name),
+							Done:      false,
+						}
+					}
+
+					// 执行工具调用
+					var toolResults []ToolCallResultInfo
+					for _, tc := range toolCalls {
+						// 解析参数
+						var params map[string]interface{}
+						args := tc.Function.Arguments
+
+						// 清理多次转义的 JSON
+						cleanedArgs := cleanJSONArgs(args)
+
+						// 尝试解析
+						if err := json.Unmarshal(cleanedArgs, &params); err != nil {
+							toolResults = append(toolResults, ToolCallResultInfo{
+								Name:  tc.Function.Name,
+								Error: fmt.Sprintf("参数解析失败: %v", err),
+							})
+							continue
+						}
+
+						// 执行工具
+						result, err := s.toolManager.ExecuteTool(ctx, tc.Function.Name, params, user)
+
+						if err != nil {
+							toolResults = append(toolResults, ToolCallResultInfo{
+								Name:   tc.Function.Name,
+								Params: params,
+								Error:  err.Error(),
+							})
+						} else {
+							toolResults = append(toolResults, ToolCallResultInfo{
+								Name:   tc.Function.Name,
+								Params: params,
+								Result: result,
+							})
+						}
+					}
+
+					// 发送工具调用结果
+					for _, result := range toolResults {
+						output <- &StreamChatChunk{
+							SessionID: session.ID,
+							ToolCall:  &result,
+							Done:      false,
+						}
+					}
+
+					// 将工具调用结果添加到请求中，继续流式调用
+					// 构建助手消息，包含工具调用
+					assistantMsg := models.Message{
+						Role:    "assistant",
+						Content: fullContent.String(),
+					}
+
+					// 添加工具调用信息
+					if len(toolCalls) > 0 {
+						assistantMsg.ToolCalls = make([]models.ToolCall, len(toolCalls))
+						for i, tc := range toolCalls {
+							assistantMsg.ToolCalls[i] = tc
+						}
+					}
+					req.Messages = append(req.Messages, assistantMsg)
+
+					// 添加工具响应消息，使用正确的工具调用ID
+					for i, result := range toolResults {
+						toolCallID := ""
+						if i < len(toolCalls) {
+							toolCallID = toolCalls[i].ID
+						}
+						req.Messages = append(req.Messages, models.Message{
+							Role:       "tool",
+							Content:    result.Result,
+							ToolCallID: toolCallID,
+						})
+					}
+
+					// 重置状态，继续流式调用
+					fullContent.Reset()
+					toolCalls = nil
+					currentToolCall = nil
+					currentToolArgs.Reset()
+
+					// 再次调用流式AI获取最终回复
+					stream, err = s.client.Stream(ctx, req)
+					if err != nil {
+						output <- &StreamChatChunk{Error: err}
+						return
+					}
+
+					// 继续处理流式响应
+					continue
+				}
+
+				// 添加助手消息到会话
+				assistantMsg := models.Message{
+					Role:    "assistant",
+					Content: fullContent.String(),
+				}
+				s.sessionManager.AddMessage(session.ID, assistantMsg)
+
+				// 发送完成信号
+				output <- &StreamChatChunk{
+					SessionID: session.ID,
+					Content:   "",
+					Done:      true,
+				}
+				return
+			}
 		}
 	}()
 
 	return output, nil
 }
 
+// ToolCallResultInfo 工具调用结果信息
+type ToolCallResultInfo struct {
+	Name   string                 `json:"name"`
+	Params map[string]interface{} `json:"params"`
+	Result string                 `json:"result"`
+	Error  string                 `json:"error,omitempty"`
+}
+
 // StreamChatChunk 流式聊天块
 type StreamChatChunk struct {
-	SessionID string `json:"session_id"`
-	Content   string `json:"content"`
-	Done      bool   `json:"done"`
-	Error     error  `json:"-"`
+	SessionID string              `json:"session_id"`
+	Content   string              `json:"content"`
+	ToolCall  *ToolCallResultInfo `json:"tool_call,omitempty"`
+	Done      bool                `json:"done"`
+	Error     error               `json:"-"`
+}
+
+// writeToolArgs 写入工具参数片段，自动解包引号
+func writeToolArgs(builder *strings.Builder, chunk json.RawMessage) {
+	// 尝试解包为字符串（流式模式下每个 chunk 可能被引号包裹）
+	var str string
+	if err := json.Unmarshal(chunk, &str); err == nil {
+		builder.WriteString(str)
+		return
+	}
+	// 如果解包失败，直接写入原始数据
+	builder.Write(chunk)
+}
+
+// cleanJSONArgs 清理多次转义的 JSON 参数
+func cleanJSONArgs(args json.RawMessage) json.RawMessage {
+	if len(args) == 0 {
+		return args
+	}
+
+	// 最多尝试解包 5 次，处理多层转义
+	for i := 0; i < 5; i++ {
+		trimmed := strings.TrimSpace(string(args))
+		if len(trimmed) == 0 {
+			return args
+		}
+
+		// 如果已经是 JSON 对象或数组，验证有效性后返回
+		if trimmed[0] == '{' || trimmed[0] == '[' {
+			var tmp interface{}
+			if err := json.Unmarshal(args, &tmp); err == nil {
+				return args
+			}
+		}
+
+		// 如果是 JSON 字符串，尝试解包
+		if trimmed[0] == '"' {
+			var str string
+			var unqErr error
+			if unqErr = json.Unmarshal(args, &str); unqErr == nil {
+				args = json.RawMessage(str)
+				continue
+			}
+		}
+
+		// 处理非标准格式："""{...}""" 或类似的多重引号
+		if strings.HasPrefix(trimmed, `"""`) || strings.HasPrefix(trimmed, `"`) {
+			// 移除所有包裹的引号
+			cleaned := strings.Trim(trimmed, `"`)
+			// 移除多余的转义
+			cleaned = strings.ReplaceAll(cleaned, `\"`, `"`)
+			cleaned = strings.ReplaceAll(cleaned, `\\`, `\`)
+			cleaned = strings.TrimSpace(cleaned)
+
+			if len(cleaned) > 0 && (cleaned[0] == '{' || cleaned[0] == '[') {
+				var tmp interface{}
+				if err := json.Unmarshal([]byte(cleaned), &tmp); err == nil {
+					return json.RawMessage(cleaned)
+				}
+			}
+		}
+
+		break
+	}
+
+	return args
 }
 
 // HealthCheck 健康检查

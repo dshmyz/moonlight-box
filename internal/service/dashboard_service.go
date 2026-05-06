@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
@@ -57,6 +59,11 @@ type DashboardService struct {
 	db          *gorm.DB
 	repoRepo    *repository.RepositoryRepository
 	storagePath string
+
+	cacheMu     sync.RWMutex
+	cachedStats *DashboardStats
+	cacheTime   time.Time
+	cacheTTL    time.Duration
 }
 
 // NewDashboardService 创建仪表盘服务实例
@@ -65,18 +72,43 @@ func NewDashboardService(db *gorm.DB, repoRepo *repository.RepositoryRepository,
 		db:          db,
 		repoRepo:    repoRepo,
 		storagePath: storagePath,
+		cacheTTL:    30 * time.Second,
 	}
 }
 
 // GetStats 获取仪表盘统计数据
 func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error) {
-	// 获取所有仓库
+	s.cacheMu.RLock()
+	if s.cachedStats != nil && time.Since(s.cacheTime) < s.cacheTTL {
+		stats := s.cachedStats
+		s.cacheMu.RUnlock()
+		return stats, nil
+	}
+	s.cacheMu.RUnlock()
+
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
+	if s.cachedStats != nil && time.Since(s.cacheTime) < s.cacheTTL {
+		return s.cachedStats, nil
+	}
+
+	stats, err := s.computeStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	s.cachedStats = stats
+	s.cacheTime = time.Now()
+	return stats, nil
+}
+
+func (s *DashboardService) computeStats(ctx context.Context) (*DashboardStats, error) {
 	repos, err := s.repoRepo.List(nil)
 	if err != nil {
 		return nil, err
 	}
 
-	// 构建仓库状态列表
 	repoStatuses := make([]RepoStatus, 0, len(repos))
 	for _, repo := range repos {
 		var pkgCount int64
@@ -92,24 +124,16 @@ func (s *DashboardService) GetStats(ctx context.Context) (*DashboardStats, error
 		repoStatuses = append(repoStatuses, status)
 	}
 
-	// 获取存储信息
 	storageInfo := s.getStorageInfo()
-
-	// 获取缓存统计
-	var cacheEntries int64
-	s.db.Model(&model.CacheEntry{}).Count(&cacheEntries)
-
-	// 获取热门包 Top 5
+	cacheInfo := s.getCacheInfo()
+	downloadsLast7Days := s.getDownloadsLast7Days()
 	topPackages := s.getTopPackages(5)
 
 	stats := &DashboardStats{
-		Repositories: repoStatuses,
-		Storage:      storageInfo,
-		Cache: CacheInfo{
-			HitRate:      94.2,
-			TotalEntries: cacheEntries,
-		},
-		DownloadsLast7Days: []int64{1200, 1450, 1100, 1800, 1650, 2100, 1900},
+		Repositories:       repoStatuses,
+		Storage:            storageInfo,
+		Cache:              cacheInfo,
+		DownloadsLast7Days: downloadsLast7Days,
 		TopPackages:        topPackages,
 	}
 
@@ -172,4 +196,46 @@ func getDirSize(path string) int64 {
 		return nil
 	})
 	return size
+}
+
+// getCacheInfo 获取缓存统计信息
+func (s *DashboardService) getCacheInfo() CacheInfo {
+	var totalEntries int64
+	s.db.Model(&model.CacheEntry{}).Count(&totalEntries)
+
+	var totalLogs int64
+	s.db.Model(&model.ProxyDownloadLog{}).Count(&totalLogs)
+
+	var cachedLogs int64
+	s.db.Model(&model.ProxyDownloadLog{}).Where("status = ?", model.DownloadStatusCached).Count(&cachedLogs)
+
+	var hitRate float64
+	if totalLogs > 0 {
+		hitRate = float64(cachedLogs) / float64(totalLogs) * 100
+		hitRate = float64(int(hitRate*10)) / 10
+	}
+
+	return CacheInfo{
+		HitRate:      hitRate,
+		TotalEntries: totalEntries,
+	}
+}
+
+// getDownloadsLast7Days 获取最近 7 天每天的下载量
+func (s *DashboardService) getDownloadsLast7Days() []int64 {
+	result := make([]int64, 7)
+	now := time.Now()
+
+	for i := 6; i >= 0; i-- {
+		dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -i)
+		dayEnd := dayStart.Add(24 * time.Hour)
+
+		var count int64
+		s.db.Model(&model.ProxyDownloadLog{}).
+			Where("created_at >= ? AND created_at < ?", dayStart, dayEnd).
+			Count(&count)
+		result[6-i] = count
+	}
+
+	return result
 }

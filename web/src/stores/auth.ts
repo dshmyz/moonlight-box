@@ -4,12 +4,18 @@ import request from '@/api/request'
 import { authApi } from '@/api/auth'
 import { casAuthApi } from '@/api/casConfig'
 
+interface Permission {
+  resource: string
+  action: string
+}
+
 interface UserInfo {
   id: number
   username: string
   email: string
   display_name: string
   roles: string[]
+  permissions: Permission[]
 }
 
 export const useAuthStore = defineStore('auth', () => {
@@ -18,6 +24,15 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isLoggedIn = computed(() => !!token.value)
   const isAdmin = computed(() => user.value?.roles?.includes('admin') ?? false)
+
+  function hasPermission(resource: string, action: string): boolean {
+    if (isAdmin.value) return true
+    if (!user.value?.permissions) return false
+    
+    return user.value.permissions.some(
+      p => p.resource === resource && p.action === action
+    )
+  }
 
   async function login(username: string, password: string) {
     const res = await authApi.login(username, password)
@@ -69,6 +84,7 @@ export const useAuthStore = defineStore('auth', () => {
     user,
     isLoggedIn,
     isAdmin,
+    hasPermission,
     login,
     casLogin,
     logout,

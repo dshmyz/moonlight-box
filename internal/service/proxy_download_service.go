@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/moonlight-box/registry/internal/model"
@@ -22,10 +23,24 @@ const (
 )
 
 type ProxyDownloadService struct {
-	pkgRepo     *repository.PackageRepository
-	storageSvc  *StorageService
-	proxyRouter *proxy.ProxyRouter
-	logRepo     *repository.ProxyDownloadLogRepository
+	pkgRepo      *repository.PackageRepository
+	storageSvc   *StorageService
+	proxyRouter  *proxy.ProxyRouter
+	logRepo      *repository.ProxyDownloadLogRepository
+	countBatcher *DownloadCountBatcher
+
+	pkgCacheMu sync.RWMutex
+	pkgCache   map[string]*pkgCacheEntry
+}
+
+type pkgCacheEntry struct {
+	PackageID uint
+	Versions  map[string]*versionCacheEntry
+}
+
+type versionCacheEntry struct {
+	VersionID uint
+	Files     map[string]uint
 }
 
 func NewProxyDownloadService(
@@ -33,12 +48,15 @@ func NewProxyDownloadService(
 	storageSvc *StorageService,
 	proxyRouter *proxy.ProxyRouter,
 	logRepo *repository.ProxyDownloadLogRepository,
+	countBatcher *DownloadCountBatcher,
 ) *ProxyDownloadService {
 	return &ProxyDownloadService{
-		pkgRepo:     pkgRepo,
-		storageSvc:  storageSvc,
-		proxyRouter: proxyRouter,
-		logRepo:     logRepo,
+		pkgRepo:      pkgRepo,
+		storageSvc:   storageSvc,
+		proxyRouter:  proxyRouter,
+		logRepo:      logRepo,
+		countBatcher: countBatcher,
+		pkgCache:     make(map[string]*pkgCacheEntry),
 	}
 }
 
@@ -76,6 +94,7 @@ func (s *ProxyDownloadService) Download(ctx context.Context, req *ProxyDownloadR
 		body, readErr := io.ReadAll(content)
 		content.Close()
 		if readErr == nil {
+			s.incrementDownloadCount(req)
 			s.recordLog(req, model.DownloadStatusCached, 0, size, int(time.Since(startTime).Milliseconds()), true, nil)
 			return &ProxyDownloadResult{
 				Content:   body,
@@ -211,4 +230,59 @@ func (s *ProxyDownloadService) GetStorageService() *StorageService {
 
 func (s *ProxyDownloadService) GetPackageRepository() *repository.PackageRepository {
 	return s.pkgRepo
+}
+
+func (s *ProxyDownloadService) SetProxyRouter(pr *proxy.ProxyRouter) {
+	s.proxyRouter = pr
+}
+
+func (s *ProxyDownloadService) incrementDownloadCount(req *ProxyDownloadRequest) {
+	if req.Name == "" || req.PackageType == "" {
+		return
+	}
+
+	cacheKey := string(req.PackageType) + "/" + req.Name
+
+	s.pkgCacheMu.RLock()
+	entry, exists := s.pkgCache[cacheKey]
+	s.pkgCacheMu.RUnlock()
+
+	if !exists {
+		pkg, err := s.pkgRepo.FindByNameAndType(req.Name, req.PackageType)
+		if err != nil {
+			return
+		}
+
+		entry = &pkgCacheEntry{
+			PackageID: pkg.ID,
+			Versions:  make(map[string]*versionCacheEntry),
+		}
+
+		for _, v := range pkg.Versions {
+			verEntry := &versionCacheEntry{
+				VersionID: v.ID,
+				Files:     make(map[string]uint),
+			}
+			for _, f := range v.Files {
+				verEntry.Files[f.Filename] = f.ID
+			}
+			entry.Versions[v.Version] = verEntry
+		}
+
+		s.pkgCacheMu.Lock()
+		s.pkgCache[cacheKey] = entry
+		s.pkgCacheMu.Unlock()
+	}
+
+	var versionID uint
+	var fileID uint
+
+	if verEntry, ok := entry.Versions[req.Version]; ok {
+		versionID = verEntry.VersionID
+		if req.Filename != "" {
+			fileID = verEntry.Files[req.Filename]
+		}
+	}
+
+	s.countBatcher.Increment(entry.PackageID, versionID, fileID)
 }

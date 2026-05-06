@@ -34,6 +34,18 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		return
 	}
 
+	// 动态计算每个版本的总大小
+	for i := range pkg.Versions {
+		version := &pkg.Versions[i]
+		if version.SizeBytes == 0 && len(version.Files) > 0 {
+			var totalSize int64
+			for _, file := range version.Files {
+				totalSize += file.SizeBytes
+			}
+			version.SizeBytes = totalSize
+		}
+	}
+
 	response.Success(c, gin.H{
 		"package_name": pkg.Name,
 		"type":         pkg.Type,

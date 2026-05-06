@@ -10,6 +10,7 @@ import (
 	"github.com/moonlight-box/registry/internal/util"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/sirupsen/logrus"
 )
 
 type AuthService struct {
@@ -52,45 +53,74 @@ func NewAuthService(
 }
 
 func (s *AuthService) Login(req *LoginRequest) (*AuthResponse, error) {
-	// 查找用户
 	user, err := s.userRepo.FindByUsername(req.Username)
 	if err != nil {
 		if errors.Is(err, util.ErrUserNotFound) {
+			logrus.WithFields(logrus.Fields{
+				"module":   "auth",
+				"username": req.Username,
+			}).Warn("Login failed: user not found")
 			return nil, util.ErrInvalidCredentials
 		}
+		logrus.WithFields(logrus.Fields{
+			"module":   "auth",
+			"username": req.Username,
+			"error":    err,
+		}).Error("Login failed: database error")
 		return nil, err
 	}
 
-	// 验证密码
 	if !util.CheckPasswordHash(req.Password, user.PasswordHash) {
+		logrus.WithFields(logrus.Fields{
+			"module":   "auth",
+			"user_id":  user.ID,
+			"username": req.Username,
+		}).Warn("Login failed: invalid password")
 		return nil, util.ErrInvalidCredentials
 	}
 
-	// 检查用户状态
 	if !user.IsActive {
+		logrus.WithFields(logrus.Fields{
+			"module":   "auth",
+			"user_id":  user.ID,
+			"username": req.Username,
+		}).Warn("Login failed: account disabled")
 		return nil, errors.New("account is disabled")
 	}
 
-	// 获取角色列表
 	roles, _ := s.roleRepo.GetUserRoles(user.ID)
 	roleNames := make([]string, len(roles))
 	for i, role := range roles {
 		roleNames[i] = role.Name
 	}
 
-	// 生成 Token
 	accessToken, err := s.generateToken(user.ID, user.Username, roleNames, s.config.TokenExpiry)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":  "auth",
+			"user_id": user.ID,
+			"error":   err,
+		}).Error("Failed to generate access token")
 		return nil, err
 	}
 
 	refreshToken, err := s.generateToken(user.ID, user.Username, roleNames, s.config.RefreshExpiry)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":  "auth",
+			"user_id": user.ID,
+			"error":   err,
+		}).Error("Failed to generate refresh token")
 		return nil, err
 	}
 
-	// 更新最后登录时间
 	s.userRepo.UpdateLastLogin(user.ID)
+
+	logrus.WithFields(logrus.Fields{
+		"module":   "auth",
+		"user_id":  user.ID,
+		"username": req.Username,
+	}).Info("User logged in successfully")
 
 	return &AuthResponse{
 		AccessToken:  accessToken,
@@ -144,33 +174,59 @@ func (s *AuthService) ValidateToken(tokenString string) (*TokenClaims, error) {
 
 func (s *AuthService) Logout(tokenString string) error {
 	s.tokenBlacklist[tokenString] = true
+	logrus.WithFields(logrus.Fields{
+		"module": "auth",
+	}).Info("User logged out")
 	return nil
 }
 
 func (s *AuthService) RefreshToken(refreshTokenString string) (*AuthResponse, error) {
 	claims, err := s.ValidateToken(refreshTokenString)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module": "auth",
+			"error":  err,
+		}).Warn("Token refresh failed: invalid token")
 		return nil, err
 	}
 
 	user, err := s.userRepo.FindByID(claims.UserID)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":  "auth",
+			"user_id": claims.UserID,
+			"error":   err,
+		}).Error("Token refresh failed: user not found")
 		return nil, err
 	}
 
-	// 将旧 Refresh Token 加入黑名单
 	s.tokenBlacklist[refreshTokenString] = true
 
-	// 生成新 Token 对
 	accessToken, err := s.generateToken(user.ID, user.Username, claims.Roles, s.config.TokenExpiry)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":  "auth",
+			"user_id": user.ID,
+			"error":   err,
+		}).Error("Failed to generate new access token during refresh")
 		return nil, err
 	}
 
 	newRefreshToken, err := s.generateToken(user.ID, user.Username, claims.Roles, s.config.RefreshExpiry)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":  "auth",
+			"user_id": user.ID,
+			"error":   err,
+		}).Error("Failed to generate new refresh token during refresh")
 		return nil, err
 	}
+
+	logrus.WithFields(logrus.Fields{
+		"module":   "auth",
+		"user_id":  user.ID,
+		"username": user.Username,
+	}).Info("Token refreshed successfully")
 
 	return &AuthResponse{
 		AccessToken:  accessToken,
@@ -181,15 +237,22 @@ func (s *AuthService) RefreshToken(refreshTokenString string) (*AuthResponse, er
 }
 
 func (s *AuthService) CreateUser(username, password, email string) (*model.UserDTO, error) {
-	// 检查是否已存在
 	existing, _ := s.userRepo.FindByUsername(username)
 	if existing != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":   "auth",
+			"username": username,
+		}).Warn("Create user failed: username already exists")
 		return nil, util.ErrUserAlreadyExists
 	}
 
-	// 哈希密码
 	hashedPassword, err := util.HashPassword(password)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":   "auth",
+			"username": username,
+			"error":    err,
+		}).Error("Create user failed: password hashing error")
 		return nil, err
 	}
 
@@ -202,8 +265,19 @@ func (s *AuthService) CreateUser(username, password, email string) (*model.UserD
 	}
 
 	if err := s.userRepo.Create(user); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":   "auth",
+			"username": username,
+			"error":    err,
+		}).Error("Create user failed: database error")
 		return nil, err
 	}
+
+	logrus.WithFields(logrus.Fields{
+		"module":   "auth",
+		"user_id":  user.ID,
+		"username": username,
+	}).Info("User created successfully")
 
 	dto := user.ToDTO()
 	return &dto, nil
@@ -212,20 +286,48 @@ func (s *AuthService) CreateUser(username, password, email string) (*model.UserD
 func (s *AuthService) ChangePassword(userID uint, oldPassword, newPassword string) error {
 	user, err := s.userRepo.FindByID(userID)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":  "auth",
+			"user_id": userID,
+			"error":   err,
+		}).Error("Change password failed: user not found")
 		return err
 	}
 
 	if !util.CheckPasswordHash(oldPassword, user.PasswordHash) {
+		logrus.WithFields(logrus.Fields{
+			"module":  "auth",
+			"user_id": userID,
+		}).Warn("Change password failed: invalid old password")
 		return util.ErrInvalidCredentials
 	}
 
 	hashedPassword, err := util.HashPassword(newPassword)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":  "auth",
+			"user_id": userID,
+			"error":   err,
+		}).Error("Change password failed: password hashing error")
 		return err
 	}
 
 	user.PasswordHash = hashedPassword
-	return s.userRepo.Update(user)
+	if err := s.userRepo.Update(user); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":  "auth",
+			"user_id": userID,
+			"error":   err,
+		}).Error("Change password failed: database error")
+		return err
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"module":  "auth",
+		"user_id": userID,
+	}).Info("Password changed successfully")
+
+	return nil
 }
 
 func (s *AuthService) GetUserByID(userID uint) (*model.User, error) {

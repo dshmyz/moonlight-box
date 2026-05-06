@@ -25,6 +25,12 @@
           <span>公共仓库</span>
         </router-link>
       </el-tooltip>
+      <el-tooltip content="帮助中心" placement="bottom">
+        <router-link to="/admin/help" class="header-link">
+          <el-icon><QuestionFilled /></el-icon>
+          <span>帮助中心</span>
+        </router-link>
+      </el-tooltip>
       <el-dropdown trigger="click" @command="handleCommand">
         <span class="user-info">
           <el-avatar :size="32" class="user-avatar">
@@ -37,7 +43,11 @@
           <el-dropdown-menu>
             <el-dropdown-item command="profile">
               <el-icon><User /></el-icon>
-              个人中心
+              个人设置
+            </el-dropdown-item>
+            <el-dropdown-item command="help">
+              <el-icon><QuestionFilled /></el-icon>
+              帮助中心
             </el-dropdown-item>
             <el-dropdown-item command="logout" divided>
               <el-icon><SwitchButton /></el-icon>
@@ -54,7 +64,7 @@
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { Fold, Expand, ArrowDown, User, SwitchButton, View } from '@element-plus/icons-vue'
+import { Fold, Expand, ArrowDown, User, SwitchButton, View, QuestionFilled } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
 
 defineProps<{
@@ -117,6 +127,10 @@ async function handleCommand(command: string) {
       router.push('/login')
       break
     case 'profile':
+      router.push('/admin/profile')
+      break
+    case 'help':
+      router.push('/admin/help')
       break
   }
 }

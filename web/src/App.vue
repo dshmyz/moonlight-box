@@ -3,24 +3,5 @@
 </template>
 
 <style>
-@import './styles/design-tokens.css';
-
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  color: var(--color-text-primary);
-  background-color: var(--color-bg-page);
-}
-
-#app {
-  width: 100%;
-  height: 100vh;
-}
+@import './styles/global.css';
 </style>

@@ -1,13 +1,15 @@
 <template>
   <div :class="['stat-card', `stat-card--${variant}`]">
-    <div class="stat-card__header">
-      <span class="stat-card__label">{{ label }}</span>
-      <span class="stat-card__icon">{{ icon }}</span>
-    </div>
-    <div class="stat-card__value">{{ formattedValue }}</div>
-    <div v-if="trend" class="stat-card__trend">
-      <span class="stat-card__trend-icon">{{ trend > 0 ? '↑' : '↓' }}</span>
-      <span class="stat-card__trend-text">{{ Math.abs(trend) }}% 较{{ trendPeriod }}</span>
+    <div class="stat-card__content">
+      <div class="stat-card__header">
+        <span class="stat-card__label">{{ label }}</span>
+        <span class="stat-card__icon">{{ icon }}</span>
+      </div>
+      <div class="stat-card__value">{{ formattedValue }}</div>
+      <div v-if="trend" class="stat-card__trend">
+        <span class="stat-card__trend-icon">{{ trend > 0 ? '↑' : '↓' }}</span>
+        <span class="stat-card__trend-text">{{ Math.abs(trend) }}% 较{{ trendPeriod }}</span>
+      </div>
     </div>
   </div>
 </template>
@@ -21,7 +23,7 @@ interface Props {
   icon?: string
   trend?: number
   trendPeriod?: string
-  variant?: 'blue' | 'green' | 'orange' | 'pink'
+  variant?: 'blue' | 'green' | 'orange' | 'purple'
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -42,115 +44,89 @@ const formattedValue = computed(() => {
 
 <style scoped>
 .stat-card {
-  padding: var(--spacing-xl);
-  border-radius: var(--radius-xl);
-  border: 1px solid;
-  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+  position: relative;
+  padding: 20px 22px;
+  border-radius: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+  background: #ffffff;
 }
 
 .stat-card:hover {
   transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
 }
 
-.stat-card--blue {
-  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-  border-color: #bfdbfe;
-}
-
-.stat-card--blue .stat-card__label {
-  color: var(--color-primary);
-}
-
-.stat-card--blue .stat-card__value {
-  color: #1e40af;
-}
-
-.stat-card--blue .stat-card__trend-text {
-  color: #60a5fa;
-}
-
-.stat-card--green {
-  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
-  border-color: #bbf7d0;
-}
-
-.stat-card--green .stat-card__label {
-  color: var(--color-success);
-}
-
-.stat-card--green .stat-card__value {
-  color: #15803d;
-}
-
-.stat-card--green .stat-card__trend-text {
-  color: #4ade80;
-}
-
-.stat-card--orange {
-  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
-  border-color: #fcd34d;
-}
-
-.stat-card--orange .stat-card__label {
-  color: var(--color-warning);
-}
-
-.stat-card--orange .stat-card__value {
-  color: #92400e;
-}
-
-.stat-card--orange .stat-card__trend-text {
-  color: #fbbf24;
-}
-
-.stat-card--pink {
-  background: linear-gradient(135deg, #fce7f3 0%, #fbcfe8 100%);
-  border-color: #f9a8d4;
-}
-
-.stat-card--pink .stat-card__label {
-  color: #db2777;
-}
-
-.stat-card--pink .stat-card__value {
-  color: #9f1239;
-}
-
-.stat-card--pink .stat-card__trend-text {
-  color: #f472b6;
+.stat-card__content {
+  position: relative;
+  z-index: 1;
 }
 
 .stat-card__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: var(--spacing-sm);
+  margin-bottom: 12px;
 }
 
 .stat-card__label {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #64748b;
 }
 
 .stat-card__icon {
-  font-size: 18px;
+  font-size: 20px;
 }
 
 .stat-card__value {
-  font-size: var(--font-size-3xl);
-  font-weight: var(--font-weight-bold);
-  margin-bottom: var(--spacing-xs);
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 8px;
+  font-variant-numeric: tabular-nums;
+  color: #1e293b;
 }
 
 .stat-card__trend {
   display: flex;
   align-items: center;
-  gap: var(--spacing-xs);
-  font-size: var(--font-size-xs);
+  gap: 4px;
+  font-size: 12px;
+  color: #64748b;
 }
 
 .stat-card__trend-icon {
-  font-size: 14px;
+  font-size: 13px;
 }
+
+/* Blue */
+.stat-card--blue {
+  background: linear-gradient(145deg, #f8fafc 0%, #f1f5f9 100%);
+  border-color: rgba(59, 130, 246, 0.15);
+}
+.stat-card--blue .stat-card__icon { color: #3b82f6; }
+
+/* Green */
+.stat-card--green {
+  background: linear-gradient(145deg, #f0fdf4 0%, #f0fdfa 100%);
+  border-color: rgba(16, 185, 129, 0.15);
+}
+.stat-card--green .stat-card__icon { color: #10b981; }
+
+/* Orange */
+.stat-card--orange {
+  background: linear-gradient(145deg, #fffbeb 0%, #fefce8 100%);
+  border-color: rgba(245, 158, 11, 0.15);
+}
+.stat-card--orange .stat-card__icon { color: #f59e0b; }
+
+/* Purple */
+.stat-card--purple {
+  background: linear-gradient(145deg, #faf5ff 0%, #f5f3ff 100%);
+  border-color: rgba(139, 92, 246, 0.15);
+}
+.stat-card--purple .stat-card__icon { color: #8b5cf6; }
 </style>

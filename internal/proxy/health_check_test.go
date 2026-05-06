@@ -1,0 +1,342 @@
+package proxy
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/stretchr/testify/assert"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func TestHealthCheckService_BasicCheck(t *testing.T) {
+	// 创建测试服务器
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	}))
+	defer server.Close()
+
+	// 初始化测试数据库
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	assert.NoError(t, err)
+	db.AutoMigrate(&model.Repository{})
+
+	// 创建测试仓库
+	repo := &model.Repository{
+		Name:      "test-proxy",
+		Type:      model.RepoTypeProxy,
+		RemoteURL: server.URL,
+		Enabled:   true,
+	}
+	db.Create(repo)
+
+	// 创建远程客户端
+	tm := NewTransportManager(5*time.Second, NewDNSResolver(nil))
+	remoteClient := NewRemoteClient(tm, 10)
+
+	// 创建健康检查服务
+	config := HealthCheckConfig{
+		Enabled:          true,
+		Interval:         100 * time.Millisecond,
+		Timeout:          2 * time.Second,
+		FailureThreshold: 3,
+	}
+
+	repoRepo := repository.NewRepositoryRepository(db)
+	healthSvc := NewHealthCheckService(db, repoRepo, remoteClient, config)
+
+	// 执行健康检查
+	healthSvc.checkRepoHealth(repo)
+
+	// 验证健康状态
+	status := healthSvc.GetHealthStatus(repo.ID)
+	assert.NotNil(t, status)
+	assert.True(t, status.IsHealthy)
+	assert.Empty(t, status.LastCheckError)
+
+	// 验证断路器状态
+	cb := healthSvc.GetCircuitBreaker(repo.ID)
+	assert.NotNil(t, cb)
+	assert.Equal(t, CircuitClosed, cb.GetState())
+}
+
+func TestHealthCheckService_FailedCheck(t *testing.T) {
+	// 创建总是返回500的测试服务器
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	// 初始化测试数据库
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	assert.NoError(t, err)
+	db.AutoMigrate(&model.Repository{})
+
+	// 创建测试仓库
+	repo := &model.Repository{
+		Name:      "test-proxy-fail",
+		Type:      model.RepoTypeProxy,
+		RemoteURL: server.URL,
+		Enabled:   true,
+	}
+	db.Create(repo)
+
+	// 创建远程客户端
+	tm := NewTransportManager(5*time.Second, NewDNSResolver(nil))
+	remoteClient := NewRemoteClient(tm, 10)
+
+	// 创建健康检查服务
+	config := HealthCheckConfig{
+		Enabled:          true,
+		Interval:         100 * time.Millisecond,
+		Timeout:          2 * time.Second,
+		FailureThreshold: 3,
+	}
+
+	repoRepo := repository.NewRepositoryRepository(db)
+	healthSvc := NewHealthCheckService(db, repoRepo, remoteClient, config)
+
+	// 执行3次失败的健康检查
+	healthSvc.checkRepoHealth(repo)
+	healthSvc.checkRepoHealth(repo)
+	healthSvc.checkRepoHealth(repo)
+
+	// 验证健康状态
+	status := healthSvc.GetHealthStatus(repo.ID)
+	assert.NotNil(t, status)
+	assert.False(t, status.IsHealthy)
+	assert.Equal(t, 3, status.ConsecutiveFailures)
+}
+
+func TestHealthCheckService_CircuitBreakerIntegration(t *testing.T) {
+	// 初始化测试数据库
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	assert.NoError(t, err)
+	db.AutoMigrate(&model.Repository{})
+
+	// 创建测试仓库
+	repo := &model.Repository{
+		Name:      "test-proxy-cb",
+		Type:      model.RepoTypeProxy,
+		RemoteURL: "http://invalid-host-that-does-not-exist:12345",
+		Enabled:   true,
+	}
+	db.Create(repo)
+
+	// 创建远程客户端
+	tm := NewTransportManager(1*time.Second, NewDNSResolver(nil))
+	remoteClient := NewRemoteClient(tm, 10)
+
+	// 创建健康检查服务
+	config := HealthCheckConfig{
+		Enabled:          true,
+		Interval:         100 * time.Millisecond,
+		Timeout:          500 * time.Millisecond,
+		FailureThreshold: 3,
+	}
+
+	repoRepo := repository.NewRepositoryRepository(db)
+	healthSvc := NewHealthCheckService(db, repoRepo, remoteClient, config)
+
+	// 执行多次失败的健康检查，触发断路器
+	for i := 0; i < 5; i++ {
+		healthSvc.checkRepoHealth(repo)
+	}
+
+	// 验证断路器已经打开
+	cb := healthSvc.GetCircuitBreaker(repo.ID)
+	assert.NotNil(t, cb)
+	assert.Equal(t, CircuitOpen, cb.GetState())
+
+	// 验证应该跳过请求
+	assert.True(t, healthSvc.ShouldSkipRequest(repo.ID))
+
+	// 验证有重试等待时间
+	retryAfter := healthSvc.GetRetryAfter(repo.ID)
+	assert.True(t, retryAfter > 0)
+
+	// 重置断路器
+	healthSvc.ResetCircuitBreaker(repo.ID)
+
+	// 验证断路器已重置
+	assert.Equal(t, CircuitClosed, cb.GetState())
+	assert.False(t, healthSvc.ShouldSkipRequest(repo.ID))
+}
+
+func TestHealthCheckService_Recovery(t *testing.T) {
+	// 创建可控制的测试服务器
+	var failFlag bool = true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if failFlag {
+			w.WriteHeader(http.StatusInternalServerError)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	// 初始化测试数据库
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	assert.NoError(t, err)
+	db.AutoMigrate(&model.Repository{})
+
+	// 创建测试仓库
+	repo := &model.Repository{
+		Name:      "test-proxy-recovery",
+		Type:      model.RepoTypeProxy,
+		RemoteURL: server.URL,
+		Enabled:   true,
+	}
+	db.Create(repo)
+
+	// 创建远程客户端
+	tm := NewTransportManager(5*time.Second, NewDNSResolver(nil))
+	remoteClient := NewRemoteClient(tm, 10)
+
+	// 创建健康检查服务，使用较短的重置超时
+	config := HealthCheckConfig{
+		Enabled:          true,
+		Interval:         100 * time.Millisecond,
+		Timeout:          2 * time.Second,
+		FailureThreshold: 3,
+	}
+
+	repoRepo := repository.NewRepositoryRepository(db)
+	healthSvc := NewHealthCheckService(db, repoRepo, remoteClient, config)
+
+	// 手动设置一个较短的reset timeout的断路器
+	cb := NewCircuitBreaker(CircuitBreakerConfig{
+		MaxFailures:   5,
+		ResetTimeout:  100 * time.Millisecond,
+		ProbeInterval: 50 * time.Millisecond,
+	})
+	healthSvc.breakers[repo.ID] = cb
+
+	// 先模拟失败
+	failFlag = true
+	for i := 0; i < 5; i++ {
+		healthSvc.checkRepoHealth(repo)
+	}
+
+	// 验证断路器打开
+	assert.Equal(t, CircuitOpen, cb.GetState())
+
+	// 现在让服务器成功响应
+	failFlag = false
+
+	// 等待重置超时，让断路器进入半开状态
+	time.Sleep(150 * time.Millisecond)
+
+	// 执行健康检查（应该在半开状态下成功）
+	healthSvc.checkRepoHealth(repo)
+
+	// 验证断路器恢复到关闭状态
+	assert.Equal(t, CircuitClosed, cb.GetState())
+}
+
+func TestHealthCheckService_StartStop(t *testing.T) {
+	// 初始化测试数据库
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	assert.NoError(t, err)
+	db.AutoMigrate(&model.Repository{})
+
+	// 创建远程客户端
+	tm := NewTransportManager(5*time.Second, NewDNSResolver(nil))
+	remoteClient := NewRemoteClient(tm, 10)
+
+	// 创建健康检查服务
+	config := HealthCheckConfig{
+		Enabled:          true,
+		Interval:         50 * time.Millisecond,
+		Timeout:          2 * time.Second,
+		FailureThreshold: 3,
+	}
+
+	repoRepo := repository.NewRepositoryRepository(db)
+	healthSvc := NewHealthCheckService(db, repoRepo, remoteClient, config)
+
+	// 启动服务
+	healthSvc.Start()
+	time.Sleep(200 * time.Millisecond)
+
+	// 停止服务
+	healthSvc.Stop()
+	time.Sleep(50 * time.Millisecond)
+
+	// 再次启动（应该可以正常工作）
+	healthSvc.Start()
+	time.Sleep(100 * time.Millisecond)
+	healthSvc.Stop()
+}
+
+func TestProxyRouter_CircuitBreakerIntegration(t *testing.T) {
+	// 初始化测试数据库
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	assert.NoError(t, err)
+	db.AutoMigrate(&model.Repository{})
+
+	// 创建远程客户端
+	tm := NewTransportManager(5*time.Second, NewDNSResolver(nil))
+	remoteClient := NewRemoteClient(tm, 10)
+
+	// 创建健康检查服务
+	config := HealthCheckConfig{
+		Enabled:          true,
+		Interval:         100 * time.Millisecond,
+		Timeout:          2 * time.Second,
+		FailureThreshold: 5,
+	}
+
+	repoRepo := repository.NewRepositoryRepository(db)
+	healthSvc := NewHealthCheckService(db, repoRepo, remoteClient, config)
+
+	// 创建测试仓库
+	repo := &model.Repository{
+		Name:             "test-proxy-router",
+		Type:             model.RepoTypeProxy,
+		RemoteURL:        "http://invalid-host:12345",
+		Enabled:          true,
+		CacheEnabled:     false,
+		CacheTTLSeconds:  0,
+		CacheNegativeTTL: 0,
+		TimeoutSeconds:   1,
+		MaxRedirects:     0,
+	}
+	db.Create(repo)
+
+	// 创建代理路由器
+	proxyRouter := NewProxyRouter(db, NewCacheService(), remoteClient, repoRepo, nil, nil)
+	proxyRouter.SetHealthCheckService(healthSvc)
+
+	// 构建URL
+	urlBuilder := func(r *model.Repository, name, version string) string {
+		return r.RemoteURL + "/" + name + "/" + version
+	}
+
+	// 执行多次请求，模拟失败
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		_, err := proxyRouter.resolveProxyWithURL(ctx, repo, "test", "1.0.0", urlBuilder)
+		assert.Error(t, err)
+	}
+
+	// 验证断路器状态（应该有失败记录）
+	cb := healthSvc.GetCircuitBreaker(repo.ID)
+	assert.NotNil(t, cb)
+	stats := cb.GetStats()
+	assert.True(t, stats.TotalFailures >= 5, "应该有至少5次失败记录")
+
+	// 验证断路器已打开
+	assert.Equal(t, CircuitOpen, cb.GetState())
+
+	// 验证后续请求会被断路器阻止
+	_, err = proxyRouter.resolveProxyWithURL(ctx, repo, "test", "1.0.0", urlBuilder)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "circuit breaker open")
+}

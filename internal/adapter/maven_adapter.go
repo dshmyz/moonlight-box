@@ -107,6 +107,7 @@ func NewMavenAdapter(
 	auditSvc *service.AuditService,
 	proxyRouter *proxy.ProxyRouter,
 	logRepo *repository.ProxyDownloadLogRepository,
+	proxyDownloadSvc *service.ProxyDownloadService,
 ) *MavenAdapter {
 	return &MavenAdapter{
 		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc),
@@ -114,7 +115,7 @@ func NewMavenAdapter(
 		storageSvc:       storageSvc,
 		auditSvc:         auditSvc,
 		proxyRouter:      proxyRouter,
-		proxyDownloadSvc: service.NewProxyDownloadService(pkgRepo, storageSvc, proxyRouter, logRepo),
+		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
 		logRepo:          logRepo,
 	}
@@ -318,13 +319,12 @@ func groupArtifactToName(groupArtifact string) string {
 
 // groupArtifactToStorageName 将groupArtifact路径转换为存储名称格式
 // 例如: "com.google.guava/guava" -> "com/google/guava/guava"
-// groupId部分使用点分隔，需要转换为斜杠分隔符
+// groupId部分的点转为斜杠，保留artifactId
 func groupArtifactToStorageName(groupArtifact string) string {
 	parts := strings.SplitN(groupArtifact, "/", 2)
 	if len(parts) < 2 {
 		return strings.ReplaceAll(groupArtifact, ".", "/")
 	}
-	// 将groupId部分的点转为斜杠，保留artifactId
 	groupId := strings.ReplaceAll(parts[0], ".", "/")
 	return groupId + "/" + parts[1]
 }
@@ -351,6 +351,12 @@ func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
 	storageVersion := version + "/" + filename
 
 	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "maven", storageName, storageVersion)
+	if err != nil {
+		legacyGroupID := strings.Join(parts[:len(parts)-3], ".")
+		legacyArtifactID := parts[len(parts)-3]
+		legacyName := legacyGroupID + "/" + legacyArtifactID
+		content, size, err = a.storageSvc.GetPackage(c.Request.Context(), "maven", legacyName, storageVersion)
+	}
 	if err == nil {
 		defer content.Close()
 
@@ -366,7 +372,9 @@ func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
 	if a.proxyRouter != nil {
 		urlBuilder := func(repo *model.Repository, pkgName, pkgVersion string) string {
 			baseURL := strings.TrimSuffix(repo.RemoteURL, "/")
-			return fmt.Sprintf("%s/%s", baseURL, fullPath)
+			groupPath := strings.ReplaceAll(groupArtifact, ".", "/")
+			remotePath := groupPath + "/" + pkgVersion + "/" + filename
+			return fmt.Sprintf("%s/%s", baseURL, remotePath)
 		}
 
 		var repo *model.Repository
@@ -616,7 +624,8 @@ func (a *MavenAdapter) Upload(ctx context.Context, req *UploadRequest) (*Package
 		filename = req.Filename
 	}
 
-	name := groupID + "/" + artifactID
+	groupArtifact := strings.ReplaceAll(groupID, ".", "/") + "/" + artifactID
+	name := groupArtifactToStorageName(groupArtifact)
 
 	isSnapshot := strings.HasSuffix(version, "-SNAPSHOT")
 	var storageVersion string
@@ -771,11 +780,10 @@ func (a *MavenAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) 
 		return
 	}
 
-	groupID := strings.Join(parts[:len(parts)-2], ".")
-	artifactID := parts[len(parts)-2]
+	groupArtifact := strings.Join(parts[:len(parts)-1], "/")
 	version := parts[len(parts)-1]
 
-	name := groupID + "/" + artifactID
+	name := groupArtifactToStorageName(groupArtifact)
 	identity := &PackageIdentity{
 		Name:    name,
 		Version: version,

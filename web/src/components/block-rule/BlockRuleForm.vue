@@ -21,7 +21,13 @@
     <el-form-item label="包类型" prop="package_type">
       <el-select v-model="form.package_type" style="width: 100%">
         <el-option label="npm" value="npm" />
-        <el-option label="maven" value="maven" />
+        <el-option label="Maven" value="maven" />
+        <el-option label="PyPI" value="pypi" />
+        <el-option label="Go" value="go" />
+        <el-option label="NuGet" value="nuget" />
+        <el-option label="Yum" value="yum" />
+        <el-option label="Apt" value="apt" />
+        <el-option label="Generic" value="generic" />
       </el-select>
     </el-form-item>
 
@@ -55,12 +61,12 @@ const emit = defineEmits<{
 
 const formRef = ref<FormInstance>()
 
-const form = ref({ ...props.modelValue })
+const form = ref<BlockRuleCreateParams>({ ...props.modelValue })
 
 watch(
   () => props.modelValue,
   (val) => {
-    form.value = { ...val }
+    Object.assign(form.value, val)
   },
   { deep: true }
 )

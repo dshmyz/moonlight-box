@@ -55,14 +55,14 @@ const handleClick = (event: MouseEvent) => {
 <style scoped>
 .custom-card {
   background: #ffffff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #e5e7eb;
   border-radius: 12px;
   overflow: hidden;
   transition: all 0.25s ease;
 }
 
 .custom-card.is-hoverable:hover {
-  border-color: #cbd5e1;
+  border-color: #d1d5db;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 
@@ -71,14 +71,14 @@ const handleClick = (event: MouseEvent) => {
 }
 
 .custom-card.is-clickable:hover {
-  border-color: #cbd5e1;
+  border-color: #d1d5db;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
   transform: translateY(-2px);
 }
 
 .custom-card-header {
-  padding: 20px 24px;
-  border-bottom: 1px solid #e2e8f0;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e5e7eb;
 }
 
 .custom-card-header-content {
@@ -89,26 +89,25 @@ const handleClick = (event: MouseEvent) => {
 
 .custom-card-title {
   margin: 0;
-  font-size: 18px;
-  font-weight: 700;
-  color: #0f172a;
-  letter-spacing: -0.3px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #111827;
 }
 
 .custom-card-subtitle {
   margin: 0;
   font-size: 14px;
-  color: #64748b;
+  color: #6b7280;
   line-height: 1.5;
 }
 
 .custom-card-body {
-  padding: 24px;
+  padding: 20px;
 }
 
 .custom-card-footer {
-  padding: 16px 24px;
-  border-top: 1px solid #e2e8f0;
-  background: #fafbfc;
+  padding: 16px 20px;
+  border-top: 1px solid #e5e7eb;
+  background: #f9fafb;
 }
 </style>

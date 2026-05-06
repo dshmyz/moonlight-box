@@ -145,7 +145,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  download: [version: PackageVersion]
+  download: [version: PackageVersion & { selectedFile?: PackageFile }]
   select: [version: string]
   deprecate: [data: { id: number; version: string; reason: string }]
   restore: [data: { id: number; version: string }]

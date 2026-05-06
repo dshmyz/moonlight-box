@@ -142,6 +142,7 @@ func NewNpmAdapter(
 	auditSvc *service.AuditService,
 	proxyRouter *proxy.ProxyRouter,
 	logRepo *repository.ProxyDownloadLogRepository,
+	proxyDownloadSvc *service.ProxyDownloadService,
 ) *NpmAdapter {
 	return &NpmAdapter{
 		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc),
@@ -149,7 +150,7 @@ func NewNpmAdapter(
 		storageSvc:       storageSvc,
 		auditSvc:         auditSvc,
 		proxyRouter:      proxyRouter,
-		proxyDownloadSvc: service.NewProxyDownloadService(pkgRepo, storageSvc, proxyRouter, logRepo),
+		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
 		logRepo:          logRepo,
 	}

@@ -25,6 +25,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/RepoConfigPage.vue'),
         meta: { title: '仓库配置' },
       },
+      {
+        path: 'help',
+        name: 'PublicHelp',
+        component: () => import('@/views/PublicHelp.vue'),
+        meta: { title: '帮助中心' },
+      },
     ],
   },
   {
@@ -89,12 +95,6 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '文件浏览' },
       },
       {
-        path: 'cas-settings',
-        name: 'CASSettings',
-        component: () => import('@/views/CASSettings.vue'),
-        meta: { title: 'CAS 设置' },
-      },
-      {
         path: 'security',
         name: 'SecurityCenter',
         component: () => import('@/views/SecurityCenter.vue'),
@@ -135,6 +135,12 @@ const routes: RouteRecordRaw[] = [
         name: 'HelpCenter',
         component: () => import('@/views/HelpCenter.vue'),
         meta: { title: '帮助中心' },
+      },
+      {
+        path: 'docs/:doc',
+        name: 'DocsViewer',
+        component: () => import('@/views/DocsViewer.vue'),
+        meta: { title: '文档查看' },
       },
       {
         path: 'backups',

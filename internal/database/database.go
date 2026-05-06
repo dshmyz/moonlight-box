@@ -6,6 +6,7 @@ import (
 
 	"github.com/moonlight-box/registry/internal/config"
 
+	"github.com/sirupsen/logrus"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -16,6 +17,11 @@ var DB *gorm.DB
 
 func Initialize(cfg *config.Config) error {
 	var dialector gorm.Dialector
+
+	logrus.WithFields(logrus.Fields{
+		"module":   "database",
+		"driver":   cfg.Database.Driver,
+	}).Info("Initializing database connection")
 
 	switch cfg.Database.Driver {
 	case "postgres":
@@ -37,12 +43,20 @@ func Initialize(cfg *config.Config) error {
 
 	db, err := gorm.Open(dialector, gormConfig)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module": "database",
+			"driver": cfg.Database.Driver,
+			"error":  err,
+		}).Error("Failed to connect to database")
 		return fmt.Errorf("failed to connect database: %w", err)
 	}
 
-	// 获取底层 sqlDB 用于配置连接池
 	sqlDB, err := db.DB()
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module": "database",
+			"error":  err,
+		}).Error("Failed to get underlying sql.DB")
 		return fmt.Errorf("failed to get sql.DB: %w", err)
 	}
 
@@ -51,6 +65,14 @@ func Initialize(cfg *config.Config) error {
 	sqlDB.SetConnMaxLifetime(time.Hour)
 
 	DB = db
+
+	logrus.WithFields(logrus.Fields{
+		"module":          "database",
+		"driver":          cfg.Database.Driver,
+		"max_idle_conns":  10,
+		"max_open_conns":  100,
+	}).Info("Database connection established")
+
 	return nil
 }
 

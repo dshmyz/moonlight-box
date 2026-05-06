@@ -54,6 +54,7 @@ export interface PackageVersion {
   checksum_sha256?: string
   checksum_md5?: string
   files?: PackageFile[]
+  files_downloaded?: boolean
 }
 
 export interface VersionListResponse {

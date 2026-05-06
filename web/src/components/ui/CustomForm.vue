@@ -19,7 +19,6 @@ interface Props {
 }
 
 withDefaults(defineProps<Props>(), {
-  rules: {},
   labelWidth: '100px',
   labelPosition: 'right'
 })

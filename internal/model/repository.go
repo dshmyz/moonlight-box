@@ -43,6 +43,9 @@ type Repository struct {
 
 	Members []RepositoryGroup `json:"members,omitempty" gorm:"foreignKey:VirtualRepoID"`
 
+	// URL 计算字段，不存储到数据库
+	URL string `json:"url" gorm:"-"`
+
 	// 元数据同步配置
 	MetadataSyncEnabled  bool       `json:"metadata_sync_enabled" gorm:"default:false"`
 	MetadataSyncInterval int        `json:"metadata_sync_interval" gorm:"default:3600"`

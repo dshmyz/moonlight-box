@@ -58,6 +58,12 @@ func (i *ConfigInitializer) InitializeDefaultConfigs() error {
 		{"auth.refresh_token_expiry", "168h", "string", "security", "刷新令牌过期时间(7天)", false},
 		{"auth.max_login_attempts", "5", "int", "security", "最大登录尝试次数", false},
 
+		{"cas.enabled", "false", "bool", "login", "启用 CAS 单点登录", false},
+		{"cas.server_url", "", "string", "login", "CAS 服务器地址", false},
+		{"cas.service_url", "", "string", "login", "Service URL", false},
+		{"cas.login_path", "/cas/login", "string", "login", "CAS 登录路径", false},
+		{"cas.validate_path", "/cas/serviceValidate", "string", "login", "CAS 验证路径", false},
+
 		{"metrics.enabled", "true", "bool", "general", "启用Prometheus监控", false},
 		{"metrics.path", "/metrics", "string", "general", "Prometheus监控路径", false},
 	}

@@ -39,6 +39,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { repositoryApi, type Repository } from '@/api/repository'
 import { ElMessage } from 'element-plus'
+import { normalizePackageType } from '@/constants/package'
 import TypeSidebar from './TypeSidebar.vue'
 import RepoCard from './RepoCard.vue'
 
@@ -54,32 +55,31 @@ interface RepoGroup {
   repos: Repository[]
 }
 
-const groupedRepos = computed<RepoGroup[]>(() => {
-  const groupConfig: Record<string, { label: string; icon: string; color: string }> = {
-    npm: { label: 'npm', icon: '⬢', color: '#cb3837' },
-    maven2: { label: 'Maven', icon: 'M', color: '#e65100' },
-    pypi: { label: 'PyPI', icon: '🐍', color: '#3775a9' },
-    go: { label: 'Go', icon: 'Go', color: '#00add8' },
-    nuget: { label: 'NuGet', icon: 'N', color: '#004880' },
-    yum: { label: 'Yum', icon: 'Y', color: '#2e6da4' },
-    apt: { label: 'Apt', icon: 'A', color: '#d70a53' },
-    generic: { label: 'Generic', icon: 'G', color: '#606266' },
-  }
+const GROUP_CONFIG: Record<string, { label: string; icon: string; color: string }> = {
+  npm: { label: 'npm', icon: '⬢', color: '#cb3837' },
+  maven: { label: 'Maven', icon: 'M', color: '#e65100' },
+  pypi: { label: 'PyPI', icon: '🐍', color: '#3775a9' },
+  go: { label: 'Go', icon: 'Go', color: '#00add8' },
+  nuget: { label: 'NuGet', icon: 'N', color: '#004880' },
+  yum: { label: 'Yum', icon: 'Y', color: '#2e6da4' },
+  apt: { label: 'Apt', icon: 'A', color: '#d70a53' },
+  generic: { label: 'Generic', icon: 'G', color: '#606266' },
+}
 
+const GROUP_ORDER = ['npm', 'maven', 'pypi', 'go', 'nuget', 'yum', 'apt', 'generic']
+
+const groupedRepos = computed<RepoGroup[]>(() => {
   const groups: Record<string, Repository[]> = {}
   for (const repo of repos.value) {
-    const key = repo.package_type || 'generic'
+    const key = normalizePackageType(repo.package_type) || 'generic'
     if (!groups[key]) groups[key] = []
     groups[key].push(repo)
   }
 
   return Object.entries(groups)
-    .sort(([a], [b]) => {
-      const order = ['npm', 'maven2', 'pypi', 'go', 'nuget']
-      return order.indexOf(a) - order.indexOf(b)
-    })
+    .sort(([a], [b]) => GROUP_ORDER.indexOf(a) - GROUP_ORDER.indexOf(b))
     .map(([type, reposList]) => {
-      const cfg = groupConfig[type] || groupConfig.generic
+      const cfg = GROUP_CONFIG[type] || GROUP_CONFIG.generic
       return { type, label: cfg.label, icon: cfg.icon, color: cfg.color, repos: reposList }
     })
 })
@@ -111,32 +111,38 @@ onMounted(async () => {
 })
 
 function getRegistryUrl(repo: Repository): string {
-  const base = window.location.origin
-  switch (repo.package_type) {
+  const base = `${window.location.origin}/repo/${repo.name}`
+  const type = normalizePackageType(repo.package_type)
+  switch (type) {
     case 'npm':
-      return `${base}/repo/${repo.name}/`
+      return `${base}/`
     case 'pypi':
-      return `${base}/repo/${repo.name}/simple`
+      return `${base}/simple`
     case 'nuget':
-      return `${base}/repo/${repo.name}/v3/index.json`
+      return `${base}/v3/index.json`
     default:
-      return `${base}/repo/${repo.name}/`
+      return `${base}/`
   }
 }
 
 function getConfigCommand(repo: Repository): string {
   const url = getRegistryUrl(repo)
-  switch (repo.package_type) {
+  const type = normalizePackageType(repo.package_type)
+  switch (type) {
     case 'npm':
       return `npm config set registry ${url}`
     case 'pypi':
       return `pip config set global.index-url ${url}`
-    case 'maven2':
+    case 'maven':
       return url
     case 'go':
       return `GOPROXY=${url} go mod tidy`
     case 'nuget':
       return `dotnet nuget add source ${url} -n ${repo.name}`
+    case 'yum':
+      return `sudo yum-config-manager --add-repo ${url}repodata/repomd.xml`
+    case 'apt':
+      return `deb [trusted=yes] ${url} ./`
     default:
       return url
   }

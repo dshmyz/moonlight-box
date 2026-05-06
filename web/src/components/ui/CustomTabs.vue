@@ -10,6 +10,9 @@
         {{ tab.label }}
       </button>
     </div>
+    <div class="custom-tabs-content">
+      <slot :name="modelValue" />
+    </div>
   </div>
 </template>
 
@@ -78,5 +81,9 @@ const handleClick = (name: string) => {
   right: 0;
   height: 2px;
   background: var(--color-primary);
+}
+
+.custom-tabs-content {
+  padding-top: var(--spacing-lg);
 }
 </style>

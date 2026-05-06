@@ -32,22 +32,38 @@ type UserRole struct {
 }
 
 // DTO for API responses (隐藏敏感字段)
+type PermissionDTO struct {
+	Resource string `json:"resource"`
+	Action   string `json:"action"`
+}
+
 type UserDTO struct {
-	ID          uint       `json:"id"`
-	Username    string     `json:"username"`
-	Email       string     `json:"email"`
-	DisplayName string     `json:"display_name"`
-	AvatarURL   string     `json:"avatar_url,omitempty"`
-	IsActive    bool       `json:"is_active"`
-	Roles       []string   `json:"roles,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	ID          uint            `json:"id"`
+	Username    string          `json:"username"`
+	Email       string          `json:"email"`
+	DisplayName string          `json:"display_name"`
+	AvatarURL   string          `json:"avatar_url,omitempty"`
+	IsActive    bool            `json:"is_active"`
+	Roles       []string        `json:"roles,omitempty"`
+	Permissions []PermissionDTO `json:"permissions,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	LastLoginAt *time.Time      `json:"last_login_at,omitempty"`
 }
 
 func (u *User) ToDTO() UserDTO {
 	roleNames := make([]string, len(u.Roles))
 	for i, role := range u.Roles {
 		roleNames[i] = role.Name
+	}
+
+	permissions := make([]PermissionDTO, 0)
+	for _, role := range u.Roles {
+		for _, perm := range role.Permissions {
+			permissions = append(permissions, PermissionDTO{
+				Resource: perm.Resource,
+				Action:   perm.Action,
+			})
+		}
 	}
 
 	return UserDTO{
@@ -58,6 +74,7 @@ func (u *User) ToDTO() UserDTO {
 		AvatarURL:   u.AvatarURL,
 		IsActive:    u.IsActive,
 		Roles:       roleNames,
+		Permissions: permissions,
 		CreatedAt:   u.CreatedAt,
 		LastLoginAt: u.LastLoginAt,
 	}

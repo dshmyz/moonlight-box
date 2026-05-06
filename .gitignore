@@ -53,3 +53,5 @@ agency-agents-zh/
 
 # Docs
 docs/
+.trae/
+.superpower/

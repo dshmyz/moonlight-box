@@ -13,12 +13,12 @@ import (
 )
 
 type CASService struct {
-	cfg          *config.CASConfig
-	authCfg      *config.AuthConfig
-	casConfigSvc *CASConfigService
-	userRepo     *repository.UserRepository
-	roleRepo     *repository.RoleRepository
-	authSvc      *AuthService
+	cfg       *config.CASConfig
+	authCfg   *config.AuthConfig
+	configSvc *SystemConfigService
+	userRepo  *repository.UserRepository
+	roleRepo  *repository.RoleRepository
+	authSvc   *AuthService
 }
 
 type CASValidationResponse struct {
@@ -44,25 +44,43 @@ func NewCASService(
 	userRepo *repository.UserRepository,
 	roleRepo *repository.RoleRepository,
 	authSvc *AuthService,
+	configSvc *SystemConfigService,
 ) *CASService {
 	return &CASService{
-		cfg:     &cfg.CAS,
-		authCfg: cfg,
-		userRepo: userRepo,
-		roleRepo: roleRepo,
-		authSvc: authSvc,
+		cfg:       &cfg.CAS,
+		authCfg:   cfg,
+		userRepo:  userRepo,
+		roleRepo:  roleRepo,
+		authSvc:   authSvc,
+		configSvc: configSvc,
 	}
 }
 
-func (s *CASService) SetCASConfigService(casConfigSvc *CASConfigService) {
-	s.casConfigSvc = casConfigSvc
-}
-
 func (s *CASService) getEffectiveConfig() *model.CASConfig {
-	if s.casConfigSvc != nil {
-		dbConfig, err := s.casConfigSvc.GetConfig()
-		if err == nil && dbConfig != nil && dbConfig.Enabled {
-			return dbConfig
+	if s.configSvc != nil {
+		enabled, _ := s.configSvc.Get("cas.enabled")
+		if enabled != nil && enabled.Value == "true" {
+			serverURL, _ := s.configSvc.Get("cas.server_url")
+			serviceURL, _ := s.configSvc.Get("cas.service_url")
+			loginPath, _ := s.configSvc.Get("cas.login_path")
+			validatePath, _ := s.configSvc.Get("cas.validate_path")
+
+			casConfig := &model.CASConfig{
+				Enabled: true,
+			}
+			if serverURL != nil {
+				casConfig.ServerURL = serverURL.Value
+			}
+			if serviceURL != nil {
+				casConfig.ServiceURL = serviceURL.Value
+			}
+			if loginPath != nil {
+				casConfig.LoginPath = loginPath.Value
+			}
+			if validatePath != nil {
+				casConfig.ValidatePath = validatePath.Value
+			}
+			return casConfig
 		}
 	}
 

@@ -1,103 +1,192 @@
 <template>
   <div class="proxy-download-logs">
-    <div class="page-header">
-      <h2>代理下载日志</h2>
-      <CustomButton @click="loadLogs">
-        <el-icon><Refresh /></el-icon> 刷新
-      </CustomButton>
+    <header class="list-header">
+      <div class="header-content">
+        <div class="header-icon">
+          <i class="fa-solid fa-file-lines"></i>
+        </div>
+        <div class="header-text">
+          <h2>代理下载日志</h2>
+          <p class="header-subtitle">查看和分析包下载记录</p>
+        </div>
+      </div>
+      <el-button class="refresh-btn" @click="loadLogs">
+        <el-icon><Refresh /></el-icon>
+        <span>刷新</span>
+      </el-button>
+    </header>
+
+    <div class="stats-bar">
+      <div class="stat-card stat-card--total">
+        <div class="stat-icon">
+          <i class="fa-solid fa-download"></i>
+        </div>
+        <div class="stat-info">
+          <span class="stat-value">{{ stats.total_downloads || 0 }}</span>
+          <span class="stat-label">总下载次数</span>
+        </div>
+      </div>
+      <div class="stat-card stat-card--success">
+        <div class="stat-icon stat-icon--success">
+          <i class="fa-solid fa-check-circle"></i>
+        </div>
+        <div class="stat-info">
+          <span class="stat-value">{{ stats.success_count || 0 }}</span>
+          <span class="stat-label">成功</span>
+        </div>
+      </div>
+      <div class="stat-card stat-card--failed">
+        <div class="stat-icon stat-icon--failed">
+          <i class="fa-solid fa-x-circle"></i>
+        </div>
+        <div class="stat-info">
+          <span class="stat-value">{{ stats.failed_count || 0 }}</span>
+          <span class="stat-label">失败</span>
+        </div>
+      </div>
+      <div class="stat-card stat-card--cached">
+        <div class="stat-icon stat-icon--cached">
+          <i class="fa-solid fa-database"></i>
+        </div>
+        <div class="stat-info">
+          <span class="stat-value">{{ stats.cached_count || 0 }}</span>
+          <span class="stat-label">缓存命中</span>
+        </div>
+      </div>
+      <div class="stat-card stat-card--traffic">
+        <div class="stat-icon stat-icon--traffic">
+          <i class="fa-solid fa-network-wired"></i>
+        </div>
+        <div class="stat-info">
+          <span class="stat-value">{{ formatBytes(stats.total_bytes || 0) }}</span>
+          <span class="stat-label">总下载流量</span>
+        </div>
+      </div>
     </div>
 
-    <div class="stat-cards">
-      <CustomCard hoverable class="stat-card">
-        <div class="stat-value">{{ stats.total_downloads || 0 }}</div>
-        <div class="stat-label">总下载次数</div>
-      </CustomCard>
-      <CustomCard hoverable class="stat-card success">
-        <div class="stat-value">{{ stats.success_count || 0 }}</div>
-        <div class="stat-label">成功</div>
-      </CustomCard>
-      <CustomCard hoverable class="stat-card danger">
-        <div class="stat-value">{{ stats.failed_count || 0 }}</div>
-        <div class="stat-label">失败</div>
-      </CustomCard>
-      <CustomCard hoverable class="stat-card info">
-        <div class="stat-value">{{ stats.cached_count || 0 }}</div>
-        <div class="stat-label">缓存命中</div>
-      </CustomCard>
-      <CustomCard hoverable class="stat-card wide">
-        <div class="stat-value">{{ formatBytes(stats.total_bytes || 0) }}</div>
-        <div class="stat-label">总下载流量</div>
-      </CustomCard>
+    <div class="content-panel" v-loading="loading">
+      <div class="filter-bar">
+        <el-select
+          v-model="filterRepo"
+          placeholder="仓库"
+          clearable
+          class="filter-select"
+          @change="loadLogs"
+        >
+          <el-option v-for="repo in repositories" :key="repo.id" :label="repo.display_name || repo.name" :value="repo.id" />
+        </el-select>
+        <el-select
+          v-model="filterPkgType"
+          placeholder="包类型"
+          clearable
+          class="filter-select"
+          @change="loadLogs"
+        >
+          <el-option label="npm" value="npm" />
+          <el-option label="Maven" value="maven" />
+          <el-option label="PyPI" value="pypi" />
+          <el-option label="Go" value="go" />
+          <el-option label="NuGet" value="nuget" />
+          <el-option label="Yum" value="yum" />
+          <el-option label="Apt" value="apt" />
+          <el-option label="Generic" value="generic" />
+        </el-select>
+        <el-select
+          v-model="filterStatus"
+          placeholder="状态"
+          clearable
+          class="filter-select"
+          @change="loadLogs"
+        >
+          <el-option label="成功" value="success" />
+          <el-option label="失败" value="failed" />
+          <el-option label="缓存" value="cached" />
+        </el-select>
+        <el-date-picker
+          v-model="dateRange"
+          type="daterange"
+          range-separator="至"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+          class="date-picker"
+          @change="loadLogs"
+        />
+        <el-button type="primary" class="search-btn" @click="loadLogs">搜索</el-button>
+      </div>
+
+      <el-table
+        :data="logs"
+        style="width: 100%"
+        :header-cell-style="{ background: '#fafbfc' }"
+        :row-class-name="tableRowClass"
+        @row-mouse-enter="handleRowEnter"
+        @row-mouse-leave="handleRowLeave"
+      >
+        <el-table-column prop="id" label="ID" width="60" />
+        <el-table-column prop="repository" label="仓库" width="140">
+          <template #default="{ row }">
+            <span class="repo-name">{{ row.repository?.display_name || row.repository?.name || '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="package_type" label="类型" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag :class="['pkg-type-tag', `pkg-type-tag--${row.package_type}`]" size="small">{{ row.package_type }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="package_name" label="包名" min-width="150" show-overflow-tooltip />
+        <el-table-column prop="version" label="版本" width="100" align="center" />
+        <el-table-column prop="status" label="状态" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag :class="['status-tag', `status-tag--${row.status}`]" size="small">{{ statusLabel(row.status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="error_message" label="失败原因" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.error_message" class="error-message">{{ row.error_message }}</span>
+            <span v-else class="no-error">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="status_code" label="HTTP状态" width="100" align="center">
+          <template #default="{ row }">
+            <span v-if="row.status_code" :class="['status-code', getStatusCodeClass(row.status_code)]">{{ row.status_code }}</span>
+            <span v-else class="no-code">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="size_bytes" label="大小" width="100" align="center">
+          <template #default="{ row }">
+            {{ formatBytes(row.size_bytes) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="duration_ms" label="耗时" width="90" align="center">
+          <template #default="{ row }">
+            <span v-if="row.duration_ms">{{ row.duration_ms }}ms</span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="from_cache" label="缓存" width="70" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.from_cache" type="info" size="small">命中</el-tag>
+            <span v-else class="no-cache">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="ip_address" label="IP" width="130" />
+        <el-table-column prop="created_at" label="时间" width="180" align="center">
+          <template #default="{ row }">
+            {{ formatDate(row.created_at) }}
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <el-pagination
+        v-if="total > pageSize"
+        :current-page="page"
+        :page-size="pageSize"
+        :total="total"
+        layout="total, prev, pager, next"
+        class="pagination"
+        @current-change="handlePageChange"
+      />
     </div>
-
-    <div class="filter-bar">
-      <CustomSelect
-        v-model="filterRepo"
-        placeholder="仓库"
-        style="width: 180px"
-        @change="loadLogs"
-        :options="repositories.map(r => ({ label: r.display_name || r.name, value: r.id }))"
-      />
-      <CustomSelect
-        v-model="filterPkgType"
-        placeholder="包类型"
-        style="width: 120px"
-        @change="loadLogs"
-        :options="pkgTypeOptions"
-      />
-      <CustomSelect
-        v-model="filterStatus"
-        placeholder="状态"
-        style="width: 100px"
-        @change="loadLogs"
-        :options="statusFilterOptions"
-      />
-      <el-date-picker v-model="dateRange" type="daterange" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" style="width: 240px" @change="loadLogs" />
-      <CustomButton type="primary" @click="loadLogs">搜索</CustomButton>
-    </div>
-
-    <CustomTable :columns="columns" :data="logs" :loading="loading" row-key="id">
-      <template #repository="{ row }">
-        {{ row.repository?.display_name || row.repository?.name || '-' }}
-      </template>
-      <template #package_type="{ row }">
-        <CustomTag size="small">{{ row.package_type }}</CustomTag>
-      </template>
-      <template #status="{ row }">
-        <CustomTag :type="statusTagType(row.status)" size="small">{{ statusLabel(row.status) }}</CustomTag>
-      </template>
-      <template #error_message="{ row }">
-        <span v-if="row.error_message" class="error-message">{{ row.error_message }}</span>
-        <span v-else>-</span>
-      </template>
-      <template #status_code="{ row }">
-        <span v-if="row.status_code">{{ row.status_code }}</span>
-        <span v-else>-</span>
-      </template>
-      <template #size_bytes="{ row }">
-        {{ formatBytes(row.size_bytes) }}
-      </template>
-      <template #duration_ms="{ row }">
-        {{ row.duration_ms ? `${row.duration_ms}ms` : '-' }}
-      </template>
-      <template #from_cache="{ row }">
-        <CustomTag v-if="row.from_cache" type="info" size="small">命中</CustomTag>
-        <span v-else>-</span>
-      </template>
-      <template #created_at="{ row }">
-        {{ formatDate(row.created_at) }}
-      </template>
-    </CustomTable>
-
-    <el-pagination
-      v-if="total > pageSize"
-      :current-page="page"
-      :page-size="pageSize"
-      :total="total"
-      layout="total, prev, pager, next"
-      class="pagination"
-      @current-change="handlePageChange"
-    />
   </div>
 </template>
 
@@ -106,11 +195,6 @@ import { ref, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { proxyDownloadApi, type ProxyDownloadLog, type ProxyDownloadStats } from '@/api/proxyDownload'
 import { repositoryApi, type Repository } from '@/api/repository'
-import CustomButton from '@/components/ui/CustomButton.vue'
-import CustomSelect from '@/components/ui/CustomSelect.vue'
-import CustomTable from '@/components/ui/CustomTable.vue'
-import CustomTag from '@/components/ui/CustomTag.vue'
-import CustomCard from '@/components/ui/CustomCard.vue'
 
 const loading = ref(false)
 const logs = ref<ProxyDownloadLog[]>([])
@@ -119,40 +203,31 @@ const repositories = ref<Repository[]>([])
 const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
-const filterRepo = ref<string | number | undefined>(undefined)
+const filterRepo = ref<number | null>(null)
 const filterPkgType = ref('')
 const filterStatus = ref('')
 const dateRange = ref<[Date, Date] | null>(null)
+const hoveredRow = ref<number | null>(null)
 
-const pkgTypeOptions = [
-  { label: 'npm', value: 'npm' },
-  { label: 'maven', value: 'maven' },
-  { label: 'pypi', value: 'pypi' },
-  { label: 'go', value: 'go' },
-  { label: 'nuget', value: 'nuget' }
-]
+function tableRowClass({ rowIndex }: { rowIndex: number }) {
+  return rowIndex === hoveredRow.value ? 'row-hovered' : ''
+}
 
-const statusFilterOptions = [
-  { label: '成功', value: 'success' },
-  { label: '失败', value: 'failed' },
-  { label: '缓存', value: 'cached' }
-]
+function handleRowEnter({ rowIndex }: { rowIndex: number }) {
+  hoveredRow.value = rowIndex
+}
 
-const columns = [
-  { prop: 'id', label: 'ID', width: '60px' },
-  { prop: 'repository', label: '仓库', width: '140px' },
-  { prop: 'package_type', label: '类型', width: '80px' },
-  { prop: 'package_name', label: '包名' },
-  { prop: 'version', label: '版本', width: '100px' },
-  { prop: 'status', label: '状态', width: '80px' },
-  { prop: 'error_message', label: '失败原因' },
-  { prop: 'status_code', label: 'HTTP状态', width: '90px' },
-  { prop: 'size_bytes', label: '大小', width: '100px' },
-  { prop: 'duration_ms', label: '耗时', width: '90px' },
-  { prop: 'from_cache', label: '缓存', width: '70px' },
-  { prop: 'ip_address', label: 'IP', width: '130px' },
-  { prop: 'created_at', label: '时间', width: '180px' },
-]
+function handleRowLeave() {
+  hoveredRow.value = null
+}
+
+function getStatusCodeClass(code: number): string {
+  if (code >= 200 && code < 300) return 'status-code--success'
+  if (code >= 300 && code < 400) return 'status-code--redirect'
+  if (code >= 400 && code < 500) return 'status-code--client-error'
+  if (code >= 500) return 'status-code--server-error'
+  return ''
+}
 
 function formatDate(d: string): string {
   if (!d) return '-'
@@ -170,11 +245,6 @@ function formatBytes(bytes: number): string {
 function statusLabel(s: string): string {
   const map: Record<string, string> = { success: '成功', failed: '失败', cached: '缓存' }
   return map[s] || s
-}
-
-function statusTagType(s: string): 'default' | 'primary' | 'success' | 'warning' | 'danger' | 'info' {
-  const map: Record<string, 'default' | 'primary' | 'success' | 'warning' | 'danger' | 'info'> = { success: 'success', failed: 'danger', cached: 'info' }
-  return map[s] || 'info'
 }
 
 function formatDateForApi(date: Date): string {
@@ -244,72 +314,259 @@ onMounted(() => {
 
 <style scoped>
 .proxy-download-logs {
-  padding: var(--spacing-xl);
+  padding: var(--spacing-5);
+  min-height: 100%;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
 }
 
-.page-header {
+.list-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: var(--spacing-2xl);
+  padding: 20px 24px;
+  background: #fff;
+  border-radius: 16px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
-.page-header h2 {
+.header-content {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.header-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  color: #2563eb;
+}
+
+.header-text h2 {
   margin: 0;
-  font-size: var(--font-size-xl);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
+  font-size: 20px;
+  font-weight: 600;
+  color: #1e293b;
 }
 
-.stat-cards {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr) 2fr;
-  gap: var(--spacing-md);
-  margin-bottom: var(--spacing-2xl);
+.header-subtitle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.refresh-btn {
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-weight: 500;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  color: #64748b;
+  transition: all 0.2s ease;
+}
+
+.refresh-btn:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #475569;
+}
+
+.stats-bar {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
 }
 
 .stat-card {
-  text-align: center;
+  flex: 1;
+  padding: 20px;
+  background: #fff;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: all 0.2s ease;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.stat-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #e2e8f0 0%, #cbd5e1 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: #64748b;
+}
+
+.stat-icon--success {
+  background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+  color: #16a34a;
+}
+
+.stat-icon--failed {
+  background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+  color: #dc2626;
+}
+
+.stat-icon--cached {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  color: #d97706;
+}
+
+.stat-icon--traffic {
+  background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%);
+  color: #4f46e5;
+}
+
+.stat-info {
+  display: flex;
+  flex-direction: column;
 }
 
 .stat-value {
-  font-size: var(--font-size-xl);
-  font-weight: var(--font-weight-bold);
-  color: var(--color-text-primary);
+  font-size: 24px;
+  font-weight: 700;
+  color: #1e293b;
 }
 
 .stat-label {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-tertiary);
-  margin-top: var(--spacing-xs);
+  font-size: 13px;
+  color: #94a3b8;
+  margin-top: 2px;
 }
 
-.stat-card.success .stat-value {
-  color: var(--color-success);
-}
-
-.stat-card.danger .stat-value {
-  color: var(--color-danger);
-}
-
-.stat-card.info .stat-value {
-  color: var(--color-primary);
+.content-panel {
+  background: #fff;
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .filter-bar {
   display: flex;
-  gap: var(--spacing-md);
-  margin-bottom: var(--spacing-lg);
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.filter-select {
+  width: 160px;
+  border-radius: 10px;
+}
+
+.date-picker {
+  width: 240px;
+  border-radius: 10px;
+}
+
+.search-btn {
+  border-radius: 10px;
+  padding: 10px 20px;
+  font-weight: 500;
+}
+
+:deep(.el-table .row-hovered) {
+  background: #f8fafc;
+}
+
+.repo-name {
+  color: #334155;
+  font-size: 13px;
+}
+
+.pkg-type-tag {
+  background: #f1f5f9;
+  color: #64748b;
+  border: none;
+}
+
+.status-tag {
+  border: none;
+}
+
+.status-tag--success {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.status-tag--failed {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.status-tag--cached {
+  background: #fef3c7;
+  color: #d97706;
+}
+
+.status-code {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.status-code--success {
+  color: #16a34a;
+}
+
+.status-code--redirect {
+  color: #3b82f6;
+}
+
+.status-code--client-error {
+  color: #f59e0b;
+}
+
+.status-code--server-error {
+  color: #dc2626;
+}
+
+.error-message {
+  color: #dc2626;
+  font-size: 13px;
+}
+
+.no-error,
+.no-code,
+.no-cache {
+  color: #94a3b8;
 }
 
 .pagination {
-  margin-top: var(--spacing-lg);
+  margin-top: 20px;
   display: flex;
   justify-content: flex-end;
 }
 
-.error-message {
-  color: var(--color-danger);
-  font-size: var(--font-size-sm);
+:deep(.el-pagination button) {
+  border-radius: 8px;
+}
+
+:deep(.el-pager li) {
+  border-radius: 8px;
+  margin: 0 2px;
+}
+
+:deep(.el-pager li.is-active) {
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
 }
 </style>

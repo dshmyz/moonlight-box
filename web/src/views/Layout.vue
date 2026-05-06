@@ -31,6 +31,7 @@ function toggleCollapse() {
   height: 100vh;
   display: flex;
   flex-direction: row;
+  background: #f5f7fa;
 }
 
 .main-container {
@@ -38,12 +39,32 @@ function toggleCollapse() {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--color-bg-page);
+  background: #f5f7fa;
 }
 
 .app-main {
-  padding: var(--spacing-2xl);
+  padding: 24px;
   overflow-y: auto;
   flex: 1;
+  background: #f5f7fa;
+}
+
+/* 滚动条样式 */
+.app-main::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.app-main::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.app-main::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.app-main::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }
 </style>

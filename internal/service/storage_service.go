@@ -11,6 +11,7 @@ import (
 
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/storage"
+	"github.com/sirupsen/logrus"
 )
 
 type StorageService struct {
@@ -69,12 +70,21 @@ func (s *StorageService) initStorageBackends() error {
 	for _, backend := range backends {
 		storageBackend, err := CreateStorageBackend(&backend)
 		if err != nil {
-			// 跳过配置不完整的后端，记录警告但不阻止服务启动
-			fmt.Printf("Warning: failed to initialize storage backend %s: %v\n", backend.Name, err)
+			logrus.WithFields(logrus.Fields{
+				"module":      "storage",
+				"backend_id":  backend.ID,
+				"backend_name": backend.Name,
+				"backend_type": backend.Type,
+			}).Warn("Failed to initialize storage backend, skipping")
 			continue
 		}
 		s.backendMap[backend.ID] = storageBackend
 	}
+
+	logrus.WithFields(logrus.Fields{
+		"module":          "storage",
+		"loaded_backends": len(s.backendMap),
+	}).Info("Storage backends initialized")
 
 	return nil
 }

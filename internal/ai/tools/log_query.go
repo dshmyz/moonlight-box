@@ -98,7 +98,12 @@ func (t *LogQueryTool) Execute(ctx context.Context, params map[string]interface{
 	// 获取日志路径
 	logPath := t.Context().LogPath
 	if logPath == "" {
-		return "", fmt.Errorf("日志路径未配置")
+		// 尝试从配置中获取
+		if t.Context().Config != nil && t.Context().Config.Logging.Output != "" {
+			logPath = t.Context().Config.Logging.Output
+		} else {
+			return "", fmt.Errorf("日志路径未配置")
+		}
 	}
 
 	// 查找日志文件
