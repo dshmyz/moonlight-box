@@ -1,0 +1,339 @@
+package proxy
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/repository"
+	"gorm.io/gorm"
+)
+
+// HealthCheckConfig 健康检查配置
+type HealthCheckConfig struct {
+	Enabled        bool          `json:"enabled"`          // 是否启用健康检查
+	Interval       time.Duration `json:"interval"`         // 检查间隔
+	Timeout        time.Duration `json:"timeout"`          // 检查超时
+	FailureThreshold int         `json:"failure_threshold"` // 失败阈值
+}
+
+// DefaultHealthCheckConfig 默认健康检查配置
+func DefaultHealthCheckConfig() HealthCheckConfig {
+	return HealthCheckConfig{
+		Enabled:        true,
+		Interval:       30 * time.Second,  // 每30秒检查一次
+		Timeout:        5 * time.Second,   // 检查超时5秒
+		FailureThreshold: 3,               // 连续3次失败标记为不健康
+	}
+}
+
+// HealthStatus 仓库健康状态
+type HealthStatus struct {
+	RepoID           uint          `json:"repo_id"`
+	RepoName         string        `json:"repo_name"`
+	IsHealthy        bool          `json:"is_healthy"`
+	LastCheckTime    time.Time     `json:"last_check_time"`
+	LastCheckError   string        `json:"last_check_error,omitempty"`
+	ResponseTime     time.Duration `json:"response_time"`
+	ConsecutiveFailures int        `json:"consecutive_failures"`
+	StatusCode       int           `json:"status_code,omitempty"`
+}
+
+// HealthCheckService 健康检查服务
+type HealthCheckService struct {
+	mu              sync.RWMutex
+	db              *gorm.DB
+	repoRepo        *repository.RepositoryRepository
+	remoteClient    *RemoteClient
+	config          HealthCheckConfig
+	breakers        map[uint]*CircuitBreaker // repoID -> CircuitBreaker
+	statuses        map[uint]*HealthStatus   // repoID -> HealthStatus
+	stopCh          chan struct{}
+	running         bool
+}
+
+// NewHealthCheckService 创建健康检查服务
+func NewHealthCheckService(
+	db *gorm.DB,
+	repoRepo *repository.RepositoryRepository,
+	remoteClient *RemoteClient,
+	config HealthCheckConfig,
+) *HealthCheckService {
+	return &HealthCheckService{
+		db:           db,
+		repoRepo:     repoRepo,
+		remoteClient: remoteClient,
+		config:       config,
+		breakers:     make(map[uint]*CircuitBreaker),
+		statuses:     make(map[uint]*HealthStatus),
+		stopCh:       make(chan struct{}),
+	}
+}
+
+// Start 启动健康检查服务
+func (h *HealthCheckService) Start() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.running || !h.config.Enabled {
+		return
+	}
+
+	h.running = true
+	h.stopCh = make(chan struct{})
+
+	slog.Info("starting health check service", "interval", h.config.Interval)
+	go h.runHealthChecks()
+}
+
+// Stop 停止健康检查服务
+func (h *HealthCheckService) Stop() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if !h.running {
+		return
+	}
+
+	h.running = false
+	close(h.stopCh)
+	slog.Info("stopped health check service")
+}
+
+// GetCircuitBreaker 获取指定仓库的断路器
+func (h *HealthCheckService) GetCircuitBreaker(repoID uint) *CircuitBreaker {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	cb, exists := h.breakers[repoID]
+	if !exists {
+		return nil
+	}
+	return cb
+}
+
+// GetOrCreateCircuitBreaker 获取或创建断路器
+func (h *HealthCheckService) GetOrCreateCircuitBreaker(repoID uint) *CircuitBreaker {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	cb, exists := h.breakers[repoID]
+	if !exists {
+		cb = NewCircuitBreaker(DefaultCircuitBreakerConfig())
+		h.breakers[repoID] = cb
+	}
+	return cb
+}
+
+// GetHealthStatus 获取仓库健康状态
+func (h *HealthCheckService) GetHealthStatus(repoID uint) *HealthStatus {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	status, exists := h.statuses[repoID]
+	if !exists {
+		return nil
+	}
+	return status
+}
+
+// GetAllHealthStatuses 获取所有仓库健康状态
+func (h *HealthCheckService) GetAllHealthStatuses() map[uint]*HealthStatus {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	result := make(map[uint]*HealthStatus)
+	for repoID, status := range h.statuses {
+		result[repoID] = status
+	}
+	return result
+}
+
+// ResetCircuitBreaker 重置指定仓库的断路器
+func (h *HealthCheckService) ResetCircuitBreaker(repoID uint) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if cb, exists := h.breakers[repoID]; exists {
+		cb.Reset()
+		slog.Info("circuit breaker reset", "repo_id", repoID)
+	}
+}
+
+// runHealthChecks 定期执行健康检查
+func (h *HealthCheckService) runHealthChecks() {
+	ticker := time.NewTicker(h.config.Interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			h.checkAllProxyRepos()
+		case <-h.stopCh:
+			return
+		}
+	}
+}
+
+// checkAllProxyRepos 检查所有代理仓库
+func (h *HealthCheckService) checkAllProxyRepos() {
+	// 查询所有代理类型的仓库
+	var repos []model.Repository
+	if err := h.db.Where("type = ? AND enabled = ?", model.RepoTypeProxy, true).Find(&repos).Error; err != nil {
+		slog.Error("failed to query proxy repositories", "error", err)
+		return
+	}
+
+	slog.Debug("checking health of proxy repositories", "count", len(repos))
+
+	for _, repo := range repos {
+		h.checkRepoHealth(&repo)
+	}
+}
+
+// checkRepoHealth 检查单个仓库的健康状态
+func (h *HealthCheckService) checkRepoHealth(repo *model.Repository) {
+	ctx, cancel := context.WithTimeout(context.Background(), h.config.Timeout)
+	defer cancel()
+
+	cb := h.GetOrCreateCircuitBreaker(repo.ID)
+	startTime := time.Now()
+
+	// 如果断路器处于熔断状态，跳过检查
+	if !cb.AllowRequest() {
+		retryAfter := cb.GetRetryAfter()
+		h.updateStatus(repo, false, fmt.Sprintf("circuit breaker open, retry after %d seconds", retryAfter), 0, 0)
+		return
+	}
+
+	// 执行健康检查（简单HTTP GET请求）
+	healthURL := repo.RemoteURL
+	statusCode, err := h.doHealthCheck(ctx, healthURL)
+	responseTime := time.Since(startTime)
+
+	if err != nil {
+		// 检查失败，记录失败
+		cb.RecordFailure()
+		h.updateStatus(repo, false, err.Error(), statusCode, responseTime)
+		slog.Warn("health check failed", 
+			"repo", repo.Name, 
+			"url", healthURL, 
+			"error", err,
+			"response_time", responseTime)
+	} else {
+		// 检查成功
+		cb.RecordSuccess()
+		h.updateStatus(repo, true, "", statusCode, responseTime)
+		slog.Debug("health check passed",
+			"repo", repo.Name,
+			"url", healthURL,
+			"status_code", statusCode,
+			"response_time", responseTime)
+	}
+}
+
+// doHealthCheck 执行HTTP健康检查
+func (h *HealthCheckService) doHealthCheck(ctx context.Context, url string) (int, error) {
+	// 使用简单的HTTP请求检查连通性
+	client := &http.Client{
+		Timeout: h.config.Timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// 允许最多2次重定向
+			if len(via) >= 2 {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("User-Agent", "Moonlight-HealthCheck/1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 2xx 状态码视为健康
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return resp.StatusCode, nil
+	}
+
+	// 4xx 也认为是连通的（只是可能需要认证）
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		return resp.StatusCode, nil
+	}
+
+	// 5xx 服务器错误视为不健康
+	return resp.StatusCode, fmt.Errorf("server error: %d", resp.StatusCode)
+}
+
+// updateStatus 更新健康状态
+func (h *HealthCheckService) updateStatus(repo *model.Repository, healthy bool, errMsg string, statusCode int, responseTime time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	status, exists := h.statuses[repo.ID]
+	if !exists {
+		status = &HealthStatus{
+			RepoID:   repo.ID,
+			RepoName: repo.Name,
+		}
+		h.statuses[repo.ID] = status
+	}
+
+	status.IsHealthy = healthy
+	status.LastCheckTime = time.Now()
+	status.ResponseTime = responseTime
+	status.StatusCode = statusCode
+
+	if errMsg != "" {
+		status.LastCheckError = errMsg
+		if !healthy {
+			status.ConsecutiveFailures++
+		}
+	} else {
+		status.LastCheckError = ""
+		status.ConsecutiveFailures = 0
+	}
+}
+
+// IsHealthy 检查指定仓库是否健康
+func (h *HealthCheckService) IsHealthy(repoID uint) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	status, exists := h.statuses[repoID]
+	if !exists {
+		return true // 没有检查记录时默认为健康
+	}
+
+	return status.IsHealthy && status.ConsecutiveFailures < h.config.FailureThreshold
+}
+
+// ShouldSkipRequest 判断是否应该跳过请求（断路器打开）
+func (h *HealthCheckService) ShouldSkipRequest(repoID uint) bool {
+	cb := h.GetCircuitBreaker(repoID)
+	if cb == nil {
+		return false
+	}
+	return !cb.AllowRequest()
+}
+
+// GetRetryAfter 获取重试等待时间（秒）
+func (h *HealthCheckService) GetRetryAfter(repoID uint) int {
+	cb := h.GetCircuitBreaker(repoID)
+	if cb == nil {
+		return 0
+	}
+	return cb.GetRetryAfter()
+}

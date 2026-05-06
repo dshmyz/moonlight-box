@@ -1,57 +1,75 @@
 <template>
-  <el-table :data="packages" v-loading="loading" style="width: 100%" empty-text="暂无数据">
-    <el-table-column prop="name" label="包名" min-width="200">
+  <el-table 
+    :data="packages" 
+    v-loading="loading" 
+    style="width: 100%" 
+    empty-text="暂无数据"
+    :header-cell-style="{ background: '#fafbfc' }"
+    :row-class-name="tableRowClass"
+    @row-mouse-enter="handleRowEnter"
+    @row-mouse-leave="handleRowLeave"
+  >
+    <el-table-column prop="name" label="包名" min-width="180">
       <template #default="{ row }">
-        <div>
-          <div class="package-name" @click="$emit('view-detail', row)">
-            {{ row.display_name || row.name }}
+        <div class="package-info">
+          <div class="package-icon">📦</div>
+          <div class="package-content">
+            <div class="package-name" @click="$emit('view-detail', row)">
+              {{ row.display_name || row.name }}
+            </div>
+            <div class="package-description">{{ row.description || '暂无描述' }}</div>
           </div>
-          <div class="package-description">{{ row.description || '暂无描述' }}</div>
         </div>
       </template>
     </el-table-column>
-    <el-table-column prop="type" label="类型" width="100">
+    <el-table-column prop="type" label="类型" width="90">
       <template #default="{ row }">
-        <el-tag :type="getTypeTag(row.type)" size="small">
+        <el-tag :class="['type-tag', `type-tag--${row.type}`]" size="small">
           {{ row.type }}
         </el-tag>
       </template>
     </el-table-column>
     <el-table-column prop="repository_type" label="来源" width="80" align="center">
       <template #default="{ row }">
-        <el-tag :type="row.repository_type === 'proxy' ? 'warning' : 'success'" size="small">
+        <el-tag :class="['source-tag', row.repository_type === 'proxy' ? 'source-tag--proxy' : 'source-tag--local']" size="small">
           {{ row.repository_type === 'proxy' ? '代理' : '本地' }}
         </el-tag>
       </template>
     </el-table-column>
-    <el-table-column prop="versions_count" label="版本数" width="80" align="center" />
-    <el-table-column prop="download_count" label="下载数" width="100" align="center">
+    <el-table-column prop="versions_count" label="版本" width="70" align="center">
       <template #default="{ row }">
-        {{ formatNumber(row.download_count) }}
+        <span class="version-count">{{ row.versions_count || 0 }}</span>
       </template>
     </el-table-column>
-    <el-table-column prop="updated_at" label="更新时间" width="180">
+    <el-table-column prop="download_count" label="下载" width="100" align="center">
       <template #default="{ row }">
-        {{ formatDate(row.updated_at) }}
+        <span class="download-count">{{ formatNumber(row.download_count) }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="操作" width="180" fixed="right">
+    <el-table-column prop="updated_at" label="更新时间" width="160">
       <template #default="{ row }">
-        <el-button size="small" @click="$emit('view-versions', row)">
-          查看版本
-        </el-button>
-        <el-button size="small" @click="$emit('view-detail', row)">
-          详情
-        </el-button>
+        <span class="update-time">{{ formatDate(row.updated_at) }}</span>
+      </template>
+    </el-table-column>
+    <el-table-column label="操作" width="200" fixed="right">
+      <template #default="{ row }">
+        <div class="action-buttons">
+          <el-button class="btn-view-versions" size="small" @click="$emit('view-versions', row)">
+            查看版本
+          </el-button>
+          <el-button class="btn-view-detail" size="small" type="primary" @click="$emit('view-detail', row)">
+            详情
+          </el-button>
+        </div>
       </template>
     </el-table-column>
   </el-table>
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue'
 import type { Package } from '@/api/package'
 import { formatNumber, formatDate } from '@/utils/format'
-import { getPackageTypeColor } from '@/constants/package'
 
 defineProps<{
   packages: Package[]
@@ -63,28 +81,201 @@ defineEmits<{
   'view-detail': [pkg: Package]
 }>()
 
-const getTypeTag = (type: string) => {
-  return getPackageTypeColor(type)
+const hoveredRow = ref<number | null>(null)
+
+const tableRowClass = ({ rowIndex }: { rowIndex: number }) => {
+  return hoveredRow.value === rowIndex ? 'row-hovered' : ''
+}
+
+const handleRowEnter = ({ rowIndex }: { rowIndex: number }) => {
+  hoveredRow.value = rowIndex
+}
+
+const handleRowLeave = () => {
+  hoveredRow.value = null
 }
 </script>
 
 <style scoped>
+:deep(.el-table) {
+  --el-table-header-text-color: #475569;
+  --el-table-text-color: #1e293b;
+  --el-table-border-color: rgba(0, 0, 0, 0.04);
+}
+
+:deep(.el-table th) {
+  font-weight: 600;
+  font-size: 13px;
+  color: #64748b;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+:deep(.el-table td) {
+  padding: 16px 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.03);
+  transition: all 0.2s ease;
+}
+
+:deep(.el-table .row-hovered td) {
+  background: #f8fafc;
+}
+
+:deep(.el-table .row-hovered) {
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.02);
+}
+
+.package-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.package-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%);
+  border-radius: 8px;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.package-content {
+  flex: 1;
+  min-width: 0;
+}
+
 .package-name {
-  color: #409eff;
+  color: #1e293b;
   cursor: pointer;
   font-weight: 600;
+  font-size: 14px;
+  transition: color 0.2s ease;
 }
 
 .package-name:hover {
-  text-decoration: underline;
+  color: #6366f1;
 }
 
 .package-description {
   font-size: 12px;
-  color: #909399;
+  color: #94a3b8;
   margin-top: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.type-tag {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.type-tag--npm {
+  background: linear-gradient(135deg, #dbeafe 0%, #93c5fd 100%);
+  color: #1d4ed8;
+  border: none;
+}
+
+.type-tag--maven {
+  background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+  color: #059669;
+  border: none;
+}
+
+.type-tag--pypi {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  color: #d97706;
+  border: none;
+}
+
+.type-tag--go {
+  background: linear-gradient(135deg, #d1fae5 0%, #6ee7b7 100%);
+  color: #047857;
+  border: none;
+}
+
+.type-tag--nuget {
+  background: linear-gradient(135deg, #fbcfe8 0%, #f9a8d4 100%);
+  color: #be185d;
+  border: none;
+}
+
+.source-tag {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-weight: 500;
+  border: none;
+}
+
+.source-tag--proxy {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  color: #d97706;
+}
+
+.source-tag--local {
+  background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+  color: #059669;
+}
+
+.version-count {
+  font-weight: 600;
+  color: #1e293b;
+  font-size: 14px;
+}
+
+.download-count {
+  font-weight: 600;
+  color: #6366f1;
+  font-size: 14px;
+}
+
+.update-time {
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 10px;
+  flex-wrap: nowrap;
+}
+
+.btn-view-versions {
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  transition: all 0.2s ease;
+}
+
+.btn-view-versions:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #475569;
+}
+
+.btn-view-detail {
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  border: none;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+  transition: all 0.2s ease;
+}
+
+.btn-view-detail:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
 }
 </style>

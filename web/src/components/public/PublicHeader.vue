@@ -34,8 +34,14 @@
           <el-icon><Search /></el-icon>
         </template>
       </el-input>
+      <router-link to="/help">
+        <el-button class="header-btn">
+          <el-icon><QuestionFilled /></el-icon>
+          帮助
+        </el-button>
+      </router-link>
       <router-link to="/login">
-        <el-button type="primary" plain>
+        <el-button class="header-btn header-btn--login">
           <el-icon><User /></el-icon>
           登录
         </el-button>
@@ -47,7 +53,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Search, User } from '@element-plus/icons-vue'
+import { Search, User, QuestionFilled } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const searchQuery = ref('')
@@ -80,8 +86,8 @@ function handleQuickSearch() {
 }
 
 .logo-icon {
-  width: 36px;
-  height: 36px;
+  width: 60px;
+  height: 60px;
   flex-shrink: 0;
 }
 
@@ -110,5 +116,35 @@ function handleQuickSearch() {
 
 .header-search :deep(.el-input__wrapper) {
   background-color: #f5f7fa;
+}
+
+.header-btn {
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1.5px solid #e2e8f0;
+  background: #ffffff;
+  color: #475569;
+  transition: all 0.2s ease;
+}
+
+.header-btn:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: #334155;
+}
+
+.header-btn--login {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+}
+
+.header-btn--login:hover {
+  background: #1e293b;
+  border-color: #1e293b;
+  color: #ffffff;
 }
 </style>

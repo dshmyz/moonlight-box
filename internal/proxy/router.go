@@ -21,12 +21,13 @@ var ErrPackageNotFound = fmt.Errorf("package not found")
 
 // ProxyRouter 多代理路由引擎，负责根据虚拟仓配置将包请求路由到正确的来源
 type ProxyRouter struct {
-	db        *gorm.DB
-	cache     *CacheService
-	client    *RemoteClient
-	repoRepo  *repository.RepositoryRepository
-	groupRepo *repository.GroupRepository
-	adapters  map[string]types.Adapter
+	db             *gorm.DB
+	cache          *CacheService
+	client         *RemoteClient
+	repoRepo       *repository.RepositoryRepository
+	groupRepo      *repository.GroupRepository
+	adapters       map[string]types.Adapter
+	healthCheckSvc *HealthCheckService
 }
 
 // NewProxyRouter 创建一个新的代理路由引擎实例
@@ -46,6 +47,11 @@ func NewProxyRouter(
 		groupRepo: groupRepo,
 		adapters:  adapters,
 	}
+}
+
+// SetHealthCheckService 设置健康检查服务（可选）
+func (r *ProxyRouter) SetHealthCheckService(svc *HealthCheckService) {
+	r.healthCheckSvc = svc
 }
 
 // RouteResult 路由结果，包含内容流和元信息
@@ -275,6 +281,12 @@ func (r *ProxyRouter) resolveProxyWithURL(ctx context.Context, repo *model.Repos
 
 	slog.Info("cache miss, fetching from remote", "remoteURL", remoteURL)
 
+	if r.healthCheckSvc != nil && r.healthCheckSvc.ShouldSkipRequest(repo.ID) {
+		retryAfter := r.healthCheckSvc.GetRetryAfter(repo.ID)
+		slog.Warn("circuit breaker open, skipping request", "repo", repo.Name, "retry_after", retryAfter)
+		return nil, fmt.Errorf("circuit breaker open for repo %s, retry after %d seconds", repo.Name, retryAfter)
+	}
+
 	authCfg, err := repo.GetAuthConfig()
 	if err != nil {
 		slog.Error("failed to get auth config", "error", err)
@@ -293,6 +305,11 @@ func (r *ProxyRouter) resolveProxyWithURL(ctx context.Context, repo *model.Repos
 	content, contentType, err := r.client.GetBytes(ctx, remoteURL, opts, toProxyAuthConfig(authCfg))
 	if err != nil {
 		slog.Error("failed to fetch from remote", "error", err, "remoteURL", remoteURL)
+
+		if r.healthCheckSvc != nil {
+			r.healthCheckSvc.GetOrCreateCircuitBreaker(repo.ID).RecordFailure()
+		}
+
 		if remoteErr, ok := err.(*RemoteError); ok {
 			slog.Error("remote error details", "statusCode", remoteErr.StatusCode, "url", remoteErr.URL)
 			if failureRules.ShouldCache(remoteErr.StatusCode) {
@@ -303,6 +320,10 @@ func (r *ProxyRouter) resolveProxyWithURL(ctx context.Context, repo *model.Repos
 			}
 		}
 		return nil, err
+	}
+
+	if r.healthCheckSvc != nil {
+		r.healthCheckSvc.GetOrCreateCircuitBreaker(repo.ID).RecordSuccess()
 	}
 
 	slog.Info("successfully fetched from remote", "remoteURL", remoteURL, "size", len(content), "contentType", contentType)
@@ -345,6 +366,13 @@ func (r *ProxyRouter) resolveProxy(ctx context.Context, repo *model.Repository, 
 		}, nil
 	}
 
+	// 检查断路器状态
+	if r.healthCheckSvc != nil && r.healthCheckSvc.ShouldSkipRequest(repo.ID) {
+		retryAfter := r.healthCheckSvc.GetRetryAfter(repo.ID)
+		slog.Warn("circuit breaker open, skipping request", "repo", repo.Name, "retry_after", retryAfter)
+		return nil, fmt.Errorf("circuit breaker open for repo %s, retry after %d seconds", repo.Name, retryAfter)
+	}
+
 	// 缓存未命中，向远程仓库发起请求
 	remoteURL := fmt.Sprintf("%s/%s/%s", repo.RemoteURL, name, version)
 	authCfg, err := repo.GetAuthConfig()
@@ -368,6 +396,10 @@ func (r *ProxyRouter) resolveProxy(ctx context.Context, repo *model.Repository, 
 	// 获取远程内容
 	content, contentType, err := r.client.GetBytes(ctx, remoteURL, opts, toProxyAuthConfig(authCfg))
 	if err != nil {
+		if r.healthCheckSvc != nil {
+			r.healthCheckSvc.GetOrCreateCircuitBreaker(repo.ID).RecordFailure()
+		}
+
 		if remoteErr, ok := err.(*RemoteError); ok {
 			// 根据失败缓存规则决定是否缓存
 			if failureRules.ShouldCache(remoteErr.StatusCode) {
@@ -379,6 +411,10 @@ func (r *ProxyRouter) resolveProxy(ctx context.Context, repo *model.Repository, 
 			}
 		}
 		return nil, err
+	}
+
+	if r.healthCheckSvc != nil {
+		r.healthCheckSvc.GetOrCreateCircuitBreaker(repo.ID).RecordSuccess()
 	}
 
 	// 将远程内容写入缓存

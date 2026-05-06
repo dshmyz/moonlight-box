@@ -57,8 +57,9 @@ func setupPyPIAdapter(t *testing.T) (*PyPIAdapter, *gorm.DB) {
 
 	auditSvc := service.NewAuditService()
 	logRepo := repository.NewProxyDownloadLogRepository(db)
+	repoRepo := repository.NewRepositoryRepository(db)
 
-	adapter := NewPyPIAdapter(pkgRepo, storageSvc, auditSvc, nil, logRepo)
+	adapter := NewPyPIAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, nil, logRepo)
 	return adapter, db
 }
 

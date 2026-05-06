@@ -77,6 +77,15 @@ const props = defineProps<{
 
 const activeVersion = computed(() => props.selectedVersion || props.pkg.latest_version || 'latest')
 
+function parseMavenCoords(name: string): { groupId: string; artifactId: string } {
+  const separator = name.includes(':') ? ':' : '/'
+  const parts = name.split(separator)
+  return {
+    groupId: parts.length >= 2 ? parts[0] : name,
+    artifactId: parts.length >= 2 ? parts[1] : name,
+  }
+}
+
 const installCommands = computed<CommandItem[]>(() => {
   const { name, type } = props.pkg
   const version = activeVersion.value
@@ -95,10 +104,8 @@ const installCommands = computed<CommandItem[]>(() => {
         { label: 'pip (最新版)', command: `pip install ${name}` },
         { label: 'poetry', command: `poetry add ${name}==${version}` },
       ]
-    case 'maven2': {
-      const parts = name.split('/')
-      const groupId = parts[0] || name
-      const artifactId = parts[1] || name
+    case 'maven': {
+      const { groupId, artifactId } = parseMavenCoords(name)
       const mavenCoord = `${groupId}:${artifactId}`
       return [
         { label: 'Maven CLI', command: `mvn dependency:get -Dartifact=${mavenCoord}:${version}` },
@@ -136,10 +143,8 @@ const configSnippets = computed<CodeItem[]>(() => {
   const t = normalizePackageType(type)
 
   switch (t) {
-    case 'maven2': {
-      const parts = name.split('/')
-      const groupId = parts[0] || name
-      const artifactId = parts[1] || name
+    case 'maven': {
+      const { groupId, artifactId } = parseMavenCoords(name)
       return [
         {
           label: 'pom.xml',
@@ -209,12 +214,12 @@ const usageExamples = computed<CodeItem[]>(() => {
         },
       ]
     }
-    case 'maven2': {
-      const parts = name.split('/')
+    case 'maven': {
+      const { groupId } = parseMavenCoords(name)
       return [
         {
           label: 'Java',
-          code: `import ${parts[0] || name}.*;`,
+          code: `import ${groupId}.*;`,
         },
       ]
     }

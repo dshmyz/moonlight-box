@@ -144,7 +144,7 @@ func TestMavenAdapter_Upload_ReleaseVersion(t *testing.T) {
 	assert.NotEmpty(t, result.StorageKey)
 
 	var pkg model.Package
-	err = db.Where("name = ?", "com.test/my-lib").First(&pkg).Error
+	err = db.Where("name = ?", "com/test/my-lib").First(&pkg).Error
 	assert.Nil(t, err)
 	assert.Equal(t, model.PackageTypeMaven, pkg.Type)
 
@@ -178,7 +178,7 @@ func TestMavenAdapter_Upload_SnapshotVersion(t *testing.T) {
 	assert.Equal(t, "1.0-SNAPSHOT", result.Version)
 
 	var pkg model.Package
-	err = db.Where("name = ?", "com.test/my-lib").First(&pkg).Error
+	err = db.Where("name = ?", "com/test/my-lib").First(&pkg).Error
 	assert.Nil(t, err)
 
 	var version model.PackageVersion

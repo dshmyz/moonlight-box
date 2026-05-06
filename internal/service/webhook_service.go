@@ -13,6 +13,7 @@ import (
 
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/sirupsen/logrus"
 )
 
 type WebhookService struct {
@@ -42,11 +43,26 @@ type WebhookPayload struct {
 func (s *WebhookService) TriggerEvent(event model.WebhookEvent, payload *WebhookPayload) error {
 	webhooks, err := s.webhookRepo.ListByEvent(event)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module": "webhook",
+			"event":  string(event),
+			"error":  err,
+		}).Error("Failed to list webhooks for event")
 		return err
+	}
+
+	if len(webhooks) == 0 {
+		return nil
 	}
 
 	payload.Event = string(event)
 	payload.Timestamp = time.Now().Format(time.RFC3339)
+
+	logrus.WithFields(logrus.Fields{
+		"module":        "webhook",
+		"event":         string(event),
+		"webhook_count": len(webhooks),
+	}).Info("Triggering webhooks for event")
 
 	for i := range webhooks {
 		go s.sendWebhook(&webhooks[i], payload)
@@ -60,12 +76,24 @@ func (s *WebhookService) sendWebhook(webhook *model.Webhook, payload *WebhookPay
 
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":      "webhook",
+			"webhook_id":  webhook.ID,
+			"webhook_url": webhook.URL,
+			"error":       err,
+		}).Error("Failed to marshal webhook payload")
 		s.recordDelivery(webhook.ID, payload.Event, string(payloadBytes), 0, false, err.Error(), 0)
 		return
 	}
 
 	req, err := http.NewRequest("POST", webhook.URL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":      "webhook",
+			"webhook_id":  webhook.ID,
+			"webhook_url": webhook.URL,
+			"error":       err,
+		}).Error("Failed to create webhook request")
 		s.recordDelivery(webhook.ID, payload.Event, string(payloadBytes), 0, false, err.Error(), 0)
 		return
 	}
@@ -83,6 +111,14 @@ func (s *WebhookService) sendWebhook(webhook *model.Webhook, payload *WebhookPay
 	duration := time.Since(startTime).Milliseconds()
 
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":      "webhook",
+			"webhook_id":  webhook.ID,
+			"webhook_url": webhook.URL,
+			"event":       payload.Event,
+			"duration_ms": duration,
+			"error":       err,
+		}).Warn("Webhook delivery failed")
 		s.recordDelivery(webhook.ID, payload.Event, string(payloadBytes), 0, false, err.Error(), duration)
 		s.incrementFailureCount(webhook)
 		return
@@ -93,6 +129,26 @@ func (s *WebhookService) sendWebhook(webhook *model.Webhook, payload *WebhookPay
 	var errMsg string
 	if !success {
 		errMsg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+	}
+
+	if success {
+		logrus.WithFields(logrus.Fields{
+			"module":      "webhook",
+			"webhook_id":  webhook.ID,
+			"webhook_url": webhook.URL,
+			"event":       payload.Event,
+			"status_code": resp.StatusCode,
+			"duration_ms": duration,
+		}).Info("Webhook delivered successfully")
+	} else {
+		logrus.WithFields(logrus.Fields{
+			"module":      "webhook",
+			"webhook_id":  webhook.ID,
+			"webhook_url": webhook.URL,
+			"event":       payload.Event,
+			"status_code": resp.StatusCode,
+			"duration_ms": duration,
+		}).Warn("Webhook delivery failed with non-2xx status")
 	}
 
 	s.recordDelivery(webhook.ID, payload.Event, string(payloadBytes), resp.StatusCode, success, errMsg, duration)
@@ -130,6 +186,12 @@ func (s *WebhookService) incrementFailureCount(webhook *model.Webhook) {
 	webhook.FailureCount++
 	if webhook.FailureCount >= 5 {
 		webhook.Status = model.WebhookStatusDisabled
+		logrus.WithFields(logrus.Fields{
+			"module":        "webhook",
+			"webhook_id":    webhook.ID,
+			"webhook_url":   webhook.URL,
+			"failure_count": webhook.FailureCount,
+		}).Warn("Webhook disabled due to excessive failures")
 	}
 	s.webhookRepo.Update(webhook)
 }

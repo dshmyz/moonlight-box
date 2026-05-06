@@ -7,14 +7,24 @@
     @close="handleClose"
   >
     <el-form :model="form" :rules="rules" ref="formRef" label-width="100px">
-      <el-form-item label="包类型" prop="packageType">
-        <el-select v-model="form.packageType" placeholder="选择包类型" @change="handlePackageTypeChange">
-          <el-option label="Generic (通用文件)" value="generic" />
-          <el-option label="PyPI (Python)" value="pypi" />
-          <el-option label="Maven (Java)" value="maven" />
-          <el-option label="APT (Debian/Ubuntu)" value="apt" />
-          <el-option label="YUM (CentOS/RHEL)" value="yum" />
+      <el-form-item label="目标仓库" prop="repositoryId">
+        <el-select v-model="form.repositoryId" placeholder="选择仓库" @change="handleRepositoryChange" filterable>
+          <el-option 
+            v-for="repo in availableRepositories" 
+            :key="repo.id" 
+            :label="repo.display_name || repo.name" 
+            :value="repo.id"
+          >
+            <span>{{ repo.display_name || repo.name }}</span>
+            <span style="color: #8492a6; font-size: 13px; margin-left: 8px">
+              ({{ repo.type }} / {{ repo.package_type }})
+            </span>
+          </el-option>
         </el-select>
+      </el-form-item>
+
+      <el-form-item label="包类型">
+        <el-tag type="info">{{ form.packageType || '未选择' }}</el-tag>
       </el-form-item>
 
       <template v-if="form.packageType === 'pypi'">
@@ -102,11 +112,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { UploadFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import type { UploadFile, UploadInstance, FormInstance, FormRules } from 'element-plus'
-import { fileApi } from '@/api/file'
+import { repositoryApi, type Repository } from '@/api/repository'
 import axios from 'axios'
 import JSZip from 'jszip'
 
@@ -122,8 +132,11 @@ const emit = defineEmits<{
 const formRef = ref<FormInstance>()
 const uploadRef = ref<UploadInstance>()
 const fileList = ref<UploadFile[]>([])
+const availableRepositories = ref<Repository[]>([])
 const form = ref({
-  packageType: 'generic',
+  repositoryId: null as number | null,
+  packageType: '',
+  repositoryName: '',
   pypiName: '',
   pypiVersion: '',
   pypiSummary: '',
@@ -138,18 +151,40 @@ const uploadProgress = ref(0)
 const mavenAutoDetected = ref(false)
 
 const rules: FormRules = {
-  packageType: [{ required: true, message: '请选择包类型', trigger: 'change' }],
+  repositoryId: [{ required: true, message: '请选择目标仓库', trigger: 'change' }],
   pypiName: [{ required: true, message: '请输入包名称', trigger: 'blur' }],
   pypiVersion: [{ required: true, message: '请输入版本号', trigger: 'blur' }],
   mavenGroupId: [{ required: true, message: '请输入 Group ID', trigger: 'blur' }],
   mavenArtifactId: [{ required: true, message: '请输入 Artifact ID', trigger: 'blur' }],
-  mavenVersion: [{ required: true, message: '请输入版本号', trigger: 'blur' }],
-  yumRepo: [{ required: true, message: '请输入仓库名称', trigger: 'blur' }]
+  mavenVersion: [{ required: true, message: '请输入版本号', trigger: 'blur' }]
 }
 
 const uploadStatus = computed(() => {
   if (uploadProgress.value === 100) return 'success'
   return undefined
+})
+
+const loadRepositories = async () => {
+  try {
+    const repos = await repositoryApi.list({ type: 'local' })
+    availableRepositories.value = repos.filter(repo => repo.enabled && repo.package_type)
+  } catch (error) {
+    console.error('Failed to load repositories:', error)
+  }
+}
+
+const handleRepositoryChange = (repoId: number) => {
+  const repo = availableRepositories.value.find(r => r.id === repoId)
+  if (!repo) return
+
+  form.value.packageType = repo.package_type
+  form.value.repositoryName = repo.name
+  fileList.value = []
+  mavenAutoDetected.value = false
+}
+
+onMounted(() => {
+  loadRepositories()
 })
 
 const fileAccept = computed(() => {
@@ -181,11 +216,6 @@ const uploadTip = computed(() => {
       return '支持所有文件格式'
   }
 })
-
-const handlePackageTypeChange = () => {
-  fileList.value = []
-  mavenAutoDetected.value = false
-}
 
 const handleFileChange = async (_file: UploadFile, files: UploadFile[]) => {
   fileList.value = files
@@ -376,12 +406,6 @@ const handleUpload = async () => {
   }
 }
 
-const uploadGeneric = async (file: File) => {
-  await fileApi.upload(file, form.value.genericPath, (percent) => {
-    uploadProgress.value = percent
-  })
-}
-
 const uploadPyPI = async (file: File) => {
   const formData = new FormData()
   formData.append('content', file)
@@ -389,6 +413,9 @@ const uploadPyPI = async (file: File) => {
   formData.append('version', form.value.pypiVersion)
   if (form.value.pypiSummary) {
     formData.append('summary', form.value.pypiSummary)
+  }
+  if (form.value.repositoryName) {
+    formData.append('repository', form.value.repositoryName)
   }
   const token = localStorage.getItem('token')
 
@@ -411,7 +438,10 @@ const uploadMaven = async (file: File) => {
   const version = form.value.mavenVersion
   const filename = file.name
 
-  const path = `/maven2/${groupId}/${artifactId}/${version}/${filename}`
+  let path = `/maven2/${groupId}/${artifactId}/${version}/${filename}`
+  if (form.value.repositoryName) {
+    path = `/repo/${form.value.repositoryName}${path}`
+  }
   const token = localStorage.getItem('token')
 
   await axios.put(path, file, {
@@ -430,9 +460,36 @@ const uploadMaven = async (file: File) => {
 const uploadApt = async (file: File) => {
   const formData = new FormData()
   formData.append('file', file)
+  if (form.value.repositoryName) {
+    formData.append('repository', form.value.repositoryName)
+  }
   const token = localStorage.getItem('token')
 
   await axios.post('/apt/upload', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+    },
+    onUploadProgress: (progressEvent) => {
+      if (progressEvent.total) {
+        uploadProgress.value = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+      }
+    }
+  })
+}
+
+const uploadGeneric = async (file: File) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  if (form.value.genericPath) {
+    formData.append('path', form.value.genericPath)
+  }
+  if (form.value.repositoryName) {
+    formData.append('repository', form.value.repositoryName)
+  }
+  const token = localStorage.getItem('token')
+
+  await axios.post('/files/upload', formData, {
     headers: {
       'Content-Type': 'multipart/form-data',
       ...(token ? { 'Authorization': `Bearer ${token}` } : {})
@@ -449,8 +506,9 @@ const uploadYum = async (file: File) => {
   const formData = new FormData()
   formData.append('file', file)
   const token = localStorage.getItem('token')
+  const repo = form.value.repositoryName || form.value.yumRepo
 
-  await axios.post(`/yum/${form.value.yumRepo}/upload`, formData, {
+  await axios.post(`/yum/${repo}/upload`, formData, {
     headers: {
       'Content-Type': 'multipart/form-data',
       ...(token ? { 'Authorization': `Bearer ${token}` } : {})
@@ -466,7 +524,9 @@ const uploadYum = async (file: File) => {
 const handleClose = () => {
   fileList.value = []
   form.value = {
-    packageType: 'generic',
+    repositoryId: null,
+    packageType: '',
+    repositoryName: '',
     pypiName: '',
     pypiVersion: '',
     pypiSummary: '',

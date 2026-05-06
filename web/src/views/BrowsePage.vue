@@ -30,18 +30,22 @@
           <div class="filter-card">
             <div class="filter-group">
               <span class="filter-label">类型:</span>
-              <el-radio-group v-model="selectedType" @change="handleSearch" size="small">
+              <el-radio-group v-model="selectedType" @change="handleSearch" class="type-filter-group">
                 <el-radio-button value="all">全部</el-radio-button>
                 <el-radio-button value="npm">npm</el-radio-button>
                 <el-radio-button value="maven">Maven</el-radio-button>
                 <el-radio-button value="pypi">PyPI</el-radio-button>
                 <el-radio-button value="go">Go</el-radio-button>
+                <el-radio-button value="nuget">NuGet</el-radio-button>
+                <el-radio-button value="yum">Yum</el-radio-button>
+                <el-radio-button value="apt">Apt</el-radio-button>
+                <el-radio-button value="generic">Generic</el-radio-button>
               </el-radio-group>
             </div>
             <div class="filter-divider" />
             <div class="filter-group">
               <span class="filter-label">排序:</span>
-              <el-select v-model="sortBy" size="small" @change="handleSearch">
+              <el-select v-model="sortBy" class="sort-filter-select" @change="handleSearch">
                 <el-option label="按名称" value="name" />
                 <el-option label="按更新时间" value="updated_at" />
                 <el-option label="按下载量" value="downloads" />
@@ -158,10 +162,10 @@ onMounted(() => {
 }
 
 .hero-section {
-  background: transparent;
-  border: none;
-  border-radius: 8px;
-  padding: 0 0 20px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 20px 24px;
   margin-bottom: 16px;
   display: flex;
   align-items: center;
@@ -170,16 +174,16 @@ onMounted(() => {
 }
 
 .page-title {
-  font-size: 24px;
-  font-weight: 600;
-  color: #1f2937;
-  margin: 0 0 4px;
-  letter-spacing: -0.3px;
-  line-height: 1.2;
+  font-size: 28px;
+  font-weight: 800;
+  color: #0f172a;
+  margin: 0 0 6px;
+  letter-spacing: -0.8px;
+  line-height: 1.1;
 }
 
 .page-desc {
-  color: #6b7280;
+  color: #64748b;
   font-size: 14px;
   margin: 0;
   line-height: 1.5;
@@ -192,36 +196,36 @@ onMounted(() => {
 }
 
 .search-input {
-  width: 100%;
+  width: 480px;
 }
 
 .search-input :deep(.el-input__wrapper) {
   border-radius: 8px;
-  border: 1px solid #e5e7eb;
+  border: 2px solid #e2e8f0;
   box-shadow: none;
-  padding: 0 14px;
-  height: 40px;
-  background: #fafafa;
-  transition: all 0.2s;
+  padding: 6px 12px;
+  background: #fafbfc;
+  transition: all 0.25s ease;
 }
 
-.search-input :deep(.el-input__wrapper:hover),
-.search-input :deep(.el-input__wrapper.is-focus) {
-  border-color: #2563eb;
-  background: #fff;
+.search-input :deep(.el-input__wrapper:hover) {
+  border-color: #0f172a;
+  background: #ffffff;
 }
 
 .search-input :deep(.el-input__wrapper.is-focus) {
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+  border-color: #0f172a;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
 }
 
 .search-input :deep(.el-input__inner) {
   font-size: 14px;
-  color: #374151;
+  color: #0f172a;
 }
 
 .search-input :deep(.el-input__prefix) {
-  color: #9ca3af;
+  color: #94a3b8;
 }
 
 .search-input :deep(.el-input__prefix-inner > .el-icon) {
@@ -229,25 +233,31 @@ onMounted(() => {
 }
 
 .search-input :deep(.el-input-group__append) {
-  background: #2563eb;
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  color: #ffffff;
   border: none;
   border-radius: 0 8px 8px 0;
-  padding: 0 16px;
+  font-weight: 600;
+  font-size: 14px;
+  padding: 0 28px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  letter-spacing: 0.5px;
 }
 
 .search-input :deep(.el-input-group__append:hover) {
-  background: #1d4ed8;
+  background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
 }
 
 .search-input :deep(.el-input-group__append:active) {
-  transform: scale(0.98);
+  transform: scale(0.97);
 }
 
 .search-input :deep(.el-input-group__append .el-button) {
   background: transparent;
   border: none;
   color: #ffffff;
-  font-weight: 500;
+  font-weight: 600;
   font-size: 14px;
   padding: 0;
   height: auto;
@@ -256,6 +266,10 @@ onMounted(() => {
 
 .browse-tabs {
   margin-top: 0;
+}
+
+.browse-tabs :deep(.el-tabs__content) {
+  padding: 0;
 }
 
 .browse-tabs :deep(.el-tabs__nav-wrap::after) {
@@ -288,52 +302,70 @@ onMounted(() => {
 }
 
 .results-section {
-  margin-top: 20px;
+  margin-top: 24px;
 }
 
 .filter-card {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 0;
-  background: transparent;
-  border: none;
+  gap: 24px;
+  padding: 16px 20px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
   margin-bottom: 20px;
-  flex-wrap: wrap;
 }
 
 .filter-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 
 .filter-divider {
-  display: none;
+  width: 1px;
+  height: 20px;
+  background: #e2e8f0;
 }
 
 .filter-label {
   font-size: 13px;
-  color: #6b7280;
+  color: #475569;
   white-space: nowrap;
+  font-weight: 600;
 }
 
-.filter-group :deep(.el-select) {
-  min-width: 110px;
+.type-filter-group :deep(.el-radio-button__inner) {
+  height: 34px;
+  padding: 0 18px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 34px;
+  border-radius: 0;
 }
 
-.filter-group :deep(.el-input__wrapper) {
+.type-filter-group :deep(.el-radio-button:first-child .el-radio-button__inner) {
+  border-radius: 6px 0 0 6px;
+}
+
+.type-filter-group :deep(.el-radio-button:last-child .el-radio-button__inner) {
+  border-radius: 0 6px 6px 0;
+}
+
+.sort-filter-select {
+  min-width: 140px;
+}
+
+.sort-filter-select :deep(.el-input__wrapper) {
+  height: 34px;
   border-radius: 6px;
-  border: 1px solid #e5e7eb;
-  background: #fff;
-  box-shadow: none;
-  padding: 0 10px;
-  height: 32px;
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.filter-group :deep(.el-input__wrapper:hover),
-.filter-group :deep(.el-input__wrapper.is-focus) {
-  border-color: #2563eb;
+.sort-filter-select :deep(.el-input__inner) {
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .filter-stats {
@@ -341,75 +373,16 @@ onMounted(() => {
 }
 
 .stats-count {
-  color: #6b7280;
-  font-size: 13px;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
   white-space: nowrap;
 }
 
-.browse-tabs :deep(.el-radio-button__inner) {
-  border-radius: 6px;
-  border: 1px solid #e5e7eb;
-  background: #fff;
-  color: #6b7280;
-  font-size: 13px;
-  padding: 6px 12px;
-  box-shadow: none;
-}
-
-.browse-tabs :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background: #2563eb;
-  border-color: #2563eb;
-  color: #fff;
-  box-shadow: none;
-}
-
-.browse-tabs :deep(.el-tabs__nav-wrap::after) {
-  height: 1px;
-  background: #e5e7eb;
-}
-
-.browse-tabs :deep(.el-tabs__header) {
-  margin-bottom: 0;
-  border-bottom: 1px solid #e5e7eb;
-}
-
-.browse-tabs :deep(.el-tabs__item) {
-  font-weight: 500;
-  color: #6b7280;
-  transition: all 0.2s;
-  font-size: 14px;
-  padding: 0 20px;
-  height: 44px;
-  line-height: 44px;
-}
-
-.browse-tabs :deep(.el-tabs__item.is-active) {
-  color: #2563eb;
-}
-
-.browse-tabs :deep(.el-tabs__active-bar) {
-  background: #2563eb;
-  height: 2px;
-}
-
 .package-list {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-}
-
-@media (max-width: 1199px) {
-  .package-list {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-@media (max-width: 767px) {
-  .package-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-  }
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .pagination-container {

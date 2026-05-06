@@ -17,11 +17,23 @@
             <span class="version-text">{{ row.version }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="100" align="center">
+        <el-table-column prop="status" label="状态" width="120" align="center">
           <template #default="{ row }">
-            <el-tag :type="getVersionStatusColor(row.status)" size="small">
-              {{ getVersionStatusLabel(row.status) }}
-            </el-tag>
+            <div class="status-cell">
+              <el-tag :type="getVersionStatusColor(row.status)" size="small">
+                {{ getVersionStatusLabel(row.status) }}
+              </el-tag>
+              <el-tooltip :content="row.files_downloaded ? '文件已下载到本地' : '文件未下载'" placement="top">
+                <el-tag 
+                  :type="row.files_downloaded ? 'success' : 'info'" 
+                  size="small" 
+                  effect="plain"
+                  class="download-status-tag"
+                >
+                  {{ row.files_downloaded ? '已下载' : '未下载' }}
+                </el-tag>
+              </el-tooltip>
+            </div>
           </template>
         </el-table-column>
         <el-table-column prop="published_at" label="发布时间" width="120">
@@ -37,6 +49,13 @@
         <el-table-column prop="download_count" label="下载量" width="90" align="right">
           <template #default="{ row }">
             {{ formatNumber(row.download_count) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="SHA256" min-width="120">
+          <template #default="{ row }">
+            <el-tooltip :content="row.checksum_sha256 || ''" placement="top" :show-after="300">
+              <span class="checksum-text" @click.stop="copyChecksum(row.checksum_sha256 || '')">{{ row.checksum_sha256 ? row.checksum_sha256.substring(0, 12) + '...' : '-' }}</span>
+            </el-tooltip>
           </template>
         </el-table-column>
       </el-table>
@@ -81,11 +100,10 @@ watch(visible, (val) => {
 async function loadVersions() {
   loading.value = true
   try {
-    const response = await packageApi.getVersions(props.packageType, props.packageName)
-    versions.value = response.versions || []
-  } catch (error) {
+    const res = await packageApi.getVersions(props.packageType, props.packageName)
+    versions.value = res?.versions || []
+  } catch {
     ElMessage.error('加载版本列表失败')
-    console.error('Failed to load versions:', error)
   } finally {
     loading.value = false
   }
@@ -93,6 +111,16 @@ async function loadVersions() {
 
 function handleClose() {
   visible.value = false
+}
+
+async function copyChecksum(checksum: string) {
+  if (!checksum) return
+  try {
+    await navigator.clipboard.writeText(checksum)
+    ElMessage.success('已复制 SHA256')
+  } catch {
+    ElMessage.error('复制失败')
+  }
 }
 </script>
 
@@ -106,5 +134,28 @@ function handleClose() {
   color: #303133;
   font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   font-size: 13px;
+}
+
+.status-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.download-status-tag {
+  font-size: 11px;
+}
+
+.checksum-text {
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-size: 12px;
+  color: #606266;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.checksum-text:hover {
+  color: #409eff;
 }
 </style>

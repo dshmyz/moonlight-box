@@ -124,7 +124,7 @@ async function handleDownload(version: PackageVersion & { selectedFile?: any }) 
 
   let file = version.selectedFile || version.files[0]
   
-  if (!version.selectedFile && pkg.value.type === 'maven') {
+  if (!version.selectedFile && (pkg.value.type === 'maven' || pkg.value.type === 'maven2')) {
     const primaryFile = version.files.find(f => f.file_type === 'primary')
     if (primaryFile) {
       file = primaryFile
@@ -137,14 +137,10 @@ async function handleDownload(version: PackageVersion & { selectedFile?: any }) 
   if (pkg.value.type === 'go') {
     downloadUrl = `/repo/${pkg.value.repository}/${pkg.value.name}/@v/${version.version}.zip`
     downloadFilename = `${version.version}.zip`
-  } else if (pkg.value.type === 'maven') {
+  } else if (pkg.value.type === 'maven' || pkg.value.type === 'maven2') {
     const parts = pkg.value.name.split(':')
-    if (parts.length === 2) {
-      const groupPath = parts[0].replace(/\./g, '/')
-      const extension = file.filename.endsWith('.pom') ? 'pom' : 
-                       file.filename.endsWith('-sources.jar') ? 'sources.jar' :
-                       file.filename.endsWith('-javadoc.jar') ? 'javadoc.jar' : 'jar'
-      downloadUrl = `/repo/${pkg.value.repository}/${groupPath}/${parts[1]}/${version.version}/${file.filename}`
+    if (parts.length >= 2) {
+      downloadUrl = `/repo/${pkg.value.repository}/${parts[0]}/${parts[1]}/${version.version}/${file.filename}`
       downloadFilename = file.filename
     } else {
       downloadUrl = `/repo/${pkg.value.repository}/${pkg.value.name}/${version.version}/${file.filename}`

@@ -1,17 +1,26 @@
 <template>
   <div class="file-browser">
-    <CustomCard title="文件浏览器" hoverable class="browser-card">
-      <template #header>
-        <div class="card-header">
-          <span class="title">文件浏览器</span>
-          <CustomButton :icon="Refresh" size="small" @click="refresh" />
+    <header class="list-header">
+      <div class="header-content">
+        <div class="header-icon">
+          <i class="fa-solid fa-folder-open"></i>
         </div>
-      </template>
+        <div class="header-text">
+          <h2>文件浏览器</h2>
+          <p class="header-subtitle">浏览和管理存储中的文件</p>
+        </div>
+      </div>
+      <el-button class="refresh-btn" @click="refresh">
+        <i class="fa-solid fa-refresh"></i>
+        <span>刷新</span>
+      </el-button>
+    </header>
 
+    <div class="content-panel" v-loading="loading">
       <div class="breadcrumb-container">
         <el-breadcrumb separator="/">
           <el-breadcrumb-item @click="navigateTo('/')">
-            <el-icon><HomeFilled /></el-icon>
+            <i class="fa-solid fa-home"></i>
             <span>根目录</span>
           </el-breadcrumb-item>
           <el-breadcrumb-item
@@ -24,66 +33,79 @@
         </el-breadcrumb>
       </div>
 
-      <CustomTable :columns="columns" :data="files" :loading="loading" row-key="path">
-        <template #name="{ row }">
-          <div class="file-name" @click="row.is_dir && navigateTo(row.path)">
-            <el-icon :size="20" :color="getFileIconColor(row)">
-              <component :is="getFileIcon(row)" />
-            </el-icon>
-            <span>{{ row.name }}</span>
-          </div>
-        </template>
-        <template #size="{ row }">
-          <span v-if="!row.is_dir">{{ formatSize(row.size) }}</span>
-          <span v-else class="directory-label">-</span>
-        </template>
-        <template #mod_time="{ row }">
-          {{ row.mod_time }}
-        </template>
-        <template #actions="{ row }">
-          <CustomButton
-            v-if="!row.is_dir"
-            type="text"
-            size="small"
-            @click.stop="downloadFile(row)"
-          >
-            <el-icon><Download /></el-icon>
-            下载
-          </CustomButton>
-          <CustomButton
-            v-else
-            type="text"
-            size="small"
-            @click.stop="navigateTo(row.path)"
-          >
-            <el-icon><FolderOpened /></el-icon>
-            打开
-          </CustomButton>
-        </template>
-      </CustomTable>
+      <el-table
+        :data="files"
+        style="width: 100%"
+        :header-cell-style="{ background: '#fafbfc' }"
+        :row-class-name="getRowClassName"
+        @row-click="handleRowClick"
+      >
+        <el-table-column label="名称" min-width="250">
+          <template #default="{ row }">
+            <div class="file-name">
+              <div class="file-icon" :class="{ 'file-icon--dir': row.is_dir }">
+                <i v-if="row.is_dir" class="fa-solid fa-folder"></i>
+                <i v-else class="fa-solid fa-file"></i>
+              </div>
+              <span>{{ row.name }}</span>
+            </div>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="大小" width="120" align="center">
+          <template #default="{ row }">
+            <span v-if="!row.is_dir" class="file-size">{{ formatSize(row.size) }}</span>
+            <span v-else class="directory-label">-</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="修改时间" width="180" align="center">
+          <template #default="{ row }">
+            <span class="file-time">{{ row.mod_time }}</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="操作" width="140" align="center">
+          <template #default="{ row }">
+            <div class="operation-buttons">
+              <el-button
+                v-if="!row.is_dir"
+                class="btn-download"
+                size="small"
+                @click.stop="downloadFile(row)"
+              >
+                <i class="fa-solid fa-download"></i>
+                <span>下载</span>
+              </el-button>
+              <el-button
+                v-else
+                class="btn-open"
+                size="small"
+                @click.stop="navigateTo(row.path)"
+              >
+                <i class="fa-solid fa-arrow-right"></i>
+                <span>打开</span>
+              </el-button>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
 
       <div class="footer-info">
-        <span>共 {{ files.length }} 个项目</span>
+        <span class="footer-count">共 {{ files.length }} 个项目</span>
+        <span class="footer-hint">
+          <i class="fa-solid fa-info-circle"></i>
+          点击目录进入，点击文件下载
+        </span>
       </div>
-    </CustomCard>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import {
-  Refresh,
-  HomeFilled,
-  Folder,
-  Document,
-  Download,
-  FolderOpened,
-} from '@element-plus/icons-vue'
 import { fileApi } from '@/api/file'
-import CustomCard from '@/components/ui/CustomCard.vue'
-import CustomButton from '@/components/ui/CustomButton.vue'
-import CustomTable from '@/components/ui/CustomTable.vue'
 
 interface FileInfo {
   name: string
@@ -97,13 +119,6 @@ const loading = ref(false)
 const currentPath = ref('/')
 const files = ref<FileInfo[]>([])
 
-const columns = [
-  { prop: 'name', label: '名称' },
-  { prop: 'size', label: '大小', width: '120px' },
-  { prop: 'mod_time', label: '修改时间', width: '180px' },
-  { prop: 'actions', label: '操作', width: '150px', align: 'center' as const },
-]
-
 const pathSegments = computed(() => {
   if (currentPath.value === '/' || currentPath.value === '') {
     return []
@@ -114,7 +129,7 @@ const pathSegments = computed(() => {
 const loadDirectory = async (path: string) => {
   loading.value = true
   try {
-    const response = await fileApi.browse(path) as any
+    const response = await fileApi.browse(path)
     files.value = response.files || []
     currentPath.value = path
   } catch (error: any) {
@@ -138,12 +153,14 @@ const refresh = () => {
   loadDirectory(currentPath.value)
 }
 
-const getFileIcon = (row: FileInfo) => {
-  return row.is_dir ? Folder : Document
+const handleRowClick = (row: FileInfo) => {
+  if (row.is_dir) {
+    navigateTo(row.path)
+  }
 }
 
-const getFileIconColor = (row: FileInfo) => {
-  return row.is_dir ? '#409EFF' : '#909399'
+const getRowClassName = ({ row }: { row: FileInfo }) => {
+  return row.is_dir ? 'directory-row' : 'file-row'
 }
 
 const formatSize = (bytes: number) => {
@@ -156,7 +173,7 @@ const formatSize = (bytes: number) => {
 
 const downloadFile = async (row: FileInfo) => {
   try {
-    const response = await fileApi.download(row.path) as any
+    const response = await fileApi.download(row.path)
     const url = window.URL.createObjectURL(new Blob([response.data]))
     const link = document.createElement('a')
     link.href = url
@@ -178,35 +195,114 @@ onMounted(() => {
 
 <style scoped>
 .file-browser {
-  padding: var(--spacing-xl);
+  /* padding: 20px; */
+  min-height: 100%;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
 }
 
-.browser-card {
-  min-height: calc(100vh - 140px);
-}
-
-.card-header {
+.list-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  padding: 20px 24px;
+  background: #fff;
+  border-radius: 16px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
-.card-header .title {
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-bold);
-  color: var(--color-text-primary);
+.header-content {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.header-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 24px;
+}
+
+.header-text h2 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+  color: #1f2937;
+  letter-spacing: -0.2px;
+}
+
+.header-subtitle {
+  font-size: 13px;
+  color: #9ca3af;
+  margin: 4px 0 0;
+}
+
+.refresh-btn {
+  height: 40px;
+  padding: 0 20px;
+  border-radius: 10px;
+  font-weight: 500;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f3f4f6;
+  border-color: #e5e7eb;
+  color: #374151;
+  transition: all 0.2s ease;
+}
+
+.refresh-btn:hover {
+  background: #e5e7eb;
+}
+
+.content-panel {
+  background: #fff;
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .breadcrumb-container {
-  margin-bottom: var(--spacing-lg);
-  padding: var(--spacing-md);
-  background-color: var(--color-bg-hover);
-  border-radius: var(--radius-sm);
+  margin-bottom: 20px;
+  padding: 16px 20px;
+  background: #f8fafc;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+}
+
+:deep(.el-breadcrumb) {
+  font-size: 14px;
+}
+
+:deep(.el-breadcrumb__item) {
+  cursor: pointer;
+}
+
+:deep(.el-breadcrumb__item:last-child .el-breadcrumb__inner) {
+  color: #1f2937;
+  font-weight: 500;
+}
+
+:deep(.el-breadcrumb__inner) {
+  color: #6b7280;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+:deep(.el-breadcrumb__inner:hover) {
+  color: #2563eb;
 }
 
 .breadcrumb-link {
-  cursor: pointer;
-  color: var(--color-primary);
+  color: #2563eb;
 }
 
 .breadcrumb-link:hover {
@@ -216,19 +312,103 @@ onMounted(() => {
 .file-name {
   display: flex;
   align-items: center;
-  gap: var(--spacing-sm);
+  gap: 10px;
   cursor: pointer;
 }
 
+.file-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: #6b7280;
+  background: #f3f4f6;
+}
+
+.file-icon--dir {
+  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+  color: #2563eb;
+}
+
+.file-name span {
+  font-size: 14px;
+  color: #1f2937;
+}
+
+.file-size {
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.file-time {
+  font-size: 13px;
+  color: #9ca3af;
+}
+
 .directory-label {
-  color: var(--color-text-tertiary);
+  color: #9ca3af;
+  font-size: 13px;
+}
+
+.directory-row {
+  cursor: pointer;
+}
+
+.directory-row:hover {
+  background: #f8fafc;
+}
+
+.file-row:hover {
+  background: #f8fafc;
+}
+
+.operation-buttons {
+  display: flex;
+  align-items: center;
+}
+
+.btn-download {
+  background: #f0f9ff;
+  color: #0369a1;
+  border-color: #bae6fd;
+}
+
+.btn-download:hover {
+  background: #e0f2fe;
+}
+
+.btn-open {
+  background: #f0fdf4;
+  color: #059669;
+  border-color: #bbf7d0;
+}
+
+.btn-open:hover {
+  background: #dcfce7;
 }
 
 .footer-info {
-  margin-top: var(--spacing-lg);
-  padding-top: var(--spacing-md);
-  border-top: 1px solid var(--color-border);
-  color: var(--color-text-tertiary);
-  font-size: var(--font-size-sm);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 16px;
+  margin-top: 16px;
+  border-top: 1px solid #f3f4f6;
+}
+
+.footer-count {
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.footer-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #9ca3af;
 }
 </style>

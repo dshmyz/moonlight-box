@@ -22,7 +22,9 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
+	"github.com/moonlight-box/registry/internal/util"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sirupsen/logrus"
 
 	"github.com/gin-gonic/gin"
 )
@@ -30,6 +32,7 @@ import (
 var (
 	version   = "0.1.0"
 	buildTime = "unknown"
+	gitCommit = "unknown"
 )
 
 func main() {
@@ -42,20 +45,37 @@ func main() {
 		return
 	}
 
-	fmt.Printf("Moonlight Registry v%s\n", version)
-	fmt.Println("Starting server...")
+	logrus.WithFields(logrus.Fields{
+		"version":    version,
+		"build_time": buildTime,
+	}).Info("Moonlight Registry starting")
 
 	// 加载配置
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
-		fmt.Println("Using default configuration...")
-		// 使用默认配置继续
+		logrus.WithFields(logrus.Fields{
+			"error": err,
+		}).Warn("Failed to load config file, using default configuration")
 		cfg, err = config.Load("")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to load default config: %v\n", err)
+			logrus.WithFields(logrus.Fields{
+				"error": err,
+			}).Error("Failed to load default config")
 			os.Exit(1)
 		}
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"server_port": cfg.Server.Port,
+		"db_driver":   cfg.Database.Driver,
+		"storage":     cfg.Storage.Backend,
+		"ai_enabled":  cfg.AI.Enabled,
+	}).Info("Configuration loaded")
+
+	// 初始化日志
+	if err := util.InitLogger(&cfg.Logging); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
+		os.Exit(1)
 	}
 
 	// 初始化数据库
@@ -109,6 +129,24 @@ func main() {
 	tm := proxy.NewTransportManager(cfg.Proxy.ConnectTimeout, dnsResolver)
 	remoteClient := proxy.NewRemoteClient(tm, cfg.Proxy.MaxRedirects)
 
+	healthCheckCfg := proxy.HealthCheckConfig{
+		Enabled:          cfg.Proxy.HealthCheck.Enabled,
+		Interval:         cfg.Proxy.HealthCheck.Interval,
+		Timeout:          cfg.Proxy.HealthCheck.Timeout,
+		FailureThreshold: cfg.Proxy.HealthCheck.FailureThreshold,
+	}
+	if healthCheckCfg.Interval == 0 {
+		healthCheckCfg.Interval = proxy.DefaultHealthCheckConfig().Interval
+	}
+	if healthCheckCfg.Timeout == 0 {
+		healthCheckCfg.Timeout = proxy.DefaultHealthCheckConfig().Timeout
+	}
+	if healthCheckCfg.FailureThreshold == 0 {
+		healthCheckCfg.FailureThreshold = proxy.DefaultHealthCheckConfig().FailureThreshold
+	}
+
+	healthCheckSvc := proxy.NewHealthCheckService(db, repoRepo, remoteClient, healthCheckCfg)
+
 	// 初始化存储服务（依赖于 storageBackendRepo）
 	storageSvc, err := service.NewStorageService(storageBackendRepo, cfg.Storage.Local.BasePath, int64(cfg.Storage.Local.MaxSizeGB))
 	if err != nil {
@@ -116,15 +154,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 初始化下载计数批量处理器
+	countBatcher := service.NewDownloadCountBatcher(packageRepo, 10*time.Second)
+	defer countBatcher.Stop()
+
+	// 创建共享的代理下载服务
+	proxyDownloadSvc := service.NewProxyDownloadService(packageRepo, storageSvc, nil, proxyDownloadLogRepo, countBatcher)
+
 	// 初始化适配器（先创建，用于构建 adapter map）
-	npmAdapter := adapter.NewNpmAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo)
-	mavenAdapter := adapter.NewMavenAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo)
-	pypiAdapter := adapter.NewPyPIAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo)
+	npmAdapter := adapter.NewNpmAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
+	mavenAdapter := adapter.NewMavenAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
+	pypiAdapter := adapter.NewPyPIAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
 	goAdapter := adapter.NewGoAdapter(packageRepo, storageSvc, auditSvc, nil)
 	nugetAdapter := adapter.NewNuGetAdapter(packageRepo, storageSvc, auditSvc)
-	genericAdapter := adapter.NewGenericAdapter(packageRepo, storageSvc, auditSvc)
+	genericAdapter := adapter.NewGenericAdapter(packageRepo, repoRepo, storageSvc, auditSvc)
 	yumAdapter := adapter.NewYumAdapter(packageRepo, storageSvc, auditSvc, nil)
-	aptAdapter := adapter.NewAptAdapter(packageRepo, storageSvc, auditSvc)
+	aptAdapter := adapter.NewAptAdapter(packageRepo, repoRepo, storageSvc, auditSvc)
 
 	// 构建 adapter map 用于 ProxyRouter
 	adapterMap := map[string]types.Adapter{
@@ -140,6 +185,12 @@ func main() {
 
 	// 创建 ProxyRouter 实例
 	proxyRouter := proxy.NewProxyRouter(db, cacheSvc, remoteClient, repoRepo, groupRepo, adapterMap)
+
+	// 注入健康检查服务到 ProxyRouter
+	proxyRouter.SetHealthCheckService(healthCheckSvc)
+
+	// 注入 ProxyRouter 到代理下载服务
+	proxyDownloadSvc.SetProxyRouter(proxyRouter)
 
 	// 注入 ProxyRouter 到需要代理的适配器
 	npmAdapter.SetProxyRouter(proxyRouter)
@@ -189,7 +240,6 @@ func main() {
 
 	repoHandler := handler.NewRepositoryHandler(repoSvc, metadataSyncSvc, schedulerSvc)
 	cacheHandler := handler.NewCacheHandler(cacheSvc)
-	blockRuleHandler := handler.NewBlockRuleHandler(blockRuleSvc, auditSvc)
 	publicRepoHandler := handler.NewPublicRepoHandler(repoSvc)
 
 	// 初始化存储后端管理服务
@@ -206,17 +256,14 @@ func main() {
 	// 初始化用户和审计日志管理
 	auditRepo := repository.NewAuditRepository(db)
 	auditLogHandler := handler.NewAuditLogHandler(auditRepo)
+	blockRuleHandler := handler.NewBlockRuleHandler(blockRuleSvc, auditSvc, auditRepo)
 	userHandler := handler.NewUserHandler(userRepo, roleRepo)
 	roleHandler := handler.NewRoleHandler(roleRepo)
 	pkgVersionHandler := handler.NewPackageVersionHandler(packageRepo)
 
 	// 初始化 CAS 认证服务
-	casConfigRepo := repository.NewCASConfigRepository(db)
-	casConfigSvc := service.NewCASConfigService(casConfigRepo)
-	casSvc := service.NewCASService(&cfg.Auth, userRepo, roleRepo, authService)
-	casSvc.SetCASConfigService(casConfigSvc)
+	casSvc := service.NewCASService(&cfg.Auth, userRepo, roleRepo, authService, systemConfigSvc)
 	casHandler := handler.NewCASHandler(casSvc)
-	casAdminHandler := handler.NewCASAdminHandler(casConfigSvc)
 
 	// 初始化安全扫描服务
 	scanRepo := repository.NewScanRepository(db)
@@ -231,15 +278,21 @@ func main() {
 
 	// 初始化系统配置服务 handler
 	systemConfigHandler := handler.NewSystemConfigHandler(systemConfigSvc)
-	systemInfoHandler := handler.NewSystemInfoHandler(version, buildTime, time.Now().Unix())
+	systemInfoHandler := handler.NewSystemInfoHandler(version, buildTime, gitCommit, time.Now().Unix())
 
 	// 初始化文件浏览服务
 	fileBrowseHandler := handler.NewFileBrowseHandler(cfg.Storage.Local.BasePath)
 
 	// 初始化迁移服务
 	migrationSvc := migration.NewMigrationService(db)
-	migrationWorker := migration.NewMigrationWorker(migrationSvc, 5)
+	migrationWorker := migration.NewMigrationWorker(migrationSvc, storageSvc, packageRepo, 5)
 	migrationHandler := handler.NewMigrationHandler(migrationSvc, migrationWorker)
+
+	// 初始化代理下载日志 handler
+	proxyDownloadLogHandler := handler.NewProxyDownloadLogHandler(proxyDownloadLogRepo)
+
+	// 初始化健康检查 handler
+	healthCheckHandler := handler.NewHealthCheckHandler(healthCheckSvc)
 
 	// 初始化AI服务
 	var aiService *ai.AIService
@@ -275,6 +328,11 @@ func main() {
 		securityTool.SetContext(toolContext)
 		aiService.RegisterTool(securityTool, []string{"admin", "security_admin"})
 
+		// 阻断日志分析工具 - 管理员和安全管理员可用
+		blockLogAnalyzerTool := tools.NewBlockLogAnalyzerTool(auditRepo)
+		blockLogAnalyzerTool.SetContext(toolContext)
+		aiService.RegisterTool(blockLogAnalyzerTool, []string{"admin", "security_admin"})
+
 		// 代码生成工具 - 所有用户可用
 		codeGenTool := tools.NewCodeGenTool()
 		codeGenTool.SetContext(toolContext)
@@ -287,7 +345,7 @@ func main() {
 	}
 
 	// 创建路由器
-	router := setupRouter(cfg, authService, adapters, repoHandler, cacheHandler, blockRuleHandler, searchHandler, dashboardHandler, casHandler, casAdminHandler, blockRuleSvc, storageBackendHandler, securityHandler, auditLogHandler, userHandler, pkgVersionHandler, roleRepo, roleHandler, publicRepoHandler, backupHandler, webhookHandler, systemConfigHandler, systemInfoHandler, fileBrowseHandler, repoSvc, migrationHandler, aiHandler)
+	router := setupRouter(cfg, authService, adapters, repoHandler, cacheHandler, blockRuleHandler, searchHandler, dashboardHandler, casHandler, blockRuleSvc, storageBackendHandler, securityHandler, auditLogHandler, userHandler, pkgVersionHandler, roleRepo, roleHandler, publicRepoHandler, backupHandler, webhookHandler, systemConfigHandler, systemInfoHandler, fileBrowseHandler, repoSvc, migrationHandler, aiHandler, proxyDownloadLogHandler, healthCheckHandler)
 
 	// 设置 Webhook 服务到适配器
 	for _, adap := range adapters {
@@ -296,9 +354,15 @@ func main() {
 		}
 	}
 
+	// 启动健康检查服务
+	healthCheckSvc.Start()
+	defer healthCheckSvc.Stop()
+
 	// 启动调度器
 	if err := schedulerSvc.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to start scheduler: %v\n", err)
+		logrus.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("Failed to start scheduler")
 	}
 	defer schedulerSvc.Stop()
 
@@ -317,9 +381,13 @@ func main() {
 
 	// 优雅关闭
 	go func() {
-		fmt.Printf("Server listening on %s\n", srv.Addr)
+		logrus.WithFields(logrus.Fields{
+			"address": srv.Addr,
+		}).Info("Server listening")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
+			logrus.WithFields(logrus.Fields{
+				"error": err,
+			}).Error("Server error")
 		}
 	}()
 
@@ -327,18 +395,20 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	fmt.Println("\nShutting down server...")
+	logrus.Info("Shutting down server...")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "Server forced to shutdown: %v\n", err)
+		logrus.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("Server forced to shutdown")
 	}
 
-	fmt.Println("Server exited")
+	logrus.Info("Server exited")
 }
 
-func setupRouter(cfg *config.Config, authService *service.AuthService, adapters []adapter.Adapter, repoHandler *handler.RepositoryHandler, cacheHandler *handler.CacheHandler, blockRuleHandler *handler.BlockRuleHandler, searchHandler *handler.PackageSearchHandler, dashboardHandler *handler.DashboardHandler, casHandler *handler.CASHandler, casAdminHandler *handler.CASAdminHandler, blockRuleSvc *service.BlockRuleService, storageBackendHandler *handler.StorageBackendHandler, securityHandler *handler.SecurityHandler, auditLogHandler *handler.AuditLogHandler, userHandler *handler.UserHandler, pkgVersionHandler *handler.PackageVersionHandler, roleRepo *repository.RoleRepository, roleHandler *handler.RoleHandler, publicRepoHandler *handler.PublicRepoHandler, backupHandler *handler.BackupHandler, webhookHandler *handler.WebhookHandler, systemConfigHandler *handler.SystemConfigHandler, systemInfoHandler *handler.SystemInfoHandler, fileBrowseHandler *handler.FileBrowseHandler, repoSvc *service.RepositoryService, migrationHandler *handler.MigrationHandler, aiHandler *handler.AIHandler) *gin.Engine {
+func setupRouter(cfg *config.Config, authService *service.AuthService, adapters []adapter.Adapter, repoHandler *handler.RepositoryHandler, cacheHandler *handler.CacheHandler, blockRuleHandler *handler.BlockRuleHandler, searchHandler *handler.PackageSearchHandler, dashboardHandler *handler.DashboardHandler, casHandler *handler.CASHandler, blockRuleSvc *service.BlockRuleService, storageBackendHandler *handler.StorageBackendHandler, securityHandler *handler.SecurityHandler, auditLogHandler *handler.AuditLogHandler, userHandler *handler.UserHandler, pkgVersionHandler *handler.PackageVersionHandler, roleRepo *repository.RoleRepository, roleHandler *handler.RoleHandler, publicRepoHandler *handler.PublicRepoHandler, backupHandler *handler.BackupHandler, webhookHandler *handler.WebhookHandler, systemConfigHandler *handler.SystemConfigHandler, systemInfoHandler *handler.SystemInfoHandler, fileBrowseHandler *handler.FileBrowseHandler, repoSvc *service.RepositoryService, migrationHandler *handler.MigrationHandler, aiHandler *handler.AIHandler, proxyDownloadLogHandler *handler.ProxyDownloadLogHandler, healthCheckHandler *handler.HealthCheckHandler) *gin.Engine {
 	r := gin.New()
 
 	// 全局中间件
@@ -444,6 +514,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 				blockRules.GET("", blockRuleHandler.List)
 				blockRules.GET("/logs", blockRuleHandler.ListBlockLogs)
 				blockRules.GET("/template", blockRuleHandler.DownloadTemplate)
+				blockRules.GET("/stats", blockRuleHandler.GetBlockStats)
 			}
 			blockRulesWrite := protected.Group("/block-rules")
 			blockRulesWrite.Use(middleware.RequirePermission(roleRepo, "block-rules", "write"))
@@ -458,13 +529,12 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 				blockRulesDelete.DELETE("/:id", blockRuleHandler.Delete)
 			}
 
-			// CAS 配置管理
-			casAdmin := protected.Group("/cas/config")
-			casAdmin.Use(middleware.RequirePermission(roleRepo, "system", "admin"))
+			// CAS 认证
+			casGroup := protected.Group("/cas")
 			{
-				casAdmin.GET("", casAdminHandler.GetConfig)
-				casAdmin.PUT("", casAdminHandler.UpdateConfig)
-				casAdmin.DELETE("", casAdminHandler.DeleteConfig)
+				casGroup.GET("/login", casHandler.Login)
+				casGroup.GET("/callback", casHandler.Callback)
+				casGroup.GET("/config", casHandler.Config)
 			}
 
 			// 存储后端管理
@@ -538,6 +608,14 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 				audit.GET("/logs/:id", auditLogHandler.Get)
 			}
 
+			// 代理下载日志
+			proxyDownloads := protected.Group("/proxy-downloads")
+			proxyDownloads.Use(middleware.RequirePermission(roleRepo, "audit", "read"))
+			{
+				proxyDownloads.GET("/logs", proxyDownloadLogHandler.List)
+				proxyDownloads.GET("/stats", proxyDownloadLogHandler.GetStats)
+			}
+
 			// 包版本管理
 			protected.POST("/packages/versions/:id/deprecate", middleware.RequirePermission(roleRepo, "npm", "write"), pkgVersionHandler.DeprecateVersion)
 			protected.POST("/packages/versions/:id/restore", middleware.RequirePermission(roleRepo, "npm", "write"), pkgVersionHandler.RestoreVersion)
@@ -581,7 +659,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 			{
 				configs.GET("", systemConfigHandler.List)
 				configs.GET("/:key", systemConfigHandler.Get)
-				configs.POST("", systemConfigHandler.Set)
+				configs.POST("", systemConfigHandler.BatchUpdate)
 				configs.DELETE("/:key", systemConfigHandler.Delete)
 			}
 
@@ -616,6 +694,9 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 					// 聊天接口 - 所有认证用户可用
 					ai.POST("/chat", aiHandler.Chat)
 
+					// 流式聊天接口 - 所有认证用户可用
+					ai.POST("/chat/stream", aiHandler.StreamChat)
+
 					// 工具列表 - 所有认证用户可用
 					ai.GET("/tools", aiHandler.ListTools)
 
@@ -637,6 +718,15 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 					// 健康检查 - 所有认证用户可用
 					ai.GET("/health", aiHandler.HealthCheck)
 				}
+			}
+
+			// 健康检查管理 - 管理员可用
+			health := protected.Group("/health")
+			health.Use(middleware.RequirePermission(roleRepo, "system", "admin"))
+			{
+				health.GET("/repos", healthCheckHandler.GetAllHealthStatuses)
+				health.GET("/repos/:id", healthCheckHandler.GetHealthStatus)
+				health.POST("/repos/:id/reset", healthCheckHandler.ResetCircuitBreaker)
 			}
 		}
 	}
@@ -671,6 +761,18 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 		{
 			deleteGroup.DELETE("/*path", repoRouter.HandleDelete)
 		}
+	}
+
+	// 前端静态文件服务（优先使用嵌入的前端，否则从目录读取）
+	frontendFS := GetEmbeddedFrontend()
+	if frontendFS != nil {
+		frontendCfg := middleware.DefaultFrontendConfig()
+		r.NoRoute(middleware.ServeFrontendFS(frontendFS, frontendCfg))
+		fmt.Println("Using embedded frontend")
+	} else {
+		frontendCfg := middleware.DefaultFrontendConfig()
+		r.NoRoute(middleware.ServeFrontend(frontendCfg))
+		fmt.Println("Using filesystem-based frontend from", frontendCfg.StaticDir)
 	}
 
 	return r

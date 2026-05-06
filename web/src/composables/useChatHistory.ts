@@ -1,12 +1,13 @@
-import type { ChatResponse } from '@/api/ai'
+import { ChatResponse, ToolCallResult } from '@/api/ai'
 
-const STORAGE_KEY = 'ai_chat_history'
+const STORAGE_KEY = 'chat_history'
 const MAX_HISTORY_SIZE = 100
 
-export interface Message extends ChatResponse {
+export interface Message extends Omit<ChatResponse, 'timestamp'> {
   role: 'user' | 'assistant'
   content: string
   timestamp?: number
+  tool_calls?: ToolCallResult[]
 }
 
 export interface ChatHistory {

@@ -20,17 +20,17 @@ INFO_COUNT=0
 
 pass() {
     echo -e "  ${GREEN}✓ PASS${NC} $1"
-    ((PASS_COUNT++))
+    PASS_COUNT=$((PASS_COUNT + 1))
 }
 
 fail() {
     echo -e "  ${RED}✗ FAIL${NC} $1"
-    ((FAIL_COUNT++))
+    FAIL_COUNT=$((FAIL_COUNT + 1))
 }
 
 info() {
     echo -e "  ${BLUE}ℹ INFO${NC} $1"
-    ((INFO_COUNT++))
+    INFO_COUNT=$((INFO_COUNT + 1))
 }
 
 warn() {

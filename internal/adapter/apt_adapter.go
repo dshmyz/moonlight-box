@@ -24,6 +24,7 @@ import (
 type AptAdapter struct {
 	*BaseAdapter
 	pkgRepo    *repository.PackageRepository
+	repoRepo   *repository.RepositoryRepository
 	storageSvc *service.StorageService
 	auditSvc   *service.AuditService
 	uploadSvc  *service.UploadService
@@ -67,12 +68,14 @@ type AptPackageEntry struct {
 
 func NewAptAdapter(
 	pkgRepo *repository.PackageRepository,
+	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
 ) *AptAdapter {
 	return &AptAdapter{
 		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
 		pkgRepo:     pkgRepo,
+		repoRepo:    repoRepo,
 		storageSvc:  storageSvc,
 		auditSvc:    auditSvc,
 		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
@@ -280,6 +283,21 @@ func (a *AptAdapter) UploadDeb(c *gin.Context) {
 	}
 	defer file.Close()
 
+	repoName := c.PostForm("repository")
+	var repositoryID uint
+	if repoName != "" {
+		repo, err := a.repoRepo.FindByName(repoName)
+		if err != nil {
+			response.BadRequest(c, "invalid repository", "repository not found: "+repoName)
+			return
+		}
+		if repo.Type != model.RepoTypeLocal {
+			response.BadRequest(c, "invalid repository", "only local repositories support uploading")
+			return
+		}
+		repositoryID = repo.ID
+	}
+
 	debData, err := io.ReadAll(file)
 	if err != nil {
 		response.BadRequest(c, "failed to read file", err.Error())
@@ -314,6 +332,7 @@ func (a *AptAdapter) UploadDeb(c *gin.Context) {
 	pkg, _, err := a.pkgRepo.CreateOrUpdate(c.Request.Context(), &model.Package{
 		Name:           packageName,
 		Type:           model.PackageTypeApt,
+		RepositoryID:   repositoryID,
 		RepositoryType: model.RepoTypeLocal,
 		CreatedBy:      userID,
 	}, &model.PackageVersion{

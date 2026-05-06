@@ -96,6 +96,12 @@ func (r *PackageRepository) StorePackageFile(ctx context.Context, pkg *model.Pac
 						return err
 					}
 				}
+
+				// 更新版本总大小：计算该版本所有文件的大小之和
+				var totalSize int64
+				tx.Model(&model.PackageFile{}).Where("version_id = ?", ver.ID).Select("SUM(size_bytes)").Scan(&totalSize)
+				tx.Model(&model.PackageVersion{}).Where("id = ?", ver.ID).Update("size_bytes", totalSize)
+				ver.SizeBytes = totalSize
 			}
 		}
 
@@ -302,19 +308,23 @@ func (r *PackageRepository) DeleteVersion(id uint) error {
 }
 
 func (r *PackageRepository) IncrementDownloadCount(pkgID uint, versionID uint, fileID uint) error {
+	return r.IncrementDownloadCountByAmount(context.Background(), pkgID, versionID, fileID, 1)
+}
+
+func (r *PackageRepository) IncrementDownloadCountByAmount(ctx context.Context, pkgID uint, versionID uint, fileID uint, amount int64) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if fileID > 0 {
-			if err := tx.Model(&model.PackageFile{}).Where("id = ?", fileID).UpdateColumn("download_count", gorm.Expr("download_count + 1")).Error; err != nil {
+			if err := tx.Model(&model.PackageFile{}).Where("id = ?", fileID).UpdateColumn("download_count", gorm.Expr("download_count + ?", amount)).Error; err != nil {
 				return err
 			}
 		}
 		if versionID > 0 {
-			if err := tx.Model(&model.PackageVersion{}).Where("id = ?", versionID).UpdateColumn("download_count", gorm.Expr("download_count + 1")).Error; err != nil {
+			if err := tx.Model(&model.PackageVersion{}).Where("id = ?", versionID).UpdateColumn("download_count", gorm.Expr("download_count + ?", amount)).Error; err != nil {
 				return err
 			}
 		}
 		if pkgID > 0 {
-			if err := tx.Model(&model.Package{}).Where("id = ?", pkgID).UpdateColumn("download_count", gorm.Expr("download_count + 1")).Error; err != nil {
+			if err := tx.Model(&model.Package{}).Where("id = ?", pkgID).UpdateColumn("download_count", gorm.Expr("download_count + ?", amount)).Error; err != nil {
 				return err
 			}
 		}

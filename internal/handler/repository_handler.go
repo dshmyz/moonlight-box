@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,30 @@ func (h *RepositoryHandler) Service() *service.RepositoryService {
 	return h.svc
 }
 
+// fillRepositoryURL 为仓库填充访问URL
+func fillRepositoryURL(repo *model.Repository, scheme string, host string) {
+	if repo == nil || repo.Name == "" {
+		return
+	}
+	repo.URL = fmt.Sprintf("%s://%s/repo/%s/", scheme, host, repo.Name)
+}
+
+// fillRepositoryURLs 为仓库列表填充访问URL
+func fillRepositoryURLs(repos []model.Repository, scheme string, host string) {
+	for i := range repos {
+		fillRepositoryURL(&repos[i], scheme, host)
+	}
+}
+
+// getSchemeAndHost 从请求中获取协议和主机
+func getSchemeAndHost(c *gin.Context) (string, string) {
+	scheme := "http"
+	if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	return scheme, c.Request.Host
+}
+
 // List 列出仓库，支持按 package_type 和 type 过滤
 func (h *RepositoryHandler) List(c *gin.Context) {
 	filter := make(map[string]interface{})
@@ -47,6 +72,9 @@ func (h *RepositoryHandler) List(c *gin.Context) {
 		return
 	}
 
+	scheme, host := getSchemeAndHost(c)
+	fillRepositoryURLs(repos, scheme, host)
+
 	Success(c, repos)
 }
 
@@ -58,6 +86,9 @@ func (h *RepositoryHandler) Get(c *gin.Context) {
 		NotFound(c, "Repository not found")
 		return
 	}
+
+	scheme, host := getSchemeAndHost(c)
+	fillRepositoryURL(repo, scheme, host)
 
 	Success(c, repo)
 }

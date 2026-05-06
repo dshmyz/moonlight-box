@@ -25,6 +25,7 @@ import (
 type PyPIAdapter struct {
 	*BaseAdapter
 	pkgRepo          *repository.PackageRepository
+	repoRepo         *repository.RepositoryRepository
 	storageSvc       *service.StorageService
 	auditSvc         *service.AuditService
 	proxyRouter      *proxy.ProxyRouter
@@ -35,18 +36,21 @@ type PyPIAdapter struct {
 
 func NewPyPIAdapter(
 	pkgRepo *repository.PackageRepository,
+	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
 	proxyRouter *proxy.ProxyRouter,
 	logRepo *repository.ProxyDownloadLogRepository,
+	proxyDownloadSvc *service.ProxyDownloadService,
 ) *PyPIAdapter {
 	return &PyPIAdapter{
 		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc),
 		pkgRepo:          pkgRepo,
+		repoRepo:         repoRepo,
 		storageSvc:       storageSvc,
 		auditSvc:         auditSvc,
 		proxyRouter:      proxyRouter,
-		proxyDownloadSvc: service.NewProxyDownloadService(pkgRepo, storageSvc, proxyRouter, logRepo),
+		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
 		logRepo:          logRepo,
 	}
@@ -474,15 +478,31 @@ func (a *PyPIAdapter) UploadPackage(c *gin.Context) {
 		return
 	}
 
+	repoName := c.PostForm("repository")
+	var repositoryID uint
+	if repoName != "" {
+		repo, err := a.repoRepo.FindByName(repoName)
+		if err != nil {
+			response.BadRequest(c, "invalid repository", "repository not found: "+repoName)
+			return
+		}
+		if repo.Type != model.RepoTypeLocal {
+			response.BadRequest(c, "invalid repository", "only local repositories support uploading")
+			return
+		}
+		repositoryID = repo.ID
+	}
+
 	req := &UploadRequest{
 		Package:  file,
 		Filename: header.Filename,
 		Size:     header.Size,
 		Metadata: map[string]interface{}{
-			"name":        pkgName,
-			"version":     version,
-			"description": c.PostForm("summary"),
-			"filename":    header.Filename,
+			"name":         pkgName,
+			"version":      version,
+			"description":  c.PostForm("summary"),
+			"filename":     header.Filename,
+			"repositoryID": repositoryID,
 		},
 		UploadedBy: userID,
 	}
@@ -517,6 +537,8 @@ func (a *PyPIAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageV
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
+	repositoryID, _ := req.Metadata["repositoryID"].(uint)
+
 	result, err := a.uploadSvc.Upload(ctx, &service.UploadContext{
 		PkgType:        "pypi",
 		Name:           name,
@@ -526,6 +548,7 @@ func (a *PyPIAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageV
 		Content:        content,
 		Size:           int64(len(content)),
 		PackageType:    model.PackageTypePyPI,
+		RepositoryID:   repositoryID,
 		RepositoryType: model.RepoTypeLocal,
 		UploadedBy:     req.UploadedBy,
 		Metadata:       req.Metadata,

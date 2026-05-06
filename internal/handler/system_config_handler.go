@@ -1,7 +1,9 @@
 package handler
 
 import (
-	"strconv"
+	"runtime"
+	"sync"
+	"time"
 
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
@@ -26,6 +28,43 @@ type SetConfigRequest struct {
 	Category    string `json:"category"`
 	Description string `json:"description"`
 	IsSensitive bool   `json:"is_sensitive"`
+}
+
+type BatchUpdateConfigRequest struct {
+	Configs []struct {
+		Key   string `json:"key" binding:"required"`
+		Value string `json:"value" binding:"required"`
+	} `json:"configs" binding:"required"`
+}
+
+func (h *SystemConfigHandler) BatchUpdate(c *gin.Context) {
+	var req BatchUpdateConfigRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request", err.Error())
+		return
+	}
+
+	userID := c.GetUint("userID")
+
+	for _, cfg := range req.Configs {
+		existing, err := h.configSvc.Get(cfg.Key)
+		valueType := "string"
+		category := ""
+		description := ""
+		isSensitive := false
+		if err == nil && existing != nil {
+			valueType = existing.ValueType
+			category = existing.Category
+			description = existing.Description
+			isSensitive = existing.IsSensitive
+		}
+		if err := h.configSvc.Set(cfg.Key, cfg.Value, valueType, category, description, isSensitive, userID); err != nil {
+			response.InternalError(c, "failed to update config: "+cfg.Key)
+			return
+		}
+	}
+
+	response.Success(c, gin.H{"message": "configs updated successfully"})
 }
 
 func (h *SystemConfigHandler) Get(c *gin.Context) {
@@ -86,30 +125,76 @@ func (h *SystemConfigHandler) Delete(c *gin.Context) {
 type SystemInfoHandler struct {
 	version   string
 	buildTime string
+	gitCommit string
 	startTime int64
+
+	cacheMu    sync.RWMutex
+	cachedInfo gin.H
+	cacheTime  time.Time
+	cacheTTL   time.Duration
 }
 
-func NewSystemInfoHandler(version, buildTime string, startTime int64) *SystemInfoHandler {
+func NewSystemInfoHandler(version, buildTime, gitCommit string, startTime int64) *SystemInfoHandler {
 	return &SystemInfoHandler{
 		version:   version,
 		buildTime: buildTime,
+		gitCommit: gitCommit,
 		startTime: startTime,
+		cacheTTL:  5 * time.Second,
 	}
 }
 
 func (h *SystemInfoHandler) GetInfo(c *gin.Context) {
-	info := gin.H{
-		"version":    h.version,
-		"build_time": h.buildTime,
-		"start_time": h.startTime,
-		"go_version": "go1.26.2",
-		"os":         "linux",
-		"arch":       "amd64",
-		"cpu_cores":  strconv.Itoa(4),
-		"goroutines": strconv.Itoa(10),
+	h.cacheMu.RLock()
+	if h.cachedInfo != nil && time.Since(h.cacheTime) < h.cacheTTL {
+		info := h.cachedInfo
+		h.cacheMu.RUnlock()
+		response.Success(c, info)
+		return
+	}
+	h.cacheMu.RUnlock()
+
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+
+	if h.cachedInfo != nil && time.Since(h.cacheTime) < h.cacheTTL {
+		response.Success(c, h.cachedInfo)
+		return
 	}
 
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	uptime := time.Now().Unix() - h.startTime
+
+	info := gin.H{
+		"version":         h.version,
+		"build_time":      h.buildTime,
+		"git_commit":      h.gitCommit,
+		"uptime":          uptime,
+		"go_version":      runtime.Version(),
+		"os":              runtime.GOOS,
+		"arch":            runtime.GOARCH,
+		"cpu_count":       runtime.NumCPU(),
+		"goroutine_count": runtime.NumGoroutine(),
+		"memory_usage":    calculateMemoryUsage(&memStats),
+	}
+
+	h.cachedInfo = info
+	h.cacheTime = time.Now()
+
 	response.Success(c, info)
+}
+
+func calculateMemoryUsage(ms *runtime.MemStats) float64 {
+	if ms.Sys == 0 {
+		return 0
+	}
+	usage := float64(ms.Alloc) / float64(ms.Sys) * 100
+	if usage > 100 {
+		return 100
+	}
+	return float64(int(usage*10)) / 10
 }
 
 func (h *SystemInfoHandler) Health(c *gin.Context) {

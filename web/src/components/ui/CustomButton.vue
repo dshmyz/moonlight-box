@@ -30,7 +30,7 @@
 import { type Component } from 'vue'
 
 interface Props {
-  type?: 'primary' | 'secondary' | 'outline' | 'text'
+  type?: 'primary' | 'secondary' | 'outline' | 'text' | 'success' | 'warning' | 'danger'
   size?: 'small' | 'medium' | 'large'
   disabled?: boolean
   loading?: boolean
@@ -60,14 +60,14 @@ const handleClick = (event: MouseEvent) => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--spacing-sm);
+  gap: 8px;
   border: none;
   cursor: pointer;
   font-family: inherit;
-  font-weight: var(--font-weight-semibold);
+  font-weight: 500;
   letter-spacing: 0.5px;
-  transition: all var(--transition-base);
-  border-radius: var(--radius-lg);
+  transition: all 0.25s ease;
+  border-radius: 8px;
   outline: none;
 }
 
@@ -77,63 +77,90 @@ const handleClick = (event: MouseEvent) => {
 
 /* Size variants */
 .custom-button--small {
-  padding: 6px 16px;
-  font-size: var(--font-size-sm);
+  padding: 8px 16px;
+  font-size: 13px;
   height: 32px;
 }
 
 .custom-button--medium {
-  padding: 10px 24px;
-  font-size: var(--font-size-base);
+  padding: 10px 20px;
+  font-size: 14px;
   height: 40px;
 }
 
 .custom-button--large {
-  padding: 12px 32px;
+  padding: 12px 24px;
   font-size: 15px;
   height: 48px;
 }
 
 /* Type variants */
 .custom-button--primary {
-  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  background: #3b82f6;
   color: #ffffff;
 }
 
 .custom-button--primary:hover:not(:disabled) {
-  background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+  background: #2563eb;
 }
 
 .custom-button--secondary {
-  background: #f8fafc;
-  color: #0f172a;
-  border: 2px solid #e2e8f0;
+  background: #ffffff;
+  color: #374151;
+  border: 1px solid #d1d5db;
 }
 
 .custom-button--secondary:hover:not(:disabled) {
-  background: #ffffff;
-  border-color: #0f172a;
+  border-color: #9ca3af;
 }
 
 .custom-button--outline {
   background: transparent;
-  color: #0f172a;
-  border: 2px solid #0f172a;
+  color: #3b82f6;
+  border: 1px solid #3b82f6;
 }
 
 .custom-button--outline:hover:not(:disabled) {
-  background: #0f172a;
+  background: #3b82f6;
   color: #ffffff;
 }
 
 .custom-button--text {
   background: transparent;
-  color: #0f172a;
+  color: #6b7280;
   padding: 6px 12px;
 }
 
 .custom-button--text:hover:not(:disabled) {
-  background: rgba(15, 23, 42, 0.05);
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+}
+
+.custom-button--success {
+  background: #10b981;
+  color: #ffffff;
+}
+
+.custom-button--success:hover:not(:disabled) {
+  background: #059669;
+}
+
+.custom-button--warning {
+  background: #f59e0b;
+  color: #ffffff;
+}
+
+.custom-button--warning:hover:not(:disabled) {
+  background: #d97706;
+}
+
+.custom-button--danger {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+.custom-button--danger:hover:not(:disabled) {
+  background: #dc2626;
 }
 
 /* States */

@@ -82,7 +82,8 @@ func setupPyPITestEnv() {
 	remoteClient := proxy.NewRemoteClient(tm, 5)
 	proxyRouter := proxy.NewProxyRouter(pypiTestDB, cacheSvc, remoteClient, repoRepo, groupRepo, nil)
 
-	pypiAdapter = adapter.NewPyPIAdapter(pypiPkgRepo, pypiStorageSvc, auditSvc, proxyRouter)
+	logRepo := repository.NewProxyDownloadLogRepository(pypiTestDB)
+	pypiAdapter = adapter.NewPyPIAdapter(pypiPkgRepo, repoRepo, pypiStorageSvc, auditSvc, proxyRouter, logRepo)
 
 	router := setupPyPIRouter()
 	pypiTestServer = httptest.NewServer(router)

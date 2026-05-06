@@ -9,17 +9,22 @@
         <span v-if="message.timestamp" class="message-time">{{ formatTime(message.timestamp) }}</span>
       </div>
       
-      <div v-if="!message.tool_calls?.length" class="message-text">
+      <div class="message-text">
         <MarkdownRenderer v-if="message.role === 'assistant'" :content="message.content" />
         <template v-else>{{ message.content }}</template>
       </div>
       
-      <div v-else class="tool-calls">
-        <ToolCallDisplay
-          v-for="(call, index) in message.tool_calls"
-          :key="index"
-          :tool-call="call"
-        />
+      <div v-if="message.tool_calls?.length" class="tool-calls">
+        <el-collapse>
+          <el-collapse-item title="工具调用详情">
+            <ToolCallDisplay
+              v-for="(call, index) in message.tool_calls"
+              :key="index"
+              :tool-call="call"
+              :show-details="false"
+            />
+          </el-collapse-item>
+        </el-collapse>
       </div>
     </div>
   </div>
@@ -28,12 +33,24 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { User, ChatDotRound } from '@element-plus/icons-vue'
-import type { ChatResponse } from '@/api/ai'
+import { ElCollapse, ElCollapseItem } from 'element-plus'
+import type { ToolCallResult } from '@/api/ai'
 import ToolCallDisplay from './ToolCallDisplay.vue'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 
+interface MessageData {
+  role: 'user' | 'assistant'
+  content: string
+  session_id: string
+  message: string
+  timestamp?: number
+  tokens_used?: number
+  cached?: boolean
+  tool_calls?: ToolCallResult[]
+}
+
 interface Props {
-  message: ChatResponse & { role: 'user' | 'assistant'; content: string; timestamp?: number }
+  message: MessageData
 }
 
 const props = defineProps<Props>()

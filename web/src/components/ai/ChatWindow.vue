@@ -1,15 +1,15 @@
 <template>
   <div class="chat-window">
     <div class="chat-header">
-      <h3>AI助手</h3>
+      <div class="header-left">
+        <span class="header-subtitle">智能问答 · 代码助手</span>
+      </div>
       <div class="header-actions">
-        <el-button text @click="handleClearSession">
-          <el-icon><Delete /></el-icon>
-          清空会话
+        <el-button class="header-btn" @click="handleClearSession" title="清空会话">
+          <i class="fa-solid fa-trash-can"></i>
         </el-button>
-        <el-button text @click="showHistory = !showHistory">
-          <el-icon><Clock /></el-icon>
-          历史记录
+        <el-button class="header-btn" @click="showHistory = !showHistory" title="历史记录">
+          <i class="fa-solid fa-clock-rotate-left"></i>
         </el-button>
       </div>
     </div>
@@ -47,6 +47,12 @@
     
     <MessageList :messages="messages" />
     
+    <!-- 加载状态指示器 -->
+    <div v-if="loading" class="loading-indicator">
+      <el-icon class="is-loading"><Loading /></el-icon>
+      <span class="loading-text">{{ loadingStatus }}</span>
+    </div>
+    
     <InputBox
       :disabled="loading || isStreaming"
       :loading="loading || isStreaming"
@@ -58,22 +64,24 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Delete, Clock } from '@element-plus/icons-vue'
-import { aiApi, type ChatResponse } from '@/api/ai'
+import { Loading } from '@element-plus/icons-vue'
+import { aiApi } from '@/api/ai'
 import { useChatHistory, type Message } from '@/composables/useChatHistory'
 import { useCommands } from '@/composables/useCommands'
-import { useStreamChat } from '@/composables/useStreamChat'
+import { useStreamChat, type LoadingPhase } from '@/composables/useStreamChat'
 import MessageList from './MessageList.vue'
 import InputBox from './InputBox.vue'
 import SuggestionList from './SuggestionList.vue'
 
 const { saveHistory, loadHistory, clearHistory, getRecentSessions } = useChatHistory()
 const { parseCommand, executeCommand } = useCommands()
-const { isStreaming, streamChat, abort } = useStreamChat()
+const { isStreaming, streamChat } = useStreamChat()
 
 const messages = ref<Message[]>([])
 const sessionId = ref<string>('')
 const loading = ref(false)
+const loadingStatus = ref('')
+const loadingPhase = ref<LoadingPhase>('done')
 const showHistory = ref(false)
 const recentHistories = ref<any[]>([])
 
@@ -120,25 +128,66 @@ const handleSend = async (message: string) => {
   })
 
   loading.value = true
+  loadingStatus.value = '正在分析您的请求...'
+  loadingPhase.value = 'analyzing'
+  
+  // 创建助手消息占位符
+  const assistantMessageIndex = messages.value.length
+  messages.value.push({
+    role: 'assistant',
+    content: '',
+    session_id: sessionId.value,
+    message: '',
+    timestamp: Date.now() / 1000,
+    tokens_used: 0,
+    cached: false,
+    tool_calls: []
+  })
   
   try {
-    const response = await aiApi.chat({
-      session_id: sessionId.value,
-      message
-    })
-
-    sessionId.value = response.session_id
-
-    messages.value.push({
-      ...response,
-      role: 'assistant',
-      content: response.message
-    })
+    await streamChat(
+      {
+        session_id: sessionId.value,
+        message
+      },
+      (content, done, toolCall) => {
+        const msg = messages.value[assistantMessageIndex]
+        if (toolCall) {
+          // 添加工具调用信息
+          if (!msg.tool_calls) {
+            msg.tool_calls = []
+          }
+          msg.tool_calls.push({
+            name: toolCall.name,
+            params: toolCall.params,
+            result: toolCall.result,
+            error: toolCall.error,
+            success: !toolCall.error,
+            duration_ms: 0
+          })
+        } else if (content) {
+          // 更新文本内容
+          msg.content = content
+          msg.message = content
+        }
+        
+        if (done) {
+          sessionId.value = msg.session_id || sessionId.value
+        }
+      },
+      (status, phase) => {
+        loadingStatus.value = status
+        loadingPhase.value = phase as LoadingPhase
+      },
+      true // 使用流式输出
+    )
   } catch (error: any) {
     ElMessage.error(error.message || '发送失败')
-    messages.value.pop()
+    messages.value.splice(assistantMessageIndex, 1)
   } finally {
     loading.value = false
+    loadingStatus.value = ''
+    loadingPhase.value = 'done'
   }
 }
 
@@ -199,19 +248,41 @@ const getHistoryPreview = (msgs: Message[]) => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--el-border-color);
+  background: var(--el-bg-color);
 }
 
-.chat-header h3 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 500;
+.header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.header-subtitle {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  letter-spacing: 0.02em;
 }
 
 .header-actions {
   display: flex;
-  gap: 8px;
+  gap: 4px;
+}
+
+.header-btn {
+  width: 28px !important;
+  height: 28px !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  color: #64748b !important;
+  transition: all 0.2s ease !important;
+}
+
+.header-btn:hover {
+  background: #f1f5f9 !important;
+  color: #0f172a !important;
 }
 
 .history-list {
@@ -245,5 +316,23 @@ const getHistoryPreview = (msgs: Message[]) => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.loading-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  color: var(--el-text-color-secondary);
+  font-size: 14px;
+}
+
+.loading-text {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 </style>

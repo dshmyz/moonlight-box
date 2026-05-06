@@ -4,7 +4,7 @@
       <StatCard
         label="总仓库数"
         :value="totalRepos"
-        icon="📦"
+        icon="◈"
         :trend="repoTrend"
         trend-period="上周"
         variant="blue"
@@ -14,7 +14,7 @@
       <StatCard
         label="总包数量"
         :value="totalPackages"
-        icon="📦"
+        icon="◇"
         :trend="packageTrend"
         trend-period="上周"
         variant="green"
@@ -24,7 +24,7 @@
       <StatCard
         label="下载量"
         :value="totalDownloads"
-        icon="⬇️"
+        icon="▾"
         :trend="downloadTrend"
         trend-period="上周"
         variant="orange"
@@ -34,10 +34,10 @@
       <StatCard
         label="缓存命中率"
         :value="cacheHitRateDisplay"
-        icon="⚡"
+        icon="◉"
         :trend="cacheTrend"
         trend-period="上周"
-        variant="pink"
+        variant="purple"
       />
     </el-col>
   </el-row>

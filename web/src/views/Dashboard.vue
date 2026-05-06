@@ -1,31 +1,41 @@
 <template>
   <div class="dashboard">
-    <div class="page-header">
-      <h2>仪表盘</h2>
-      <el-button @click="loadStats" :loading="loading" circle>
-        <el-icon><Refresh /></el-icon>
+    <header class="page-header">
+      <div class="header-content">
+        <div class="header-icon">
+          <i class="fa-solid fa-gauge-high"></i>
+        </div>
+        <div class="header-text">
+          <h2>仪表盘</h2>
+          <p class="header-subtitle">系统概览与实时统计</p>
+        </div>
+      </div>
+      <el-button class="refresh-btn" @click="loadStats" :loading="loading">
+        <i class="fa-solid fa-rotate"></i>
+        <span>刷新</span>
       </el-button>
-    </div>
+    </header>
 
-    <section v-loading="loading">
+    <div class="content-panel" v-loading="loading">
       <StatCards :stats="stats" />
 
-      <el-row :gutter="16">
-        <el-col :span="24">
-          <h3 class="section-title">仓库状态</h3>
-        </el-col>
-      </el-row>
-      <el-row :gutter="16" class="repo-grid">
-        <el-col
-          v-for="repo in stats.repositories"
-          :key="repo.name"
-          :xs="24" :sm="12" :md="8" :lg="6"
-        >
-          <RepoStatusCard :repo="repo" />
-        </el-col>
-      </el-row>
+      <div class="section">
+        <h3 class="section-title">
+          <i class="fa-solid fa-boxes"></i>
+          <span>仓库状态</span>
+        </h3>
+        <el-row :gutter="16" class="repo-grid">
+          <el-col
+            v-for="repo in stats.repositories"
+            :key="repo.name"
+            :xs="24" :sm="12" :md="8" :lg="6"
+          >
+            <RepoStatusCard :repo="repo" />
+          </el-col>
+        </el-row>
+      </div>
 
-      <el-row :gutter="16" class="chart-row">
+      <el-row :gutter="16" class="charts-row">
         <el-col :span="16">
           <DownloadChart :data="stats.downloads_last_7_days" />
         </el-col>
@@ -34,7 +44,7 @@
         </el-col>
       </el-row>
 
-      <el-row :gutter="16" class="activity-row">
+      <el-row :gutter="16" class="bottom-row">
         <el-col :xs="24" :md="14">
           <TopPackages :packages="stats.top_packages" />
         </el-col>
@@ -42,13 +52,12 @@
           <ActivityFeed :activities="activities" />
         </el-col>
       </el-row>
-    </section>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
 import { dashboardApi, type DashboardStats } from '@/api/dashboard'
 import RepoStatusCard from '@/components/dashboard/RepoStatusCard.vue'
 import DownloadChart from '@/components/dashboard/DownloadChart.vue'
@@ -107,33 +116,100 @@ onMounted(loadStats)
 </script>
 
 <style scoped>
+.dashboard {
+  min-height: 100%;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+}
+
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: var(--spacing-2xl);
+  padding: 20px 24px;
+  background: #fff;
+  border-radius: 16px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
-.page-header h2 {
-  font-size: var(--font-size-xl);
-  font-weight: var(--font-weight-semibold);
+.header-content {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.header-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 24px;
+}
+
+.header-text h2 {
+  font-size: 20px;
+  font-weight: 600;
   margin: 0;
-  color: var(--color-text-primary);
+  color: #1f2937;
+  letter-spacing: -0.2px;
+}
+
+.header-subtitle {
+  font-size: 13px;
+  color: #9ca3af;
+  margin: 4px 0 0;
+}
+
+.refresh-btn {
+  height: 40px;
+  padding: 0 20px;
+  border-radius: 10px;
+  font-weight: 500;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fff;
+  border-color: #e5e7eb;
+  color: #374151;
+}
+
+.refresh-btn:hover {
+  background: #f9fafb;
+}
+
+.content-panel {
+  padding: 0;
+}
+
+.section {
+  margin-bottom: 20px;
 }
 
 .section-title {
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
-  margin: 0 0 var(--spacing-lg);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #374151;
+  margin: 0 0 16px;
+}
+
+.section-title i {
+  color: #8b5cf6;
 }
 
 .repo-grid {
-  margin-bottom: var(--spacing-sm);
+  margin-bottom: 0;
 }
 
-.chart-row,
-.activity-row {
-  margin-top: var(--spacing-xl);
+.charts-row,
+.bottom-row {
+  margin-top: 20px;
 }
 </style>

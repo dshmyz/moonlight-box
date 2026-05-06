@@ -42,7 +42,7 @@ interface Props {
   showCommandHint?: boolean
 }
 
-const props = withDefaults(defineProps<Props>(), {
+withDefaults(defineProps<Props>(), {
   disabled: false,
   loading: false,
   placeholder: '输入你的问题，例如：查询lodash包的信息',

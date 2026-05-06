@@ -37,6 +37,7 @@ export interface Repository {
   sync_mode?: 'metadata_only' | 'full'
   last_metadata_sync_at?: string
   last_sync_status?: string
+  url?: string
 }
 
 export interface RepositoryGroup {

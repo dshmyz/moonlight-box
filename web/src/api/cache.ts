@@ -1,8 +1,15 @@
 import request from './request'
 
+export interface CacheStats {
+  total_entries: number
+  total_size: number
+  expired_entries: number
+  max_size_gb: number
+}
+
 export const cacheApi = {
   getStats() {
-    return request.get('/cache/stats')
+    return request.get<CacheStats>('/cache/stats')
   },
 
   clear() {

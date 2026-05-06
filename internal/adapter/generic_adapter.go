@@ -21,6 +21,7 @@ import (
 type GenericAdapter struct {
 	*BaseAdapter
 	pkgRepo    *repository.PackageRepository
+	repoRepo   *repository.RepositoryRepository
 	storageSvc *service.StorageService
 	auditSvc   *service.AuditService
 }
@@ -35,12 +36,14 @@ type FileEntry struct {
 
 func NewGenericAdapter(
 	pkgRepo *repository.PackageRepository,
+	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
 ) *GenericAdapter {
 	return &GenericAdapter{
 		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
 		pkgRepo:     pkgRepo,
+		repoRepo:    repoRepo,
 		storageSvc:  storageSvc,
 		auditSvc:    auditSvc,
 	}
@@ -123,6 +126,21 @@ func (a *GenericAdapter) UploadFile(c *gin.Context) {
 	}
 	defer file.Close()
 
+	repoName := c.PostForm("repository")
+	var repositoryID uint
+	if repoName != "" {
+		repo, err := a.repoRepo.FindByName(repoName)
+		if err != nil {
+			response.BadRequest(c, "invalid repository", "repository not found: "+repoName)
+			return
+		}
+		if repo.Type != model.RepoTypeLocal {
+			response.BadRequest(c, "invalid repository", "only local repositories support uploading")
+			return
+		}
+		repositoryID = repo.ID
+	}
+
 	targetPath := c.PostForm("path")
 	if targetPath != "" {
 		targetPath = filepath.Join(targetPath, header.Filename)
@@ -141,6 +159,7 @@ func (a *GenericAdapter) UploadFile(c *gin.Context) {
 	pkg, _, err := a.pkgRepo.CreateOrUpdate(c.Request.Context(), &model.Package{
 		Name:           targetPath,
 		Type:           model.PackageTypeGeneric,
+		RepositoryID:   repositoryID,
 		RepositoryType: model.RepoTypeLocal,
 		CreatedBy:      userID,
 	}, &model.PackageVersion{

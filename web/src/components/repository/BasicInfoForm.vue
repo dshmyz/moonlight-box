@@ -24,9 +24,14 @@
     >
       <el-select v-model="form.package_type" :disabled="disabled" style="width: 100%">
         <el-option label="npm" value="npm" />
-        <el-option label="maven2" value="maven2" />
+        <el-option label="Maven" value="maven" />
+        <el-option label="PyPI" value="pypi" />
+        <el-option label="Go" value="go" />
+        <el-option label="NuGet" value="nuget" />
+        <el-option label="Yum" value="yum" />
+        <el-option label="Apt" value="apt" />
+        <el-option label="Generic" value="generic" />
       </el-select>
-      <span class="form-hint">当前仅支持 npm 和 maven2，其他类型正在开发中</span>
     </el-form-item>
 
     <el-form-item
@@ -41,12 +46,13 @@
         style="width: 100%"
       >
         <el-option label="npm" value="npm" />
-        <el-option label="maven" value="maven" />
-        <el-option label="pypi" value="pypi" />
-        <el-option label="go" value="go" />
-        <el-option label="nuget" value="nuget" />
-        <el-option label="yum" value="yum" />
-        <el-option label="apt" value="apt" />
+        <el-option label="Maven" value="maven" />
+        <el-option label="PyPI" value="pypi" />
+        <el-option label="Go" value="go" />
+        <el-option label="NuGet" value="nuget" />
+        <el-option label="Yum" value="yum" />
+        <el-option label="Apt" value="apt" />
+        <el-option label="Generic" value="generic" />
       </el-select>
       <span class="form-hint">虚拟仓库可聚合多种包类型的仓库</span>
     </el-form-item>

@@ -94,7 +94,7 @@ interface Option {
 }
 
 interface Props {
-  modelValue?: string | number | string[] | number[]
+  modelValue?: string | number | string[] | number[] | null
   options: Option[]
   placeholder?: string
   disabled?: boolean
@@ -104,7 +104,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  modelValue: '',
+  modelValue: null,
   placeholder: '请选择',
   disabled: false,
   multiple: false,
@@ -113,8 +113,8 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 const emit = defineEmits<{
-  'update:modelValue': [value: string | number | Array<string | number>]
-  change: [value: string | number | Array<string | number>]
+  'update:modelValue': [value: string | number | (string | number)[]]
+  'change': [value: string | number | (string | number)[]]
 }>()
 
 const selectRef = ref<HTMLElement>()
@@ -124,8 +124,8 @@ const searchQuery = ref('')
 
 const selectedOptions = computed(() => {
   if (props.multiple) {
-    const values = Array.isArray(props.modelValue) ? props.modelValue : []
-    return props.options.filter((opt) => (values as (string | number)[]).includes(opt.value))
+    const values = Array.isArray(props.modelValue) ? props.modelValue : ([] as (string | number)[])
+    return props.options.filter((opt) => values.includes(opt.value))
   }
   const option = props.options.find((opt) => opt.value === props.modelValue)
   return option ? [option] : []
@@ -135,7 +135,7 @@ const hasValue = computed(() => {
   if (props.multiple) {
     return Array.isArray(props.modelValue) && props.modelValue.length > 0
   }
-  return props.modelValue !== '' && props.modelValue !== undefined
+  return props.modelValue !== '' && props.modelValue !== null && props.modelValue !== undefined
 })
 
 const selectedLabel = computed(() => {
@@ -154,7 +154,7 @@ const filteredOptions = computed(() => {
 
 const isSelected = (option: Option) => {
   if (props.multiple) {
-    const values = Array.isArray(props.modelValue) ? (props.modelValue as (string | number)[]) : []
+    const values = Array.isArray(props.modelValue) ? props.modelValue : ([] as (string | number)[])
     return values.includes(option.value)
   }
   return props.modelValue === option.value
@@ -164,7 +164,7 @@ const selectOption = (option: Option) => {
   if (option.disabled) return
 
   if (props.multiple) {
-    const values = Array.isArray(props.modelValue) ? [...(props.modelValue as (string | number)[])] : []
+    const values: (string | number)[] = Array.isArray(props.modelValue) ? [...props.modelValue] : []
     const index = values.indexOf(option.value)
 
     if (index > -1) {
@@ -184,7 +184,7 @@ const selectOption = (option: Option) => {
 
 const removeOption = (option: Option) => {
   if (props.multiple && Array.isArray(props.modelValue)) {
-    const values = (props.modelValue as (string | number)[]).filter((v) => v !== option.value)
+    const values: (string | number)[] = props.modelValue.filter((v: string | number) => v !== option.value)
     emit('update:modelValue', values)
     emit('change', values)
   }
@@ -234,10 +234,10 @@ onBeforeUnmount(() => {
   padding: 8px 14px;
   background: #fafbfc;
   border: 2px solid #e2e8f0;
-  border-radius: var(--radius-lg);
+  border-radius: 8px;
   cursor: pointer;
-  transition: all var(--transition-base);
-  font-size: var(--font-size-base);
+  transition: all 0.25s ease;
+  font-size: 14px;
 }
 
 .custom-select-trigger:hover:not(.is-disabled) {
@@ -269,18 +269,18 @@ onBeforeUnmount(() => {
 .custom-select-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--spacing-xs);
+  gap: 4px;
   flex: 1;
 }
 
 .custom-select-tag {
   display: inline-flex;
   align-items: center;
-  gap: var(--spacing-xs);
+  gap: 4px;
   padding: 2px 8px;
   background: #f1f5f9;
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-xs);
+  border-radius: 4px;
+  font-size: 12px;
   color: #0f172a;
 }
 
@@ -293,7 +293,7 @@ onBeforeUnmount(() => {
   background: transparent;
   color: #64748b;
   cursor: pointer;
-  transition: color var(--transition-fast);
+  transition: color 0.2s;
 }
 
 .custom-select-tag-close:hover {
@@ -303,8 +303,8 @@ onBeforeUnmount(() => {
 .custom-select-tag-count {
   padding: 2px 8px;
   background: #f1f5f9;
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-xs);
+  border-radius: 4px;
+  font-size: 12px;
   color: #64748b;
 }
 
@@ -313,7 +313,7 @@ onBeforeUnmount(() => {
   border: none;
   outline: none;
   background: transparent;
-  font-size: var(--font-size-base);
+  font-size: 14px;
   color: #0f172a;
 }
 
@@ -325,8 +325,8 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   color: #94a3b8;
-  transition: transform var(--transition-base);
-  margin-left: var(--spacing-sm);
+  transition: transform 0.25s ease;
+  margin-left: 8px;
 }
 
 .custom-select-trigger.is-active .custom-select-arrow {
@@ -342,7 +342,7 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   background: #ffffff;
   border: 1px solid #e2e8f0;
-  border-radius: var(--radius-lg);
+  border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
   z-index: 1000;
 }
@@ -351,17 +351,17 @@ onBeforeUnmount(() => {
   padding: 12px 16px;
   color: #94a3b8;
   text-align: center;
-  font-size: var(--font-size-base);
+  font-size: 14px;
 }
 
 .custom-select-option {
   display: flex;
   align-items: center;
-  gap: var(--spacing-sm);
+  gap: 8px;
   padding: 10px 14px;
   cursor: pointer;
-  transition: background var(--transition-fast);
-  font-size: var(--font-size-base);
+  transition: background 0.2s;
+  font-size: 14px;
   color: #0f172a;
 }
 
@@ -371,7 +371,7 @@ onBeforeUnmount(() => {
 
 .custom-select-option.is-selected {
   background: #f1f5f9;
-  font-weight: var(--font-weight-semibold);
+  font-weight: 600;
 }
 
 .custom-select-option.is-disabled {
@@ -391,7 +391,7 @@ onBeforeUnmount(() => {
 
 .dropdown-enter-active,
 .dropdown-leave-active {
-  transition: all var(--transition-base);
+  transition: all 0.25s ease;
 }
 
 .dropdown-enter-from,

@@ -1,29 +1,24 @@
 <template>
   <div class="package-card" @click="$emit('click')">
-    <div class="card-main">
-      <div class="card-header">
-        <el-tag :type="getPackageTypeColor(pkg.type)" size="small" effect="plain" class="type-tag">
-          {{ getPackageTypeLabel(pkg.type) }}
-        </el-tag>
-        <span class="package-name">{{ pkg.name }}</span>
-      </div>
-      <p class="package-desc">{{ pkg.description || '暂无描述' }}</p>
+    <div class="card-top">
+      <el-tag :type="getTypeColor(pkg.type)" size="small" effect="plain">
+        {{ getPackageTypeLabel(pkg.type) }}
+      </el-tag>
+      <span class="package-name">{{ pkg.name }}</span>
     </div>
-    <div class="card-footer">
+    <p class="package-desc">{{ pkg.description || '暂无描述' }}</p>
+    <div class="card-bottom">
       <div class="meta-item">
         <el-icon><PriceTag /></el-icon>
-        <span class="meta-label">版本</span>
-        <span class="meta-value">{{ pkg.latest_version || '-' }}</span>
+        <span>{{ pkg.latest_version || '-' }}</span>
       </div>
       <div class="meta-item">
         <el-icon><Download /></el-icon>
-        <span class="meta-label">下载量</span>
-        <span class="meta-value">{{ formatNumber(pkg.download_count || 0) }}</span>
+        <span>{{ formatNumber(pkg.download_count || 0) }}</span>
       </div>
       <div class="meta-item">
         <el-icon><Clock /></el-icon>
-        <span class="meta-label">更新于</span>
-        <span class="meta-value">{{ formatRelativeTime(pkg.updated_at) }}</span>
+        <span>{{ formatRelativeTime(pkg.updated_at) }}</span>
       </div>
     </div>
   </div>
@@ -32,8 +27,6 @@
 <script setup lang="ts">
 import { Download, PriceTag, Clock } from '@element-plus/icons-vue'
 import type { Package } from '@/api/package'
-import { formatNumber, formatRelativeTime } from '@/utils/format'
-import { getPackageTypeColor, getPackageTypeLabel } from '@/constants/package'
 
 defineProps<{
   pkg: Package
@@ -42,90 +35,110 @@ defineProps<{
 defineEmits<{
   click: []
 }>()
+
+function getTypeColor(type: string) {
+  const t = type === 'maven' ? 'maven2' : type
+  const colors: Record<string, string> = {
+    npm: '',
+    maven2: 'success',
+    pypi: 'warning',
+    go: 'info',
+  }
+  return colors[t] || 'info'
+}
+
+function getPackageTypeLabel(type: string) {
+  const t = type === 'maven' ? 'maven2' : type
+  const labels: Record<string, string> = {
+    npm: 'npm',
+    maven2: 'Maven',
+    pypi: 'PyPI',
+    go: 'Go',
+  }
+  return labels[t] || type
+}
+
+function formatNumber(num: number) {
+  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`
+  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`
+  return String(num)
+}
+
+function formatRelativeTime(timeStr: string) {
+  const date = new Date(timeStr)
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+
+  if (diffDays < 0) return date.toLocaleDateString('zh-CN')
+  if (diffDays === 0) return '今天'
+  if (diffDays === 1) return '昨天'
+  if (diffDays < 30) return `${diffDays} 天前`
+  if (diffDays < 365) return `${Math.floor(diffDays / 30)} 个月前`
+  return `${Math.floor(diffDays / 365)} 年前`
+}
 </script>
 
 <style scoped>
 .package-card {
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
+  background: #fff;
   border-radius: 8px;
-  padding: 16px 20px;
+  padding: 20px;
   cursor: pointer;
-  transition: all 0.2s ease;
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 24px;
+  transition: all 0.2s;
 }
 
 .package-card:hover {
-  border-color: #0f172a;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+  background: #fafbfc;
 }
 
-.card-main {
-  flex: 1;
-  min-width: 0;
-}
-
-.card-header {
+.card-top {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 8px;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
-.type-tag {
-  min-width: 56px;
-  text-align: center;
+.card-top :deep(.el-tag) {
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 0 6px;
+  height: 20px;
+  line-height: 18px;
 }
 
 .package-name {
-  font-size: 16px;
-  font-weight: 700;
-  color: #0f172a;
-  letter-spacing: -0.3px;
+  font-size: 15px;
+  font-weight: 500;
+  color: #1f2937;
+  letter-spacing: -0.2px;
 }
 
 .package-desc {
-  color: #64748b;
+  color: #6b7280;
   font-size: 13px;
-  margin: 0;
+  margin: 0 0 14px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
-.card-footer {
+.card-bottom {
   display: flex;
   gap: 20px;
   align-items: center;
-  flex-shrink: 0;
 }
 
 .meta-item {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-.meta-label {
-  font-size: 11px;
-  color: #94a3b8;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-weight: 600;
-}
-
-.meta-value {
-  font-size: 13px;
-  color: #0f172a;
-  font-weight: 600;
+  font-size: 12px;
+  color: #9ca3af;
 }
 
 .meta-item .el-icon {
   font-size: 14px;
-  color: #94a3b8;
 }
 </style>

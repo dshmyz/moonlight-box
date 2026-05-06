@@ -10,14 +10,14 @@
             <el-tag size="small" :type="getPackageTypeColor(pkg.type)">{{ getPackageTypeLabel(pkg.type) }}</el-tag>
           </router-link>
         </el-breadcrumb-item>
-        <el-breadcrumb-item>{{ pkg.name }}</el-breadcrumb-item>
+        <el-breadcrumb-item>{{ pkg.display_name || pkg.name }}</el-breadcrumb-item>
       </el-breadcrumb>
     </div>
     <div class="header-body">
       <el-tag :type="getPackageTypeColor(pkg.type)" size="large" effect="plain">
         {{ getPackageTypeLabel(pkg.type) }}
       </el-tag>
-      <h1 class="package-title">{{ pkg.name }}</h1>
+      <h1 class="package-title">{{ pkg.display_name || pkg.name }}</h1>
       <p class="package-description">{{ pkg.description || '暂无描述' }}</p>
       <div class="header-meta">
         <span class="meta-item">
@@ -40,11 +40,12 @@
 <script setup lang="ts">
 import { PriceTag, Download, Document } from '@element-plus/icons-vue'
 import { formatNumber } from '@/utils/format'
-import { getPackageTypeColor, getPackageTypeLabel, normalizePackageType } from '@/constants/package'
+import { getPackageTypeColor, getPackageTypeLabel } from '@/constants/package'
 
 defineProps<{
   pkg: {
     name: string
+    display_name?: string
     type: string
     description?: string
     latest_version?: string

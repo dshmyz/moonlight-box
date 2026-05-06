@@ -18,7 +18,7 @@ const renderedContent = computed(() => {
   
   html = escapeHtml(html)
   
-  html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
+  html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (_match, lang, code) => {
     return `<pre class="code-block" data-lang="${lang || ''}"><code>${code.trim()}</code></pre>`
   })
   
