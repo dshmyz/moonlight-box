@@ -6,6 +6,11 @@ bin/
 *.so
 *.dylib
 
+# Root-level binaries (build outputs)
+/registry
+/moonlight-registry
+/main
+
 # Test binary
 *.test
 
