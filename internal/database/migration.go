@@ -3,6 +3,7 @@ package database
 import (
 	"fmt"
 
+	"github.com/moonlight-box/registry/internal/config"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/util"
 )
@@ -55,14 +56,50 @@ func SeedData() error {
 
 	// 创建预置权限
 	permissions := []model.Permission{
+		// 系统管理
 		{Resource: "system", Action: "admin"},
+		{Resource: "system", Action: "read"},
+
+		// 用户与权限
 		{Resource: "users", Action: "read"},
 		{Resource: "users", Action: "write"},
+
+		// 审计日志
 		{Resource: "audit", Action: "read"},
+
+		// 仓库管理
+		{Resource: "repositories", Action: "read"},
+		{Resource: "repositories", Action: "write"},
+		{Resource: "repositories", Action: "delete"},
+
+		// 缓存管理
+		{Resource: "cache", Action: "read"},
+		{Resource: "cache", Action: "write"},
+
+		// 阻断规则
+		{Resource: "block-rules", Action: "read"},
+		{Resource: "block-rules", Action: "write"},
+		{Resource: "block-rules", Action: "delete"},
+
+		// 存储后端
+		{Resource: "storage-backends", Action: "read"},
+		{Resource: "storage-backends", Action: "write"},
+
+		// 安全扫描
+		{Resource: "security", Action: "read"},
+		{Resource: "security", Action: "write"},
+
+		// Webhook
+		{Resource: "webhooks", Action: "read"},
+		{Resource: "webhooks", Action: "write"},
+
+		// NPM 包管理
 		{Resource: "npm", Action: "read"},
 		{Resource: "npm", Action: "write"},
 		{Resource: "npm", Action: "delete"},
 		{Resource: "npm", Action: "admin"},
+
+		// Maven 包管理
 		{Resource: "maven", Action: "read"},
 		{Resource: "maven", Action: "write"},
 		{Resource: "maven", Action: "delete"},
@@ -130,9 +167,12 @@ func SeedData() error {
 		return err
 	}
 
-	// 创建测试包数据
-	if err := seedTestPackages(); err != nil {
-		return err
+	// 根据配置决定是否加载测试包数据
+	cfg := config.Get()
+	if cfg != nil && cfg.Seed.LoadTestData {
+		if err := seedTestPackages(); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -366,35 +406,35 @@ func seedDefaultRepositories() error {
 			Enabled:     true,
 		},
 		{
-			Name:           "npm-proxy-cn",
-			DisplayName:    "NPM 国内代理",
-			Description:    "国内 npm 镜像源代理",
-			Type:           model.RepoTypeProxy,
-			PackageType:    string(model.PackageTypeNPM),
-			Enabled:        true,
-			RemoteURL:      "https://registry.npmmirror.com",
-			AuthType:       "none",
-			ProxyPriority:  1,
-			CacheEnabled:   true,
-			CacheTTLSeconds: 86400,
-			TimeoutSeconds: 30,
-			MaxRedirects:   5,
+			Name:              "npm-proxy-cn",
+			DisplayName:       "NPM 国内代理",
+			Description:       "国内 npm 镜像源代理",
+			Type:              model.RepoTypeProxy,
+			PackageType:       string(model.PackageTypeNPM),
+			Enabled:           true,
+			RemoteURL:         "https://registry.npmmirror.com",
+			AuthType:          "none",
+			ProxyPriority:     1,
+			CacheEnabled:      true,
+			CacheTTLSeconds:   86400,
+			TimeoutSeconds:    30,
+			MaxRedirects:      5,
 			FailureCacheRules: `[{"status_code": 404, "ttl_seconds": 300}, {"status_code_range": [500, 599], "ttl_seconds": 60}]`,
 		},
 		{
-			Name:           "npm-proxy-official",
-			DisplayName:    "NPM 官方代理",
-			Description:    "npm 官方仓库代理",
-			Type:           model.RepoTypeProxy,
-			PackageType:    string(model.PackageTypeNPM),
-			Enabled:        true,
-			RemoteURL:      "https://registry.npmjs.org",
-			AuthType:       "none",
-			ProxyPriority:  2,
-			CacheEnabled:   true,
-			CacheTTLSeconds: 86400,
-			TimeoutSeconds: 30,
-			MaxRedirects:   5,
+			Name:              "npm-proxy-official",
+			DisplayName:       "NPM 官方代理",
+			Description:       "npm 官方仓库代理",
+			Type:              model.RepoTypeProxy,
+			PackageType:       string(model.PackageTypeNPM),
+			Enabled:           true,
+			RemoteURL:         "https://registry.npmjs.org",
+			AuthType:          "none",
+			ProxyPriority:     2,
+			CacheEnabled:      true,
+			CacheTTLSeconds:   86400,
+			TimeoutSeconds:    30,
+			MaxRedirects:      5,
 			FailureCacheRules: `[{"status_code": 404, "ttl_seconds": 300}, {"status_code_range": [500, 599], "ttl_seconds": 60}]`,
 		},
 		{
@@ -420,35 +460,35 @@ func seedDefaultRepositories() error {
 			Enabled:     true,
 		},
 		{
-			Name:           "maven-proxy-aliyun",
-			DisplayName:    "Maven 阿里云代理",
-			Description:    "阿里云 Maven 镜像代理",
-			Type:           model.RepoTypeProxy,
-			PackageType:    string(model.PackageTypeMaven),
-			Enabled:        true,
-			RemoteURL:      "https://maven.aliyun.com/repository/public",
-			AuthType:       "none",
-			ProxyPriority:  1,
-			CacheEnabled:   true,
-			CacheTTLSeconds: 86400,
-			TimeoutSeconds: 30,
-			MaxRedirects:   5,
+			Name:              "maven-proxy-aliyun",
+			DisplayName:       "Maven 阿里云代理",
+			Description:       "阿里云 Maven 镜像代理",
+			Type:              model.RepoTypeProxy,
+			PackageType:       string(model.PackageTypeMaven),
+			Enabled:           true,
+			RemoteURL:         "https://maven.aliyun.com/repository/public",
+			AuthType:          "none",
+			ProxyPriority:     1,
+			CacheEnabled:      true,
+			CacheTTLSeconds:   86400,
+			TimeoutSeconds:    30,
+			MaxRedirects:      5,
 			FailureCacheRules: `[{"status_code": 404, "ttl_seconds": 300}, {"status_code_range": [500, 599], "ttl_seconds": 60}]`,
 		},
 		{
-			Name:           "maven-proxy-central",
-			DisplayName:    "Maven Central 代理",
-			Description:    "Maven Central 官方仓库代理",
-			Type:           model.RepoTypeProxy,
-			PackageType:    string(model.PackageTypeMaven),
-			Enabled:        true,
-			RemoteURL:      "https://repo.maven.apache.org/maven2",
-			AuthType:       "none",
-			ProxyPriority:  2,
-			CacheEnabled:   true,
-			CacheTTLSeconds: 86400,
-			TimeoutSeconds: 30,
-			MaxRedirects:   5,
+			Name:              "maven-proxy-central",
+			DisplayName:       "Maven Central 代理",
+			Description:       "Maven Central 官方仓库代理",
+			Type:              model.RepoTypeProxy,
+			PackageType:       string(model.PackageTypeMaven),
+			Enabled:           true,
+			RemoteURL:         "https://repo.maven.apache.org/maven2",
+			AuthType:          "none",
+			ProxyPriority:     2,
+			CacheEnabled:      true,
+			CacheTTLSeconds:   86400,
+			TimeoutSeconds:    30,
+			MaxRedirects:      5,
 			FailureCacheRules: `[{"status_code": 404, "ttl_seconds": 300}, {"status_code_range": [500, 599], "ttl_seconds": 60}]`,
 		},
 		{

@@ -52,4 +52,14 @@ func setDefaults(v interface {
 	v.SetDefault("proxy.large_file_threshold", 50*1024*1024)
 	v.SetDefault("proxy.max_redirects", 10)
 	v.SetDefault("proxy.insecure_skip_verify", false)
+
+	// Proxy Health Check
+	v.SetDefault("proxy.health_check.enabled", true)
+	v.SetDefault("proxy.health_check.interval", 30*time.Second)
+	v.SetDefault("proxy.health_check.timeout", 5*time.Second)
+	v.SetDefault("proxy.health_check.failure_threshold", 3)
+
+	// Seed Data
+	v.SetDefault("seed.enabled", true)
+	v.SetDefault("seed.load_test_data", false)
 }
