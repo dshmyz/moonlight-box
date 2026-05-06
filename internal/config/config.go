@@ -15,7 +15,13 @@ type Config struct {
 	Cache    CacheConfig    `mapstructure:"cache"`
 	Logging  LoggingConfig  `mapstructure:"logging"`
 	Proxy    ProxyConfig    `mapstructure:"proxy"`
-	AI       AIConfig       `mapstructure:"ai"` // AI 配置
+	AI       AIConfig       `mapstructure:"ai"`   // AI 配置
+	Seed     SeedConfig     `mapstructure:"seed"` // 初始化数据配置
+}
+
+type SeedConfig struct {
+	Enabled      bool `mapstructure:"enabled"`        // 是否启用种子数据
+	LoadTestData bool `mapstructure:"load_test_data"` // 是否加载测试包数据
 }
 
 type ServerConfig struct {
@@ -86,6 +92,14 @@ type ProxyConfig struct {
 	MaxRedirects       int               `mapstructure:"max_redirects"`
 	InsecureSkipVerify bool              `mapstructure:"insecure_skip_verify"`
 	DNSMapping         map[string]string `mapstructure:"dns_mapping"`
+	HealthCheck        HealthCheckConfig `mapstructure:"health_check"`
+}
+
+type HealthCheckConfig struct {
+	Enabled          bool          `mapstructure:"enabled"`
+	Interval         time.Duration `mapstructure:"interval"`
+	Timeout          time.Duration `mapstructure:"timeout"`
+	FailureThreshold int           `mapstructure:"failure_threshold"`
 }
 
 // AI 配置
