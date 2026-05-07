@@ -142,10 +142,8 @@ func (s *ProxyDownloadService) Download(ctx context.Context, req *ProxyDownloadR
 	storageKey, storeErr := s.storageSvc.StorePackage(ctx, req.PkgType, req.Name, storageVersion, bytes.NewReader(body), result.Size)
 	if storeErr != nil {
 		logrus.Warnf("failed to store proxy package %s: %v", req.Name, storeErr)
-	}
-
-	if storeErr == nil && storageKey != "" {
-		s.pkgRepo.StorePackageFileAndIncrementDownload(ctx, &model.Package{
+	} else if storageKey != "" {
+		_, _, _, dbErr := s.pkgRepo.StorePackageFileAndIncrementDownload(ctx, &model.Package{
 			Name:           req.Name,
 			Type:           req.PackageType,
 			RepositoryID:   result.RepoID,
@@ -160,6 +158,9 @@ func (s *ProxyDownloadService) Download(ctx context.Context, req *ProxyDownloadR
 			StoragePath: storageKey,
 			SizeBytes:   result.Size,
 		})
+		if dbErr != nil {
+			logrus.Warnf("failed to store proxy package file to database %s: %v", req.Name, dbErr)
+		}
 	}
 
 	s.recordLog(req, model.DownloadStatusSuccess, 200, result.Size, int(time.Since(startTime).Milliseconds()), result.FromCache, nil)
