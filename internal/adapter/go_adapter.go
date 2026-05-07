@@ -22,11 +22,12 @@ import (
 
 type GoAdapter struct {
 	*BaseAdapter
-	pkgRepo     *repository.PackageRepository
-	storageSvc  *service.StorageService
-	auditSvc    *service.AuditService
-	proxyRouter *proxy.ProxyRouter
-	uploadSvc   *service.UploadService
+	pkgRepo          *repository.PackageRepository
+	storageSvc       *service.StorageService
+	auditSvc         *service.AuditService
+	proxyRouter      *proxy.ProxyRouter
+	proxyDownloadSvc *service.ProxyDownloadService
+	uploadSvc        *service.UploadService
 }
 
 func NewGoAdapter(
@@ -34,14 +35,16 @@ func NewGoAdapter(
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
 	proxyRouter *proxy.ProxyRouter,
+	proxyDownloadSvc *service.ProxyDownloadService,
 ) *GoAdapter {
 	return &GoAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
-		pkgRepo:     pkgRepo,
-		storageSvc:  storageSvc,
-		auditSvc:    auditSvc,
-		proxyRouter: proxyRouter,
-		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
+		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
+		pkgRepo:          pkgRepo,
+		storageSvc:       storageSvc,
+		auditSvc:         auditSvc,
+		proxyRouter:      proxyRouter,
+		proxyDownloadSvc: proxyDownloadSvc,
+		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
 	}
 }
 
@@ -217,9 +220,9 @@ func (a *GoAdapter) handleGoMod(c *gin.Context, module, version string) {
 
 	slog.Info("Cache miss, trying proxy", "module", module, "version", version)
 
-	if a.proxyRouter != nil {
-		urlBuilder := func(repo *model.Repository, pkgName, pkgVersion string) string {
-			return fmt.Sprintf("%s/%s/@v/%s.mod", strings.TrimSuffix(repo.RemoteURL, "/"), encodeGoModulePath(pkgName), pkgVersion)
+	if a.proxyRouter != nil && a.proxyDownloadSvc != nil {
+		urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
+			return fmt.Sprintf("%s/%s/@v/%s.mod", strings.TrimSuffix(r.RemoteURL, "/"), encodeGoModulePath(pkgName), pkgVersion)
 		}
 
 		var repo *model.Repository
@@ -227,23 +230,34 @@ func (a *GoAdapter) handleGoMod(c *gin.Context, module, version string) {
 			repo = r.(*model.Repository)
 		}
 
-		slog.Info("Calling DownloadFromProxyAndCache for go.mod", "module", module, "version", version)
-		if !a.DownloadFromProxyAndCache(c, &ProxyDownloadAndCacheOpts{
-			PkgType:     model.PackageTypeGo,
-			Name:        module,
-			Version:     storageVersion,
-			Filename:    version + ".mod",
-			ContentType: "text/plain",
-			Repo:        repo,
-			URLBuilder:  urlBuilder,
-		}) {
-			slog.Error("DownloadFromProxyAndCache failed for go.mod")
+		slog.Info("Calling ProxyDownloadService.Download for go.mod", "module", module, "version", version)
+		result, downloadErr := a.proxyDownloadSvc.Download(c.Request.Context(), &service.ProxyDownloadRequest{
+			PkgType:        "go",
+			Name:           module,
+			Version:        storageVersion,
+			Filename:       version + ".mod",
+			Repo:           repo,
+			URLBuilder:     urlBuilder,
+			PackageType:    model.PackageTypeGo,
+			RepositoryType: repo.Type,
+			FileType:       model.FileTypePrimary,
+			ResolutionMode: service.ResolutionModeSmart,
+			IPAddress:      c.ClientIP(),
+			UserAgent:      c.Request.UserAgent(),
+			UserID:         getUintPtr(c.GetUint("userID")),
+		})
+
+		if downloadErr != nil {
+			slog.Error("ProxyDownloadService.Download failed for go.mod", "error", downloadErr)
 			response.NotFound(c, "go.mod not found")
+			return
 		}
+
+		c.Data(200, "text/plain", result.Content)
 		return
 	}
 
-	slog.Warn("proxyRouter is nil")
+	slog.Warn("proxyRouter or proxyDownloadSvc is nil")
 	response.NotFound(c, "go.mod not found")
 }
 
@@ -271,22 +285,34 @@ func (a *GoAdapter) handleDownloadZip(c *gin.Context, module, version string) {
 		return
 	}
 
-	if a.proxyRouter != nil {
-		urlBuilder := func(repo *model.Repository, pkgName, pkgVersion string) string {
-			return fmt.Sprintf("%s/%s/@v/%s.zip", strings.TrimSuffix(repo.RemoteURL, "/"), encodeGoModulePath(pkgName), pkgVersion)
+	if a.proxyRouter != nil && a.proxyDownloadSvc != nil {
+		urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
+			return fmt.Sprintf("%s/%s/@v/%s.zip", strings.TrimSuffix(r.RemoteURL, "/"), encodeGoModulePath(pkgName), pkgVersion)
 		}
 
-		if !a.DownloadFromProxyAndCache(c, &ProxyDownloadAndCacheOpts{
-			PkgType:     model.PackageTypeGo,
-			Name:        module,
-			Version:     storageVersion,
-			Filename:    version + ".zip",
-			ContentType: "application/zip",
-			Repo:        repo,
-			URLBuilder:  urlBuilder,
-		}) {
+		result, downloadErr := a.proxyDownloadSvc.Download(c.Request.Context(), &service.ProxyDownloadRequest{
+			PkgType:        "go",
+			Name:           module,
+			Version:        storageVersion,
+			Filename:       version + ".zip",
+			Repo:           repo,
+			URLBuilder:     urlBuilder,
+			PackageType:    model.PackageTypeGo,
+			RepositoryType: repo.Type,
+			FileType:       model.FileTypePrimary,
+			ResolutionMode: service.ResolutionModeSmart,
+			IPAddress:      c.ClientIP(),
+			UserAgent:      c.Request.UserAgent(),
+			UserID:         getUintPtr(c.GetUint("userID")),
+		})
+
+		if downloadErr != nil {
 			response.NotFound(c, "module zip not found")
+			return
 		}
+
+		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, version))
+		c.Data(200, "application/zip", result.Content)
 		return
 	}
 

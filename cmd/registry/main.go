@@ -165,7 +165,7 @@ func main() {
 	npmAdapter := adapter.NewNpmAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
 	mavenAdapter := adapter.NewMavenAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
 	pypiAdapter := adapter.NewPyPIAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
-	goAdapter := adapter.NewGoAdapter(packageRepo, storageSvc, auditSvc, nil)
+	goAdapter := adapter.NewGoAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
 	nugetAdapter := adapter.NewNuGetAdapter(packageRepo, storageSvc, auditSvc)
 	genericAdapter := adapter.NewGenericAdapter(packageRepo, repoRepo, storageSvc, auditSvc)
 	yumAdapter := adapter.NewYumAdapter(packageRepo, storageSvc, auditSvc, nil)
