@@ -19,6 +19,13 @@ func (r *ProxyDownloadLogRepository) Create(log *model.ProxyDownloadLog) error {
 	return r.db.Create(log).Error
 }
 
+func (r *ProxyDownloadLogRepository) BatchCreate(logs []*model.ProxyDownloadLog) error {
+	if len(logs) == 0 {
+		return nil
+	}
+	return r.db.CreateInBatches(logs, 100).Error
+}
+
 func (r *ProxyDownloadLogRepository) List(page, pageSize int, repositoryID *uint, packageType, status string, startTime, endTime *time.Time) ([]model.ProxyDownloadLog, int64, error) {
 	var logs []model.ProxyDownloadLog
 	var total int64

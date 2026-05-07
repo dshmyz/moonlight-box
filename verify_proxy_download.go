@@ -6,7 +6,6 @@ import (
 	"github.com/moonlight-box/registry/internal/config"
 	"github.com/moonlight-box/registry/internal/database"
 	"github.com/moonlight-box/registry/internal/model"
-	"gorm.io/gorm"
 )
 
 func main() {

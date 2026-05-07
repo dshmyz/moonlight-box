@@ -27,6 +27,7 @@ type ProxyDownloadService struct {
 	storageSvc   *StorageService
 	proxyRouter  *proxy.ProxyRouter
 	logRepo      *repository.ProxyDownloadLogRepository
+	logBatcher   *LogBatcher
 	countBatcher *DownloadCountBatcher
 
 	pkgCacheMu sync.RWMutex
@@ -48,6 +49,7 @@ func NewProxyDownloadService(
 	storageSvc *StorageService,
 	proxyRouter *proxy.ProxyRouter,
 	logRepo *repository.ProxyDownloadLogRepository,
+	logBatcher *LogBatcher,
 	countBatcher *DownloadCountBatcher,
 ) *ProxyDownloadService {
 	return &ProxyDownloadService{
@@ -55,6 +57,7 @@ func NewProxyDownloadService(
 		storageSvc:   storageSvc,
 		proxyRouter:  proxyRouter,
 		logRepo:      logRepo,
+		logBatcher:   logBatcher,
 		countBatcher: countBatcher,
 		pkgCache:     make(map[string]*pkgCacheEntry),
 	}
@@ -179,7 +182,7 @@ func (s *ProxyDownloadService) Download(ctx context.Context, req *ProxyDownloadR
 }
 
 func (s *ProxyDownloadService) recordLog(req *ProxyDownloadRequest, status string, statusCode int, sizeBytes int64, durationMs int, fromCache bool, err error) {
-	if s.logRepo == nil {
+	if s.logRepo == nil && s.logBatcher == nil {
 		return
 	}
 
@@ -209,8 +212,12 @@ func (s *ProxyDownloadService) recordLog(req *ProxyDownloadRequest, status strin
 		log.ErrorMessage = err.Error()
 	}
 
-	if createErr := s.logRepo.Create(log); createErr != nil {
-		logrus.Warnf("failed to record proxy download log: %v", createErr)
+	if s.logBatcher != nil {
+		s.logBatcher.Record(log)
+	} else if s.logRepo != nil {
+		if createErr := s.logRepo.Create(log); createErr != nil {
+			logrus.Warnf("failed to record proxy download log: %v", createErr)
+		}
 	}
 }
 
