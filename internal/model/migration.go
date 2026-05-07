@@ -26,6 +26,9 @@ type MigrationTask struct {
 	ErrorMessage        string          `json:"error_message" gorm:"type:text"`
 	TargetRepositoryID  uint            `json:"target_repository_id" gorm:"default:0"`
 	TargetRepository    string          `json:"target_repository" gorm:"size:200"`
+	WorkerCount         int             `json:"worker_count" gorm:"default:10"`
+	MaxRetries          int             `json:"max_retries" gorm:"default:3"`
+	BatchSize           int             `json:"batch_size" gorm:"default:50"`
 	CreatedAt           time.Time       `json:"created_at"`
 	UpdatedAt           time.Time       `json:"updated_at"`
 	StartedAt           *time.Time      `json:"started_at"`
