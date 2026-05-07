@@ -393,8 +393,6 @@ func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
 	if err == nil {
 		defer content.Close()
 
-		a.IncrementDownloadCountForPackage(pkgName, model.PackageTypeMaven, version, filename)
-
 		contentType := a.storageSvc.GetContentType(filename)
 		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 		c.DataFromReader(200, size, contentType, content, nil)

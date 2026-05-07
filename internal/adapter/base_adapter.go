@@ -239,29 +239,6 @@ func (b *BaseAdapter) StoreProxyPackageFromResult(ctx context.Context, pkgType m
 	return b.StoreProxyPackageFromReader(ctx, pkgType, name, version, result.Content, result.Size, result.RepoID, metadata)
 }
 
-func (b *BaseAdapter) IncrementDownloadCountForPackage(pkgName string, pkgType model.PackageType, version string, filename string) {
-	go b.incrementDownloadCountAsync(pkgName, pkgType, version, filename)
-}
-
-func (b *BaseAdapter) incrementDownloadCountAsync(pkgName string, pkgType model.PackageType, version string, filename string) {
-	pkg, err := b.pkgRepo.FindByNameAndType(pkgName, pkgType)
-	if err != nil {
-		return
-	}
-
-	for _, v := range pkg.Versions {
-		if v.Version == version {
-			for _, f := range v.Files {
-				if f.Filename == filename {
-					b.pkgRepo.IncrementDownloadCount(pkg.ID, v.ID, f.ID)
-					return
-				}
-			}
-			return
-		}
-	}
-}
-
 func (b *BaseAdapter) GetPackageMetadata(ctx context.Context, name string, pkgType model.PackageType, typeStr types.PackageType) (*types.PackageMeta, error) {
 	pkg, err := b.pkgRepo.FindByNameAndType(name, pkgType)
 	if err != nil {

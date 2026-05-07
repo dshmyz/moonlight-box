@@ -296,8 +296,6 @@ func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
 	if err == nil {
 		defer content.Close()
 
-		a.IncrementDownloadCountForPackage(name, model.PackageTypePyPI, version, actualFilename)
-
 		contentType := a.storageSvc.GetContentType(actualFilename)
 		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, actualFilename))
 		c.DataFromReader(200, size, contentType, content, nil)
