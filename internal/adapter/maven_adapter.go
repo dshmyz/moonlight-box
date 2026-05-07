@@ -26,13 +26,8 @@ import (
 
 type MavenAdapter struct {
 	*BaseAdapter
-	pkgRepo          *repository.PackageRepository
-	storageSvc       *service.StorageService
-	auditSvc         *service.AuditService
-	proxyRouter      *proxy.ProxyRouter
 	proxyDownloadSvc *service.ProxyDownloadService
 	uploadSvc        *service.UploadService
-	logRepo          *repository.ProxyDownloadLogRepository
 }
 
 type MavenMetadata struct {
@@ -109,21 +104,14 @@ func NewMavenAdapter(
 	logRepo *repository.ProxyDownloadLogRepository,
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *MavenAdapter {
-	return &MavenAdapter{
+	adapter := &MavenAdapter{
 		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
-		pkgRepo:          pkgRepo,
-		storageSvc:       storageSvc,
-		auditSvc:         auditSvc,
-		proxyRouter:      proxyRouter,
 		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
-		logRepo:          logRepo,
 	}
-}
-
-func (a *MavenAdapter) SetProxyRouter(pr *proxy.ProxyRouter) {
-	a.proxyRouter = pr
-	a.BaseAdapter.SetProxyRouter(pr)
+	adapter.SetProxyRouter(proxyRouter)
+	adapter.SetLogRepo(logRepo)
+	return adapter
 }
 
 func (a *MavenAdapter) Type() PackageType   { return MavenType }

@@ -25,13 +25,8 @@ import (
 
 type NpmAdapter struct {
 	*BaseAdapter
-	pkgRepo          *repository.PackageRepository
-	storageSvc       *service.StorageService
-	auditSvc         *service.AuditService
-	proxyRouter      *proxy.ProxyRouter
 	proxyDownloadSvc *service.ProxyDownloadService
 	uploadSvc        *service.UploadService
-	logRepo          *repository.ProxyDownloadLogRepository
 }
 
 type NpmPackageMetadata struct {
@@ -144,25 +139,18 @@ func NewNpmAdapter(
 	logRepo *repository.ProxyDownloadLogRepository,
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *NpmAdapter {
-	return &NpmAdapter{
+	adapter := &NpmAdapter{
 		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
-		pkgRepo:          pkgRepo,
-		storageSvc:       storageSvc,
-		auditSvc:         auditSvc,
-		proxyRouter:      proxyRouter,
 		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
-		logRepo:          logRepo,
 	}
+	adapter.SetProxyRouter(proxyRouter)
+	adapter.SetLogRepo(logRepo)
+	return adapter
 }
 
 func (a *NpmAdapter) Type() PackageType   { return NpmType }
 func (a *NpmAdapter) RoutePrefix() string { return "/npm" }
-
-func (a *NpmAdapter) SetProxyRouter(pr *proxy.ProxyRouter) {
-	a.proxyRouter = pr
-	a.BaseAdapter.SetProxyRouter(pr)
-}
 
 func (a *NpmAdapter) RegisterRoutes(r *gin.RouterGroup, authMw gin.HandlerFunc, permMw func(resource, action string) gin.HandlerFunc) {
 	{
