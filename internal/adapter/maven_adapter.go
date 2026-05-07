@@ -401,30 +401,38 @@ func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
 		return
 	}
 
-	if a.proxyRouter != nil {
-		urlBuilder := func(repo *model.Repository, pkgName, pkgVersion string) string {
-			baseURL := strings.TrimSuffix(repo.RemoteURL, "/")
+	if a.proxyRouter != nil && a.proxyDownloadSvc != nil {
+		urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
+			baseURL := strings.TrimSuffix(r.RemoteURL, "/")
 			groupPath := strings.ReplaceAll(groupArtifact, ".", "/")
 			remotePath := groupPath + "/" + pkgVersion + "/" + filename
 			return fmt.Sprintf("%s/%s", baseURL, remotePath)
 		}
 
-		var repo *model.Repository
-		if r, ok := c.Get("repo"); ok {
-			repo = r.(*model.Repository)
+		result, downloadErr := a.proxyDownloadSvc.Download(c.Request.Context(), &service.ProxyDownloadRequest{
+			PkgType:        "maven",
+			Name:           storageName,
+			Version:        version,
+			Filename:       filename,
+			Repo:           repo,
+			URLBuilder:     urlBuilder,
+			PackageType:    model.PackageTypeMaven,
+			RepositoryType: repo.Type,
+			FileType:       model.FileTypePrimary,
+			ResolutionMode: service.ResolutionModeSmart,
+			IPAddress:      c.ClientIP(),
+			UserAgent:      c.Request.UserAgent(),
+			UserID:         getUintPtr(c.GetUint("userID")),
+		})
+
+		if downloadErr != nil {
+			response.NotFound(c, "artifact not found")
+			return
 		}
 
-		if !a.DownloadFromProxyAndCache(c, &ProxyDownloadAndCacheOpts{
-			PkgType:     model.PackageTypeMaven,
-			Name:        storageName,
-			Version:     version,
-			Filename:    filename,
-			ContentType: a.storageSvc.GetContentType(filename),
-			Repo:        repo,
-			URLBuilder:  urlBuilder,
-		}) {
-			response.NotFound(c, "artifact not found")
-		}
+		contentType := a.storageSvc.GetContentType(filename)
+		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+		c.Data(200, contentType, result.Content)
 		return
 	}
 
