@@ -73,6 +73,9 @@ type CreateMigrationRequest struct {
 	SelectedRepos      []string `json:"selected_repos" binding:"required"`
 	TargetRepositoryID uint     `json:"target_repository_id"`
 	TargetRepository   string   `json:"target_repository"`
+	WorkerCount        int      `json:"worker_count"`
+	MaxRetries         int      `json:"max_retries"`
+	BatchSize          int      `json:"batch_size"`
 }
 
 func (h *MigrationHandler) CreateMigration(c *gin.Context) {
@@ -82,14 +85,12 @@ func (h *MigrationHandler) CreateMigration(c *gin.Context) {
 		return
 	}
 
-	task, err := h.service.CreateTask(req.URL, req.Username, req.Password, req.SelectedRepos, req.TargetRepositoryID, req.TargetRepository)
+	task, err := h.service.CreateTask(req.URL, req.Username, req.Password, req.SelectedRepos, req.TargetRepositoryID, req.TargetRepository, req.WorkerCount, req.MaxRetries, req.BatchSize)
 	if err != nil {
 		response.InternalError(c, "创建迁移任务失败: "+err.Error())
 		return
 	}
 
-	// 启动异步迁移，使用独立的 context（不使用 HTTP 请求的 context）
-	// 因为 HTTP 请求完成后其 context 会被取消，导致迁移任务被误判为取消
 	go func(taskID uint) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
