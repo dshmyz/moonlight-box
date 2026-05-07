@@ -123,12 +123,14 @@ func (h *MigrationHandler) GetMigrationStatus(c *gin.Context) {
 		"processed_items": 0,
 		"failed_items":    0,
 		"total_items":     0,
+		"logs":            []string{},
 	}
 
 	if progress != nil {
 		resp["processed_items"] = progress.Processed
 		resp["failed_items"] = progress.Failed
 		resp["total_items"] = progress.Total
+		resp["logs"] = progress.Logs
 	}
 
 	response.Success(c, resp)
