@@ -6,21 +6,38 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 )
 
+type cachedWildcardRule struct {
+	rule    *model.BlockRule
+	compiled *regexp.Regexp
+}
+
 type BlockRuleService struct {
 	repo     *repository.BlockRuleRepository
 	auditSvc *AuditService
+
+	cacheMu          sync.RWMutex
+	cachedAt         time.Time
+	cacheTTL         time.Duration
+	exactRulesCache  map[string][]*model.BlockRule
+	wildcardRules    map[string][]cachedWildcardRule
 }
 
 func NewBlockRuleService(repo *repository.BlockRuleRepository, auditSvc *AuditService) *BlockRuleService {
-	return &BlockRuleService{
-		repo:     repo,
-		auditSvc: auditSvc,
+	svc := &BlockRuleService{
+		repo:            repo,
+		auditSvc:        auditSvc,
+		cacheTTL:        1 * time.Minute,
+		exactRulesCache: make(map[string][]*model.BlockRule),
+		wildcardRules:   make(map[string][]cachedWildcardRule),
 	}
+	return svc
 }
 
 type BlockResult struct {
@@ -29,25 +46,93 @@ type BlockResult struct {
 }
 
 func (s *BlockRuleService) IsBlocked(pkgType, pkgName, version string) (*BlockResult, error) {
-	exactRules, err := s.repo.FindEnabledExactRules(pkgType, pkgName, version)
-	if err != nil {
-		return nil, err
-	}
-	if len(exactRules) > 0 {
-		return &BlockResult{Blocked: true, Rule: &exactRules[0]}, nil
+	s.cacheMu.RLock()
+	cacheValid := time.Since(s.cachedAt) < s.cacheTTL
+	s.cacheMu.RUnlock()
+
+	if !cacheValid {
+		if err := s.refreshCache(); err != nil {
+			return nil, err
+		}
 	}
 
-	wildcardRules, err := s.repo.FindEnabledWildcardRules(pkgType)
-	if err != nil {
-		return nil, err
+	s.cacheMu.RLock()
+	exactKey := pkgType + ":" + pkgName + ":" + version
+	exactRules, ok := s.exactRulesCache[exactKey]
+	wildcardRules, ok2 := s.wildcardRules[pkgType]
+	s.cacheMu.RUnlock()
+
+	if ok && len(exactRules) > 0 {
+		return &BlockResult{Blocked: true, Rule: exactRules[0]}, nil
 	}
-	for i := range wildcardRules {
-		if s.matchWildcard(&wildcardRules[i], pkgName, version) {
-			return &BlockResult{Blocked: true, Rule: &wildcardRules[i]}, nil
+
+	if ok2 {
+		for _, cached := range wildcardRules {
+			if s.matchCachedWildcard(&cached, pkgName, version) {
+				return &BlockResult{Blocked: true, Rule: cached.rule}, nil
+			}
 		}
 	}
 
 	return &BlockResult{Blocked: false}, nil
+}
+
+func (s *BlockRuleService) refreshCache() error {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
+	if time.Since(s.cachedAt) < s.cacheTTL {
+		return nil
+	}
+
+	exactRules, err := s.repo.FindAllEnabledExactRules()
+	if err != nil {
+		return err
+	}
+
+	wildcardRules, err := s.repo.FindAllEnabledWildcardRules()
+	if err != nil {
+		return err
+	}
+
+	newExactCache := make(map[string][]*model.BlockRule)
+	for i := range exactRules {
+		key := string(exactRules[i].PackageType) + ":" + exactRules[i].PackageName + ":" + exactRules[i].Version
+		newExactCache[key] = append(newExactCache[key], &exactRules[i])
+	}
+
+	newWildcardCache := make(map[string][]cachedWildcardRule)
+	for i := range wildcardRules {
+		rule := &wildcardRules[i]
+		regexPattern := "^" + strings.ReplaceAll(regexp.QuoteMeta(rule.PackageName), `\*`, ".*") + "$"
+		compiled, err := regexp.Compile(regexPattern)
+		if err != nil {
+			continue
+		}
+		pkgType := string(rule.PackageType)
+		newWildcardCache[pkgType] = append(newWildcardCache[pkgType], cachedWildcardRule{
+			rule:    rule,
+			compiled: compiled,
+		})
+	}
+
+	s.exactRulesCache = newExactCache
+	s.wildcardRules = newWildcardCache
+	s.cachedAt = time.Now()
+
+	return nil
+}
+
+func (s *BlockRuleService) matchCachedWildcard(cached *cachedWildcardRule, pkgName, version string) bool {
+	if !cached.compiled.MatchString(pkgName) {
+		return false
+	}
+	if cached.rule.Version == "*" {
+		return true
+	}
+	versionPattern := "^" + strings.ReplaceAll(regexp.QuoteMeta(cached.rule.Version), `\*`, ".*") + "$"
+	matched, _ := regexp.MatchString(versionPattern, version)
+	return matched
 }
 
 func (s *BlockRuleService) matchWildcard(rule *model.BlockRule, pkgName, version string) bool {
@@ -89,7 +174,11 @@ func (s *BlockRuleService) LogBlock(ctx context.Context, pkgName, version string
 }
 
 func (s *BlockRuleService) Create(rule *model.BlockRule) error {
-	return s.repo.Create(rule)
+	err := s.repo.Create(rule)
+	if err == nil {
+		s.invalidateCache()
+	}
+	return err
 }
 
 func (s *BlockRuleService) BatchCreate(rules []*model.BlockRule) (int, int, error) {
@@ -109,15 +198,32 @@ func (s *BlockRuleService) BatchCreate(rules []*model.BlockRule) (int, int, erro
 			success++
 		}
 	}
+	if success > 0 {
+		s.invalidateCache()
+	}
 	return success, failed, nil
 }
 
 func (s *BlockRuleService) Update(id uint, updates map[string]interface{}) error {
-	return s.repo.Update(id, updates)
+	err := s.repo.Update(id, updates)
+	if err == nil {
+		s.invalidateCache()
+	}
+	return err
 }
 
 func (s *BlockRuleService) Delete(id uint) error {
-	return s.repo.Delete(id)
+	err := s.repo.Delete(id)
+	if err == nil {
+		s.invalidateCache()
+	}
+	return err
+}
+
+func (s *BlockRuleService) invalidateCache() {
+	s.cacheMu.Lock()
+	s.cachedAt = time.Time{}
+	s.cacheMu.Unlock()
 }
 
 func (s *BlockRuleService) GetByID(id uint) (*model.BlockRule, error) {

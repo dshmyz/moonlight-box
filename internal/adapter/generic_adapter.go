@@ -41,7 +41,7 @@ func NewGenericAdapter(
 	auditSvc *service.AuditService,
 ) *GenericAdapter {
 	return &GenericAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
+		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
 		pkgRepo:     pkgRepo,
 		repoRepo:    repoRepo,
 		storageSvc:  storageSvc,
@@ -102,6 +102,19 @@ func (a *GenericAdapter) DownloadOrBrowse(c *gin.Context) {
 		return
 	}
 
+	filename := filepath.Base(filePath)
+
+	var repo *model.Repository
+	if r, ok := c.Get("repo"); ok {
+		repo = r.(*model.Repository)
+	}
+
+	decision := a.CheckDownloadPermission(c, repo, model.PackageTypeGeneric, filePath, "", filename)
+	if !decision.Allow {
+		c.JSON(decision.Code, gin.H{"error": decision.Message})
+		return
+	}
+
 	content, err := backend.Get(c.Request.Context(), storageKey)
 	if err != nil {
 		response.NotFound(c, "file not found")
@@ -109,7 +122,6 @@ func (a *GenericAdapter) DownloadOrBrowse(c *gin.Context) {
 	}
 	defer content.Close()
 
-	filename := filepath.Base(filePath)
 	contentType := a.storageSvc.GetContentType(filename)
 
 	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, url.PathEscape(filename)))
@@ -288,7 +300,7 @@ func (a *GenericAdapter) GetMetadata(ctx context.Context, name string) (*Package
 }
 
 func (a *GenericAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version)
+	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeGeneric)
 }
 
 func (a *GenericAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {

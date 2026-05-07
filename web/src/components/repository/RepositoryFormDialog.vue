@@ -26,6 +26,7 @@
             :form="formData"
             :disabled="isEditMode"
             v-model:selected-package-types="selectedPackageTypes"
+            v-model:storage-backend-id="storageBackendId"
           />
         </el-tab-pane>
 
@@ -214,6 +215,7 @@ const authConfig = ref({
 
 const membersText = ref('')
 const selectedPackageTypes = ref<string[]>([])
+const storageBackendId = ref<number | null>(null)
 
 const formRules = computed<FormRules>(() => ({
   name: [{ required: true, message: '请输入仓库名称', trigger: 'blur' }],
@@ -239,6 +241,7 @@ const resetForm = () => {
   }
   membersText.value = ''
   selectedPackageTypes.value = []
+  storageBackendId.value = null
   activeTab.value = 'basic'
   formRef.value?.clearValidate()
 }
@@ -273,6 +276,8 @@ watch(
         metadata_sync_interval: repo.metadata_sync_interval ?? 3600,
         sync_mode: repo.sync_mode ?? 'metadata_only',
       }
+
+      storageBackendId.value = repo.storage_backend_id || null
 
       if (repo.auth_config) {
         try {
@@ -356,6 +361,7 @@ const buildSubmitData = (): Partial<Repository> => {
     description: formData.value.description,
     type: formData.value.type,
     package_type: formData.value.package_type,
+    storage_backend_id: storageBackendId.value || undefined,
   }
 
   if (formData.value.type === 'virtual' && selectedPackageTypes.value.length > 0) {

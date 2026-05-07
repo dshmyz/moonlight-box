@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/moonlight-box/registry/internal/database"
+	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 
@@ -14,11 +15,13 @@ import (
 
 type SystemConfigHandler struct {
 	configSvc *service.SystemConfigService
+	auditSvc  *service.AuditService
 }
 
-func NewSystemConfigHandler(configSvc *service.SystemConfigService) *SystemConfigHandler {
+func NewSystemConfigHandler(configSvc *service.SystemConfigService, auditSvc *service.AuditService) *SystemConfigHandler {
 	return &SystemConfigHandler{
 		configSvc: configSvc,
+		auditSvc:  auditSvc,
 	}
 }
 
@@ -107,6 +110,21 @@ func (h *SystemConfigHandler) Set(c *gin.Context) {
 	if err := h.configSvc.Set(req.Key, req.Value, valueType, req.Category, req.Description, req.IsSensitive, userID); err != nil {
 		response.InternalError(c, err.Error())
 		return
+	}
+
+	if h.auditSvc != nil && userID > 0 {
+		uid := userID
+		_ = h.auditSvc.LogWithRequest(
+			c.Request.Context(),
+			&uid,
+			model.ActionConfigChange,
+			"config",
+			nil,
+			req.Key,
+			`{"action":"set"}`,
+			c.ClientIP(),
+			c.Request.UserAgent(),
+		)
 	}
 
 	response.Success(c, gin.H{"message": "config saved successfully"})

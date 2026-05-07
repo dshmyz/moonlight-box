@@ -3,6 +3,7 @@ package handler
 import (
 	"strings"
 
+	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -10,10 +11,11 @@ import (
 
 type AuthHandler struct {
 	authService *service.AuthService
+	auditSvc    *service.AuditService
 }
 
-func NewAuthHandler(authService *service.AuthService) *AuthHandler {
-	return &AuthHandler{authService: authService}
+func NewAuthHandler(authService *service.AuthService, auditSvc *service.AuditService) *AuthHandler {
+	return &AuthHandler{authService: authService, auditSvc: auditSvc}
 }
 
 // @Summary 用户登录
@@ -36,6 +38,21 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
+	if h.auditSvc != nil {
+		userID := resp.User.ID
+		_ = h.auditSvc.LogWithRequest(
+			c.Request.Context(),
+			&userID,
+			model.ActionLogin,
+			"user",
+			&userID,
+			resp.User.Username,
+			"",
+			c.ClientIP(),
+			c.Request.UserAgent(),
+		)
+	}
+
 	Success(c, resp)
 }
 
@@ -46,9 +63,25 @@ func (h *AuthHandler) Login(c *gin.Context) {
 // @Success 200 {object} Response
 // @Router /api/v1/auth/logout [post]
 func (h *AuthHandler) Logout(c *gin.Context) {
+	userID := c.GetUint("userID")
 	token := extractTokenFromContext(c)
 	if token != "" {
 		h.authService.Logout(token)
+	}
+
+	if h.auditSvc != nil && userID > 0 {
+		uid := userID
+		_ = h.auditSvc.LogWithRequest(
+			c.Request.Context(),
+			&uid,
+			model.ActionLogout,
+			"user",
+			&uid,
+			"",
+			"",
+			c.ClientIP(),
+			c.Request.UserAgent(),
+		)
 	}
 
 	Success(c, gin.H{"message": "logged out successfully"})

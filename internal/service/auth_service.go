@@ -18,6 +18,7 @@ type AuthService struct {
 	roleRepo       *repository.RoleRepository
 	config         *config.AuthConfig
 	tokenBlacklist map[string]bool // 简单内存黑名单，生产环境可用 Redis
+	auditSvc       *AuditService
 }
 
 type LoginRequest struct {
@@ -43,12 +44,14 @@ func NewAuthService(
 	userRepo *repository.UserRepository,
 	roleRepo *repository.RoleRepository,
 	cfg *config.AuthConfig,
+	auditSvc *AuditService,
 ) *AuthService {
 	return &AuthService{
 		userRepo:       userRepo,
 		roleRepo:       roleRepo,
 		config:         cfg,
 		tokenBlacklist: make(map[string]bool),
+		auditSvc:       auditSvc,
 	}
 }
 

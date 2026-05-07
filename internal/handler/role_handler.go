@@ -8,14 +8,16 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/response"
+	"github.com/moonlight-box/registry/internal/service"
 )
 
 type RoleHandler struct {
 	roleRepo *repository.RoleRepository
+	auditSvc *service.AuditService
 }
 
-func NewRoleHandler(roleRepo *repository.RoleRepository) *RoleHandler {
-	return &RoleHandler{roleRepo: roleRepo}
+func NewRoleHandler(roleRepo *repository.RoleRepository, auditSvc *service.AuditService) *RoleHandler {
+	return &RoleHandler{roleRepo: roleRepo, auditSvc: auditSvc}
 }
 
 func (h *RoleHandler) List(c *gin.Context) {
@@ -68,6 +70,25 @@ func (h *RoleHandler) Create(c *gin.Context) {
 	if err := h.roleRepo.Create(role); err != nil {
 		response.InternalError(c, err.Error())
 		return
+	}
+
+	if h.auditSvc != nil {
+		operatorID := c.GetUint("userID")
+		var opID *uint
+		if operatorID > 0 {
+			opID = &operatorID
+		}
+		_ = h.auditSvc.LogWithRequest(
+			c.Request.Context(),
+			opID,
+			model.ActionRoleAssign,
+			"role",
+			&role.ID,
+			role.Name,
+			`{"action":"create"}`,
+			c.ClientIP(),
+			c.Request.UserAgent(),
+		)
 	}
 
 	response.Created(c, role)

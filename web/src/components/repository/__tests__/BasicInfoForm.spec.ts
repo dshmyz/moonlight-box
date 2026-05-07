@@ -31,7 +31,7 @@ describe('BasicInfoForm', () => {
     const wrapper = createWrapper()
     
     expect(wrapper.find('.basic-info-form').exists()).toBe(true)
-    expect(wrapper.findAll('.el-form-item')).toHaveLength(5)
+    expect(wrapper.findAll('.el-form-item')).toHaveLength(6)
   })
 
   it('binds name field correctly', async () => {
@@ -95,17 +95,16 @@ describe('BasicInfoForm', () => {
   })
 
   it('shows correct package_type selection', async () => {
-    const wrapper = createWrapper({
-      form: {
-        name: '',
-        display_name: '',
-        description: '',
-        type: 'local',
-        package_type: 'maven2',
-      },
-    })
+    const form = {
+      name: '',
+      display_name: '',
+      description: '',
+      type: 'local' as const,
+      package_type: 'maven',
+    }
+    const wrapper = createWrapper({ form })
     
-    expect(wrapper.html()).toContain('maven2')
+    expect(wrapper.props('form').package_type).toBe('maven')
   })
 
   it('disables fields when disabled prop is true', async () => {

@@ -60,10 +60,13 @@ type DashboardService struct {
 	repoRepo    *repository.RepositoryRepository
 	storagePath string
 
-	cacheMu     sync.RWMutex
-	cachedStats *DashboardStats
-	cacheTime   time.Time
-	cacheTTL    time.Duration
+	cacheMu        sync.RWMutex
+	cachedStats    *DashboardStats
+	cacheTime      time.Time
+	cacheTTL       time.Duration
+	storageSize    int64
+	storageSizeMu  sync.RWMutex
+	storageUpdated time.Time
 }
 
 // NewDashboardService 创建仪表盘服务实例
@@ -109,17 +112,36 @@ func (s *DashboardService) computeStats(ctx context.Context) (*DashboardStats, e
 		return nil, err
 	}
 
+	var repoIDs []uint
+	for _, repo := range repos {
+		repoIDs = append(repoIDs, repo.ID)
+	}
+
+	var pkgCounts []struct {
+		RepositoryID uint
+		Count        int64
+	}
+	if len(repoIDs) > 0 {
+		s.db.Model(&model.Package{}).
+			Select("repository_id, COUNT(*) as count").
+			Where("repository_id IN ?", repoIDs).
+			Group("repository_id").
+			Scan(&pkgCounts)
+	}
+
+	pkgCountMap := make(map[uint]int64)
+	for _, pc := range pkgCounts {
+		pkgCountMap[pc.RepositoryID] = pc.Count
+	}
+
 	repoStatuses := make([]RepoStatus, 0, len(repos))
 	for _, repo := range repos {
-		var pkgCount int64
-		s.db.Model(&model.Package{}).Where("repository_id = ?", repo.ID).Count(&pkgCount)
-
 		status := RepoStatus{
 			Name:         repo.Name,
 			Type:         string(repo.Type),
 			PackageType:  repo.PackageType,
 			Status:       "healthy",
-			PackageCount: pkgCount,
+			PackageCount: pkgCountMap[repo.ID],
 		}
 		repoStatuses = append(repoStatuses, status)
 	}
@@ -166,9 +188,28 @@ func (s *DashboardService) getStorageInfo() StorageInfo {
 		return StorageInfo{}
 	}
 
+	s.storageSizeMu.RLock()
+	cached := s.storageSize
+	lastUpdated := s.storageUpdated
+	s.storageSizeMu.RUnlock()
+
+	if cached > 0 && time.Since(lastUpdated) < 5*time.Minute {
+		totalBytes := cached * 2
+		usagePercent := float64(cached) / float64(totalBytes) * 100
+		return StorageInfo{
+			TotalBytes:   totalBytes,
+			UsedBytes:    cached,
+			UsagePercent: usagePercent,
+		}
+	}
+
 	usedBytes := getDirSize(s.storagePath)
 
-	// 获取磁盘总空间
+	s.storageSizeMu.Lock()
+	s.storageSize = usedBytes
+	s.storageUpdated = time.Now()
+	s.storageSizeMu.Unlock()
+
 	var totalBytes int64
 	if usedBytes > 0 {
 		totalBytes = usedBytes * 2
@@ -226,15 +267,29 @@ func (s *DashboardService) getDownloadsLast7Days() []int64 {
 	result := make([]int64, 7)
 	now := time.Now()
 
-	for i := 6; i >= 0; i-- {
-		dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -i)
-		dayEnd := dayStart.Add(24 * time.Hour)
+	sevenDaysAgo := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -6)
 
-		var count int64
-		s.db.Model(&model.ProxyDownloadLog{}).
-			Where("created_at >= ? AND created_at < ?", dayStart, dayEnd).
-			Count(&count)
-		result[6-i] = count
+	type DailyCount struct {
+		Date  time.Time
+		Count int64
+	}
+
+	var dailyCounts []DailyCount
+	s.db.Model(&model.ProxyDownloadLog{}).
+		Select("DATE(created_at) as date, COUNT(*) as count").
+		Where("created_at >= ?", sevenDaysAgo).
+		Group("DATE(created_at)").
+		Scan(&dailyCounts)
+
+	countMap := make(map[string]int64)
+	for _, dc := range dailyCounts {
+		countMap[dc.Date.Format("2006-01-02")] = dc.Count
+	}
+
+	for i := 6; i >= 0; i-- {
+		day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -i)
+		dateKey := day.Format("2006-01-02")
+		result[6-i] = countMap[dateKey]
 	}
 
 	return result

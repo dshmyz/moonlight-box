@@ -145,7 +145,7 @@ func NewNpmAdapter(
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *NpmAdapter {
 	return &NpmAdapter{
-		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc),
+		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
 		pkgRepo:          pkgRepo,
 		storageSvc:       storageSvc,
 		auditSvc:         auditSvc,
@@ -161,6 +161,7 @@ func (a *NpmAdapter) RoutePrefix() string { return "/npm" }
 
 func (a *NpmAdapter) SetProxyRouter(pr *proxy.ProxyRouter) {
 	a.proxyRouter = pr
+	a.BaseAdapter.SetProxyRouter(pr)
 }
 
 func (a *NpmAdapter) RegisterRoutes(r *gin.RouterGroup, authMw gin.HandlerFunc, permMw func(resource, action string) gin.HandlerFunc) {
@@ -299,6 +300,13 @@ func (a *NpmAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) {
 		return
 	}
 
+	pkg, _ := a.pkgRepo.FindByNameAndType(name, model.PackageTypeNPM)
+	var pkgID *uint
+	if pkg != nil {
+		pkgID = &pkg.ID
+	}
+	a.LogDeleteAudit(c, repo.Name, name, identity.Version, pkgID)
+
 	a.TriggerWebhook(model.WebhookEventPackageDeleted, name, identity.Version, repo.Name, nil)
 
 	c.JSON(200, gin.H{"ok": true})
@@ -348,7 +356,7 @@ func (a *NpmAdapter) handleProxyMetadata(c *gin.Context, repo *model.Repository,
 		return fmt.Sprintf("%s/%s", strings.TrimSuffix(r.RemoteURL, "/"), pkgName)
 	}
 
-	if !a.GetMetadataFromProxy(c, repo, urlBuilder) {
+	if !a.GetMetadataFromProxy(c, repo, name, urlBuilder) {
 		response.NotFound(c, "package not found")
 	}
 }
@@ -399,6 +407,12 @@ func (a *NpmAdapter) downloadTarballForRepo(c *gin.Context, repo *model.Reposito
 		if scope != "" {
 			pkgName = scope + "/" + pkgName
 		}
+	}
+
+	decision := a.CheckDownloadPermission(c, repo, model.PackageTypeNPM, pkgName, version, filename)
+	if !decision.Allow {
+		c.JSON(decision.Code, gin.H{"error": decision.Message})
+		return
 	}
 
 	switch repo.Type {
@@ -807,7 +821,7 @@ func (a *NpmAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta
 }
 
 func (a *NpmAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version)
+	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeNPM)
 }
 
 func (a *NpmAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {

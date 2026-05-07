@@ -133,7 +133,7 @@ func NewYumAdapter(
 	proxyRouter *proxy.ProxyRouter,
 ) *YumAdapter {
 	return &YumAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
+		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
 		pkgRepo:     pkgRepo,
 		storageSvc:  storageSvc,
 		auditSvc:    auditSvc,
@@ -236,11 +236,11 @@ func (a *YumAdapter) RepoDataFile(c *gin.Context) {
 }
 
 func (a *YumAdapter) DownloadRPM(c *gin.Context) {
-	repo := c.Param("repo")
+	repoName := c.Param("repo")
 	filePath := c.Param("path")
 	filePath = strings.TrimPrefix(filePath, "/")
 
-	storageKey := fmt.Sprintf("repos/%s/Packages/%s", repo, filePath)
+	storageKey := fmt.Sprintf("repos/%s/Packages/%s", repoName, filePath)
 
 	backend := a.storageSvc.GetDefaultBackend()
 	content, err := backend.Get(c.Request.Context(), storageKey)
@@ -257,6 +257,18 @@ func (a *YumAdapter) DownloadRPM(c *gin.Context) {
 	}
 
 	filename := filepath.Base(filePath)
+
+	var repo *model.Repository
+	if r, ok := c.Get("repo"); ok {
+		repo = r.(*model.Repository)
+	}
+
+	decision := a.CheckDownloadPermission(c, repo, model.PackageTypeYum, filename, "", filename)
+	if !decision.Allow {
+		c.JSON(decision.Code, gin.H{"error": decision.Message})
+		return
+	}
+
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	c.DataFromReader(200, size, "application/x-rpm", content, nil)
 }
@@ -430,7 +442,7 @@ func (a *YumAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta
 }
 
 func (a *YumAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version)
+	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeYum)
 }
 
 func (a *YumAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {
@@ -647,6 +659,13 @@ func (a *YumAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) {
 		response.InternalError(c, err.Error())
 		return
 	}
+
+	pkg, _ := a.pkgRepo.FindByNameAndType(name, model.PackageTypeYum)
+	var pkgID *uint
+	if pkg != nil {
+		pkgID = &pkg.ID
+	}
+	a.LogDeleteAudit(c, repo.Name, name, version, pkgID)
 
 	c.JSON(200, gin.H{"ok": true})
 }

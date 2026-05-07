@@ -82,7 +82,7 @@ func setupMavenTestEnv() {
 	remoteClient := proxy.NewRemoteClient(tm, 5)
 	proxyRouter := proxy.NewProxyRouter(mavenTestDB, cacheSvc, remoteClient, repoRepo, groupRepo, nil)
 
-	mavenAdapter = adapter.NewMavenAdapter(mavenPkgRepo, mavenStorageSvc, auditSvc, proxyRouter)
+	mavenAdapter = adapter.NewMavenAdapter(mavenPkgRepo, mavenStorageSvc, auditSvc, proxyRouter, nil, nil)
 
 	router := setupMavenRouter()
 	mavenTestServer = httptest.NewServer(router)
@@ -109,7 +109,7 @@ func setupMavenRouter() *gin.Engine {
 		}
 	}
 
-	repoRouter := handler.NewRepoRouter(mavenRepoSvc)
+	repoRouter := handler.NewRepoRouter(mavenRepoSvc, nil)
 	repoRouter.RegisterAdapter("maven", mavenAdapter)
 
 	repoGroup := router.Group("/repo/:repoName")
@@ -136,9 +136,6 @@ func setupMavenRouter() *gin.Engine {
 }
 
 func TestE2E_Maven_PublishReleaseVersion(t *testing.T) {
-	setupMavenTestEnv()
-	defer teardownMavenTestEnv()
-
 	setupMavenTestEnv()
 	defer teardownMavenTestEnv()
 
@@ -396,7 +393,8 @@ func TestE2E_Maven_RepositoryManagement(t *testing.T) {
 
 	var result map[string]interface{}
 	parseJSONResponse(resp, &result)
-	assert.Equal(t, "maven-local-create", result["name"])
+	data := result["data"].(map[string]interface{})
+	assert.Equal(t, "maven-local-create", data["name"])
 
 	getResp, err := http.Get(mavenTestServer.URL + "/api/repositories/maven-local-create")
 	assert.Nil(t, err)
@@ -445,7 +443,8 @@ func TestE2E_Maven_ProxyRepository(t *testing.T) {
 
 	var result map[string]interface{}
 	parseJSONResponse(resp, &result)
-	assert.Equal(t, "https://repo.maven.apache.org/maven2", result["remote_url"])
+	data := result["data"].(map[string]interface{})
+	assert.Equal(t, "https://repo.maven.apache.org/maven2", data["remote_url"])
 }
 
 func TestE2E_Maven_VirtualRepository(t *testing.T) {

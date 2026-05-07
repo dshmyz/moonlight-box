@@ -7,6 +7,7 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/response"
+	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/util"
 
 	"github.com/gin-gonic/gin"
@@ -15,12 +16,14 @@ import (
 type UserHandler struct {
 	userRepo *repository.UserRepository
 	roleRepo *repository.RoleRepository
+	auditSvc *service.AuditService
 }
 
-func NewUserHandler(userRepo *repository.UserRepository, roleRepo *repository.RoleRepository) *UserHandler {
+func NewUserHandler(userRepo *repository.UserRepository, roleRepo *repository.RoleRepository, auditSvc *service.AuditService) *UserHandler {
 	return &UserHandler{
 		userRepo: userRepo,
 		roleRepo: roleRepo,
+		auditSvc: auditSvc,
 	}
 }
 
@@ -80,6 +83,25 @@ func (h *UserHandler) Create(c *gin.Context) {
 		return
 	}
 
+	if h.auditSvc != nil {
+		operatorID := c.GetUint("userID")
+		var opID *uint
+		if operatorID > 0 {
+			opID = &operatorID
+		}
+		_ = h.auditSvc.LogWithRequest(
+			c.Request.Context(),
+			opID,
+			model.ActionUserCreate,
+			"user",
+			&user.ID,
+			user.Username,
+			"",
+			c.ClientIP(),
+			c.Request.UserAgent(),
+		)
+	}
+
 	response.Created(c, user)
 }
 
@@ -108,6 +130,25 @@ func (h *UserHandler) UpdateStatus(c *gin.Context) {
 	if err := h.userRepo.Update(user); err != nil {
 		response.InternalError(c, err.Error())
 		return
+	}
+
+	if h.auditSvc != nil {
+		operatorID := c.GetUint("userID")
+		var opID *uint
+		if operatorID > 0 {
+			opID = &operatorID
+		}
+		_ = h.auditSvc.LogWithRequest(
+			c.Request.Context(),
+			opID,
+			model.ActionUserUpdate,
+			"user",
+			&user.ID,
+			user.Username,
+			`{"is_active":`+strconv.FormatBool(req.IsActive)+`}`,
+			c.ClientIP(),
+			c.Request.UserAgent(),
+		)
 	}
 
 	response.Success(c, user)
@@ -159,6 +200,25 @@ func (h *UserHandler) AssignRoles(c *gin.Context) {
 		if !existingMap[rID] {
 			h.roleRepo.AssignRole(user.ID, rID, user.ID)
 		}
+	}
+
+	if h.auditSvc != nil {
+		operatorID := c.GetUint("userID")
+		var opID *uint
+		if operatorID > 0 {
+			opID = &operatorID
+		}
+		_ = h.auditSvc.LogWithRequest(
+			c.Request.Context(),
+			opID,
+			model.ActionRoleAssign,
+			"user",
+			&user.ID,
+			user.Username,
+			`{"role_ids":`+strconv.Itoa(len(req.RoleIDs))+`}`,
+			c.ClientIP(),
+			c.Request.UserAgent(),
+		)
 	}
 
 	response.Success(c, gin.H{"message": "roles assigned"})

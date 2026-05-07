@@ -38,6 +38,7 @@ export interface Repository {
   last_metadata_sync_at?: string
   last_sync_status?: string
   url?: string
+  storage_backend_id?: number
 }
 
 export interface RepositoryGroup {
@@ -67,6 +68,30 @@ export interface SyncTask {
   error_message: string
   trigger_type: 'manual' | 'scheduled'
   triggered_by?: number
+}
+
+export interface HealthStatus {
+  repo_id: number
+  repo_name: string
+  is_healthy: boolean
+  last_check_time: string
+  last_check_error?: string
+  response_time: number
+  consecutive_failures: number
+  status_code?: number
+}
+
+export interface CircuitBreakerStats {
+  state: string
+  success_count: number
+  failure_count: number
+  last_failure_time?: string
+}
+
+export interface RepoHealthInfo {
+  repo_id: number
+  health_status: HealthStatus
+  circuit_breaker?: CircuitBreakerStats
 }
 
 export const repositoryApi = {
@@ -121,5 +146,18 @@ export const repositoryApi = {
 
   cancelSyncTask(taskId: string) {
     return request.post(`/sync-tasks/${taskId}/cancel`)
+  },
+
+  // 健康检查相关 API
+  getAllHealthStatuses() {
+    return request.get<{ total: number; items: RepoHealthInfo[] }>('/health/repos')
+  },
+
+  getHealthStatus(repoId: number) {
+    return request.get<RepoHealthInfo>(`/health/repos/${repoId}`)
+  },
+
+  resetCircuitBreaker(repoId: number) {
+    return request.post(`/health/repos/${repoId}/reset`)
   },
 }

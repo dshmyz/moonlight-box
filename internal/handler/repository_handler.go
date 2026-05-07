@@ -116,6 +116,7 @@ func (h *RepositoryHandler) Create(c *gin.Context) {
 		InsecureSkipVerify bool     `json:"insecure_skip_verify"`
 		FailureCacheRules  string   `json:"failure_cache_rules"`
 		Members            []string `json:"members"`
+		StorageBackendID   *uint    `json:"storage_backend_id"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -138,6 +139,7 @@ func (h *RepositoryHandler) Create(c *gin.Context) {
 		InsecureSkipVerify: req.InsecureSkipVerify,
 		FailureCacheRules:  req.FailureCacheRules,
 		Enabled:            true,
+		StorageBackendID:   req.StorageBackendID,
 	}
 
 	if err := h.svc.Create(&repo, req.Members); err != nil {

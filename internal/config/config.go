@@ -33,9 +33,13 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	Driver   string `mapstructure:"driver"`   // sqlite, postgres
-	DSN      string `mapstructure:"dsn"`
-	LogLevel string `mapstructure:"log_level"` // silent, error, warn, info
+	Driver          string        `mapstructure:"driver"` // sqlite, postgres
+	DSN             string        `mapstructure:"dsn"`
+	LogLevel        string        `mapstructure:"log_level"`          // silent, error, warn, info
+	MaxOpenConns    int           `mapstructure:"max_open_conns"`     // 最大打开连接数
+	MaxIdleConns    int           `mapstructure:"max_idle_conns"`     // 最大空闲连接数
+	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`  // 连接最大生命周期
+	ConnMaxIdleTime time.Duration `mapstructure:"conn_max_idle_time"` // 连接最大空闲时间
 }
 
 type StorageConfig struct {

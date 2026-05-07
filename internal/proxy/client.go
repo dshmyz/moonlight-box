@@ -5,12 +5,12 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"time"
 )
 
-// TransportManager 管理多个 Transport 实例，避免每次请求都创建
 type TransportManager struct {
 	secureTransport   *http.Transport
 	insecureTransport *http.Transport
@@ -18,7 +18,6 @@ type TransportManager struct {
 	dnsResolver       *DNSResolver
 }
 
-// NewTransportManager 创建 TransportManager
 func NewTransportManager(connectTimeout time.Duration, dnsResolver *DNSResolver) *TransportManager {
 	baseTransport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -54,7 +53,7 @@ func NewTransportManager(connectTimeout time.Duration, dnsResolver *DNSResolver)
 
 	insecureTransport := baseTransport.Clone()
 	insecureTransport.TLSClientConfig = &tls.Config{
-		InsecureSkipVerify: true, //nolint:gosec
+		InsecureSkipVerify: true,
 	}
 
 	return &TransportManager{
@@ -65,7 +64,6 @@ func NewTransportManager(connectTimeout time.Duration, dnsResolver *DNSResolver)
 	}
 }
 
-// GetTransport 根据是否需要跳过证书校验返回对应的 Transport
 func (m *TransportManager) GetTransport(insecure bool) *http.Transport {
 	if insecure {
 		return m.insecureTransport
@@ -73,29 +71,40 @@ func (m *TransportManager) GetTransport(insecure bool) *http.Transport {
 	return m.secureTransport
 }
 
-// RequestOptions 请求选项
 type RequestOptions struct {
 	ConnectTimeout     time.Duration
 	ReadTimeout        time.Duration
-	MaxRedirects       int // -1 表示不跟随重定向，0 表示使用默认值
+	MaxRedirects       int
 	InsecureSkipVerify bool
+	MaxRetries         int
+	RetryDelay         time.Duration
 }
 
-// RemoteClient 远程 HTTP 客户端
 type RemoteClient struct {
 	transportManager    *TransportManager
 	defaultMaxRedirects int
+	defaultMaxRetries   int
+	defaultRetryDelay   time.Duration
 }
 
-// NewRemoteClient 创建远程客户端
 func NewRemoteClient(tm *TransportManager, defaultMaxRedirects int) *RemoteClient {
 	return &RemoteClient{
 		transportManager:    tm,
 		defaultMaxRedirects: defaultMaxRedirects,
+		defaultMaxRetries:   3,
+		defaultRetryDelay:   1 * time.Second,
 	}
 }
 
-// buildClient 根据选项构建 http.Client
+func NewRemoteClientWithRetry(tm *TransportManager, defaultMaxRedirects, defaultMaxRetries int, defaultRetryDelay time.Duration) *RemoteClient {
+	return &RemoteClient{
+		transportManager:    tm,
+		defaultMaxRedirects: defaultMaxRedirects,
+		defaultMaxRetries:   defaultMaxRetries,
+		defaultRetryDelay:   defaultRetryDelay,
+	}
+}
+
 func (c *RemoteClient) buildClient(opts RequestOptions) *http.Client {
 	maxRedirects := opts.MaxRedirects
 	if maxRedirects == 0 {
@@ -119,7 +128,6 @@ func (c *RemoteClient) buildClient(opts RequestOptions) *http.Client {
 	}
 }
 
-// Get 发起 GET 请求，返回原始 HTTP 响应
 func (c *RemoteClient) Get(ctx context.Context, url string, opts RequestOptions, auth *ProxyAuthConfig) (*http.Response, error) {
 	client := c.buildClient(opts)
 
@@ -152,68 +160,160 @@ func (c *RemoteClient) Get(ctx context.Context, url string, opts RequestOptions,
 	return resp, nil
 }
 
-// GetBytes 发起 GET 请求并读取完整响应体
 func (c *RemoteClient) GetBytes(ctx context.Context, url string, opts RequestOptions, auth *ProxyAuthConfig) ([]byte, string, error) {
-	resp, err := c.Get(ctx, url, opts, auth)
-	if err != nil {
-		return nil, "", err
+	maxRetries := opts.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = c.defaultMaxRetries
 	}
-	defer resp.Body.Close()
-
-	contentType := resp.Header.Get("Content-Type")
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, "", fmt.Errorf("读取响应体失败: %w", err)
+	retryDelay := opts.RetryDelay
+	if retryDelay == 0 {
+		retryDelay = c.defaultRetryDelay
 	}
 
-	return body, contentType, nil
+	var lastErr error
+	for i := 0; i < maxRetries; i++ {
+		resp, err := c.Get(ctx, url, opts, auth)
+		if err != nil {
+			lastErr = err
+			
+			if c.shouldRetry(err, i, maxRetries) {
+				delay := time.Duration(math.Pow(2, float64(i))) * retryDelay
+				select {
+				case <-ctx.Done():
+					return nil, "", ctx.Err()
+				case <-time.After(delay):
+				}
+				continue
+			}
+			return nil, "", err
+		}
+
+		defer resp.Body.Close()
+		contentType := resp.Header.Get("Content-Type")
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			lastErr = fmt.Errorf("读取响应体失败: %w", err)
+			if c.shouldRetry(lastErr, i, maxRetries) {
+				delay := time.Duration(math.Pow(2, float64(i))) * retryDelay
+				select {
+				case <-ctx.Done():
+					return nil, "", ctx.Err()
+				case <-time.After(delay):
+				}
+				continue
+			}
+			return nil, "", lastErr
+		}
+
+		return body, contentType, nil
+	}
+
+	return nil, "", lastErr
 }
 
-// GetStream 发起 GET 请求并返回流式响应，避免大文件全部加载到内存
 func (c *RemoteClient) GetStream(ctx context.Context, url string, opts RequestOptions, auth *ProxyAuthConfig) (*http.Response, error) {
-	client := c.buildClient(opts)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
+	maxRetries := opts.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = c.defaultMaxRetries
+	}
+	retryDelay := opts.RetryDelay
+	if retryDelay == 0 {
+		retryDelay = c.defaultRetryDelay
 	}
 
-	req.Header.Set("User-Agent", "Moonlight-Registry/1.0")
+	var lastErr error
+	for i := 0; i < maxRetries; i++ {
+		client := c.buildClient(opts)
 
-	if auth != nil {
-		if err := auth.Apply(req); err != nil {
-			return nil, fmt.Errorf("应用认证信息失败: %w", err)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("创建请求失败: %w", err)
 		}
-	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("请求失败: %w", err)
-	}
+		req.Header.Set("User-Agent", "Moonlight-Registry/1.0")
 
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return nil, &RemoteError{
-			StatusCode: resp.StatusCode,
-			URL:        url,
+		if auth != nil {
+			if err := auth.Apply(req); err != nil {
+				return nil, fmt.Errorf("应用认证信息失败: %w", err)
+			}
 		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			if c.shouldRetry(err, i, maxRetries) {
+				delay := time.Duration(math.Pow(2, float64(i))) * retryDelay
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(delay):
+				}
+				continue
+			}
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			lastErr = &RemoteError{
+				StatusCode: resp.StatusCode,
+				URL:        url,
+			}
+			if c.shouldRetry(lastErr, i, maxRetries) {
+				delay := time.Duration(math.Pow(2, float64(i))) * retryDelay
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(delay):
+				}
+				continue
+			}
+			return nil, lastErr
+		}
+
+		return resp, nil
 	}
 
-	return resp, nil
+	return nil, lastErr
 }
 
-// RemoteError 远程请求错误
+func (c *RemoteClient) shouldRetry(err error, attempt, maxRetries int) bool {
+	if attempt >= maxRetries-1 {
+		return false
+	}
+
+	switch err {
+	case context.DeadlineExceeded:
+		return true
+	case context.Canceled:
+		return false
+	}
+
+	if remoteErr, ok := err.(*RemoteError); ok {
+		switch remoteErr.StatusCode {
+		case 500, 502, 503, 504:
+			return true
+		default:
+			return false
+		}
+	}
+
+	if _, ok := err.(net.Error); ok {
+		return true
+	}
+
+	return false
+}
+
 type RemoteError struct {
 	StatusCode int
 	URL        string
 }
 
-// Error 实现 error 接口
 func (e *RemoteError) Error() string {
 	return fmt.Sprintf("远程请求失败: %d %s", e.StatusCode, e.URL)
 }
 
-// IsNotFound 判断是否为 404 未找到错误
 func (e *RemoteError) IsNotFound() bool {
 	return e.StatusCode == http.StatusNotFound
 }

@@ -73,7 +73,7 @@ func NewAptAdapter(
 	auditSvc *service.AuditService,
 ) *AptAdapter {
 	return &AptAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
+		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
 		pkgRepo:     pkgRepo,
 		repoRepo:    repoRepo,
 		storageSvc:  storageSvc,
@@ -269,6 +269,18 @@ func (a *AptAdapter) DownloadDeb(c *gin.Context) {
 	}
 
 	filename := filepath.Base(filePath)
+
+	var repo *model.Repository
+	if r, ok := c.Get("repo"); ok {
+		repo = r.(*model.Repository)
+	}
+
+	decision := a.CheckDownloadPermission(c, repo, model.PackageTypeApt, filename, "", filename)
+	if !decision.Allow {
+		c.JSON(decision.Code, gin.H{"error": decision.Message})
+		return
+	}
+
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)))
 	c.DataFromReader(200, size, "application/vnd.debian.binary-package", content, nil)
 }
@@ -435,7 +447,7 @@ func (a *AptAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta
 }
 
 func (a *AptAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version)
+	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeApt)
 }
 
 func (a *AptAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {

@@ -115,8 +115,8 @@ func main() {
 	proxyDownloadLogRepo := repository.NewProxyDownloadLogRepository(database.GetDB())
 
 	// 初始化服务
-	authService := service.NewAuthService(userRepo, roleRepo, &cfg.Auth)
 	auditSvc := service.NewAuditService()
+	authService := service.NewAuthService(userRepo, roleRepo, &cfg.Auth, auditSvc)
 
 	// 初始化仓库管理和缓存服务
 	db := database.GetDB()
@@ -199,6 +199,12 @@ func main() {
 	goAdapter.SetProxyRouter(proxyRouter)
 	yumAdapter.SetProxyRouter(proxyRouter)
 
+	// 注入日志仓库到需要记录代理下载日志的适配器
+	npmAdapter.SetLogRepo(proxyDownloadLogRepo)
+	mavenAdapter.SetLogRepo(proxyDownloadLogRepo)
+	pypiAdapter.SetLogRepo(proxyDownloadLogRepo)
+	goAdapter.SetLogRepo(proxyDownloadLogRepo)
+
 	adapters := []adapter.Adapter{
 		npmAdapter,
 		mavenAdapter,
@@ -260,8 +266,8 @@ func main() {
 	auditRepo := repository.NewAuditRepository(db)
 	auditLogHandler := handler.NewAuditLogHandler(auditRepo)
 	blockRuleHandler := handler.NewBlockRuleHandler(blockRuleSvc, auditSvc, auditRepo)
-	userHandler := handler.NewUserHandler(userRepo, roleRepo)
-	roleHandler := handler.NewRoleHandler(roleRepo)
+	userHandler := handler.NewUserHandler(userRepo, roleRepo, auditSvc)
+	roleHandler := handler.NewRoleHandler(roleRepo, auditSvc)
 	pkgVersionHandler := handler.NewPackageVersionHandler(packageRepo)
 
 	// 初始化 CAS 认证服务
@@ -280,7 +286,7 @@ func main() {
 	webhookHandler := handler.NewWebhookHandler(webhookSvc)
 
 	// 初始化系统配置服务 handler
-	systemConfigHandler := handler.NewSystemConfigHandler(systemConfigSvc)
+	systemConfigHandler := handler.NewSystemConfigHandler(systemConfigSvc, auditSvc)
 	systemInfoHandler := handler.NewSystemInfoHandler(version, buildTime, gitCommit, time.Now().Unix())
 
 	// 初始化文件浏览服务
@@ -348,7 +354,7 @@ func main() {
 	}
 
 	// 创建路由器
-	router := setupRouter(cfg, authService, adapters, repoHandler, cacheHandler, blockRuleHandler, searchHandler, dashboardHandler, casHandler, blockRuleSvc, storageBackendHandler, securityHandler, auditLogHandler, userHandler, pkgVersionHandler, permCacheSvc, roleHandler, publicRepoHandler, backupHandler, webhookHandler, systemConfigHandler, systemInfoHandler, fileBrowseHandler, repoSvc, migrationHandler, aiHandler, proxyDownloadLogHandler, healthCheckHandler)
+	router := setupRouter(cfg, authService, auditSvc, adapters, repoHandler, cacheHandler, blockRuleHandler, searchHandler, dashboardHandler, casHandler, blockRuleSvc, storageBackendHandler, securityHandler, auditLogHandler, userHandler, pkgVersionHandler, permCacheSvc, roleHandler, publicRepoHandler, backupHandler, webhookHandler, systemConfigHandler, systemInfoHandler, fileBrowseHandler, repoSvc, migrationHandler, aiHandler, proxyDownloadLogHandler, healthCheckHandler)
 
 	// 设置 Webhook 服务到适配器
 	for _, adap := range adapters {
@@ -408,10 +414,13 @@ func main() {
 		}).Error("Server forced to shutdown")
 	}
 
+	// 关闭审计服务，确保所有日志都已写入
+	auditSvc.Shutdown()
+
 	logrus.Info("Server exited")
 }
 
-func setupRouter(cfg *config.Config, authService *service.AuthService, adapters []adapter.Adapter, repoHandler *handler.RepositoryHandler, cacheHandler *handler.CacheHandler, blockRuleHandler *handler.BlockRuleHandler, searchHandler *handler.PackageSearchHandler, dashboardHandler *handler.DashboardHandler, casHandler *handler.CASHandler, blockRuleSvc *service.BlockRuleService, storageBackendHandler *handler.StorageBackendHandler, securityHandler *handler.SecurityHandler, auditLogHandler *handler.AuditLogHandler, userHandler *handler.UserHandler, pkgVersionHandler *handler.PackageVersionHandler, permCacheSvc *service.PermissionCacheService, roleHandler *handler.RoleHandler, publicRepoHandler *handler.PublicRepoHandler, backupHandler *handler.BackupHandler, webhookHandler *handler.WebhookHandler, systemConfigHandler *handler.SystemConfigHandler, systemInfoHandler *handler.SystemInfoHandler, fileBrowseHandler *handler.FileBrowseHandler, repoSvc *service.RepositoryService, migrationHandler *handler.MigrationHandler, aiHandler *handler.AIHandler, proxyDownloadLogHandler *handler.ProxyDownloadLogHandler, healthCheckHandler *handler.HealthCheckHandler) *gin.Engine {
+func setupRouter(cfg *config.Config, authService *service.AuthService, auditSvc *service.AuditService, adapters []adapter.Adapter, repoHandler *handler.RepositoryHandler, cacheHandler *handler.CacheHandler, blockRuleHandler *handler.BlockRuleHandler, searchHandler *handler.PackageSearchHandler, dashboardHandler *handler.DashboardHandler, casHandler *handler.CASHandler, blockRuleSvc *service.BlockRuleService, storageBackendHandler *handler.StorageBackendHandler, securityHandler *handler.SecurityHandler, auditLogHandler *handler.AuditLogHandler, userHandler *handler.UserHandler, pkgVersionHandler *handler.PackageVersionHandler, permCacheSvc *service.PermissionCacheService, roleHandler *handler.RoleHandler, publicRepoHandler *handler.PublicRepoHandler, backupHandler *handler.BackupHandler, webhookHandler *handler.WebhookHandler, systemConfigHandler *handler.SystemConfigHandler, systemInfoHandler *handler.SystemInfoHandler, fileBrowseHandler *handler.FileBrowseHandler, repoSvc *service.RepositoryService, migrationHandler *handler.MigrationHandler, aiHandler *handler.AIHandler, proxyDownloadLogHandler *handler.ProxyDownloadLogHandler, healthCheckHandler *handler.HealthCheckHandler) *gin.Engine {
 	r := gin.New()
 
 	// 全局中间件
@@ -422,7 +431,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 	r.Use(gin.Logger())
 
 	// 初始化 auth handler
-	authHandler := handler.NewAuthHandler(authService)
+	authHandler := handler.NewAuthHandler(authService, auditSvc)
 
 	// 健康检查
 	r.GET("/health", func(c *gin.Context) {
@@ -502,11 +511,14 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 			cache.Use(middleware.RequirePermission(permCacheSvc, "cache", "read"))
 			{
 				cache.GET("/stats", cacheHandler.GetStats)
+				cache.GET("/items", cacheHandler.List)
 			}
 			cacheWrite := protected.Group("/cache")
 			cacheWrite.Use(middleware.RequirePermission(permCacheSvc, "cache", "write"))
 			{
 				cacheWrite.DELETE("", cacheHandler.Clear)
+				cacheWrite.DELETE("/items/:key", cacheHandler.DeleteItem)
+				cacheWrite.DELETE("/expired", cacheHandler.CleanupExpired)
 				cacheWrite.POST("/invalidate", cacheHandler.Invalidate)
 			}
 
@@ -735,7 +747,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 	}
 
 	// 注册统一仓库路由
-	repoRouter := handler.NewRepoRouter(repoHandler.Service())
+	repoRouter := handler.NewRepoRouter(repoHandler.Service(), auditSvc)
 	for _, adap := range adapters {
 		if repoAware, ok := adap.(adapter.RepoAwareAdapter); ok {
 			repoRouter.RegisterAdapter(string(adap.Type()), repoAware)
@@ -760,23 +772,16 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 		}
 
 		deleteGroup := repoGroup.Group("")
-		deleteGroup.Use(authMw, permMw("npm", "delete"))
+		deleteGroup.Use(authMw, permMw("package", "delete"))
 		{
 			deleteGroup.DELETE("/*path", repoRouter.HandleDelete)
 		}
 	}
 
-	// 前端静态文件服务（优先使用嵌入的前端，否则从目录读取）
-	frontendFS := GetEmbeddedFrontend()
-	if frontendFS != nil {
-		frontendCfg := middleware.DefaultFrontendConfig()
-		r.NoRoute(middleware.ServeFrontendFS(frontendFS, frontendCfg))
-		fmt.Println("Using embedded frontend")
-	} else {
-		frontendCfg := middleware.DefaultFrontendConfig()
-		r.NoRoute(middleware.ServeFrontend(frontendCfg))
-		fmt.Println("Using filesystem-based frontend from", frontendCfg.StaticDir)
-	}
+	// 前端静态文件服务
+	frontendCfg := middleware.DefaultFrontendConfig()
+	r.NoRoute(middleware.ServeFrontend(frontendCfg))
+	fmt.Println("Using filesystem-based frontend from", frontendCfg.StaticDir)
 
 	return r
 }

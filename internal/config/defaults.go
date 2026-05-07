@@ -16,6 +16,10 @@ func setDefaults(v interface {
 	v.SetDefault("database.driver", "sqlite")
 	v.SetDefault("database.dsn", "./data/registry.db")
 	v.SetDefault("database.log_level", "warn")
+	v.SetDefault("database.max_open_conns", 100)
+	v.SetDefault("database.max_idle_conns", 10)
+	v.SetDefault("database.conn_max_lifetime", 1*time.Hour)
+	v.SetDefault("database.conn_max_idle_time", 30*time.Minute)
 
 	// Storage
 	v.SetDefault("storage.backend", "local")
