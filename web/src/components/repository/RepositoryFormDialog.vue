@@ -296,7 +296,7 @@ watch(
 
       if (repo.members && repo.members.length > 0) {
         membersText.value = repo.members
-          .map(m => m.member_repo?.name || '')
+          .map(m => typeof m === 'string' ? m : m.member_repo?.name || '')
           .filter(Boolean)
           .join('\n')
       }

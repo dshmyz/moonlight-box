@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import { mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import VirtualMembersForm from '../VirtualMembersForm.vue'
@@ -63,7 +63,7 @@ describe('VirtualMembersForm', () => {
   })
 
   it('adds new member when clicking add button', async () => {
-    ;(repositoryApi.list as vi.Mock).mockResolvedValue(mockRepos)
+    ;(repositoryApi.list as Mock).mockResolvedValue(mockRepos)
     
     const wrapper = createWrapper({
       membersText: '',
@@ -93,7 +93,7 @@ describe('VirtualMembersForm', () => {
   })
 
   it('emits update:membersText when members change', async () => {
-    ;(repositoryApi.list as vi.Mock).mockResolvedValue(mockRepos)
+    ;(repositoryApi.list as Mock).mockResolvedValue(mockRepos)
     
     const wrapper = createWrapper({
       membersText: 'repo1',
@@ -133,7 +133,7 @@ describe('VirtualMembersForm', () => {
   })
 
   it('updates membersText when adding multiple members', async () => {
-    ;(repositoryApi.list as vi.Mock).mockResolvedValue(mockRepos)
+    ;(repositoryApi.list as Mock).mockResolvedValue(mockRepos)
     
     const wrapper = createWrapper({
       membersText: '',
@@ -153,7 +153,7 @@ describe('VirtualMembersForm', () => {
   })
 
   it('loads available repos on mount', async () => {
-    ;(repositoryApi.list as vi.Mock).mockResolvedValue(mockRepos)
+    ;(repositoryApi.list as Mock).mockResolvedValue(mockRepos)
     
     createWrapper()
     
@@ -161,7 +161,7 @@ describe('VirtualMembersForm', () => {
   })
 
   it('disables add button when no repos available', async () => {
-    ;(repositoryApi.list as vi.Mock).mockResolvedValue([])
+    ;(repositoryApi.list as Mock).mockResolvedValue([])
     
     const wrapper = createWrapper()
     
@@ -173,7 +173,7 @@ describe('VirtualMembersForm', () => {
   })
 
   it('disables add button when loading', async () => {
-    ;(repositoryApi.list as vi.Mock).mockImplementation(() => {
+    ;(repositoryApi.list as Mock).mockImplementation(() => {
       return new Promise(resolve => setTimeout(() => resolve(mockRepos), 100))
     })
     
