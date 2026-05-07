@@ -86,9 +86,11 @@ type CacheConfig struct {
 }
 
 type LoggingConfig struct {
-	Level  string `mapstructure:"level"`  // debug, info, warn, error
-	Format string `mapstructure:"format"` // json, console
-	Output string `mapstructure:"output"`
+	Level            string        `mapstructure:"level"`  // debug, info, warn, error
+	Format           string        `mapstructure:"format"` // json, console
+	Output           string        `mapstructure:"output"`
+	LogRetentionDays int           `mapstructure:"log_retention_days"` // 日志保留天数
+	CleanupInterval  time.Duration `mapstructure:"cleanup_interval"`   // 清理间隔
 }
 
 type ProxyConfig struct {

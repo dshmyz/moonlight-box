@@ -51,6 +51,8 @@ func setDefaults(v interface {
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.format", "console")
 	v.SetDefault("logging.output", "stdout")
+	v.SetDefault("logging.log_retention_days", 30)         // 默认保留30天
+	v.SetDefault("logging.cleanup_interval", 24*time.Hour) // 默认每24小时清理一次
 
 	// Proxy
 	v.SetDefault("proxy.default_timeout", 30*time.Second)
