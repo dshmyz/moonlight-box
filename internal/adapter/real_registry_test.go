@@ -53,7 +53,7 @@ func setupGoAdapter(t *testing.T) *GoAdapter {
 
 	auditSvc := service.NewAuditService()
 
-	adapter := NewGoAdapter(pkgRepo, storageSvc, auditSvc, nil)
+	adapter := NewGoAdapter(pkgRepo, storageSvc, auditSvc, nil, nil)
 	return adapter
 }
 
