@@ -9,7 +9,6 @@ const (
 	PackageTypeMaven   PackageType = "maven"
 	PackageTypePyPI    PackageType = "pypi"
 	PackageTypeGo      PackageType = "go"
-	PackageTypeNuGet   PackageType = "nuget"
 	PackageTypeYum     PackageType = "yum"
 	PackageTypeApt     PackageType = "apt"
 	PackageTypeGeneric PackageType = "generic"

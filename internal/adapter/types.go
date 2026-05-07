@@ -19,7 +19,6 @@ const (
 	MavenType   = types.MavenType
 	PyPIType    = types.PyPIType
 	GoType      = types.GoType
-	NuGetType   = types.NuGetType
 	YumType     = types.YumType
 	AptType     = types.AptType
 	GenericType = types.GenericType

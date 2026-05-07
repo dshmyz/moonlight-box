@@ -40,9 +40,9 @@ func (w *MigrationWorker) Execute(ctx context.Context, task *model.MigrationTask
 	w.service.RegisterContext(task.ID, ctx, cancel)
 
 	logrus.WithFields(logrus.Fields{
-		"module":     "migration",
-		"task_id":    task.ID,
-		"source_url": task.SourceURL,
+		"module":      "migration",
+		"task_id":     task.ID,
+		"source_url":  task.SourceURL,
 		"concurrency": w.concurrency,
 	}).Info("Migration task started")
 
@@ -132,12 +132,12 @@ func (w *MigrationWorker) Execute(ctx context.Context, task *model.MigrationTask
 
 				if err := w.migrateComponent(task.ID, client, c); err != nil {
 					logrus.WithFields(logrus.Fields{
-						"module":       "migration",
-						"task_id":      task.ID,
-						"component":    c.Name,
-						"version":      c.Version,
-						"format":       c.Format,
-						"error":        err,
+						"module":    "migration",
+						"task_id":   task.ID,
+						"component": c.Name,
+						"version":   c.Version,
+						"format":    c.Format,
+						"error":     err,
 					}).Warn("Failed to migrate component")
 					w.service.AddLog(task.ID, fmt.Sprintf("迁移 %s (v%s) 失败: %v", c.Name, c.Version, err))
 					w.incrementFailed(task.ID)
@@ -200,8 +200,6 @@ func (w *MigrationWorker) storeAsset(taskID uint, comp NexusComponent, asset Nex
 		return w.storeNpmAsset(taskID, comp, asset, reader, size)
 	case "pypi":
 		return w.storePypiAsset(taskID, comp, asset, reader, size)
-	case "nuget":
-		return w.storeNugetAsset(taskID, comp, asset, reader, size)
 	case "go":
 		return w.storeGoAsset(taskID, comp, asset, reader, size)
 	case "raw":
@@ -317,42 +315,6 @@ func (w *MigrationWorker) storePypiAsset(taskID uint, comp NexusComponent, asset
 	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:           name,
 		Type:           model.PackageTypePyPI,
-		RepositoryID:   task.TargetRepositoryID,
-		RepositoryType: repoType,
-		Description:    comp.Name,
-	}, &model.PackageVersion{
-		Version:     version,
-		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
-	}, &model.PackageFile{
-		Filename:    filepath.Base(asset.Path),
-		FileType:    model.FileTypePrimary,
-		StoragePath: storageKey,
-		SizeBytes:   size,
-	})
-
-	return err
-}
-
-func (w *MigrationWorker) storeNugetAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
-	name := comp.Name
-	version := comp.Version
-	if version == "" {
-		version = "1.0.0"
-	}
-
-	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackage(context.Background(), "nuget", name, storageVersion, reader, size)
-	if err != nil {
-		return err
-	}
-
-	task, _ := w.service.GetTask(taskID)
-	repoType := model.RepoTypeLocal
-
-	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
-		Name:           name,
-		Type:           model.PackageTypeNuGet,
 		RepositoryID:   task.TargetRepositoryID,
 		RepositoryType: repoType,
 		Description:    comp.Name,

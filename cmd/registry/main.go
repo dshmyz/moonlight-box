@@ -166,7 +166,6 @@ func main() {
 	mavenAdapter := adapter.NewMavenAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
 	pypiAdapter := adapter.NewPyPIAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
 	goAdapter := adapter.NewGoAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
-	nugetAdapter := adapter.NewNuGetAdapter(packageRepo, storageSvc, auditSvc)
 	genericAdapter := adapter.NewGenericAdapter(packageRepo, repoRepo, storageSvc, auditSvc)
 	yumAdapter := adapter.NewYumAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
 	aptAdapter := adapter.NewAptAdapter(packageRepo, repoRepo, storageSvc, auditSvc)
@@ -177,7 +176,6 @@ func main() {
 		string(types.MavenType):   mavenAdapter,
 		string(types.PyPIType):    pypiAdapter,
 		string(types.GoType):      goAdapter,
-		string(types.NuGetType):   nugetAdapter,
 		string(types.GenericType): genericAdapter,
 		string(types.YumType):     yumAdapter,
 		string(types.AptType):     aptAdapter,
@@ -210,7 +208,6 @@ func main() {
 		mavenAdapter,
 		pypiAdapter,
 		goAdapter,
-		nugetAdapter,
 		genericAdapter,
 		yumAdapter,
 		aptAdapter,
