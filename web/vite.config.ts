@@ -1,6 +1,11 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
+import { webcrypto } from 'node:crypto'
+
+if (!globalThis.crypto) {
+  globalThis.crypto = webcrypto as Crypto
+}
 
 export default defineConfig({
   plugins: [vue()],
@@ -31,7 +36,8 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: 'dist',
+    outDir: '../cmd/registry/dist',
+    emptyOutDir: true,
     assetsDir: 'assets',
   },
 })
