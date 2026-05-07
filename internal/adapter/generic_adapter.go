@@ -21,11 +21,7 @@ import (
 
 type GenericAdapter struct {
 	*BaseAdapter
-	pkgRepo          *repository.PackageRepository
 	repoRepo         *repository.RepositoryRepository
-	storageSvc       *service.StorageService
-	auditSvc         *service.AuditService
-	proxyRouter      *proxy.ProxyRouter
 	proxyDownloadSvc *service.ProxyDownloadService
 }
 
@@ -45,15 +41,13 @@ func NewGenericAdapter(
 	proxyRouter *proxy.ProxyRouter,
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *GenericAdapter {
-	return &GenericAdapter{
+	adapter := &GenericAdapter{
 		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
-		pkgRepo:          pkgRepo,
 		repoRepo:         repoRepo,
-		storageSvc:       storageSvc,
-		auditSvc:         auditSvc,
-		proxyRouter:      proxyRouter,
 		proxyDownloadSvc: proxyDownloadSvc,
 	}
+	adapter.SetProxyRouter(proxyRouter)
+	return adapter
 }
 
 func (a *GenericAdapter) Type() PackageType   { return GenericType }

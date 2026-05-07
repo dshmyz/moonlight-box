@@ -22,10 +22,6 @@ import (
 
 type GoAdapter struct {
 	*BaseAdapter
-	pkgRepo          *repository.PackageRepository
-	storageSvc       *service.StorageService
-	auditSvc         *service.AuditService
-	proxyRouter      *proxy.ProxyRouter
 	proxyDownloadSvc *service.ProxyDownloadService
 	uploadSvc        *service.UploadService
 }
@@ -37,19 +33,13 @@ func NewGoAdapter(
 	proxyRouter *proxy.ProxyRouter,
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *GoAdapter {
-	return &GoAdapter{
+	adapter := &GoAdapter{
 		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
-		pkgRepo:          pkgRepo,
-		storageSvc:       storageSvc,
-		auditSvc:         auditSvc,
-		proxyRouter:      proxyRouter,
 		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
 	}
-}
-
-func (a *GoAdapter) SetProxyRouter(pr *proxy.ProxyRouter) {
-	a.proxyRouter = pr
+	adapter.SetProxyRouter(proxyRouter)
+	return adapter
 }
 
 func (a *GoAdapter) Type() PackageType   { return GoType }

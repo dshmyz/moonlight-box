@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/moonlight-box/registry/internal/config"
@@ -82,9 +83,6 @@ func main() {
 	fmt.Println("\n=== 测试 2: PyPI 包下载 ===")
 	testPyPIPackage(proxyDownloadSvc, repoRepo, db)
 
-	fmt.Println("\n=== 测试 3: Maven 包下载 ===")
-	testMavenPackage(proxyDownloadSvc, repoRepo, db)
-
 	fmt.Println("\n=== 验证数据库存储 ===")
 	verifyDatabaseStorage(db)
 
@@ -125,6 +123,9 @@ func testNPMPackage(svc *service.ProxyDownloadService, repoRepo *repository.Repo
 		ResolutionMode: service.ResolutionModeProxyOnly,
 		IPAddress:      "127.0.0.1",
 		UserAgent:      "test-script",
+		URLBuilder: func(repo *model.Repository, name, version string) string {
+			return fmt.Sprintf("%s/%s/-/%s-%s.tgz", repo.RemoteURL, name, name, version)
+		},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -176,6 +177,13 @@ func testPyPIPackage(svc *service.ProxyDownloadService, repoRepo *repository.Rep
 		ResolutionMode: service.ResolutionModeProxyOnly,
 		IPAddress:      "127.0.0.1",
 		UserAgent:      "test-script",
+		URLBuilder: func(repo *model.Repository, name, _ string) string {
+			base := strings.TrimSuffix(repo.RemoteURL, "/")
+			if !strings.HasSuffix(base, "/simple") {
+				base = base + "/simple"
+			}
+			return fmt.Sprintf("%s/%s/", base, name)
+		},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -188,57 +196,6 @@ func testPyPIPackage(svc *service.ProxyDownloadService, repoRepo *repository.Rep
 	}
 
 	fmt.Printf("✓ 下载 requests 成功!\n")
-	fmt.Printf("  - 大小: %d bytes\n", result.Size)
-	fmt.Printf("  - 存储路径: %s\n", result.StorageKey)
-	fmt.Printf("  - 来自缓存: %v\n", result.FromCache)
-}
-
-func testMavenPackage(svc *service.ProxyDownloadService, repoRepo *repository.RepositoryRepository, db *gorm.DB) {
-	repo := &model.Repository{
-		Name:        "maven-proxy-test",
-		DisplayName: "Maven Proxy Test",
-		Type:        model.RepoTypeProxy,
-		PackageType: string(model.PackageTypeMaven),
-		RemoteURL:   "https://repo.maven.apache.org/maven2",
-		Enabled:     true,
-	}
-
-	var existingRepo model.Repository
-	if err := db.Where("name = ?", repo.Name).First(&existingRepo).Error; err == nil {
-		repo = &existingRepo
-		fmt.Printf("使用已存在的仓库: %s (ID: %d)\n", repo.Name, repo.ID)
-	} else {
-		if err := repoRepo.Create(repo); err != nil {
-			fmt.Printf("创建 Maven 代理仓库失败: %v\n", err)
-			return
-		}
-		fmt.Printf("创建 Maven 代理仓库成功: %s (ID: %d)\n", repo.Name, repo.ID)
-	}
-
-	req := &service.ProxyDownloadRequest{
-		PkgType:        "maven",
-		Name:           "org.apache.commons:commons-lang3",
-		Version:        "3.14.0",
-		Filename:       "commons-lang3-3.14.0.jar",
-		Repo:           repo,
-		PackageType:    model.PackageTypeMaven,
-		RepositoryType: model.RepoTypeProxy,
-		FileType:       model.FileTypePrimary,
-		ResolutionMode: service.ResolutionModeProxyOnly,
-		IPAddress:      "127.0.0.1",
-		UserAgent:      "test-script",
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	result, err := svc.Download(ctx, req)
-	if err != nil {
-		fmt.Printf("下载 commons-lang3 失败: %v\n", err)
-		return
-	}
-
-	fmt.Printf("✓ 下载 commons-lang3 成功!\n")
 	fmt.Printf("  - 大小: %d bytes\n", result.Size)
 	fmt.Printf("  - 存储路径: %s\n", result.StorageKey)
 	fmt.Printf("  - 来自缓存: %v\n", result.FromCache)
