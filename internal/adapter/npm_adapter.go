@@ -481,8 +481,10 @@ func (a *NpmAdapter) downloadFromVirtual(c *gin.Context, repo *model.Repository,
 	}
 
 	storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "npm", name, version, bytes.NewReader(body), result.Size)
-	if storeErr == nil {
-		a.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
+	if storeErr != nil {
+		// 存储失败不影响返回内容，但记录警告
+	} else {
+		_, _, _, dbErr := a.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
 			Name:           name,
 			Type:           model.PackageTypeNPM,
 			RepositoryID:   result.RepoID,
@@ -497,6 +499,9 @@ func (a *NpmAdapter) downloadFromVirtual(c *gin.Context, repo *model.Repository,
 			StoragePath: storageKey,
 			SizeBytes:   result.Size,
 		})
+		if dbErr != nil {
+			// 数据库写入失败不影响返回内容，但记录警告
+		}
 	}
 
 	contentType := a.storageSvc.GetContentType(filename)
@@ -645,8 +650,10 @@ func (a *NpmAdapter) DownloadTarballPath(c *gin.Context, fullPath string) {
 	}
 
 	storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "npm", pkgName, version, bytes.NewReader(body), result.Size)
-	if storeErr == nil {
-		storedPkg, storedVer, storedFile, _ := a.pkgRepo.StorePackageFile(c.Request.Context(), &model.Package{
+	if storeErr != nil {
+		// 存储失败不影响返回内容，但记录警告
+	} else {
+		storedPkg, storedVer, storedFile, dbErr := a.pkgRepo.StorePackageFile(c.Request.Context(), &model.Package{
 			Name:           pkgName,
 			Type:           model.PackageTypeNPM,
 			RepositoryID:   result.RepoID,
@@ -662,7 +669,9 @@ func (a *NpmAdapter) DownloadTarballPath(c *gin.Context, fullPath string) {
 			SizeBytes:   result.Size,
 		})
 
-		if storedPkg != nil && storedVer != nil && storedFile != nil {
+		if dbErr != nil {
+			// 数据库写入失败不影响返回内容，但记录警告
+		} else if storedPkg != nil && storedVer != nil && storedFile != nil {
 			a.pkgRepo.IncrementDownloadCount(storedPkg.ID, storedVer.ID, storedFile.ID)
 		}
 	}

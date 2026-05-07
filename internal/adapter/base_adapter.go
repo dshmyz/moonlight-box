@@ -388,8 +388,10 @@ func (b *BaseAdapter) DownloadFromProxyAndCache(c *gin.Context, opts *ProxyDownl
 	}
 
 	storageKey, storeErr := b.storageSvc.StorePackage(c.Request.Context(), string(opts.PkgType), opts.Name, opts.Version, bytes.NewReader(body), result.Size)
-	if storeErr == nil {
-		b.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
+	if storeErr != nil {
+		// 存储失败不影响返回内容，但记录警告
+	} else {
+		_, _, _, dbErr := b.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
 			Name:           opts.Name,
 			Type:           opts.PkgType,
 			RepositoryID:   result.RepoID,
@@ -404,6 +406,9 @@ func (b *BaseAdapter) DownloadFromProxyAndCache(c *gin.Context, opts *ProxyDownl
 			StoragePath: storageKey,
 			SizeBytes:   result.Size,
 		})
+		if dbErr != nil {
+			// 数据库写入失败不影响返回内容，但记录警告
+		}
 	}
 
 	contentType := opts.ContentType

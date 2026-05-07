@@ -99,6 +99,14 @@ func (w *MigrationWorker) Execute(ctx context.Context, task *model.MigrationTask
 			continue
 		}
 
+		w.service.AddLog(task.ID, fmt.Sprintf("仓库 %s 共有 %d 个组件", repoName, len(components)))
+		logrus.WithFields(logrus.Fields{
+			"module":     "migration",
+			"task_id":    task.ID,
+			"repo_name":  repoName,
+			"components": len(components),
+		}).Info("Components retrieved successfully")
+
 		w.updateTotal(task.ID, len(components))
 
 		for _, comp := range components {
@@ -114,17 +122,26 @@ func (w *MigrationWorker) Execute(ctx context.Context, task *model.MigrationTask
 				default:
 				}
 
+				w.service.AddLog(task.ID, fmt.Sprintf("开始迁移组件: %s (版本: %s)", c.Name, c.Version))
+
 				if err := w.migrateComponent(task.ID, client, c); err != nil {
 					logrus.WithFields(logrus.Fields{
 						"module":       "migration",
 						"task_id":      task.ID,
 						"component":    c.Name,
+						"version":      c.Version,
 						"format":       c.Format,
 						"error":        err,
 					}).Warn("Failed to migrate component")
-					w.service.AddLog(task.ID, fmt.Sprintf("迁移 %s 失败: %v", c.Name, err))
+					w.service.AddLog(task.ID, fmt.Sprintf("迁移 %s (v%s) 失败: %v", c.Name, c.Version, err))
 					w.incrementFailed(task.ID)
 				} else {
+					logrus.WithFields(logrus.Fields{
+						"module":    "migration",
+						"task_id":   task.ID,
+						"component": c.Name,
+						"version":   c.Version,
+					}).Info("Component migrated successfully")
 					w.incrementProcessed(task.ID)
 				}
 			}(comp)
