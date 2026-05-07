@@ -99,13 +99,19 @@ func (w *MigrationWorker) Execute(ctx context.Context, task *model.MigrationTask
 			continue
 		}
 
-		w.service.AddLog(task.ID, fmt.Sprintf("仓库 %s 共有 %d 个组件", repoName, len(components)))
 		logrus.WithFields(logrus.Fields{
 			"module":     "migration",
 			"task_id":    task.ID,
 			"repo_name":  repoName,
 			"components": len(components),
-		}).Info("Components retrieved successfully")
+		}).Info("Components retrieved")
+
+		w.service.AddLog(task.ID, fmt.Sprintf("仓库 %s 共有 %d 个组件", repoName, len(components)))
+
+		if len(components) == 0 {
+			w.service.AddLog(task.ID, fmt.Sprintf("仓库 %s 没有组件，跳过", repoName))
+			continue
+		}
 
 		w.updateTotal(task.ID, len(components))
 

@@ -133,6 +133,23 @@ func (b *BaseAdapter) GetLocalPackageWithIDs(ctx context.Context, pkgType model.
 
 	pkg, err := b.pkgRepo.FindByNameAndType(name, pkgType)
 	if err != nil {
+		// 数据库中不存在，尝试补写元数据
+		logrus.Warnf("package %s/%s exists in storage but not in database, repairing metadata", name, version)
+		_, _, _, repairErr := b.pkgRepo.StorePackageFile(ctx, &model.Package{
+			Name:           name,
+			Type:           pkgType,
+			RepositoryType: model.RepoTypeProxy,
+		}, &model.PackageVersion{
+			Version: version,
+			Status:  model.StatusPublished,
+		}, &model.PackageFile{
+			Filename:  filename,
+			FileType:  model.FileTypePrimary,
+			SizeBytes: size,
+		})
+		if repairErr != nil {
+			logrus.Warnf("failed to repair package metadata %s/%s: %v", name, version, repairErr)
+		}
 		return &LocalPackageResult{
 			Content: content,
 			Size:    size,
