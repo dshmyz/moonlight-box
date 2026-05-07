@@ -38,25 +38,19 @@ func NewPyPIAdapter(
 	logRepo *repository.ProxyDownloadLogRepository,
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *PyPIAdapter {
-	return &PyPIAdapter{
+	adapter := &PyPIAdapter{
 		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
-		pkgRepo:          pkgRepo,
 		repoRepo:         repoRepo,
-		storageSvc:       storageSvc,
-		auditSvc:         auditSvc,
-		proxyRouter:      proxyRouter,
 		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
-		logRepo:          logRepo,
 	}
+	adapter.SetProxyRouter(proxyRouter)
+	adapter.SetLogRepo(logRepo)
+	return adapter
 }
 
 func (a *PyPIAdapter) Type() PackageType   { return PyPIType }
 func (a *PyPIAdapter) RoutePrefix() string { return "/pypi" }
-
-func (a *PyPIAdapter) SetProxyRouter(pr *proxy.ProxyRouter) {
-	a.proxyRouter = pr
-}
 
 func (a *PyPIAdapter) RegisterRoutes(r *gin.RouterGroup, authMw gin.HandlerFunc, permMw func(resource, action string) gin.HandlerFunc) {
 	{

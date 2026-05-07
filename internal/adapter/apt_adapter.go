@@ -24,11 +24,7 @@ import (
 
 type AptAdapter struct {
 	*BaseAdapter
-	pkgRepo          *repository.PackageRepository
 	repoRepo         *repository.RepositoryRepository
-	storageSvc       *service.StorageService
-	auditSvc         *service.AuditService
-	proxyRouter      *proxy.ProxyRouter
 	proxyDownloadSvc *service.ProxyDownloadService
 	uploadSvc        *service.UploadService
 }
@@ -77,16 +73,14 @@ func NewAptAdapter(
 	proxyRouter *proxy.ProxyRouter,
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *AptAdapter {
-	return &AptAdapter{
+	adapter := &AptAdapter{
 		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
-		pkgRepo:          pkgRepo,
 		repoRepo:         repoRepo,
-		storageSvc:       storageSvc,
-		auditSvc:         auditSvc,
-		proxyRouter:      proxyRouter,
 		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
 	}
+	adapter.SetProxyRouter(proxyRouter)
+	return adapter
 }
 
 func (a *AptAdapter) Type() PackageType   { return AptType }
