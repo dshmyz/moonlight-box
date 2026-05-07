@@ -1,5 +1,6 @@
 <template>
   <button
+    :type="nativeType"
     :class="[
       'custom-button',
       `custom-button--${type}`,
@@ -31,6 +32,7 @@ import { type Component } from 'vue'
 
 interface Props {
   type?: 'primary' | 'secondary' | 'outline' | 'text' | 'success' | 'warning' | 'danger'
+  nativeType?: 'button' | 'submit' | 'reset'
   size?: 'small' | 'medium' | 'large'
   disabled?: boolean
   loading?: boolean
@@ -39,6 +41,7 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   type: 'primary',
+  nativeType: 'button',
   size: 'medium',
   disabled: false,
   loading: false,

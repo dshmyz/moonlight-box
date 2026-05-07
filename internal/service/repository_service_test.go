@@ -347,3 +347,55 @@ func TestRepositoryService_RepositoryTypes(t *testing.T) {
 		assert.Equal(t, repoType, retrieved.Type)
 	}
 }
+
+func TestRepositoryService_Update_VirtualRepoMembers(t *testing.T) {
+	service, db := setupRepositoryService(t)
+
+	// 创建成员仓库
+	localRepo1 := &model.Repository{
+		Name:        "local-1",
+		Type:        model.RepoTypeLocal,
+		PackageType: "npm",
+	}
+	db.Create(localRepo1)
+
+	localRepo2 := &model.Repository{
+		Name:        "local-2",
+		Type:        model.RepoTypeLocal,
+		PackageType: "npm",
+	}
+	db.Create(localRepo2)
+
+	localRepo3 := &model.Repository{
+		Name:        "local-3",
+		Type:        model.RepoTypeLocal,
+		PackageType: "npm",
+	}
+	db.Create(localRepo3)
+
+	// 创建虚拟仓库
+	virtualRepo := &model.Repository{
+		Name:        "virtual-update-test",
+		Type:        model.RepoTypeVirtual,
+		PackageType: "npm",
+	}
+	service.Create(virtualRepo, []string{"local-1", "local-2"})
+
+	// 验证初始成员
+	members, err := service.GetMembers("virtual-update-test")
+	assert.Nil(t, err)
+	assert.Equal(t, 2, len(members))
+
+	// 更新成员列表（使用 []interface{} 模拟 JSON 解析结果）
+	err = service.Update("virtual-update-test", map[string]interface{}{
+		"members": []interface{}{"local-2", "local-3"},
+	})
+	assert.Nil(t, err)
+
+	// 验证成员已更新
+	members, err = service.GetMembers("virtual-update-test")
+	assert.Nil(t, err)
+	assert.Equal(t, 2, len(members))
+	assert.Equal(t, "local-2", members[0].MemberRepo.Name)
+	assert.Equal(t, "local-3", members[1].MemberRepo.Name)
+}

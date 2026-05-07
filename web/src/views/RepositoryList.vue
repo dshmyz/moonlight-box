@@ -72,6 +72,14 @@
                   <span class="repo-url">{{ row.url || '-' }}</span>
                 </template>
               </el-table-column>
+              <el-table-column label="代理地址" min-width="200" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <template v-if="row.type === 'proxy' && row.remote_url">
+                    <span class="remote-url">{{ row.remote_url }}</span>
+                  </template>
+                  <span v-else class="no-value">-</span>
+                </template>
+              </el-table-column>
               <el-table-column label="同步状态" width="140">
                 <template #default="{ row }">
                   <div v-if="row.type === 'proxy' && row.metadata_sync_enabled" class="sync-status">
@@ -664,6 +672,17 @@ onMounted(loadRepos)
   font-size: 13px;
   color: #64748b;
   white-space: nowrap;
+}
+
+.remote-url {
+  font-size: 13px;
+  color: #059669;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  white-space: nowrap;
+}
+
+.no-value {
+  color: #cbd5e1;
 }
 
 .sync-status {

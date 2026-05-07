@@ -86,6 +86,59 @@ func (s *RepositoryService) Update(name string, updates map[string]interface{}) 
 			updates["package_type"] = types[0]
 		}
 	}
+
+	// 处理虚拟仓库成员更新
+	var members []string
+	if membersRaw, ok := updates["members"]; ok {
+		delete(updates, "members")
+
+		switch v := membersRaw.(type) {
+		case []string:
+			members = v
+		case []interface{}:
+			for _, item := range v {
+				if str, ok := item.(string); ok {
+					members = append(members, str)
+				}
+			}
+		}
+	}
+
+	if len(members) > 0 {
+		return s.db.Transaction(func(tx *gorm.DB) error {
+			// 在事务中直接更新仓库基本信息
+			if err := tx.Model(&model.Repository{}).Where("name = ?", name).Updates(updates).Error; err != nil {
+				return err
+			}
+
+			var virtualRepo model.Repository
+			if err := tx.Where("name = ?", name).First(&virtualRepo).Error; err != nil {
+				return err
+			}
+
+			if err := tx.Where("virtual_repo_id = ?", virtualRepo.ID).Delete(&model.RepositoryGroup{}).Error; err != nil {
+				return err
+			}
+
+			for i, memberName := range members {
+				var memberRepo model.Repository
+				if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
+					continue
+				}
+				group := model.RepositoryGroup{
+					VirtualRepoID: virtualRepo.ID,
+					MemberRepoID:  memberRepo.ID,
+					Priority:      i,
+				}
+				if err := tx.Create(&group).Error; err != nil {
+					return err
+				}
+			}
+
+			return nil
+		})
+	}
+
 	return s.repoRepo.Update(name, updates)
 }
 

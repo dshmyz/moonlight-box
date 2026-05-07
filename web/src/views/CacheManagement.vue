@@ -265,7 +265,18 @@ const formatTime = (timeStr: string) => {
 const loadStats = async () => {
   try {
     const res = await cacheApi.getStats()
-    stats.value = res
+    stats.value = {
+      total_items: res.total_items || 0,
+      positive_items: res.positive_items || 0,
+      negative_items: res.negative_items || 0,
+      total_size: res.total_size || 0,
+      used_bytes: res.used_bytes || 0,
+      max_bytes: res.max_bytes || 0,
+      max_items: res.max_items || 0,
+      num_shards: res.num_shards || 0,
+      expired_entries: res.expired_entries || 0,
+      max_size_gb: res.max_size_gb || 0,
+    }
   } catch {
     ElMessage.error('加载缓存统计失败')
   }

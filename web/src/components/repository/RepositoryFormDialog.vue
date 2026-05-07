@@ -389,9 +389,7 @@ const buildSubmitData = (): Partial<Repository> => {
   }
 
   if (formData.value.type === 'virtual') {
-    data.members = memberNames?.map(name => ({
-      member_repo: { name } as Repository,
-    })) as Repository['members']
+    data.members = memberNames
   }
 
   data.cache_enabled = formData.value.cache_enabled

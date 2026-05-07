@@ -1,7 +1,20 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import VirtualMembersForm from '../VirtualMembersForm.vue'
+import { repositoryApi } from '@/api/repository'
+
+vi.mock('@/api/repository', () => ({
+  repositoryApi: {
+    list: vi.fn(),
+  },
+}))
+
+const mockRepos = [
+  { name: 'repo1', display_name: '仓库1', type: 'local' },
+  { name: 'repo2', display_name: '仓库2', type: 'proxy' },
+  { name: 'repo3', display_name: '', type: 'local' },
+]
 
 const createWrapper = (props = {}) => {
   return mount(VirtualMembersForm, {
@@ -16,6 +29,10 @@ const createWrapper = (props = {}) => {
 }
 
 describe('VirtualMembersForm', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it('renders virtual members form', () => {
     const wrapper = createWrapper()
     
@@ -41,20 +58,25 @@ describe('VirtualMembersForm', () => {
     
     await wrapper.vm.$nextTick()
     
-    const memberInputs = wrapper.findAll('.member-item input')
-    expect(memberInputs).toHaveLength(3)
+    const memberSelects = wrapper.findAll('.member-item .el-select')
+    expect(memberSelects).toHaveLength(3)
   })
 
   it('adds new member when clicking add button', async () => {
+    ;(repositoryApi.list as vi.Mock).mockResolvedValue(mockRepos)
+    
     const wrapper = createWrapper({
       membersText: '',
     })
     
+    await wrapper.vm.$nextTick()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    
     const addButton = wrapper.find('button')
     await addButton.trigger('click')
     
-    const memberInputs = wrapper.findAll('.member-item input')
-    expect(memberInputs.length).toBeGreaterThan(0)
+    const memberSelects = wrapper.findAll('.member-item .el-select')
+    expect(memberSelects.length).toBeGreaterThan(0)
   })
 
   it('removes member when clicking delete button', async () => {
@@ -71,14 +93,17 @@ describe('VirtualMembersForm', () => {
   })
 
   it('emits update:membersText when members change', async () => {
+    ;(repositoryApi.list as vi.Mock).mockResolvedValue(mockRepos)
+    
     const wrapper = createWrapper({
       membersText: 'repo1',
     })
     
     await wrapper.vm.$nextTick()
+    await new Promise(resolve => setTimeout(resolve, 10))
     
-    const input = wrapper.find('.member-item input')
-    await input.setValue('new-repo-name')
+    const selectComponent = wrapper.findComponent({ name: 'ElSelect' })
+    await selectComponent.vm.$emit('change', 'repo2')
     
     expect(wrapper.emitted('update:membersText')).toBeTruthy()
   })
@@ -103,25 +128,58 @@ describe('VirtualMembersForm', () => {
     
     await wrapper.vm.$nextTick()
     
-    const memberInputs = wrapper.findAll('.member-item input')
-    expect(memberInputs).toHaveLength(2)
+    const memberSelects = wrapper.findAll('.member-item .el-select')
+    expect(memberSelects).toHaveLength(2)
   })
 
   it('updates membersText when adding multiple members', async () => {
+    ;(repositoryApi.list as vi.Mock).mockResolvedValue(mockRepos)
+    
     const wrapper = createWrapper({
       membersText: '',
     })
     
+    await wrapper.vm.$nextTick()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    
     const addButton = wrapper.find('button')
     await addButton.trigger('click')
+    await wrapper.vm.$nextTick()
     await addButton.trigger('click')
+    await wrapper.vm.$nextTick()
     
-    const inputs = wrapper.findAll('.member-item input')
-    if (inputs.length >= 2) {
-      await inputs[0].setValue('repo-a')
-      await inputs[1].setValue('repo-b')
-      
-      expect(wrapper.emitted('update:membersText')).toBeTruthy()
-    }
+    const selects = wrapper.findAll('.member-item .el-select')
+    expect(selects.length).toBe(2)
+  })
+
+  it('loads available repos on mount', async () => {
+    ;(repositoryApi.list as vi.Mock).mockResolvedValue(mockRepos)
+    
+    createWrapper()
+    
+    expect(repositoryApi.list).toHaveBeenCalled()
+  })
+
+  it('disables add button when no repos available', async () => {
+    ;(repositoryApi.list as vi.Mock).mockResolvedValue([])
+    
+    const wrapper = createWrapper()
+    
+    await wrapper.vm.$nextTick()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    
+    const addButton = wrapper.find('button')
+    expect(addButton.attributes('disabled')).toBeDefined()
+  })
+
+  it('disables add button when loading', async () => {
+    ;(repositoryApi.list as vi.Mock).mockImplementation(() => {
+      return new Promise(resolve => setTimeout(() => resolve(mockRepos), 100))
+    })
+    
+    const wrapper = createWrapper()
+    
+    const addButton = wrapper.find('button')
+    expect(addButton.attributes('disabled')).toBeDefined()
   })
 })

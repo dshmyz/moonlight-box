@@ -160,7 +160,7 @@ func (w *MigrationWorker) migrateComponent(taskID uint, client *NexusClient, com
 		}
 
 		size := int64(len(body))
-		err = w.storeAsset(comp, asset, bytes.NewReader(body), size, contentType)
+		err = w.storeAsset(taskID, comp, asset, bytes.NewReader(body), size, contentType)
 		if err != nil {
 			return fmt.Errorf("store asset failed: %w", err)
 		}
@@ -169,26 +169,26 @@ func (w *MigrationWorker) migrateComponent(taskID uint, client *NexusClient, com
 	return nil
 }
 
-func (w *MigrationWorker) storeAsset(comp NexusComponent, asset NexusAsset, reader io.Reader, size int64, _ string) error {
+func (w *MigrationWorker) storeAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64, _ string) error {
 	switch comp.Format {
 	case "maven2":
-		return w.storeMavenAsset(comp, asset, reader, size)
+		return w.storeMavenAsset(taskID, comp, asset, reader, size)
 	case "npm":
-		return w.storeNpmAsset(comp, asset, reader, size)
+		return w.storeNpmAsset(taskID, comp, asset, reader, size)
 	case "pypi":
-		return w.storePypiAsset(comp, asset, reader, size)
+		return w.storePypiAsset(taskID, comp, asset, reader, size)
 	case "nuget":
-		return w.storeNugetAsset(comp, asset, reader, size)
+		return w.storeNugetAsset(taskID, comp, asset, reader, size)
 	case "go":
-		return w.storeGoAsset(comp, asset, reader, size)
+		return w.storeGoAsset(taskID, comp, asset, reader, size)
 	case "raw":
-		return w.storeGenericAsset(comp, asset, reader, size)
+		return w.storeGenericAsset(taskID, comp, asset, reader, size)
 	default:
-		return w.storeGenericAsset(comp, asset, reader, size)
+		return w.storeGenericAsset(taskID, comp, asset, reader, size)
 	}
 }
 
-func (w *MigrationWorker) storeMavenAsset(comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
+func (w *MigrationWorker) storeMavenAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
 	packaging := getPackaging(asset.Path)
 	storageName := groupArtifactToStorageName(comp.Group, comp.Name)
 	storageVersion := comp.Version + "/" + filepath.Base(asset.Path)
@@ -206,10 +206,17 @@ func (w *MigrationWorker) storeMavenAsset(comp NexusComponent, asset NexusAsset,
 		"filename":   filepath.Base(asset.Path),
 	}
 
+	task, _ := w.service.GetTask(taskID)
+	repoType := model.RepoTypeLocal
+	if task != nil && task.TargetRepositoryID > 0 {
+		repoType = model.RepoTypeLocal
+	}
+
 	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:           comp.Group + ":" + comp.Name,
 		Type:           model.PackageTypeMaven,
-		RepositoryType: model.RepoTypeLocal,
+		RepositoryID:   task.TargetRepositoryID,
+		RepositoryType: repoType,
 		Description:    comp.Name,
 	}, &model.PackageVersion{
 		Version:     comp.Version,
@@ -226,7 +233,7 @@ func (w *MigrationWorker) storeMavenAsset(comp NexusComponent, asset NexusAsset,
 	return err
 }
 
-func (w *MigrationWorker) storeNpmAsset(comp NexusComponent, _ NexusAsset, reader io.Reader, size int64) error {
+func (w *MigrationWorker) storeNpmAsset(taskID uint, comp NexusComponent, _ NexusAsset, reader io.Reader, size int64) error {
 	name := comp.Name
 	if comp.Group != "" {
 		name = comp.Group + "/" + comp.Name
@@ -242,10 +249,14 @@ func (w *MigrationWorker) storeNpmAsset(comp NexusComponent, _ NexusAsset, reade
 		return err
 	}
 
+	task, _ := w.service.GetTask(taskID)
+	repoType := model.RepoTypeLocal
+
 	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:           name,
 		Type:           model.PackageTypeNPM,
-		RepositoryType: model.RepoTypeLocal,
+		RepositoryID:   task.TargetRepositoryID,
+		RepositoryType: repoType,
 		Description:    comp.Name,
 	}, &model.PackageVersion{
 		Version:     version,
@@ -261,7 +272,7 @@ func (w *MigrationWorker) storeNpmAsset(comp NexusComponent, _ NexusAsset, reade
 	return err
 }
 
-func (w *MigrationWorker) storePypiAsset(comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
+func (w *MigrationWorker) storePypiAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
 	name := comp.Name
 	if comp.Group != "" {
 		name = comp.Group
@@ -277,10 +288,14 @@ func (w *MigrationWorker) storePypiAsset(comp NexusComponent, asset NexusAsset, 
 		return err
 	}
 
+	task, _ := w.service.GetTask(taskID)
+	repoType := model.RepoTypeLocal
+
 	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:           name,
 		Type:           model.PackageTypePyPI,
-		RepositoryType: model.RepoTypeLocal,
+		RepositoryID:   task.TargetRepositoryID,
+		RepositoryType: repoType,
 		Description:    comp.Name,
 	}, &model.PackageVersion{
 		Version:     version,
@@ -296,7 +311,7 @@ func (w *MigrationWorker) storePypiAsset(comp NexusComponent, asset NexusAsset, 
 	return err
 }
 
-func (w *MigrationWorker) storeNugetAsset(comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
+func (w *MigrationWorker) storeNugetAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
 	name := comp.Name
 	version := comp.Version
 	if version == "" {
@@ -309,10 +324,14 @@ func (w *MigrationWorker) storeNugetAsset(comp NexusComponent, asset NexusAsset,
 		return err
 	}
 
+	task, _ := w.service.GetTask(taskID)
+	repoType := model.RepoTypeLocal
+
 	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:           name,
 		Type:           model.PackageTypeNuGet,
-		RepositoryType: model.RepoTypeLocal,
+		RepositoryID:   task.TargetRepositoryID,
+		RepositoryType: repoType,
 		Description:    comp.Name,
 	}, &model.PackageVersion{
 		Version:     version,
@@ -328,7 +347,7 @@ func (w *MigrationWorker) storeNugetAsset(comp NexusComponent, asset NexusAsset,
 	return err
 }
 
-func (w *MigrationWorker) storeGoAsset(comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
+func (w *MigrationWorker) storeGoAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
 	name := comp.Name
 	if comp.Group != "" {
 		name = comp.Group + "/" + comp.Name
@@ -344,10 +363,14 @@ func (w *MigrationWorker) storeGoAsset(comp NexusComponent, asset NexusAsset, re
 		return err
 	}
 
+	task, _ := w.service.GetTask(taskID)
+	repoType := model.RepoTypeLocal
+
 	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:           name,
 		Type:           model.PackageTypeGo,
-		RepositoryType: model.RepoTypeLocal,
+		RepositoryID:   task.TargetRepositoryID,
+		RepositoryType: repoType,
 		Description:    comp.Name,
 	}, &model.PackageVersion{
 		Version:     version,
@@ -363,7 +386,7 @@ func (w *MigrationWorker) storeGoAsset(comp NexusComponent, asset NexusAsset, re
 	return err
 }
 
-func (w *MigrationWorker) storeGenericAsset(comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
+func (w *MigrationWorker) storeGenericAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
 	path := asset.Path
 	if path == "" {
 		path = comp.Name + "/" + filepath.Base(asset.DownloadURL)
@@ -375,10 +398,14 @@ func (w *MigrationWorker) storeGenericAsset(comp NexusComponent, asset NexusAsse
 		return err
 	}
 
+	task, _ := w.service.GetTask(taskID)
+	repoType := model.RepoTypeLocal
+
 	_, _, _, err := w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:           path,
 		Type:           model.PackageTypeGeneric,
-		RepositoryType: model.RepoTypeLocal,
+		RepositoryID:   task.TargetRepositoryID,
+		RepositoryType: repoType,
 		Description:    comp.Name,
 	}, &model.PackageVersion{
 		Version:     "1.0.0",

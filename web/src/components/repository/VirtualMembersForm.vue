@@ -10,11 +10,21 @@
   <div class="members-list">
     <div v-for="(member, index) in members" :key="index" class="member-item">
       <span class="member-index">{{ index + 1 }}</span>
-      <el-input
+      <el-select
         v-model="member.name"
-        placeholder="输入仓库名称"
-        @input="handleMemberChange"
-      />
+        placeholder="请选择仓库"
+        filterable
+        :disabled="loading"
+        validate-event="false"
+        @change="handleMemberChange"
+      >
+        <el-option
+          v-for="repo in availableRepos"
+          :key="repo.name"
+          :label="repo.display_name || repo.name"
+          :value="repo.name"
+        />
+      </el-select>
       <el-button
         type="danger"
         :icon="Delete"
@@ -24,15 +34,21 @@
       />
     </div>
   </div>
-  <el-button type="primary" plain @click="addMember" style="margin-top: 8px">
+  <el-button 
+    type="primary" 
+    @click="addMember" 
+    :disabled="loading || availableRepos.length === 0" 
+    style="margin-top: 8px"
+  >
     <el-icon><Plus /></el-icon>
     添加成员
   </el-button>
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { Plus, Delete } from '@element-plus/icons-vue'
+import { repositoryApi, type Repository } from '@/api/repository'
 
 interface Member {
   name: string
@@ -48,6 +64,20 @@ const emit = defineEmits<{
 }>()
 
 const members = ref<Member[]>([])
+const availableRepos = ref<Repository[]>([])
+const loading = ref(false)
+
+const loadAvailableRepos = async () => {
+  loading.value = true
+  try {
+    const res = await repositoryApi.list()
+    availableRepos.value = res || []
+  } catch {
+    availableRepos.value = []
+  } finally {
+    loading.value = false
+  }
+}
 
 watch(
   () => props.membersText,
@@ -80,6 +110,10 @@ const handleMemberChange = () => {
     .join('\n')
   emit('update:membersText', text)
 }
+
+onMounted(() => {
+  loadAvailableRepos()
+})
 </script>
 
 <style scoped>

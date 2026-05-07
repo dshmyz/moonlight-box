@@ -17,6 +17,8 @@ export interface MigrationTask {
   failed_items: number
   selected_repos: string
   error_message: string
+  target_repository_id: number
+  target_repository: string
   created_at: string
   updated_at: string
   started_at: string | null
@@ -51,6 +53,8 @@ export function createMigration(data: {
   username: string
   password: string
   selected_repos: string[]
+  target_repository_id?: number
+  target_repository?: string
 }) {
   return request.post('/migration/nexus', data)
 }
