@@ -39,8 +39,18 @@ func NewMigrationService(db *gorm.DB) *MigrationService {
 	}
 }
 
-func (s *MigrationService) CreateTask(sourceURL, username, password string, selectedRepos []string, targetRepoID uint, targetRepoName string) (*model.MigrationTask, error) {
+func (s *MigrationService) CreateTask(sourceURL, username, password string, selectedRepos []string, targetRepoID uint, targetRepoName string, workerCount, maxRetries, batchSize int) (*model.MigrationTask, error) {
 	reposJSON, _ := json.Marshal(selectedRepos)
+
+	if workerCount <= 0 {
+		workerCount = 10
+	}
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+	if batchSize <= 0 {
+		batchSize = 50
+	}
 
 	task := &model.MigrationTask{
 		SourceType:         "nexus",
@@ -51,6 +61,9 @@ func (s *MigrationService) CreateTask(sourceURL, username, password string, sele
 		SelectedRepos:      string(reposJSON),
 		TargetRepositoryID: targetRepoID,
 		TargetRepository:   targetRepoName,
+		WorkerCount:        workerCount,
+		MaxRetries:         maxRetries,
+		BatchSize:          batchSize,
 	}
 
 	if err := s.db.Create(task).Error; err != nil {
