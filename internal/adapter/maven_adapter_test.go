@@ -58,8 +58,9 @@ func setupMavenAdapter(t *testing.T) (*MavenAdapter, *gorm.DB) {
 
 	auditSvc := service.NewAuditService()
 	logRepo := repository.NewProxyDownloadLogRepository(db)
+	proxyDownloadSvc := service.NewProxyDownloadService(pkgRepo, storageSvc, nil, logRepo, nil)
 
-	adapter := NewMavenAdapter(pkgRepo, storageSvc, auditSvc, nil, logRepo)
+	adapter := NewMavenAdapter(pkgRepo, storageSvc, auditSvc, nil, logRepo, proxyDownloadSvc)
 	return adapter, db
 }
 

@@ -1,17 +1,25 @@
 package proxy
 
 import (
+	"container/list"
 	"context"
 	"fmt"
+	"sync"
 	"time"
 )
 
-// CacheService 缓存服务，管理代理内容的缓存
 type CacheService struct {
-	store map[string]*cacheEntry
+	mu       sync.RWMutex
+	store    map[string]*cacheEntry
+	lruList  *list.List
+	lruIndex map[string]*list.Element
+	maxItems int
+	maxBytes int64
+	usedBytes int64
 }
 
 type cacheEntry struct {
+	key         string
 	content     []byte
 	contentType string
 	size        int64
@@ -19,7 +27,6 @@ type cacheEntry struct {
 	isNegative  bool
 }
 
-// CacheItem 缓存项
 type CacheItem struct {
 	Key         string
 	Content     []byte
@@ -28,29 +35,49 @@ type CacheItem struct {
 	IsNegative  bool `json:"is_negative"`
 }
 
-// NewCacheService 创建缓存服务
 func NewCacheService() *CacheService {
 	return &CacheService{
-		store: make(map[string]*cacheEntry),
+		store:    make(map[string]*cacheEntry),
+		lruList:  list.New(),
+		lruIndex: make(map[string]*list.Element),
+		maxItems: 10000,
+		maxBytes: 10 * 1024 * 1024 * 1024,
 	}
 }
 
-// Get 获取缓存项
+func (c *CacheService) SetLimits(maxItems int, maxBytes int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.maxItems = maxItems
+	c.maxBytes = maxBytes
+	c.evictIfNeeded()
+}
+
 func (c *CacheService) Get(ctx context.Context, key string) (*CacheItem, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	entry, ok := c.store[key]
 	if !ok {
 		return nil, fmt.Errorf("cache miss: %s", key)
 	}
+
 	if time.Now().After(entry.expiry) {
-		delete(c.store, key)
+		c.removeEntry(key, entry)
 		return nil, fmt.Errorf("cache expired: %s", key)
 	}
+
+	if elem, ok := c.lruIndex[key]; ok {
+		c.lruList.MoveToFront(elem)
+	}
+
 	if entry.isNegative {
 		return &CacheItem{
 			Key:        key,
 			IsNegative: true,
 		}, nil
 	}
+
 	return &CacheItem{
 		Key:         key,
 		Content:     entry.content,
@@ -60,44 +87,98 @@ func (c *CacheService) Get(ctx context.Context, key string) (*CacheItem, error) 
 	}, nil
 }
 
-// Set 设置缓存项
 func (c *CacheService) Set(ctx context.Context, item *CacheItem, ttl time.Duration) error {
-	c.store[item.Key] = &cacheEntry{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	entrySize := int64(len(item.Content))
+	if entrySize > c.maxBytes {
+		return fmt.Errorf("item size %d exceeds max cache size %d", entrySize, c.maxBytes)
+	}
+
+	if oldEntry, exists := c.store[item.Key]; exists {
+		c.removeEntry(item.Key, oldEntry)
+	}
+
+	c.evictForSpace(entrySize)
+
+	entry := &cacheEntry{
+		key:         item.Key,
 		content:     item.Content,
 		contentType: item.ContentType,
 		size:        item.Size,
 		expiry:      time.Now().Add(ttl),
+		isNegative:  false,
 	}
+
+	c.store[item.Key] = entry
+	elem := c.lruList.PushFront(item.Key)
+	c.lruIndex[item.Key] = elem
+	c.usedBytes += entrySize
+
 	return nil
 }
 
-// SetNegative 设置负向缓存
 func (c *CacheService) SetNegative(ctx context.Context, key string, ttl time.Duration) error {
-	c.store[key] = &cacheEntry{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if oldEntry, exists := c.store[key]; exists {
+		c.removeEntry(key, oldEntry)
+	}
+
+	c.evictForSpace(0)
+
+	entry := &cacheEntry{
+		key:        key,
 		expiry:     time.Now().Add(ttl),
 		isNegative: true,
+		size:       0,
 	}
+
+	c.store[key] = entry
+	elem := c.lruList.PushFront(key)
+	c.lruIndex[key] = elem
+
 	return nil
 }
 
-// Invalidate 使指定模式的缓存失效
 func (c *CacheService) Invalidate(ctx context.Context, pattern string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var keysToDelete []string
 	for key := range c.store {
 		if matchPattern(pattern, key) {
-			delete(c.store, key)
+			keysToDelete = append(keysToDelete, key)
 		}
 	}
+
+	for _, key := range keysToDelete {
+		if entry, exists := c.store[key]; exists {
+			c.removeEntry(key, entry)
+		}
+	}
+
 	return nil
 }
 
-// Clear 清空所有缓存
 func (c *CacheService) Clear(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	c.store = make(map[string]*cacheEntry)
+	c.lruList = list.New()
+	c.lruIndex = make(map[string]*list.Element)
+	c.usedBytes = 0
+
 	return nil
 }
 
-// GetStats 获取缓存统计
 func (c *CacheService) GetStats(ctx context.Context) (map[string]interface{}, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	totalSize := int64(0)
 	positiveCount := 0
 	negativeCount := 0
@@ -109,12 +190,73 @@ func (c *CacheService) GetStats(ctx context.Context) (map[string]interface{}, er
 			positiveCount++
 		}
 	}
+
 	return map[string]interface{}{
-		"total_items":    positiveCount + negativeCount,
-		"positive_items": positiveCount,
-		"negative_items": negativeCount,
-		"total_size":     totalSize,
+		"total_items":     positiveCount + negativeCount,
+		"positive_items":  positiveCount,
+		"negative_items":  negativeCount,
+		"total_size":      totalSize,
+		"used_bytes":      c.usedBytes,
+		"max_bytes":       c.maxBytes,
+		"max_items":       c.maxItems,
+		"lru_list_length": c.lruList.Len(),
 	}, nil
+}
+
+func (c *CacheService) removeEntry(key string, entry *cacheEntry) {
+	delete(c.store, key)
+	if elem, ok := c.lruIndex[key]; ok {
+		c.lruList.Remove(elem)
+		delete(c.lruIndex, key)
+	}
+	c.usedBytes -= entry.size
+	if c.usedBytes < 0 {
+		c.usedBytes = 0
+	}
+}
+
+func (c *CacheService) evictForSpace(neededBytes int64) {
+	for (len(c.store) >= c.maxItems) || (c.usedBytes+neededBytes > c.maxBytes) {
+		if c.lruList.Len() == 0 {
+			break
+		}
+
+		elem := c.lruList.Back()
+		if elem == nil {
+			break
+		}
+
+		key := elem.Value.(string)
+		if entry, exists := c.store[key]; exists {
+			c.removeEntry(key, entry)
+		}
+	}
+}
+
+func (c *CacheService) evictIfNeeded() {
+	c.evictForSpace(0)
+}
+
+func (c *CacheService) cleanupExpired() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now()
+	var expiredKeys []string
+
+	for key, entry := range c.store {
+		if now.After(entry.expiry) {
+			expiredKeys = append(expiredKeys, key)
+		}
+	}
+
+	for _, key := range expiredKeys {
+		if entry, exists := c.store[key]; exists {
+			c.removeEntry(key, entry)
+		}
+	}
+
+	return len(expiredKeys)
 }
 
 func matchPattern(pattern, key string) bool {

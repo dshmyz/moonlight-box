@@ -33,8 +33,9 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	Driver string `mapstructure:"driver"` // sqlite, postgres
-	DSN    string `mapstructure:"dsn"`
+	Driver   string `mapstructure:"driver"`   // sqlite, postgres
+	DSN      string `mapstructure:"dsn"`
+	LogLevel string `mapstructure:"log_level"` // silent, error, warn, info
 }
 
 type StorageConfig struct {

@@ -1,14 +1,15 @@
 package middleware
 
 import (
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/response"
 	"strings"
+
+	"github.com/moonlight-box/registry/internal/response"
+	"github.com/moonlight-box/registry/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
 
-func RequirePermission(permRepo *repository.RoleRepository, resource, action string) gin.HandlerFunc {
+func RequirePermission(permCache *service.PermissionCacheService, resource, action string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetUint("userID")
 		if userID == 0 {
@@ -17,7 +18,7 @@ func RequirePermission(permRepo *repository.RoleRepository, resource, action str
 			return
 		}
 
-		permissions, err := permRepo.GetUserPermissions(userID)
+		permissions, err := permCache.GetUserPermissions(userID)
 		if err != nil {
 			response.InternalError(c, "failed to load user permissions")
 			c.Abort()
@@ -39,7 +40,6 @@ func RequirePermission(permRepo *repository.RoleRepository, resource, action str
 		if !hasPermission {
 			response.Forbidden(c, "insufficient permissions")
 			c.Abort()
-			return
 		}
 
 		c.Next()

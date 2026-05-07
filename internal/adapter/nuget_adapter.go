@@ -18,6 +18,7 @@ import (
 )
 
 type NuGetAdapter struct {
+	*BaseAdapter
 	pkgRepo    *repository.PackageRepository
 	storageSvc *service.StorageService
 	auditSvc   *service.AuditService
@@ -29,9 +30,10 @@ func NewNuGetAdapter(
 	auditSvc *service.AuditService,
 ) *NuGetAdapter {
 	return &NuGetAdapter{
-		pkgRepo:    pkgRepo,
-		storageSvc: storageSvc,
-		auditSvc:   auditSvc,
+		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
+		pkgRepo:     pkgRepo,
+		storageSvc:  storageSvc,
+		auditSvc:    auditSvc,
 	}
 }
 
@@ -307,28 +309,7 @@ func (a *NuGetAdapter) Download(ctx context.Context, identity *PackageIdentity) 
 }
 
 func (a *NuGetAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
-	pkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypeNuGet)
-	if err != nil {
-		return nil, err
-	}
-
-	meta := &PackageMeta{
-		ID:          pkg.ID,
-		Name:        pkg.Name,
-		Type:        NuGetType,
-		Description: pkg.Description,
-	}
-
-	for _, ver := range pkg.Versions {
-		meta.Versions = append(meta.Versions, VersionInfo{
-			Version:       ver.Version,
-			PublishedAt:   ver.PublishedAt.Format(time.RFC3339),
-			Size:          ver.SizeBytes,
-			DownloadCount: int64(ver.DownloadCount),
-		})
-	}
-
-	return meta, nil
+	return a.BaseAdapter.GetPackageMetadata(ctx, name, model.PackageTypeNuGet, NuGetType)
 }
 
 func (a *NuGetAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {

@@ -45,9 +45,9 @@ const (
 
 type Package struct {
 	BaseModel
-	Name           string           `gorm:"not null;index" json:"name"`
+	Name           string           `gorm:"not null;uniqueIndex:idx_pkg_name_type" json:"name"`
 	DisplayName    string           `gorm:"size:255;index" json:"display_name"`
-	Type           PackageType      `gorm:"not null;index" json:"type"`
+	Type           PackageType      `gorm:"not null;uniqueIndex:idx_pkg_name_type" json:"type"`
 	Description    string           `gorm:"size:500" json:"description,omitempty"`
 	RepositoryID   uint             `gorm:"index" json:"repository_id"`
 	RepositoryType RepositoryType   `gorm:"default:local;index" json:"repository_type"`
@@ -65,9 +65,9 @@ type Package struct {
 
 type PackageVersion struct {
 	ID             uint                `gorm:"primaryKey" json:"id"`
-	PackageID      uint                `gorm:"not null;index" json:"package_id"`
-	Version        string              `gorm:"not null;index" json:"version"`
-	Status         PackageStatus       `gorm:"default:published" json:"status"`
+	PackageID      uint                `gorm:"not null;uniqueIndex:idx_ver_pkg_version" json:"package_id"`
+	Version        string              `gorm:"not null;uniqueIndex:idx_ver_pkg_version" json:"version"`
+	Status         PackageStatus       `gorm:"default:published;index" json:"status"`
 	StoragePath    string              `gorm:"size:500" json:"storage_path"`
 	PublishedAt    time.Time           `gorm:"autoCreateTime" json:"published_at"`
 	PublishedBy    uint                `json:"published_by"`
@@ -86,8 +86,8 @@ type PackageVersion struct {
 
 type PackageFile struct {
 	ID             uint            `gorm:"primaryKey" json:"id"`
-	VersionID      uint            `gorm:"not null;index" json:"version_id"`
-	Filename       string          `gorm:"not null;size:255" json:"filename"`
+	VersionID      uint            `gorm:"not null;uniqueIndex:idx_file_ver_filename" json:"version_id"`
+	Filename       string          `gorm:"not null;size:255;uniqueIndex:idx_file_ver_filename" json:"filename"`
 	FileType       PackageFileType `gorm:"not null;size:20;index" json:"file_type"`
 	StoragePath    string          `gorm:"not null;size:500" json:"storage_path"`
 	SizeBytes      int64           `gorm:"default:0" json:"size_bytes"`

@@ -382,42 +382,18 @@ func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
 			repo = r.(*model.Repository)
 		}
 
-		result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "maven", groupArtifact, version, urlBuilder)
-		if resolveErr == nil && result != nil {
-			defer result.Content.Close()
-			body, readErr := io.ReadAll(result.Content)
-			if readErr == nil {
-				storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "maven", storageName, version, bytes.NewReader(body), result.Size)
-				if storeErr == nil {
-					pkgName := groupArtifactToName(groupArtifact)
-					a.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
-						Name:           pkgName,
-						Type:           model.PackageTypeMaven,
-						RepositoryID:   result.RepoID,
-						RepositoryType: model.RepoTypeProxy,
-					}, &model.PackageVersion{
-						Version:     version,
-						Status:      model.StatusPublished,
-						StoragePath: filepath.Dir(storageKey),
-					}, &model.PackageFile{
-						Filename:    filename,
-						FileType:    getMavenFileType(filename),
-						StoragePath: storageKey,
-						SizeBytes:   result.Size,
-					})
-				}
-				localContent, localSize, localErr := a.storageSvc.GetPackage(c.Request.Context(), "maven", storageName, storageVersion)
-				if localErr == nil {
-					defer localContent.Close()
-					c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-					c.DataFromReader(200, localSize, a.storageSvc.GetContentType(filename), localContent, nil)
-					return
-				}
-				c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-				c.Data(200, a.storageSvc.GetContentType(filename), body)
-				return
-			}
+		if !a.DownloadFromProxyAndCache(c, &ProxyDownloadAndCacheOpts{
+			PkgType:     model.PackageTypeMaven,
+			Name:        storageName,
+			Version:     version,
+			Filename:    filename,
+			ContentType: a.storageSvc.GetContentType(filename),
+			Repo:        repo,
+			URLBuilder:  urlBuilder,
+		}) {
+			response.NotFound(c, "artifact not found")
 		}
+		return
 	}
 
 	response.NotFound(c, "artifact not found")
@@ -775,15 +751,17 @@ func (a *MavenAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository)
 func (a *MavenAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) {
 	fullPath := strings.TrimPrefix(c.Param("path"), "/")
 	parts := strings.Split(fullPath, "/")
-	if len(parts) < 3 {
-		response.BadRequest(c, "invalid path", "expected group/artifact/version")
+	if len(parts) < 4 {
+		response.BadRequest(c, "invalid path", "expected group/artifact/version/filename")
 		return
 	}
 
-	groupArtifact := strings.Join(parts[:len(parts)-1], "/")
-	version := parts[len(parts)-1]
+	groupID := strings.Join(parts[:len(parts)-3], "/")
+	groupID = strings.ReplaceAll(groupID, "/", ".")
+	artifactID := parts[len(parts)-3]
+	version := parts[len(parts)-2]
 
-	name := groupArtifactToStorageName(groupArtifact)
+	name := groupID + "/" + artifactID
 	identity := &PackageIdentity{
 		Name:    name,
 		Version: version,
