@@ -19,6 +19,9 @@ export interface MigrationTask {
   error_message: string
   target_repository_id: number
   target_repository: string
+  worker_count: number
+  max_retries: number
+  batch_size: number
   created_at: string
   updated_at: string
   started_at: string | null
@@ -55,6 +58,9 @@ export function createMigration(data: {
   selected_repos: string[]
   target_repository_id?: number
   target_repository?: string
+  worker_count?: number
+  max_retries?: number
+  batch_size?: number
 }) {
   return request.post('/migration/nexus', data)
 }
