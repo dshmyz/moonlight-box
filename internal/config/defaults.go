@@ -11,6 +11,7 @@ func setDefaults(v interface {
 	v.SetDefault("server.mode", "debug")
 	v.SetDefault("server.read_timeout", 30*time.Second)
 	v.SetDefault("server.write_timeout", 30*time.Second)
+	v.SetDefault("server.static_dir", "./cmd/registry/dist")
 
 	// Database
 	v.SetDefault("database.driver", "sqlite")

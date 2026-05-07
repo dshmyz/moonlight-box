@@ -30,6 +30,7 @@ type ServerConfig struct {
 	Mode         string        `mapstructure:"mode"` // debug, release, test
 	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout time.Duration `mapstructure:"write_timeout"`
+	StaticDir    string        `mapstructure:"static_dir"` // 前端静态文件目录
 }
 
 type DatabaseConfig struct {

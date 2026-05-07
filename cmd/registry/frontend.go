@@ -1,0 +1,100 @@
+package main
+
+import (
+	"embed"
+	"net/http"
+	"os"
+	"path"
+	"path/filepath"
+
+	"github.com/gin-gonic/gin"
+)
+
+//go:embed dist
+var frontendFS embed.FS
+
+func setupFrontendRouter(r *gin.Engine, staticDir string) {
+	if staticDir != "" && dirExists(staticDir) {
+		r.NoRoute(serveFilesystemFrontend(staticDir))
+	} else {
+		r.NoRoute(serveEmbeddedFrontend())
+	}
+}
+
+func serveEmbeddedFrontend() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		reqPath := c.Request.URL.Path
+		if reqPath == "/" {
+			reqPath = "/index.html"
+		}
+
+		filePath := path.Join("dist", reqPath)
+		data, err := frontendFS.ReadFile(filePath)
+		if err != nil {
+			data, err = frontendFS.ReadFile("dist/index.html")
+			if err != nil {
+				c.Status(http.StatusInternalServerError)
+				return
+			}
+		}
+
+		c.Header("Content-Type", getContentType(filePath))
+		c.Data(http.StatusOK, getContentType(filePath), data)
+	}
+}
+
+func serveFilesystemFrontend(staticDir string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		reqPath := c.Request.URL.Path
+		filePath := filepath.Join(staticDir, reqPath)
+
+		_, err := os.Stat(filePath)
+		if err != nil {
+			indexPath := filepath.Join(staticDir, "index.html")
+			content, err := os.ReadFile(indexPath)
+			if err != nil {
+				c.Status(http.StatusInternalServerError)
+				return
+			}
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			c.String(http.StatusOK, string(content))
+			return
+		}
+
+		c.File(filePath)
+	}
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func getContentType(filePath string) string {
+	switch filepath.Ext(filePath) {
+	case ".html":
+		return "text/html; charset=utf-8"
+	case ".css":
+		return "text/css"
+	case ".js":
+		return "application/javascript"
+	case ".json":
+		return "application/json"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".svg":
+		return "image/svg+xml"
+	case ".ico":
+		return "image/x-icon"
+	case ".woff", ".woff2":
+		return "font/woff2"
+	case ".ttf":
+		return "font/ttf"
+	default:
+		return "application/octet-stream"
+	}
+}
