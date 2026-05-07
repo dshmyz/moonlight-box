@@ -19,7 +19,6 @@ import (
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
 	"github.com/moonlight-box/registry/internal/util"
-	"github.com/sirupsen/logrus"
 
 	"github.com/gin-gonic/gin"
 )
@@ -446,16 +445,29 @@ func (a *NpmAdapter) downloadFromProxy(c *gin.Context, repo *model.Repository, n
 		return fmt.Sprintf("%s/%s/-/%s", strings.TrimSuffix(r.RemoteURL, "/"), pkgName, filename)
 	}
 
-	if !a.DownloadFromProxyAndCache(c, &ProxyDownloadAndCacheOpts{
-		PkgType:    model.PackageTypeNPM,
-		Name:       name,
-		Version:    version,
-		Filename:   filename,
-		Repo:       repo,
-		URLBuilder: urlBuilder,
-	}) {
+	result, err := a.proxyDownloadSvc.Download(c.Request.Context(), &service.ProxyDownloadRequest{
+		PkgType:        "npm",
+		Name:           name,
+		Version:        version,
+		Filename:       filename,
+		Repo:           repo,
+		URLBuilder:     urlBuilder,
+		PackageType:    model.PackageTypeNPM,
+		RepositoryType: repo.Type,
+		FileType:       model.FileTypePrimary,
+		ResolutionMode: service.ResolutionModeSmart,
+		IPAddress:      c.ClientIP(),
+		UserAgent:      c.Request.UserAgent(),
+		UserID:         getUintPtr(c.GetUint("userID")),
+	})
+
+	if err != nil {
 		response.NotFound(c, "tarball not found")
+		return
 	}
+
+	contentType := a.storageSvc.GetContentType(filename)
+	c.Data(200, contentType, result.Content)
 }
 
 func (a *NpmAdapter) downloadFromVirtual(c *gin.Context, repo *model.Repository, name, version, filename string) {
@@ -463,59 +475,29 @@ func (a *NpmAdapter) downloadFromVirtual(c *gin.Context, repo *model.Repository,
 		return fmt.Sprintf("%s/%s/-/%s", strings.TrimSuffix(r.RemoteURL, "/"), pkgName, filename)
 	}
 
-	if a.proxyRouter == nil {
-		response.NotFound(c, "tarball not found")
-		return
-	}
+	result, err := a.proxyDownloadSvc.Download(c.Request.Context(), &service.ProxyDownloadRequest{
+		PkgType:        "npm",
+		Name:           name,
+		Version:        version,
+		Filename:       filename,
+		Repo:           repo,
+		URLBuilder:     urlBuilder,
+		PackageType:    model.PackageTypeNPM,
+		RepositoryType: repo.Type,
+		FileType:       model.FileTypePrimary,
+		ResolutionMode: service.ResolutionModeVirtualRepo,
+		IPAddress:      c.ClientIP(),
+		UserAgent:      c.Request.UserAgent(),
+		UserID:         getUintPtr(c.GetUint("userID")),
+	})
 
-	result, err := a.proxyRouter.ResolveForVirtualRepo(c.Request.Context(), repo, "npm", name, version, urlBuilder)
 	if err != nil {
 		response.NotFound(c, "tarball not found")
 		return
 	}
-	defer result.Content.Close()
-
-	body, readErr := io.ReadAll(result.Content)
-	if readErr != nil {
-		response.NotFound(c, "tarball not found")
-		return
-	}
-
-	storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "npm", name, version, bytes.NewReader(body), result.Size)
-	if storeErr != nil {
-		logrus.Warnf("failed to store proxy package %s/%s to storage: %v", name, version, storeErr)
-		a.recordProxyDownloadLog(&ProxyDownloadAndCacheOpts{
-			PkgType:  model.PackageTypeNPM,
-			Name:     name,
-			Version:  version,
-			Filename: filename,
-			Repo:     repo,
-		}, model.DownloadStatusFailed, 500, result.Size, 0, false, fmt.Errorf("storage failed: %w", storeErr))
-		response.InternalError(c, "failed to store package")
-		return
-	}
-
-	_, _, _, dbErr := a.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
-		Name:           name,
-		Type:           model.PackageTypeNPM,
-		RepositoryID:   result.RepoID,
-		RepositoryType: model.RepoTypeProxy,
-	}, &model.PackageVersion{
-		Version:     version,
-		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
-	}, &model.PackageFile{
-		Filename:    filename,
-		FileType:    model.FileTypePrimary,
-		StoragePath: storageKey,
-		SizeBytes:   result.Size,
-	})
-	if dbErr != nil {
-		logrus.Warnf("failed to store proxy package %s/%s to database: %v", name, version, dbErr)
-	}
 
 	contentType := a.storageSvc.GetContentType(filename)
-	c.Data(200, contentType, body)
+	c.Data(200, contentType, result.Content)
 }
 
 func (a *NpmAdapter) ParsePackagePath(path string) (*PackageIdentity, error) {
@@ -608,110 +590,44 @@ func (a *NpmAdapter) DownloadTarballPath(c *gin.Context, fullPath string) {
 	filenameWithoutExt := strings.TrimSuffix(filename, ".tgz")
 	version := strings.TrimPrefix(filenameWithoutExt, pkgName+"-")
 
-	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "npm", pkgName, version)
-	if err == nil {
-		defer content.Close()
-
-		pkg, pkgErr := a.pkgRepo.FindByNameAndType(pkgName, model.PackageTypeNPM)
-		if pkgErr == nil {
-			for _, v := range pkg.Versions {
-				if v.Version == version {
-					for _, f := range v.Files {
-						if f.Filename == filename {
-							a.pkgRepo.IncrementDownloadCount(pkg.ID, v.ID, f.ID)
-							break
-						}
-					}
-					break
-				}
-			}
-		}
-
-		contentType := a.storageSvc.GetContentType(filename)
-		c.DataFromReader(200, size, contentType, content, nil)
-		return
-	}
-
-	if a.proxyRouter == nil {
-		response.NotFound(c, "tarball not found")
-		return
-	}
-
-	urlBuilder := func(repo *model.Repository, name, ver string) string {
-		return fmt.Sprintf("%s/%s/-/%s", strings.TrimSuffix(repo.RemoteURL, "/"), name, filename)
-	}
-
 	var repo *model.Repository
 	if r, ok := c.Get("repo"); ok {
 		repo = r.(*model.Repository)
 	}
 
-	result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "npm", pkgName, version, urlBuilder)
-	if resolveErr != nil {
-		response.NotFound(c, "tarball not found")
-		return
-	}
-	defer result.Content.Close()
-
-	body, readErr := io.ReadAll(result.Content)
-	if readErr != nil {
-		response.NotFound(c, "tarball not found")
+	decision := a.CheckDownloadPermission(c, repo, model.PackageTypeNPM, pkgName, version, filename)
+	if !decision.Allow {
+		c.JSON(decision.Code, gin.H{"error": decision.Message})
 		return
 	}
 
-	storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "npm", pkgName, version, bytes.NewReader(body), result.Size)
-	if storeErr != nil {
-		logrus.Warnf("failed to store proxy package %s/%s to storage: %v", pkgName, version, storeErr)
-		a.recordProxyDownloadLog(&ProxyDownloadAndCacheOpts{
-			PkgType:  model.PackageTypeNPM,
-			Name:     pkgName,
-			Version:  version,
-			Filename: filename,
-			Repo:     repo,
-		}, model.DownloadStatusFailed, 500, result.Size, 0, false, fmt.Errorf("storage failed: %w", storeErr))
-		response.InternalError(c, "failed to store package")
-		return
+	urlBuilder := func(r *model.Repository, name, ver string) string {
+		return fmt.Sprintf("%s/%s/-/%s", strings.TrimSuffix(r.RemoteURL, "/"), name, filename)
 	}
 
-	storedPkg, storedVer, storedFile, dbErr := a.pkgRepo.StorePackageFile(c.Request.Context(), &model.Package{
+	result, err := a.proxyDownloadSvc.Download(c.Request.Context(), &service.ProxyDownloadRequest{
+		PkgType:        "npm",
 		Name:           pkgName,
-		Type:           model.PackageTypeNPM,
-		RepositoryID:   result.RepoID,
+		Version:        version,
+		Filename:       filename,
+		Repo:           repo,
+		URLBuilder:     urlBuilder,
+		PackageType:    model.PackageTypeNPM,
 		RepositoryType: model.RepoTypeProxy,
-	}, &model.PackageVersion{
-		Version:     version,
-		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
-	}, &model.PackageFile{
-		Filename:    filename,
-		FileType:    model.FileTypePrimary,
-		StoragePath: storageKey,
-		SizeBytes:   result.Size,
+		FileType:       model.FileTypePrimary,
+		ResolutionMode: service.ResolutionModeSmart,
+		IPAddress:      c.ClientIP(),
+		UserAgent:      c.Request.UserAgent(),
+		UserID:         getUintPtr(c.GetUint("userID")),
 	})
 
-	if dbErr != nil {
-		logrus.Warnf("failed to store proxy package %s/%s to database: %v", pkgName, version, dbErr)
-		a.recordProxyDownloadLog(&ProxyDownloadAndCacheOpts{
-			PkgType:  model.PackageTypeNPM,
-			Name:     pkgName,
-			Version:  version,
-			Filename: filename,
-			Repo:     repo,
-		}, model.DownloadStatusFailed, 500, result.Size, 0, false, fmt.Errorf("database insert failed: %w", dbErr))
-	} else if storedPkg != nil && storedVer != nil && storedFile != nil {
-		a.pkgRepo.IncrementDownloadCount(storedPkg.ID, storedVer.ID, storedFile.ID)
-	}
-
-	localContent, localSize, localErr := a.storageSvc.GetPackage(c.Request.Context(), "npm", pkgName, version)
-	if localErr != nil {
-		contentType := a.storageSvc.GetContentType(filename)
-		c.Data(200, contentType, body)
+	if err != nil {
+		response.NotFound(c, "tarball not found")
 		return
 	}
-	defer localContent.Close()
 
 	contentType := a.storageSvc.GetContentType(filename)
-	c.DataFromReader(200, localSize, contentType, localContent, nil)
+	c.Data(200, contentType, result.Content)
 }
 
 func (a *NpmAdapter) Publish(c *gin.Context) {
@@ -1175,4 +1091,11 @@ func (a *NpmAdapter) HandleSearch(c *gin.Context) {
 
 	resp := a.formatSearchResponse(packages, total)
 	c.JSON(200, resp)
+}
+
+func getUintPtr(val uint) *uint {
+	if val == 0 {
+		return nil
+	}
+	return &val
 }
