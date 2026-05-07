@@ -2,6 +2,7 @@ package migration
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -51,7 +52,14 @@ func NewNexusClient(baseURL, username, password string) *NexusClient {
 		baseURL:  baseURL,
 		username: username,
 		password: password,
-		client:   &http.Client{Timeout: 30 * time.Second},
+		client: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: true,
+				},
+			},
+		},
 	}
 }
 

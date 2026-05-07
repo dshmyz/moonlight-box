@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -241,6 +242,11 @@ func (h *HealthCheckService) doHealthCheck(ctx context.Context, url string) (int
 	// 使用简单的HTTP请求检查连通性
 	client := &http.Client{
 		Timeout: h.config.Timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			// 允许最多2次重定向
 			if len(via) >= 2 {
