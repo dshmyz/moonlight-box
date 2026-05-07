@@ -214,24 +214,30 @@ func (a *YumAdapter) RepoDataFile(c *gin.Context) {
 		return
 	}
 
-	if a.proxyRouter != nil {
+	if a.proxyDownloadSvc != nil {
 		urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
 			baseURL := strings.TrimSuffix(r.RemoteURL, "/")
 			return fmt.Sprintf("%s/repodata/%s", baseURL, filePath)
 		}
-		result, resolveErr := a.proxyRouter.ResolveProxyOnly(c.Request.Context(), "yum", repo+"/repodata/"+filePath, "", urlBuilder)
-		if resolveErr == nil && result != nil {
-			defer result.Content.Close()
-			body, readErr := io.ReadAll(result.Content)
-			if readErr == nil {
-				backend.Put(c.Request.Context(), storageKey, bytes.NewReader(body), result.Size)
-				contentType := "application/xml"
-				if strings.HasSuffix(filePath, ".gz") {
-					contentType = "application/gzip"
-				}
-				c.Data(200, contentType, body)
-				return
+
+		req := &service.ProxyDownloadRequest{
+			PkgType:        "yum",
+			Name:           "repodata/" + filePath,
+			Version:        "",
+			Filename:       filepath.Base(filePath),
+			URLBuilder:     urlBuilder,
+			PackageType:    model.PackageTypeYum,
+			ResolutionMode: service.ResolutionModeProxyOnly,
+		}
+
+		result, err := a.proxyDownloadSvc.Download(c.Request.Context(), req)
+		if err == nil && result != nil {
+			contentType := "application/xml"
+			if strings.HasSuffix(filePath, ".gz") {
+				contentType = "application/gzip"
 			}
+			c.Data(200, contentType, result.Content)
+			return
 		}
 	}
 
@@ -471,25 +477,30 @@ func (a *YumAdapter) HandleRepoRequest(c *gin.Context, repo *model.Repository, p
 			return
 		}
 
-		if a.proxyRouter != nil {
+		if a.proxyDownloadSvc != nil {
 			urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
 				baseURL := strings.TrimSuffix(r.RemoteURL, "/")
 				return fmt.Sprintf("%s/repodata/%s", baseURL, filePath)
 			}
 
-			result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "yum", repo.Name+"/repodata/"+filePath, "", urlBuilder)
-			if resolveErr == nil && result != nil {
-				defer result.Content.Close()
-				body, readErr := io.ReadAll(result.Content)
-				if readErr == nil {
-					backend.Put(c.Request.Context(), storageKey, bytes.NewReader(body), result.Size)
-					contentType := "application/xml"
-					if strings.HasSuffix(filePath, ".gz") {
-						contentType = "application/gzip"
-					}
-					c.Data(200, contentType, body)
-					return
+			req := &service.ProxyDownloadRequest{
+				PkgType:     "yum",
+				Name:        "repodata/" + filePath,
+				Version:     "",
+				Filename:    filepath.Base(filePath),
+				Repo:        repo,
+				URLBuilder:  urlBuilder,
+				PackageType: model.PackageTypeYum,
+			}
+
+			result, err := a.proxyDownloadSvc.Download(c.Request.Context(), req)
+			if err == nil && result != nil {
+				contentType := "application/xml"
+				if strings.HasSuffix(filePath, ".gz") {
+					contentType = "application/gzip"
 				}
+				c.Data(200, contentType, result.Content)
+				return
 			}
 		}
 
@@ -509,32 +520,28 @@ func (a *YumAdapter) HandleRepoRequest(c *gin.Context, repo *model.Repository, p
 			return
 		}
 
-		if a.proxyRouter != nil {
+		if a.proxyDownloadSvc != nil {
+			filename := filepath.Base(filePath)
 			urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
 				baseURL := strings.TrimSuffix(r.RemoteURL, "/")
 				return fmt.Sprintf("%s/Packages/%s", baseURL, filePath)
 			}
 
-			result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "yum", repo.Name+"/Packages/"+filePath, "", urlBuilder)
-			if resolveErr == nil && result != nil {
-				defer result.Content.Close()
-				body, err := io.ReadAll(result.Content)
-				if err == nil {
-					pkgName := strings.TrimSuffix(filePath, ".rpm")
-					info := &ProxyPackageInfo{
-						PackageType: model.PackageTypeYum,
-						Name:        pkgName,
-						Version:     "1",
-						RepoID:      result.RepoID,
-						Content:     body,
-						Size:        result.Size,
-					}
-					a.StoreProxyPackage(c.Request.Context(), info)
-					filename := filepath.Base(filePath)
-					c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-					c.Data(200, "application/x-rpm", body)
-					return
-				}
+			req := &service.ProxyDownloadRequest{
+				PkgType:     "yum",
+				Name:        strings.TrimSuffix(filePath, ".rpm"),
+				Version:     "1",
+				Filename:    filename,
+				Repo:        repo,
+				URLBuilder:  urlBuilder,
+				PackageType: model.PackageTypeYum,
+			}
+
+			result, err := a.proxyDownloadSvc.Download(c.Request.Context(), req)
+			if err == nil && result != nil {
+				c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+				c.Data(200, "application/x-rpm", result.Content)
+				return
 			}
 		}
 
@@ -552,22 +559,27 @@ func (a *YumAdapter) HandleRepoRequest(c *gin.Context, repo *model.Repository, p
 			return
 		}
 
-		if a.proxyRouter != nil {
+		if a.proxyDownloadSvc != nil {
 			urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
 				baseURL := strings.TrimSuffix(r.RemoteURL, "/")
 				return fmt.Sprintf("%s/%s", baseURL, path)
 			}
 
-			result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "yum", repo.Name+"/"+path, "", urlBuilder)
-			if resolveErr == nil && result != nil {
-				defer result.Content.Close()
-				body, readErr := io.ReadAll(result.Content)
-				if readErr == nil {
-					backend.Put(c.Request.Context(), storageKey, bytes.NewReader(body), result.Size)
-					contentType := a.storageSvc.GetContentType(path)
-					c.Data(200, contentType, body)
-					return
-				}
+			req := &service.ProxyDownloadRequest{
+				PkgType:     "yum",
+				Name:        path,
+				Version:     "",
+				Filename:    filepath.Base(path),
+				Repo:        repo,
+				URLBuilder:  urlBuilder,
+				PackageType: model.PackageTypeYum,
+			}
+
+			result, err := a.proxyDownloadSvc.Download(c.Request.Context(), req)
+			if err == nil && result != nil {
+				contentType := a.storageSvc.GetContentType(path)
+				c.Data(200, contentType, result.Content)
+				return
 			}
 		}
 
