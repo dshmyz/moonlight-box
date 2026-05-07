@@ -40,6 +40,7 @@ data/
 # Config (secrets)
 config.yaml
 .env
+configs/ai-config.yaml
 
 # Logs
 *.log
