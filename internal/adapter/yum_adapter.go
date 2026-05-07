@@ -25,10 +25,7 @@ import (
 
 type YumAdapter struct {
 	*BaseAdapter
-	pkgRepo          *repository.PackageRepository
-	storageSvc       *service.StorageService
-	auditSvc         *service.AuditService
-	proxyRouter      *proxy.ProxyRouter
+	repoRepo         *repository.RepositoryRepository
 	proxyDownloadSvc *service.ProxyDownloadService
 	uploadSvc        *service.UploadService
 }
@@ -136,17 +133,9 @@ func NewYumAdapter(
 ) *YumAdapter {
 	return &YumAdapter{
 		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
-		pkgRepo:          pkgRepo,
-		storageSvc:       storageSvc,
-		auditSvc:         auditSvc,
-		proxyRouter:      proxyRouter,
 		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
 	}
-}
-
-func (a *YumAdapter) SetProxyRouter(pr *proxy.ProxyRouter) {
-	a.proxyRouter = pr
 }
 
 func (a *YumAdapter) Type() PackageType   { return YumType }

@@ -24,14 +24,9 @@ import (
 
 type PyPIAdapter struct {
 	*BaseAdapter
-	pkgRepo          *repository.PackageRepository
 	repoRepo         *repository.RepositoryRepository
-	storageSvc       *service.StorageService
-	auditSvc         *service.AuditService
-	proxyRouter      *proxy.ProxyRouter
 	proxyDownloadSvc *service.ProxyDownloadService
 	uploadSvc        *service.UploadService
-	logRepo          *repository.ProxyDownloadLogRepository
 }
 
 func NewPyPIAdapter(
