@@ -11,9 +11,9 @@ type Repository struct {
 	Name             string         `json:"name" gorm:"uniqueIndex;size:100"`
 	DisplayName      string         `json:"display_name" gorm:"size:200"`
 	Description      string         `json:"description"`
-	Type             RepositoryType `json:"type" gorm:"size:20"`
-	PackageType      string         `json:"package_type" gorm:"size:50"`
-	Enabled          bool           `json:"enabled" gorm:"default:true"`
+	Type             RepositoryType `json:"type" gorm:"size:20;index:idx_repo_type_pkg"`
+	PackageType      string         `json:"package_type" gorm:"size:50;index:idx_repo_type_pkg"`
+	Enabled          bool           `json:"enabled" gorm:"default:true;index"`
 	StorageBackendID *uint          `json:"storage_backend_id,omitempty"`
 
 	RemoteURL     string `json:"remote_url,omitempty"`
@@ -63,6 +63,51 @@ func (r *Repository) GetAuthConfig() (*ProxyAuthConfig, error) {
 	var cfg ProxyAuthConfig
 	err := json.Unmarshal([]byte(r.AuthConfig), &cfg)
 	return &cfg, err
+}
+
+// SanitizedAuthConfig 返回脱敏后的认证配置，用于 API 响应
+func (r *Repository) SanitizedAuthConfig() (*ProxyAuthConfig, error) {
+	cfg, err := r.GetAuthConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.Basic != nil && cfg.Basic.Password != "" {
+		cfg.Basic.Password = "******"
+	}
+	if cfg.Bearer != nil && cfg.Bearer.Token != "" {
+		cfg.Bearer.Token = "******"
+	}
+	if cfg.APIKey != nil && cfg.APIKey.KeyValue != "" {
+		cfg.APIKey.KeyValue = "******"
+	}
+
+	return cfg, nil
+}
+
+// MaskAuthConfig 返回脱敏后的 AuthConfig JSON 字符串，用于 API 响应
+func (r *Repository) MaskAuthConfig() string {
+	if r.AuthConfig == "" {
+		return ""
+	}
+
+	cfg, err := r.GetAuthConfig()
+	if err != nil {
+		return r.AuthConfig
+	}
+
+	if cfg.Basic != nil && cfg.Basic.Password != "" {
+		cfg.Basic.Password = "******"
+	}
+	if cfg.Bearer != nil && cfg.Bearer.Token != "" {
+		cfg.Bearer.Token = "******"
+	}
+	if cfg.APIKey != nil && cfg.APIKey.KeyValue != "" {
+		cfg.APIKey.KeyValue = "******"
+	}
+
+	masked, _ := json.Marshal(cfg)
+	return string(masked)
 }
 
 // RepositoryGroup 虚拟仓与成员仓的关联关系

@@ -124,13 +124,20 @@ func (a *PyPIAdapter) listPackagesHTML(c *gin.Context) {
 		return
 	}
 
-	html := "<!DOCTYPE html>\n<html><head><title>Simple Index</title></head><body>\n"
+	var sb strings.Builder
+	sb.Grow(100 + len(packages)*80)
+	sb.WriteString("<!DOCTYPE html>\n<html><head><title>Simple Index</title></head><body>\n")
 	for _, pkg := range packages {
-		html += fmt.Sprintf(`<a href="/pypi/simple/%s/">%s</a><br>`+"\n", normalizePackageName(pkg.Name), normalizePackageName(pkg.Name))
+		normalized := normalizePackageName(pkg.Name)
+		sb.WriteString(`<a href="/pypi/simple/`)
+		sb.WriteString(normalized)
+		sb.WriteString(`/">`)
+		sb.WriteString(normalized)
+		sb.WriteString(`</a><br>` + "\n")
 	}
-	html += "</body></html>"
+	sb.WriteString("</body></html>")
 
-	c.Data(200, "text/html", []byte(html))
+	c.Data(200, "text/html", []byte(sb.String()))
 }
 
 func (a *PyPIAdapter) PackageFiles(c *gin.Context) {
@@ -240,13 +247,21 @@ func (a *PyPIAdapter) packageFilesHTML(c *gin.Context, pkgName string) {
 <h1>Links for %s</h1>
 `, pkgName, pkgName)
 
+	var sb strings.Builder
+	sb.Grow(len(html) + len(pkg.Versions)*60)
+	sb.WriteString(html)
+
 	for _, ver := range pkg.Versions {
 		filename := filepath.Base(ver.StoragePath)
-		html += fmt.Sprintf(`<a href="/pypi/packages/%s">%s</a><br>`+"\n", filename, filename)
+		sb.WriteString(`<a href="/pypi/packages/`)
+		sb.WriteString(filename)
+		sb.WriteString(`">`)
+		sb.WriteString(filename)
+		sb.WriteString(`</a><br>` + "\n")
 	}
-	html += "</body></html>"
+	sb.WriteString("</body></html>")
 
-	c.Data(200, "text/html", []byte(html))
+	c.Data(200, "text/html", []byte(sb.String()))
 }
 
 func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
@@ -297,48 +312,18 @@ func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
 	}
 
 	slog.Info("Calling ResolveSmart", "repo", repo != nil, "name", name, "version", version)
-	result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "pypi", name, version, urlBuilder)
-	if resolveErr != nil {
-		slog.Error("ResolveSmart failed", "error", resolveErr)
+	if !a.DownloadFromProxyAndCache(c, &ProxyDownloadAndCacheOpts{
+		PkgType:     model.PackageTypePyPI,
+		Name:        name,
+		Version:     actualFilename,
+		Filename:    actualFilename,
+		ContentType: a.storageSvc.GetContentType(actualFilename),
+		Repo:        repo,
+		URLBuilder:  urlBuilder,
+	}) {
+		slog.Error("DownloadFromProxyAndCache failed")
 		response.NotFound(c, "package not found")
-		return
 	}
-	defer result.Content.Close()
-
-	body, readErr := io.ReadAll(result.Content)
-	if readErr != nil {
-		response.NotFound(c, "package not found")
-		return
-	}
-
-	storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "pypi", name, actualFilename, bytes.NewReader(body), result.Size)
-	if storeErr == nil {
-		a.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
-			Name:           name,
-			Type:           model.PackageTypePyPI,
-			RepositoryID:   result.RepoID,
-			RepositoryType: model.RepoTypeProxy,
-		}, &model.PackageVersion{
-			Version:     version,
-			Status:      model.StatusPublished,
-			StoragePath: filepath.Dir(storageKey),
-			SizeBytes:   result.Size,
-		}, &model.PackageFile{
-			Filename:    actualFilename,
-			FileType:    model.FileTypePrimary,
-			StoragePath: storageKey,
-			SizeBytes:   result.Size,
-		})
-	}
-
-	if storeErr != nil {
-		response.InternalError(c, "failed to store package")
-		return
-	}
-
-	contentType := a.storageSvc.GetContentType(actualFilename)
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, actualFilename))
-	c.Data(200, contentType, body)
 }
 
 func (a *PyPIAdapter) handleChecksumRequest(c *gin.Context, filename string) {

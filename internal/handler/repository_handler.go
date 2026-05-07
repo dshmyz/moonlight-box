@@ -3,10 +3,10 @@ package handler
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	apperr "github.com/moonlight-box/registry/internal/errors"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/service"
 )
@@ -68,12 +68,16 @@ func (h *RepositoryHandler) List(c *gin.Context) {
 
 	repos, err := h.svc.List(filter)
 	if err != nil {
-		InternalError(c, err.Error())
+		InternalError(c, "Failed to list repositories")
 		return
 	}
 
 	scheme, host := getSchemeAndHost(c)
 	fillRepositoryURLs(repos, scheme, host)
+
+	for i := range repos {
+		repos[i].AuthConfig = repos[i].MaskAuthConfig()
+	}
 
 	Success(c, repos)
 }
@@ -89,6 +93,8 @@ func (h *RepositoryHandler) Get(c *gin.Context) {
 
 	scheme, host := getSchemeAndHost(c)
 	fillRepositoryURL(repo, scheme, host)
+
+	repo.AuthConfig = repo.MaskAuthConfig()
 
 	Success(c, repo)
 }
@@ -135,11 +141,11 @@ func (h *RepositoryHandler) Create(c *gin.Context) {
 	}
 
 	if err := h.svc.Create(&repo, req.Members); err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") || strings.Contains(err.Error(), "duplicate key") {
+		if apperr.IsDuplicate(err) {
 			Conflict(c, "仓库名称已存在")
 			return
 		}
-		InternalError(c, err.Error())
+		InternalError(c, "Failed to create repository")
 		return
 	}
 
@@ -156,7 +162,7 @@ func (h *RepositoryHandler) Update(c *gin.Context) {
 	}
 
 	if err := h.svc.Update(name, updates); err != nil {
-		InternalError(c, err.Error())
+		InternalError(c, "Failed to update repository")
 		return
 	}
 
@@ -167,7 +173,7 @@ func (h *RepositoryHandler) Update(c *gin.Context) {
 func (h *RepositoryHandler) Delete(c *gin.Context) {
 	name := c.Param("name")
 	if err := h.svc.Delete(name); err != nil {
-		InternalError(c, err.Error())
+		InternalError(c, "Failed to delete repository")
 		return
 	}
 
@@ -179,7 +185,7 @@ func (h *RepositoryHandler) GetMembers(c *gin.Context) {
 	name := c.Param("name")
 	members, err := h.svc.GetMembers(name)
 	if err != nil {
-		InternalError(c, err.Error())
+		InternalError(c, "Failed to get members")
 		return
 	}
 
@@ -200,7 +206,7 @@ func (h *RepositoryHandler) AddMember(c *gin.Context) {
 	}
 
 	if err := h.svc.AddMember(name, req.MemberName, req.Priority); err != nil {
-		InternalError(c, err.Error())
+		InternalError(c, "Failed to add member")
 		return
 	}
 
@@ -213,7 +219,7 @@ func (h *RepositoryHandler) RemoveMember(c *gin.Context) {
 	memberName := c.Param("memberName")
 
 	if err := h.svc.RemoveMember(name, memberName); err != nil {
-		InternalError(c, err.Error())
+		InternalError(c, "Failed to remove member")
 		return
 	}
 
@@ -241,9 +247,19 @@ func (h *RepositoryHandler) TriggerMetadataSync(c *gin.Context) {
 		return
 	}
 
-	task, err := h.metadataSyncSvc.TriggerManualSync(repo.ID, userID.(uint))
+	uid, ok := userID.(uint)
+	if !ok {
+		InternalError(c, "Invalid user ID type")
+		return
+	}
+
+	task, err := h.metadataSyncSvc.TriggerManualSync(repo.ID, uid)
 	if err != nil {
-		InternalError(c, err.Error())
+		if apperr.IsDuplicate(err) {
+			Conflict(c, "A sync task is already running")
+			return
+		}
+		InternalError(c, "Failed to trigger metadata sync")
 		return
 	}
 
@@ -255,7 +271,7 @@ func (h *RepositoryHandler) GetSyncHistory(c *gin.Context) {
 	repoIDStr := c.Param("id")
 	repoID, err := strconv.ParseUint(repoIDStr, 10, 32)
 	if err != nil {
-		BadRequest(c, "Invalid repository ID", err.Error())
+		BadRequest(c, "Invalid repository ID", "")
 		return
 	}
 
@@ -267,7 +283,7 @@ func (h *RepositoryHandler) GetSyncHistory(c *gin.Context) {
 
 	tasks, err := h.metadataSyncSvc.GetRepositorySyncHistory(uint(repoID), limit)
 	if err != nil {
-		InternalError(c, err.Error())
+		InternalError(c, "Failed to get sync history")
 		return
 	}
 
@@ -279,7 +295,7 @@ func (h *RepositoryHandler) GetSyncTaskStatus(c *gin.Context) {
 	taskIDStr := c.Param("taskId")
 	taskID, err := strconv.ParseUint(taskIDStr, 10, 32)
 	if err != nil {
-		BadRequest(c, "Invalid task ID", err.Error())
+		BadRequest(c, "Invalid task ID", "")
 		return
 	}
 
@@ -297,12 +313,12 @@ func (h *RepositoryHandler) CancelSyncTask(c *gin.Context) {
 	taskIDStr := c.Param("taskId")
 	taskID, err := strconv.ParseUint(taskIDStr, 10, 32)
 	if err != nil {
-		BadRequest(c, "Invalid task ID", err.Error())
+		BadRequest(c, "Invalid task ID", "")
 		return
 	}
 
 	if err := h.metadataSyncSvc.CancelTask(uint(taskID)); err != nil {
-		InternalError(c, err.Error())
+		InternalError(c, "Failed to cancel task")
 		return
 	}
 
@@ -319,7 +335,7 @@ func (h *RepositoryHandler) UpdateMetadataSyncConfig(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		BadRequest(c, "Invalid request", err.Error())
+		BadRequest(c, "Invalid request", "")
 		return
 	}
 
@@ -337,7 +353,7 @@ func (h *RepositoryHandler) UpdateMetadataSyncConfig(c *gin.Context) {
 	}
 
 	if err := h.svc.Update(repo.Name, updates); err != nil {
-		InternalError(c, err.Error())
+		InternalError(c, "Failed to update metadata sync config")
 		return
 	}
 
@@ -349,7 +365,7 @@ func (h *RepositoryHandler) UpdateMetadataSyncConfig(c *gin.Context) {
 				interval = time.Hour
 			}
 			if err := h.schedulerSvc.ScheduleMetadataSync(repo.ID, interval); err != nil {
-				InternalError(c, err.Error())
+				InternalError(c, "Failed to schedule metadata sync")
 				return
 			}
 		} else {

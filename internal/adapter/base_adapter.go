@@ -3,9 +3,11 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
@@ -14,9 +16,10 @@ import (
 )
 
 type BaseAdapter struct {
-	pkgRepo    *repository.PackageRepository
-	storageSvc *service.StorageService
-	webhookSvc *service.WebhookService
+	pkgRepo     *repository.PackageRepository
+	storageSvc  *service.StorageService
+	webhookSvc  *service.WebhookService
+	proxyRouter *proxy.ProxyRouter
 }
 
 func NewBaseAdapter(pkgRepo *repository.PackageRepository, storageSvc *service.StorageService) *BaseAdapter {
@@ -24,6 +27,10 @@ func NewBaseAdapter(pkgRepo *repository.PackageRepository, storageSvc *service.S
 		pkgRepo:    pkgRepo,
 		storageSvc: storageSvc,
 	}
+}
+
+func (b *BaseAdapter) SetProxyRouter(pr *proxy.ProxyRouter) {
+	b.proxyRouter = pr
 }
 
 func (b *BaseAdapter) SetWebhookService(webhookSvc *service.WebhookService) {
@@ -144,23 +151,35 @@ func (b *BaseAdapter) StoreProxyPackage(ctx context.Context, info *ProxyPackageI
 	return storageKey, nil
 }
 
-func (b *BaseAdapter) StoreProxyPackageFromResult(ctx context.Context, pkgType model.PackageType, name, version string, result *proxy.RouteResult, metadata map[string]interface{}) (string, error) {
-	body, err := io.ReadAll(result.Content)
+func (b *BaseAdapter) StoreProxyPackageFromReader(ctx context.Context, pkgType model.PackageType, name, version string, content io.Reader, size int64, repoID uint, metadata map[string]interface{}) (string, error) {
+	storageKey, err := b.storageSvc.StorePackage(ctx, string(pkgType), name, version, content, size)
 	if err != nil {
 		return "", err
 	}
 
-	info := &ProxyPackageInfo{
-		PackageType: pkgType,
-		Name:        name,
+	_, _, dbErr := b.pkgRepo.CreateOrUpdate(ctx, &model.Package{
+		Name:           name,
+		Type:           pkgType,
+		RepositoryID:   repoID,
+		RepositoryType: model.RepoTypeProxy,
+	}, &model.PackageVersion{
 		Version:     version,
-		RepoID:      result.RepoID,
-		Content:     body,
-		Size:        result.Size,
-		Metadata:    metadata,
+		Status:      model.StatusPublished,
+		StoragePath: storageKey,
+		SizeBytes:   size,
+		Metadata:    marshalMetadata(metadata),
+	})
+
+	if dbErr != nil {
+		return storageKey, dbErr
 	}
 
-	return b.StoreProxyPackage(ctx, info)
+	return storageKey, nil
+}
+
+func (b *BaseAdapter) StoreProxyPackageFromResult(ctx context.Context, pkgType model.PackageType, name, version string, result *proxy.RouteResult, metadata map[string]interface{}) (string, error) {
+	defer result.Content.Close()
+	return b.StoreProxyPackageFromReader(ctx, pkgType, name, version, result.Content, result.Size, result.RepoID, metadata)
 }
 
 func (b *BaseAdapter) IncrementDownloadCountForPackage(pkgName string, pkgType model.PackageType, version string, filename string) {
@@ -217,4 +236,127 @@ func (b *BaseAdapter) GetPackageRepository() *repository.PackageRepository {
 
 func (b *BaseAdapter) GetStorageService() *service.StorageService {
 	return b.storageSvc
+}
+
+type UploadHelperOpts struct {
+	PkgType        string
+	Name           string
+	Version        string
+	StorageVersion string
+	Filename       string
+	PackageType    model.PackageType
+	RepositoryType model.RepositoryType
+	RepositoryID   uint
+	UploadedBy     uint
+	Metadata       map[string]interface{}
+	FileType       model.PackageFileType
+}
+
+func (b *BaseAdapter) ExecuteUpload(ctx context.Context, opts *UploadHelperOpts, reader io.Reader, size int64, uploadSvc *service.UploadService) (*PackageVersionResult, error) {
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read content: %w", err)
+	}
+
+	storageVersion := opts.StorageVersion
+	if storageVersion == "" {
+		storageVersion = opts.Version
+	}
+
+	result, err := uploadSvc.Upload(ctx, &service.UploadContext{
+		PkgType:        opts.PkgType,
+		Name:           opts.Name,
+		Version:        opts.Version,
+		StorageVersion: storageVersion,
+		Filename:       opts.Filename,
+		Content:        content,
+		Size:           size,
+		PackageType:    opts.PackageType,
+		RepositoryType: opts.RepositoryType,
+		RepositoryID:   opts.RepositoryID,
+		UploadedBy:     opts.UploadedBy,
+		Metadata:       opts.Metadata,
+		FileType:       opts.FileType,
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &PackageVersionResult{
+		PackageID:  result.PackageID,
+		VersionID:  result.VersionID,
+		Version:    result.Version,
+		StorageKey: result.StorageKey,
+		Size:       result.Size,
+		Checksum:   result.ChecksumSHA256,
+	}, nil
+}
+
+type ProxyDownloadAndCacheOpts struct {
+	PkgType     model.PackageType
+	Name        string
+	Version     string
+	Filename    string
+	ContentType string
+	Repo        *model.Repository
+	URLBuilder  proxy.URLBuilder
+}
+
+func (b *BaseAdapter) DownloadFromProxyAndCache(c *gin.Context, opts *ProxyDownloadAndCacheOpts) bool {
+	if b.proxyRouter == nil {
+		return false
+	}
+
+	result, err := b.proxyRouter.ResolveSmart(c.Request.Context(), opts.Repo, string(opts.PkgType), opts.Name, opts.Version, opts.URLBuilder)
+	if err != nil {
+		return false
+	}
+	defer result.Content.Close()
+
+	body, readErr := io.ReadAll(result.Content)
+	if readErr != nil {
+		return false
+	}
+
+	storageKey, storeErr := b.storageSvc.StorePackage(c.Request.Context(), string(opts.PkgType), opts.Name, opts.Version, bytes.NewReader(body), result.Size)
+	if storeErr == nil {
+		b.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
+			Name:           opts.Name,
+			Type:           opts.PkgType,
+			RepositoryID:   result.RepoID,
+			RepositoryType: model.RepoTypeProxy,
+		}, &model.PackageVersion{
+			Version:     opts.Version,
+			Status:      model.StatusPublished,
+			StoragePath: storageKey,
+		}, &model.PackageFile{
+			Filename:    opts.Filename,
+			FileType:    model.FileTypePrimary,
+			StoragePath: storageKey,
+			SizeBytes:   result.Size,
+		})
+	}
+
+	contentType := opts.ContentType
+	if contentType == "" {
+		contentType = b.storageSvc.GetContentType(opts.Filename)
+	}
+	c.Data(200, contentType, body)
+	return true
+}
+
+func (b *BaseAdapter) GetMetadataFromProxy(c *gin.Context, repo *model.Repository, urlBuilder proxy.URLBuilder) bool {
+	if b.proxyRouter == nil {
+		return false
+	}
+
+	result, err := b.proxyRouter.ResolveProxyOnlyForRepo(c.Request.Context(), repo, "", "", urlBuilder)
+	if err != nil {
+		return false
+	}
+	defer result.Content.Close()
+
+	c.DataFromReader(200, result.Size, "application/json", result.Content, nil)
+	return true
 }

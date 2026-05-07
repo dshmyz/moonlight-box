@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/moonlight-box/registry/internal/config"
@@ -21,13 +22,15 @@ var ErrPackageNotFound = fmt.Errorf("package not found")
 
 // ProxyRouter 多代理路由引擎，负责根据虚拟仓配置将包请求路由到正确的来源
 type ProxyRouter struct {
-	db             *gorm.DB
-	cache          *CacheService
-	client         *RemoteClient
-	repoRepo       *repository.RepositoryRepository
-	groupRepo      *repository.GroupRepository
-	adapters       map[string]types.Adapter
-	healthCheckSvc *HealthCheckService
+	db                 *gorm.DB
+	cache              *CacheService
+	client             *RemoteClient
+	repoRepo           *repository.RepositoryRepository
+	groupRepo          *repository.GroupRepository
+	adapters           map[string]types.Adapter
+	healthCheckSvc     *HealthCheckService
+	largeFileThreshold int64
+	virtualRepoCache   *VirtualRepoCache
 }
 
 // NewProxyRouter 创建一个新的代理路由引擎实例
@@ -49,6 +52,14 @@ func NewProxyRouter(
 	}
 }
 
+func (r *ProxyRouter) SetLargeFileThreshold(threshold int64) {
+	r.largeFileThreshold = threshold
+}
+
+func (r *ProxyRouter) SetVirtualRepoCache(cache *VirtualRepoCache) {
+	r.virtualRepoCache = cache
+}
+
 // SetHealthCheckService 设置健康检查服务（可选）
 func (r *ProxyRouter) SetHealthCheckService(svc *HealthCheckService) {
 	r.healthCheckSvc = svc
@@ -67,6 +78,20 @@ type RouteResult struct {
 
 type URLBuilder func(repo *model.Repository, name, version string) string
 
+func (r *ProxyRouter) getVirtualRepo(pkgType string) (*model.Repository, error) {
+	if r.virtualRepoCache != nil {
+		return r.virtualRepoCache.GetVirtualRepo(pkgType)
+	}
+	return r.repoRepo.FindVirtualByPackageType(pkgType)
+}
+
+func (r *ProxyRouter) getMembers(virtualRepoID uint) ([]model.RepositoryGroup, error) {
+	if r.virtualRepoCache != nil {
+		return r.virtualRepoCache.GetMembers(virtualRepoID)
+	}
+	return r.groupRepo.GetMembersByVirtualRepo(virtualRepoID)
+}
+
 func (r *ProxyRouter) Resolve(ctx context.Context, pkgType, name, version string) (*RouteResult, error) {
 	return r.resolveFull(ctx, pkgType, name, version, nil)
 }
@@ -80,7 +105,7 @@ func (r *ProxyRouter) ResolveSmart(ctx context.Context, repo *model.Repository, 
 		return r.resolveProxyWithURL(ctx, repo, name, version, urlBuilder)
 	}
 
-	virtualRepo, err := r.repoRepo.FindVirtualByPackageType(pkgType)
+	virtualRepo, err := r.getVirtualRepo(pkgType)
 	if err != nil {
 		if repo != nil && repo.Type == model.RepoTypeProxy {
 			return r.resolveProxyWithURL(ctx, repo, name, version, urlBuilder)
@@ -88,7 +113,7 @@ func (r *ProxyRouter) ResolveSmart(ctx context.Context, repo *model.Repository, 
 		return nil, ErrPackageNotFound
 	}
 
-	members, err := r.groupRepo.GetMembersByVirtualRepo(virtualRepo.ID)
+	members, err := r.getMembers(virtualRepo.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +136,7 @@ func (r *ProxyRouter) ResolveSmart(ctx context.Context, repo *model.Repository, 
 }
 
 func (r *ProxyRouter) ResolveForVirtualRepo(ctx context.Context, virtualRepo *model.Repository, pkgType, name, version string, urlBuilder URLBuilder) (*RouteResult, error) {
-	members, err := r.groupRepo.GetMembersByVirtualRepo(virtualRepo.ID)
+	members, err := r.getMembers(virtualRepo.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -149,40 +174,39 @@ func (r *ProxyRouter) ResolveForVirtualRepo(ctx context.Context, virtualRepo *mo
 }
 
 func (r *ProxyRouter) ResolveProxyOnly(ctx context.Context, pkgType, name, version string, urlBuilder URLBuilder) (*RouteResult, error) {
-	virtualRepo, err := r.repoRepo.FindVirtualByPackageType(pkgType)
+	virtualRepo, err := r.getVirtualRepo(pkgType)
 	if err != nil {
 		return nil, err
 	}
 
-	members, err := r.groupRepo.GetMembersByVirtualRepo(virtualRepo.ID)
+	members, err := r.getMembers(virtualRepo.ID)
 	if err != nil {
 		return nil, err
 	}
 
+	var tasks []proxyResolveTask
 	for _, member := range members {
-		repo := member.MemberRepo
-		if repo.Type != model.RepoTypeProxy {
-			continue
-		}
-
-		result, err := r.resolveProxyWithURL(ctx, &repo, name, version, urlBuilder)
-		if err == nil && result != nil {
-			result.Source = repo.Name
-			result.RepoID = repo.ID
-			return result, nil
+		if member.MemberRepo.Type == model.RepoTypeProxy {
+			tasks = append(tasks, proxyResolveTask{
+				member:     member,
+				urlBuilder: urlBuilder,
+				pkgType:    pkgType,
+				name:       name,
+				version:    version,
+			})
 		}
 	}
 
-	return nil, ErrPackageNotFound
+	return r.resolveConcurrent(ctx, tasks)
 }
 
 func (r *ProxyRouter) resolveFull(ctx context.Context, pkgType, name, version string, urlBuilder URLBuilder) (*RouteResult, error) {
-	virtualRepo, err := r.repoRepo.FindVirtualByPackageType(pkgType)
+	virtualRepo, err := r.getVirtualRepo(pkgType)
 	if err != nil {
 		return nil, err
 	}
 
-	members, err := r.groupRepo.GetMembersByVirtualRepo(virtualRepo.ID)
+	members, err := r.getMembers(virtualRepo.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -329,12 +353,16 @@ func (r *ProxyRouter) resolveProxyWithURL(ctx context.Context, repo *model.Repos
 	slog.Info("successfully fetched from remote", "remoteURL", remoteURL, "size", len(content), "contentType", contentType)
 
 	size := int64(len(content))
-	r.cache.Set(ctx, &CacheItem{
-		Key:         cacheKey,
-		Content:     content,
-		ContentType: contentType,
-		Size:        size,
-	}, time.Duration(repo.CacheTTLSeconds)*time.Second)
+	shouldCache := r.largeFileThreshold == 0 || size <= r.largeFileThreshold
+
+	if shouldCache {
+		r.cache.Set(ctx, &CacheItem{
+			Key:         cacheKey,
+			Content:     content,
+			ContentType: contentType,
+			Size:        size,
+		}, time.Duration(repo.CacheTTLSeconds)*time.Second)
+	}
 
 	return &RouteResult{
 		Source:     repo.Name,
@@ -417,14 +445,17 @@ func (r *ProxyRouter) resolveProxy(ctx context.Context, repo *model.Repository, 
 		r.healthCheckSvc.GetOrCreateCircuitBreaker(repo.ID).RecordSuccess()
 	}
 
-	// 将远程内容写入缓存
 	size := int64(len(content))
-	r.cache.Set(ctx, &CacheItem{
-		Key:         cacheKey,
-		Content:     content,
-		ContentType: contentType,
-		Size:        size,
-	}, time.Duration(repo.CacheTTLSeconds)*time.Second)
+	shouldCache := r.largeFileThreshold == 0 || size <= r.largeFileThreshold
+
+	if shouldCache {
+		r.cache.Set(ctx, &CacheItem{
+			Key:         cacheKey,
+			Content:     content,
+			ContentType: contentType,
+			Size:        size,
+		}, time.Duration(repo.CacheTTLSeconds)*time.Second)
+	}
 
 	return &RouteResult{
 		SourceType: "proxy",
@@ -433,6 +464,100 @@ func (r *ProxyRouter) resolveProxy(ctx context.Context, repo *model.Repository, 
 		FromCache:  false,
 		CacheTTL:   repo.CacheTTLSeconds,
 	}, nil
+}
+
+type proxyResolveTask struct {
+	member     model.RepositoryGroup
+	urlBuilder URLBuilder
+	pkgType    string
+	name       string
+	version    string
+}
+
+func (r *ProxyRouter) resolveConcurrent(ctx context.Context, tasks []proxyResolveTask) (*RouteResult, error) {
+	if len(tasks) == 0 {
+		return nil, ErrPackageNotFound
+	}
+
+	if len(tasks) == 1 {
+		task := tasks[0]
+		repo := task.member.MemberRepo
+		if repo.Type != model.RepoTypeProxy {
+			return nil, ErrPackageNotFound
+		}
+		if task.urlBuilder != nil {
+			return r.resolveProxyWithURL(ctx, &repo, task.name, task.version, task.urlBuilder)
+		}
+		return r.resolveProxy(ctx, &repo, task.pkgType, task.name, task.version)
+	}
+
+	resultCh := make(chan *RouteResult, len(tasks))
+	errCh := make(chan error, len(tasks))
+	var wg sync.WaitGroup
+	ctxDone := ctx.Done()
+
+	for _, task := range tasks {
+		wg.Add(1)
+		go func(t proxyResolveTask) {
+			defer wg.Done()
+
+			select {
+			case <-ctxDone:
+				return
+			default:
+			}
+
+			repo := t.member.MemberRepo
+			if repo.Type != model.RepoTypeProxy {
+				return
+			}
+
+			var result *RouteResult
+			var err error
+			if t.urlBuilder != nil {
+				result, err = r.resolveProxyWithURL(ctx, &repo, t.name, t.version, t.urlBuilder)
+			} else {
+				result, err = r.resolveProxy(ctx, &repo, t.pkgType, t.name, t.version)
+			}
+
+			if err == nil && result != nil {
+				result.Source = repo.Name
+				result.RepoID = repo.ID
+				select {
+				case resultCh <- result:
+				case <-ctxDone:
+				}
+			} else {
+				select {
+				case errCh <- err:
+				case <-ctxDone:
+				}
+			}
+		}(task)
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultCh)
+		close(errCh)
+	}()
+
+	select {
+	case result := <-resultCh:
+		return result, nil
+	case <-ctxDone:
+		return nil, ctx.Err()
+	}
+
+	var lastErr error
+	for err := range errCh {
+		lastErr = err
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, ErrPackageNotFound
 }
 
 // calcReadTimeout 计算读取超时时间，大文件动态延长

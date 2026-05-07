@@ -15,6 +15,7 @@ func setDefaults(v interface {
 	// Database
 	v.SetDefault("database.driver", "sqlite")
 	v.SetDefault("database.dsn", "./data/registry.db")
+	v.SetDefault("database.log_level", "warn")
 
 	// Storage
 	v.SetDefault("storage.backend", "local")

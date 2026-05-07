@@ -348,19 +348,19 @@ func (a *NpmAdapter) handleProxyMetadata(c *gin.Context, repo *model.Repository,
 		return fmt.Sprintf("%s/%s", strings.TrimSuffix(r.RemoteURL, "/"), pkgName)
 	}
 
-	result, err := a.proxyRouter.ResolveProxyOnlyForRepo(c.Request.Context(), repo, name, "", urlBuilder)
-	if err != nil {
+	if !a.GetMetadataFromProxy(c, repo, urlBuilder) {
 		response.NotFound(c, "package not found")
-		return
 	}
-	defer result.Content.Close()
-
-	c.DataFromReader(200, result.Size, "application/json", result.Content, nil)
 }
 
 func (a *NpmAdapter) handleVirtualMetadata(c *gin.Context, repo *model.Repository, name string) {
 	urlBuilder := func(r *model.Repository, pkgName, _ string) string {
 		return fmt.Sprintf("%s/%s", strings.TrimSuffix(r.RemoteURL, "/"), pkgName)
+	}
+
+	if a.proxyRouter == nil {
+		response.NotFound(c, "package not found")
+		return
 	}
 
 	result, err := a.proxyRouter.ResolveForVirtualRepo(c.Request.Context(), repo, "npm", name, "", urlBuilder)
@@ -431,45 +431,26 @@ func (a *NpmAdapter) downloadFromProxy(c *gin.Context, repo *model.Repository, n
 		return fmt.Sprintf("%s/%s/-/%s", strings.TrimSuffix(r.RemoteURL, "/"), pkgName, filename)
 	}
 
-	result, err := a.proxyRouter.ResolveProxyOnlyForRepo(c.Request.Context(), repo, name, version, urlBuilder)
-	if err != nil {
+	if !a.DownloadFromProxyAndCache(c, &ProxyDownloadAndCacheOpts{
+		PkgType:    model.PackageTypeNPM,
+		Name:       name,
+		Version:    version,
+		Filename:   filename,
+		Repo:       repo,
+		URLBuilder: urlBuilder,
+	}) {
 		response.NotFound(c, "tarball not found")
-		return
 	}
-	defer result.Content.Close()
-
-	body, readErr := io.ReadAll(result.Content)
-	if readErr != nil {
-		response.NotFound(c, "tarball not found")
-		return
-	}
-
-	storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "npm", name, version, bytes.NewReader(body), result.Size)
-	if storeErr == nil {
-		a.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
-			Name:           name,
-			Type:           model.PackageTypeNPM,
-			RepositoryID:   result.RepoID,
-			RepositoryType: model.RepoTypeProxy,
-		}, &model.PackageVersion{
-			Version:     version,
-			Status:      model.StatusPublished,
-			StoragePath: filepath.Dir(storageKey),
-		}, &model.PackageFile{
-			Filename:    filename,
-			FileType:    model.FileTypePrimary,
-			StoragePath: storageKey,
-			SizeBytes:   result.Size,
-		})
-	}
-
-	contentType := a.storageSvc.GetContentType(filename)
-	c.Data(200, contentType, body)
 }
 
 func (a *NpmAdapter) downloadFromVirtual(c *gin.Context, repo *model.Repository, name, version, filename string) {
 	urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
 		return fmt.Sprintf("%s/%s/-/%s", strings.TrimSuffix(r.RemoteURL, "/"), pkgName, filename)
+	}
+
+	if a.proxyRouter == nil {
+		response.NotFound(c, "tarball not found")
+		return
 	}
 
 	result, err := a.proxyRouter.ResolveForVirtualRepo(c.Request.Context(), repo, "npm", name, version, urlBuilder)

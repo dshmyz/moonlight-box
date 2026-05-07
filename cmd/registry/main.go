@@ -213,6 +213,9 @@ func main() {
 	repoSvc := service.NewRepositoryService(repoRepo, groupRepo, db)
 	blockRuleSvc := service.NewBlockRuleService(blockRuleRepo, auditSvc)
 
+	// 初始化权限缓存服务（5分钟TTL）
+	permCacheSvc := service.NewPermissionCacheService(roleRepo, 5*time.Minute)
+
 	// 初始化元数据同步服务
 	metadataSyncTaskRepo := repository.NewMetadataSyncTaskRepository(db)
 	metadataSyncSvc := service.NewMetadataSyncService(db, metadataSyncTaskRepo, repoRepo, packageRepo)
@@ -345,7 +348,7 @@ func main() {
 	}
 
 	// 创建路由器
-	router := setupRouter(cfg, authService, adapters, repoHandler, cacheHandler, blockRuleHandler, searchHandler, dashboardHandler, casHandler, blockRuleSvc, storageBackendHandler, securityHandler, auditLogHandler, userHandler, pkgVersionHandler, roleRepo, roleHandler, publicRepoHandler, backupHandler, webhookHandler, systemConfigHandler, systemInfoHandler, fileBrowseHandler, repoSvc, migrationHandler, aiHandler, proxyDownloadLogHandler, healthCheckHandler)
+	router := setupRouter(cfg, authService, adapters, repoHandler, cacheHandler, blockRuleHandler, searchHandler, dashboardHandler, casHandler, blockRuleSvc, storageBackendHandler, securityHandler, auditLogHandler, userHandler, pkgVersionHandler, permCacheSvc, roleHandler, publicRepoHandler, backupHandler, webhookHandler, systemConfigHandler, systemInfoHandler, fileBrowseHandler, repoSvc, migrationHandler, aiHandler, proxyDownloadLogHandler, healthCheckHandler)
 
 	// 设置 Webhook 服务到适配器
 	for _, adap := range adapters {
@@ -408,7 +411,7 @@ func main() {
 	logrus.Info("Server exited")
 }
 
-func setupRouter(cfg *config.Config, authService *service.AuthService, adapters []adapter.Adapter, repoHandler *handler.RepositoryHandler, cacheHandler *handler.CacheHandler, blockRuleHandler *handler.BlockRuleHandler, searchHandler *handler.PackageSearchHandler, dashboardHandler *handler.DashboardHandler, casHandler *handler.CASHandler, blockRuleSvc *service.BlockRuleService, storageBackendHandler *handler.StorageBackendHandler, securityHandler *handler.SecurityHandler, auditLogHandler *handler.AuditLogHandler, userHandler *handler.UserHandler, pkgVersionHandler *handler.PackageVersionHandler, roleRepo *repository.RoleRepository, roleHandler *handler.RoleHandler, publicRepoHandler *handler.PublicRepoHandler, backupHandler *handler.BackupHandler, webhookHandler *handler.WebhookHandler, systemConfigHandler *handler.SystemConfigHandler, systemInfoHandler *handler.SystemInfoHandler, fileBrowseHandler *handler.FileBrowseHandler, repoSvc *service.RepositoryService, migrationHandler *handler.MigrationHandler, aiHandler *handler.AIHandler, proxyDownloadLogHandler *handler.ProxyDownloadLogHandler, healthCheckHandler *handler.HealthCheckHandler) *gin.Engine {
+func setupRouter(cfg *config.Config, authService *service.AuthService, adapters []adapter.Adapter, repoHandler *handler.RepositoryHandler, cacheHandler *handler.CacheHandler, blockRuleHandler *handler.BlockRuleHandler, searchHandler *handler.PackageSearchHandler, dashboardHandler *handler.DashboardHandler, casHandler *handler.CASHandler, blockRuleSvc *service.BlockRuleService, storageBackendHandler *handler.StorageBackendHandler, securityHandler *handler.SecurityHandler, auditLogHandler *handler.AuditLogHandler, userHandler *handler.UserHandler, pkgVersionHandler *handler.PackageVersionHandler, permCacheSvc *service.PermissionCacheService, roleHandler *handler.RoleHandler, publicRepoHandler *handler.PublicRepoHandler, backupHandler *handler.BackupHandler, webhookHandler *handler.WebhookHandler, systemConfigHandler *handler.SystemConfigHandler, systemInfoHandler *handler.SystemInfoHandler, fileBrowseHandler *handler.FileBrowseHandler, repoSvc *service.RepositoryService, migrationHandler *handler.MigrationHandler, aiHandler *handler.AIHandler, proxyDownloadLogHandler *handler.ProxyDownloadLogHandler, healthCheckHandler *handler.HealthCheckHandler) *gin.Engine {
 	r := gin.New()
 
 	// 全局中间件
@@ -472,14 +475,14 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 			// 仓库管理
 			repos := protected.Group("/repositories")
-			repos.Use(middleware.RequirePermission(roleRepo, "repositories", "read"))
+			repos.Use(middleware.RequirePermission(permCacheSvc, "repositories", "read"))
 			{
 				repos.GET("", repoHandler.List)
 				repos.GET("/:name", repoHandler.Get)
 				repos.GET("/:name/members", repoHandler.GetMembers)
 			}
 			reposWrite := protected.Group("/repositories")
-			reposWrite.Use(middleware.RequirePermission(roleRepo, "repositories", "write"))
+			reposWrite.Use(middleware.RequirePermission(permCacheSvc, "repositories", "write"))
 			{
 				reposWrite.POST("", repoHandler.Create)
 				reposWrite.PUT("/:name", repoHandler.Update)
@@ -488,7 +491,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 				reposWrite.PUT("/:name/metadata-sync-config", repoHandler.UpdateMetadataSyncConfig)
 			}
 			reposDelete := protected.Group("/repositories")
-			reposDelete.Use(middleware.RequirePermission(roleRepo, "repositories", "delete"))
+			reposDelete.Use(middleware.RequirePermission(permCacheSvc, "repositories", "delete"))
 			{
 				reposDelete.DELETE("/:name", repoHandler.Delete)
 				reposDelete.DELETE("/:name/members/:memberName", repoHandler.RemoveMember)
@@ -496,12 +499,12 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 			// 缓存管理
 			cache := protected.Group("/cache")
-			cache.Use(middleware.RequirePermission(roleRepo, "cache", "read"))
+			cache.Use(middleware.RequirePermission(permCacheSvc, "cache", "read"))
 			{
 				cache.GET("/stats", cacheHandler.GetStats)
 			}
 			cacheWrite := protected.Group("/cache")
-			cacheWrite.Use(middleware.RequirePermission(roleRepo, "cache", "write"))
+			cacheWrite.Use(middleware.RequirePermission(permCacheSvc, "cache", "write"))
 			{
 				cacheWrite.DELETE("", cacheHandler.Clear)
 				cacheWrite.POST("/invalidate", cacheHandler.Invalidate)
@@ -509,7 +512,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 			// 阻断规则管理
 			blockRules := protected.Group("/block-rules")
-			blockRules.Use(middleware.RequirePermission(roleRepo, "block-rules", "read"))
+			blockRules.Use(middleware.RequirePermission(permCacheSvc, "block-rules", "read"))
 			{
 				blockRules.GET("", blockRuleHandler.List)
 				blockRules.GET("/logs", blockRuleHandler.ListBlockLogs)
@@ -517,14 +520,14 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 				blockRules.GET("/stats", blockRuleHandler.GetBlockStats)
 			}
 			blockRulesWrite := protected.Group("/block-rules")
-			blockRulesWrite.Use(middleware.RequirePermission(roleRepo, "block-rules", "write"))
+			blockRulesWrite.Use(middleware.RequirePermission(permCacheSvc, "block-rules", "write"))
 			{
 				blockRulesWrite.POST("", blockRuleHandler.Create)
 				blockRulesWrite.POST("/batch-import", blockRuleHandler.BatchImport)
 				blockRulesWrite.PUT("/:id", blockRuleHandler.Update)
 			}
 			blockRulesDelete := protected.Group("/block-rules")
-			blockRulesDelete.Use(middleware.RequirePermission(roleRepo, "block-rules", "delete"))
+			blockRulesDelete.Use(middleware.RequirePermission(permCacheSvc, "block-rules", "delete"))
 			{
 				blockRulesDelete.DELETE("/:id", blockRuleHandler.Delete)
 			}
@@ -539,28 +542,28 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 			// 存储后端管理
 			storageBackends := protected.Group("/storage-backends")
-			storageBackends.Use(middleware.RequirePermission(roleRepo, "storage-backends", "read"))
+			storageBackends.Use(middleware.RequirePermission(permCacheSvc, "storage-backends", "read"))
 			{
 				storageBackends.GET("", storageBackendHandler.List)
 				storageBackends.GET("/:id", storageBackendHandler.Get)
 				storageBackends.POST("/test", storageBackendHandler.TestConnection)
 			}
 			storageBackendsWrite := protected.Group("/storage-backends")
-			storageBackendsWrite.Use(middleware.RequirePermission(roleRepo, "storage-backends", "write"))
+			storageBackendsWrite.Use(middleware.RequirePermission(permCacheSvc, "storage-backends", "write"))
 			{
 				storageBackendsWrite.POST("", storageBackendHandler.Create)
 				storageBackendsWrite.PUT("/:id", storageBackendHandler.Update)
 				storageBackendsWrite.POST("/:id/default", storageBackendHandler.SetDefault)
 			}
 			storageBackendsDelete := protected.Group("/storage-backends")
-			storageBackendsDelete.Use(middleware.RequirePermission(roleRepo, "storage-backends", "write"))
+			storageBackendsDelete.Use(middleware.RequirePermission(permCacheSvc, "storage-backends", "write"))
 			{
 				storageBackendsDelete.DELETE("/:id", storageBackendHandler.Delete)
 			}
 
 			// 安全扫描
 			security := protected.Group("/security")
-			security.Use(middleware.RequirePermission(roleRepo, "security", "read"))
+			security.Use(middleware.RequirePermission(permCacheSvc, "security", "read"))
 			{
 				security.GET("/vulnerabilities", securityHandler.ListVulnerabilities)
 				security.GET("/statistics", securityHandler.GetSecurityStats)
@@ -568,7 +571,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 				security.GET("/packages/:id/scan", securityHandler.GetScanResult)
 			}
 			securityWrite := protected.Group("/security")
-			securityWrite.Use(middleware.RequirePermission(roleRepo, "security", "write"))
+			securityWrite.Use(middleware.RequirePermission(permCacheSvc, "security", "write"))
 			{
 				securityWrite.POST("/scan/full", securityHandler.TriggerFullScan)
 				securityWrite.POST("/block/:cve", securityHandler.BlockByCVE)
@@ -577,22 +580,22 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 			// 用户管理
 			users := protected.Group("/users")
-			users.Use(middleware.RequirePermission(roleRepo, "users", "read"))
+			users.Use(middleware.RequirePermission(permCacheSvc, "users", "read"))
 			{
 				users.GET("", userHandler.List)
 			}
 			usersWrite := protected.Group("/users")
-			usersWrite.Use(middleware.RequirePermission(roleRepo, "users", "write"))
+			usersWrite.Use(middleware.RequirePermission(permCacheSvc, "users", "write"))
 			{
 				usersWrite.POST("", userHandler.Create)
 				usersWrite.PUT("/:id/status", userHandler.UpdateStatus)
 				usersWrite.PUT("/:id/roles", userHandler.AssignRoles)
 			}
-			protected.GET("/roles", middleware.RequirePermission(roleRepo, "users", "read"), roleHandler.List)
-			protected.GET("/roles/permissions", middleware.RequirePermission(roleRepo, "users", "read"), roleHandler.ListPermissions)
-			protected.GET("/roles/:id", middleware.RequirePermission(roleRepo, "users", "read"), roleHandler.Get)
+			protected.GET("/roles", middleware.RequirePermission(permCacheSvc, "users", "read"), roleHandler.List)
+			protected.GET("/roles/permissions", middleware.RequirePermission(permCacheSvc, "users", "read"), roleHandler.ListPermissions)
+			protected.GET("/roles/:id", middleware.RequirePermission(permCacheSvc, "users", "read"), roleHandler.Get)
 			rolesWrite := protected.Group("/roles")
-			rolesWrite.Use(middleware.RequirePermission(roleRepo, "users", "write"))
+			rolesWrite.Use(middleware.RequirePermission(permCacheSvc, "users", "write"))
 			{
 				rolesWrite.POST("", roleHandler.Create)
 				rolesWrite.PUT("/:id", roleHandler.Update)
@@ -602,7 +605,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 			// 审计日志
 			audit := protected.Group("/audit")
-			audit.Use(middleware.RequirePermission(roleRepo, "audit", "read"))
+			audit.Use(middleware.RequirePermission(permCacheSvc, "audit", "read"))
 			{
 				audit.GET("/logs", auditLogHandler.List)
 				audit.GET("/logs/:id", auditLogHandler.Get)
@@ -610,24 +613,24 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 			// 代理下载日志
 			proxyDownloads := protected.Group("/proxy-downloads")
-			proxyDownloads.Use(middleware.RequirePermission(roleRepo, "audit", "read"))
+			proxyDownloads.Use(middleware.RequirePermission(permCacheSvc, "audit", "read"))
 			{
 				proxyDownloads.GET("/logs", proxyDownloadLogHandler.List)
 				proxyDownloads.GET("/stats", proxyDownloadLogHandler.GetStats)
 			}
 
 			// 包版本管理
-			protected.POST("/packages/versions/:id/deprecate", middleware.RequirePermission(roleRepo, "npm", "write"), pkgVersionHandler.DeprecateVersion)
-			protected.POST("/packages/versions/:id/restore", middleware.RequirePermission(roleRepo, "npm", "write"), pkgVersionHandler.RestoreVersion)
-			protected.POST("/packages/versions/:id/yank", middleware.RequirePermission(roleRepo, "npm", "write"), pkgVersionHandler.YankVersion)
-			protected.DELETE("/packages/versions/:id", middleware.RequirePermission(roleRepo, "npm", "delete"), pkgVersionHandler.DeleteVersion)
+			protected.POST("/packages/versions/:id/deprecate", middleware.RequirePermission(permCacheSvc, "npm", "write"), pkgVersionHandler.DeprecateVersion)
+			protected.POST("/packages/versions/:id/restore", middleware.RequirePermission(permCacheSvc, "npm", "write"), pkgVersionHandler.RestoreVersion)
+			protected.POST("/packages/versions/:id/yank", middleware.RequirePermission(permCacheSvc, "npm", "write"), pkgVersionHandler.YankVersion)
+			protected.DELETE("/packages/versions/:id", middleware.RequirePermission(permCacheSvc, "npm", "delete"), pkgVersionHandler.DeleteVersion)
 
 			// Dashboard 统计（需要认证）
 			protected.GET("/dashboard/stats", dashboardHandler.GetStats)
 
 			// 备份管理
 			backups := protected.Group("/backups")
-			backups.Use(middleware.RequirePermission(roleRepo, "system", "admin"))
+			backups.Use(middleware.RequirePermission(permCacheSvc, "system", "admin"))
 			{
 				backups.GET("", backupHandler.List)
 				backups.GET("/:id", backupHandler.Get)
@@ -638,14 +641,14 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 			// Webhook 管理
 			webhooks := protected.Group("/webhooks")
-			webhooks.Use(middleware.RequirePermission(roleRepo, "webhooks", "read"))
+			webhooks.Use(middleware.RequirePermission(permCacheSvc, "webhooks", "read"))
 			{
 				webhooks.GET("", webhookHandler.List)
 				webhooks.GET("/:id", webhookHandler.Get)
 				webhooks.GET("/:id/deliveries", webhookHandler.ListDeliveries)
 			}
 			webhooksWrite := protected.Group("/webhooks")
-			webhooksWrite.Use(middleware.RequirePermission(roleRepo, "webhooks", "write"))
+			webhooksWrite.Use(middleware.RequirePermission(permCacheSvc, "webhooks", "write"))
 			{
 				webhooksWrite.POST("", webhookHandler.Create)
 				webhooksWrite.PUT("/:id", webhookHandler.Update)
@@ -655,7 +658,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 			// 系统配置管理
 			configs := protected.Group("/configs")
-			configs.Use(middleware.RequirePermission(roleRepo, "system", "admin"))
+			configs.Use(middleware.RequirePermission(permCacheSvc, "system", "admin"))
 			{
 				configs.GET("", systemConfigHandler.List)
 				configs.GET("/:key", systemConfigHandler.Get)
@@ -668,7 +671,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 			// 文件浏览
 			files := protected.Group("/files")
-			files.Use(middleware.RequirePermission(roleRepo, "system", "admin"))
+			files.Use(middleware.RequirePermission(permCacheSvc, "system", "admin"))
 			{
 				files.GET("/browse", fileBrowseHandler.ListDirectory)
 				files.GET("/stats", fileBrowseHandler.GetFileStats)
@@ -677,7 +680,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 			// 数据迁移
 			migrationGroup := protected.Group("/migration")
-			migrationGroup.Use(middleware.RequirePermission(roleRepo, "system", "admin"))
+			migrationGroup.Use(middleware.RequirePermission(permCacheSvc, "system", "admin"))
 			{
 				migrationGroup.GET("", migrationHandler.ListMigrations)
 				migrationGroup.POST("/nexus/test", migrationHandler.TestNexusConnection)
@@ -707,13 +710,13 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 					ai.GET("/rate-limit", aiHandler.GetRateLimitStatus)
 
 					// 服务统计 - 管理员可用
-					ai.GET("/stats", middleware.RequirePermission(roleRepo, "system", "admin"), aiHandler.GetStats)
+					ai.GET("/stats", middleware.RequirePermission(permCacheSvc, "system", "admin"), aiHandler.GetStats)
 
 					// 缓存统计 - 管理员可用
-					ai.GET("/cache/stats", middleware.RequirePermission(roleRepo, "system", "admin"), aiHandler.GetCacheStats)
+					ai.GET("/cache/stats", middleware.RequirePermission(permCacheSvc, "system", "admin"), aiHandler.GetCacheStats)
 
 					// 审计日志 - 管理员可用
-					ai.GET("/audit-logs", middleware.RequirePermission(roleRepo, "system", "admin"), aiHandler.GetAuditLogs)
+					ai.GET("/audit-logs", middleware.RequirePermission(permCacheSvc, "system", "admin"), aiHandler.GetAuditLogs)
 
 					// 健康检查 - 所有认证用户可用
 					ai.GET("/health", aiHandler.HealthCheck)
@@ -722,7 +725,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 
 			// 健康检查管理 - 管理员可用
 			health := protected.Group("/health")
-			health.Use(middleware.RequirePermission(roleRepo, "system", "admin"))
+			health.Use(middleware.RequirePermission(permCacheSvc, "system", "admin"))
 			{
 				health.GET("/repos", healthCheckHandler.GetAllHealthStatuses)
 				health.GET("/repos/:id", healthCheckHandler.GetHealthStatus)
@@ -742,7 +745,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, adapters 
 	authMw := middleware.Auth(authService)
 	blockMw := middleware.BlockCheck(blockRuleSvc, repoSvc)
 	permMw := func(resource, action string) gin.HandlerFunc {
-		return middleware.RequirePermission(roleRepo, resource, action)
+		return middleware.RequirePermission(permCacheSvc, resource, action)
 	}
 
 	repoGroup := r.Group("/repo/:repoName")

@@ -49,7 +49,7 @@
           <i class="fa-solid fa-memory"></i>
         </div>
         <div class="stat-info">
-          <span class="stat-value">{{ systemInfo.memory_usage || 0 }}%</span>
+          <span class="stat-value">{{ formatMemoryUsage(systemInfo.memory_usage) }}%</span>
           <span class="stat-label">内存使用</span>
         </div>
       </div>
@@ -124,7 +124,7 @@
           <div class="info-item info-item--progress">
             <span class="info-label">内存使用</span>
             <el-progress
-              :percentage="systemInfo.memory_usage || 0"
+              :percentage="formatMemoryUsage(systemInfo.memory_usage)"
               :color="getProgressColor(systemInfo.memory_usage)"
               :stroke-width="10"
             />
@@ -156,6 +156,60 @@
             <i class="fa-solid fa-check-circle status-icon status-icon--success"></i>
             <span>存储服务正常</span>
           </div>
+        </div>
+      </div>
+
+      <div class="info-card info-card--full-width">
+        <div class="card-header">
+          <div class="card-title">
+            <i class="fa-solid fa-database"></i>
+            <span>数据库连接池</span>
+          </div>
+          <span class="card-subtitle">实时监控数据库连接池状态</span>
+        </div>
+        <div v-if="systemInfo.database_pool && !systemInfo.database_pool.status" class="db-pool-grid">
+          <div class="db-pool-item">
+            <span class="db-pool-label">最大连接数</span>
+            <span class="db-pool-value">{{ systemInfo.database_pool.max_open_connections }}</span>
+          </div>
+          <div class="db-pool-item">
+            <span class="db-pool-label">打开连接数</span>
+            <span class="db-pool-value db-pool-value--primary">{{ systemInfo.database_pool.open_connections }}</span>
+          </div>
+          <div class="db-pool-item">
+            <span class="db-pool-label">使用中</span>
+            <span class="db-pool-value db-pool-value--warning">{{ systemInfo.database_pool.in_use }}</span>
+          </div>
+          <div class="db-pool-item">
+            <span class="db-pool-label">空闲连接</span>
+            <span class="db-pool-value db-pool-value--success">{{ systemInfo.database_pool.idle }}</span>
+          </div>
+          <div class="db-pool-item">
+            <span class="db-pool-label">等待次数</span>
+            <span class="db-pool-value" :class="{ 'db-pool-value--danger': systemInfo.database_pool.wait_count > 0 }">
+              {{ systemInfo.database_pool.wait_count }}
+            </span>
+          </div>
+          <div class="db-pool-item">
+            <span class="db-pool-label">等待时长</span>
+            <span class="db-pool-value">{{ systemInfo.database_pool.wait_duration_ms }} ms</span>
+          </div>
+          <div class="db-pool-item">
+            <span class="db-pool-label">空闲关闭</span>
+            <span class="db-pool-value">{{ systemInfo.database_pool.max_idle_closed }}</span>
+          </div>
+          <div class="db-pool-item">
+            <span class="db-pool-label">超时关闭</span>
+            <span class="db-pool-value">{{ systemInfo.database_pool.max_idle_time_closed }}</span>
+          </div>
+          <div class="db-pool-item">
+            <span class="db-pool-label">生命周期关闭</span>
+            <span class="db-pool-value">{{ systemInfo.database_pool.max_lifetime_closed }}</span>
+          </div>
+        </div>
+        <div v-else class="db-pool-unavailable">
+          <i class="fa-solid fa-info-circle"></i>
+          <span>数据库连接池统计信息暂不可用</span>
         </div>
       </div>
     </div>
@@ -196,6 +250,11 @@ const formatUptime = (seconds: number): string => {
   if (secs > 0 || parts.length === 0) parts.push(`${secs} 秒`)
 
   return parts.join(' ')
+}
+
+const formatMemoryUsage = (percentage: number): number => {
+  if (!percentage || percentage < 0) return 0
+  return Math.round(percentage * 10) / 10
 }
 
 const getProgressColor = (percentage: number): string => {
@@ -454,5 +513,78 @@ onMounted(loadSystemInfo)
 
 .status-icon--success {
   color: #22c55e;
+}
+
+.info-card--full-width {
+  grid-column: 1 / -1;
+}
+
+.card-subtitle {
+  font-size: 12px;
+  color: #9ca3af;
+  margin-left: 8px;
+}
+
+.db-pool-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.db-pool-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px;
+  background: #f8fafc;
+  border-radius: 10px;
+  transition: all 0.2s ease;
+}
+
+.db-pool-item:hover {
+  background: #f1f5f9;
+  transform: translateY(-1px);
+}
+
+.db-pool-label {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 8px;
+}
+
+.db-pool-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.db-pool-value--primary {
+  color: #3b82f6;
+}
+
+.db-pool-value--success {
+  color: #22c55e;
+}
+
+.db-pool-value--warning {
+  color: #f59e0b;
+}
+
+.db-pool-value--danger {
+  color: #ef4444;
+}
+
+.db-pool-unavailable {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: #9ca3af;
+  font-size: 14px;
+}
+
+.db-pool-unavailable i {
+  font-size: 18px;
 }
 </style>

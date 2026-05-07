@@ -18,6 +18,19 @@ export interface ConfigUpdateRequest {
   }>
 }
 
+export interface DatabasePoolStats {
+  status?: string
+  max_open_connections: number
+  open_connections: number
+  in_use: number
+  idle: number
+  wait_count: number
+  wait_duration_ms: number
+  max_idle_closed: number
+  max_idle_time_closed: number
+  max_lifetime_closed: number
+}
+
 export interface SystemInfo {
   version: string
   go_version: string
@@ -29,6 +42,7 @@ export interface SystemInfo {
   cpu_count: number
   memory_usage: number
   goroutine_count: number
+  database_pool?: DatabasePoolStats
 }
 
 export const systemApi = {

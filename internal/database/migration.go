@@ -458,6 +458,7 @@ func seedDefaultRepositories() error {
 			Type:        model.RepoTypeLocal,
 			PackageType: string(model.PackageTypeMaven),
 			Enabled:     true,
+			AllowDelete: true,
 		},
 		{
 			Name:              "maven-proxy-aliyun",

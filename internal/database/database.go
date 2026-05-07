@@ -19,8 +19,8 @@ func Initialize(cfg *config.Config) error {
 	var dialector gorm.Dialector
 
 	logrus.WithFields(logrus.Fields{
-		"module":   "database",
-		"driver":   cfg.Database.Driver,
+		"module": "database",
+		"driver": cfg.Database.Driver,
 	}).Info("Initializing database connection")
 
 	switch cfg.Database.Driver {
@@ -67,10 +67,10 @@ func Initialize(cfg *config.Config) error {
 	DB = db
 
 	logrus.WithFields(logrus.Fields{
-		"module":          "database",
-		"driver":          cfg.Database.Driver,
-		"max_idle_conns":  10,
-		"max_open_conns":  100,
+		"module":         "database",
+		"driver":         cfg.Database.Driver,
+		"max_idle_conns": 10,
+		"max_open_conns": 100,
 	}).Info("Database connection established")
 
 	return nil
@@ -89,4 +89,38 @@ func Close() error {
 		return sqlDB.Close()
 	}
 	return nil
+}
+
+type PoolStats struct {
+	MaxOpenConnections int           `json:"max_open_connections"`
+	OpenConnections    int           `json:"open_connections"`
+	InUse              int           `json:"in_use"`
+	Idle               int           `json:"idle"`
+	WaitCount          int64         `json:"wait_count"`
+	WaitDuration       time.Duration `json:"wait_duration_ms"`
+	MaxIdleClosed      int64         `json:"max_idle_closed"`
+	MaxIdleTimeClosed  int64         `json:"max_idle_time_closed"`
+	MaxLifetimeClosed  int64         `json:"max_lifetime_closed"`
+}
+
+func GetPoolStats() *PoolStats {
+	if DB == nil {
+		return nil
+	}
+	sqlDB, err := DB.DB()
+	if err != nil {
+		return nil
+	}
+	s := sqlDB.Stats()
+	return &PoolStats{
+		MaxOpenConnections: s.MaxOpenConnections,
+		OpenConnections:    s.OpenConnections,
+		InUse:              s.InUse,
+		Idle:               s.Idle,
+		WaitCount:          s.WaitCount,
+		WaitDuration:       s.WaitDuration,
+		MaxIdleClosed:      s.MaxIdleClosed,
+		MaxIdleTimeClosed:  s.MaxIdleTimeClosed,
+		MaxLifetimeClosed:  s.MaxLifetimeClosed,
+	}
 }

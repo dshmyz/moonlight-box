@@ -191,13 +191,41 @@ func (r *PackageRepository) CreateOrUpdateMetadata(ctx context.Context, pkg *mod
 
 func (r *PackageRepository) FindByNameAndType(name string, pkgType model.PackageType) (*model.Package, error) {
 	var pkg model.Package
-	result := r.db.Preload("Versions").Preload("Versions.Files").Where("name = ? AND type = ?", name, pkgType).First(&pkg)
+	result := r.db.Where("name = ? AND type = ?", name, pkgType).First(&pkg)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, util.ErrPackageNotFound
 		}
 		return nil, result.Error
 	}
+
+	var versions []model.PackageVersion
+	if err := r.db.Where("package_id = ?", pkg.ID).Find(&versions).Error; err != nil {
+		return nil, err
+	}
+
+	if len(versions) > 0 {
+		versionIDs := make([]uint, len(versions))
+		for i, v := range versions {
+			versionIDs[i] = v.ID
+		}
+
+		var files []model.PackageFile
+		if err := r.db.Where("version_id IN ?", versionIDs).Find(&files).Error; err != nil {
+			return nil, err
+		}
+
+		fileMap := make(map[uint][]model.PackageFile)
+		for _, f := range files {
+			fileMap[f.VersionID] = append(fileMap[f.VersionID], f)
+		}
+
+		for i := range versions {
+			versions[i].Files = fileMap[versions[i].ID]
+		}
+	}
+
+	pkg.Versions = versions
 	return &pkg, nil
 }
 
@@ -264,7 +292,7 @@ func (r *PackageRepository) List(page, pageSize int, pkgType string, keyword str
 	var packages []model.Package
 	var total int64
 
-	query := r.db.Model(&model.Package{}).Preload("Versions").Preload("Versions.Files")
+	query := r.db.Model(&model.Package{})
 
 	if pkgType != "" {
 		query = query.Where("type = ?", pkgType)
@@ -278,8 +306,55 @@ func (r *PackageRepository) List(page, pageSize int, pkgType string, keyword str
 
 	offset := (page - 1) * pageSize
 	result := query.Offset(offset).Limit(pageSize).Order("created_at DESC").Find(&packages)
+	if result.Error != nil {
+		return nil, 0, result.Error
+	}
 
-	return packages, total, result.Error
+	if len(packages) == 0 {
+		return packages, total, nil
+	}
+
+	packageIDs := make([]uint, len(packages))
+	for i, p := range packages {
+		packageIDs[i] = p.ID
+	}
+
+	var versions []model.PackageVersion
+	if err := r.db.Where("package_id IN ?", packageIDs).Find(&versions).Error; err != nil {
+		return nil, 0, err
+	}
+
+	if len(versions) > 0 {
+		versionIDs := make([]uint, len(versions))
+		for i, v := range versions {
+			versionIDs[i] = v.ID
+		}
+
+		var files []model.PackageFile
+		if err := r.db.Where("version_id IN ?", versionIDs).Find(&files).Error; err != nil {
+			return nil, 0, err
+		}
+
+		fileMap := make(map[uint][]model.PackageFile)
+		for _, f := range files {
+			fileMap[f.VersionID] = append(fileMap[f.VersionID], f)
+		}
+
+		for i := range versions {
+			versions[i].Files = fileMap[versions[i].ID]
+		}
+	}
+
+	packageVersionsMap := make(map[uint][]model.PackageVersion)
+	for _, v := range versions {
+		packageVersionsMap[v.PackageID] = append(packageVersionsMap[v.PackageID], v)
+	}
+
+	for i := range packages {
+		packages[i].Versions = packageVersionsMap[packages[i].ID]
+	}
+
+	return packages, total, nil
 }
 
 func (r *PackageRepository) FindVersionByID(id uint) (*model.PackageVersion, error) {

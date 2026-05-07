@@ -44,9 +44,12 @@ func NewTransportManager(connectTimeout time.Duration, dnsResolver *DNSResolver)
 			}
 			return dialer.DialContext(ctx, network, net.JoinHostPort(resolvedHost, resolvedPort))
 		},
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
+		MaxIdleConns:        200,
+		MaxIdleConnsPerHost: 50,
 		IdleConnTimeout:     90 * time.Second,
+		MaxConnsPerHost:     100,
+		TLSHandshakeTimeout: 10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 	}
 
 	insecureTransport := baseTransport.Clone()

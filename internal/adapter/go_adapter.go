@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -228,46 +227,23 @@ func (a *GoAdapter) handleGoMod(c *gin.Context, module, version string) {
 			repo = r.(*model.Repository)
 		}
 
-		result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "go", module, version, urlBuilder)
-		if resolveErr == nil && result != nil {
-			slog.Info("Proxy resolved successfully", "source", result.Source, "size", result.Size)
-			defer result.Content.Close()
-			body, readErr := io.ReadAll(result.Content)
-			if readErr == nil {
-				slog.Info("Storing go.mod to storage", "module", module, "version", version, "size", len(body))
-				storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "go", module, storageVersion, bytes.NewReader(body), result.Size)
-				if storeErr == nil {
-					slog.Info("Stored successfully", "storageKey", storageKey)
-					a.pkgRepo.StorePackageFile(c.Request.Context(), &model.Package{
-						Name:           module,
-						Type:           model.PackageTypeGo,
-						RepositoryID:   result.RepoID,
-						RepositoryType: model.RepoTypeProxy,
-					}, &model.PackageVersion{
-						Version:     version,
-						Status:      model.StatusPublished,
-						StoragePath: filepath.Dir(storageKey),
-					}, &model.PackageFile{
-						Filename:    version + ".mod",
-						FileType:    model.FileTypeMetadata,
-						StoragePath: storageKey,
-						SizeBytes:   result.Size,
-					})
-				} else {
-					slog.Error("Failed to store go.mod", "error", storeErr)
-				}
-				c.Data(200, "text/plain", body)
-				return
-			} else {
-				slog.Error("Failed to read response body", "error", readErr)
-			}
-		} else {
-			slog.Error("Proxy resolution failed", "error", resolveErr)
+		slog.Info("Calling DownloadFromProxyAndCache for go.mod", "module", module, "version", version)
+		if !a.DownloadFromProxyAndCache(c, &ProxyDownloadAndCacheOpts{
+			PkgType:     model.PackageTypeGo,
+			Name:        module,
+			Version:     storageVersion,
+			Filename:    version + ".mod",
+			ContentType: "text/plain",
+			Repo:        repo,
+			URLBuilder:  urlBuilder,
+		}) {
+			slog.Error("DownloadFromProxyAndCache failed for go.mod")
+			response.NotFound(c, "go.mod not found")
 		}
-	} else {
-		slog.Warn("proxyRouter is nil")
+		return
 	}
 
+	slog.Warn("proxyRouter is nil")
 	response.NotFound(c, "go.mod not found")
 }
 
@@ -294,41 +270,18 @@ func (a *GoAdapter) handleDownloadZip(c *gin.Context, module, version string) {
 			repo = r.(*model.Repository)
 		}
 
-		result, resolveErr := a.proxyRouter.ResolveSmart(c.Request.Context(), repo, "go", module, version, urlBuilder)
-		if resolveErr == nil && result != nil {
-			defer result.Content.Close()
-			body, readErr := io.ReadAll(result.Content)
-			if readErr == nil {
-				storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "go", module, storageVersion, bytes.NewReader(body), result.Size)
-				if storeErr == nil {
-					a.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
-						Name:           module,
-						Type:           model.PackageTypeGo,
-						RepositoryID:   result.RepoID,
-						RepositoryType: model.RepoTypeProxy,
-					}, &model.PackageVersion{
-						Version:     version,
-						Status:      model.StatusPublished,
-						StoragePath: filepath.Dir(storageKey),
-					}, &model.PackageFile{
-						Filename:    version + ".zip",
-						FileType:    model.FileTypePrimary,
-						StoragePath: storageKey,
-						SizeBytes:   result.Size,
-					})
-				}
-				localContent, localSize, localErr := a.storageSvc.GetPackage(c.Request.Context(), "go", module, storageVersion)
-				if localErr == nil {
-					defer localContent.Close()
-					c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, version))
-					c.DataFromReader(200, localSize, "application/zip", localContent, nil)
-					return
-				}
-				c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, version))
-				c.Data(200, "application/zip", body)
-				return
-			}
+		if !a.DownloadFromProxyAndCache(c, &ProxyDownloadAndCacheOpts{
+			PkgType:     model.PackageTypeGo,
+			Name:        module,
+			Version:     storageVersion,
+			Filename:    version + ".zip",
+			ContentType: "application/zip",
+			Repo:        repo,
+			URLBuilder:  urlBuilder,
+		}) {
+			response.NotFound(c, "module zip not found")
 		}
+		return
 	}
 
 	response.NotFound(c, "module zip not found")
@@ -463,28 +416,7 @@ func (a *GoAdapter) Download(ctx context.Context, identity *PackageIdentity) (*P
 }
 
 func (a *GoAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
-	pkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypeGo)
-	if err != nil {
-		return nil, err
-	}
-
-	meta := &PackageMeta{
-		ID:          pkg.ID,
-		Name:        pkg.Name,
-		Type:        GoType,
-		Description: pkg.Description,
-	}
-
-	for _, ver := range pkg.Versions {
-		meta.Versions = append(meta.Versions, VersionInfo{
-			Version:       ver.Version,
-			PublishedAt:   ver.PublishedAt.Format(time.RFC3339),
-			Size:          ver.SizeBytes,
-			DownloadCount: int64(ver.DownloadCount),
-		})
-	}
-
-	return meta, nil
+	return a.BaseAdapter.GetPackageMetadata(ctx, name, model.PackageTypeGo, GoType)
 }
 
 func (a *GoAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {

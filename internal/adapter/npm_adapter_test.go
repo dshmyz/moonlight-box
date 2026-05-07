@@ -72,8 +72,9 @@ func setupNpmAdapter(t *testing.T) (*NpmAdapter, *gorm.DB) {
 
 	auditSvc := service.NewAuditService()
 	logRepo := repository.NewProxyDownloadLogRepository(db)
+	proxyDownloadSvc := service.NewProxyDownloadService(pkgRepo, storageSvc, nil, logRepo, nil)
 
-	adapter := NewNpmAdapter(pkgRepo, storageSvc, auditSvc, nil, logRepo)
+	adapter := NewNpmAdapter(pkgRepo, storageSvc, auditSvc, nil, logRepo, proxyDownloadSvc)
 	return adapter, db
 }
 

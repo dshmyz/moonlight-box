@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/moonlight-box/registry/internal/database"
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 
@@ -178,6 +179,7 @@ func (h *SystemInfoHandler) GetInfo(c *gin.Context) {
 		"cpu_count":       runtime.NumCPU(),
 		"goroutine_count": runtime.NumGoroutine(),
 		"memory_usage":    calculateMemoryUsage(&memStats),
+		"database_pool":   getDatabasePoolStats(),
 	}
 
 	h.cachedInfo = info
@@ -195,6 +197,35 @@ func calculateMemoryUsage(ms *runtime.MemStats) float64 {
 		return 100
 	}
 	return float64(int(usage*10)) / 10
+}
+
+func getDatabasePoolStats() gin.H {
+	stats := database.GetPoolStats()
+	if stats == nil {
+		return gin.H{
+			"max_open_connections": 0,
+			"open_connections":     0,
+			"in_use":               0,
+			"idle":                 0,
+			"wait_count":           0,
+			"wait_duration_ms":     0,
+			"max_idle_closed":      0,
+			"max_idle_time_closed": 0,
+			"max_lifetime_closed":  0,
+		}
+	}
+
+	return gin.H{
+		"max_open_connections": stats.MaxOpenConnections,
+		"open_connections":     stats.OpenConnections,
+		"in_use":               stats.InUse,
+		"idle":                 stats.Idle,
+		"wait_count":           stats.WaitCount,
+		"wait_duration_ms":     stats.WaitDuration.Milliseconds(),
+		"max_idle_closed":      stats.MaxIdleClosed,
+		"max_idle_time_closed": stats.MaxIdleTimeClosed,
+		"max_lifetime_closed":  stats.MaxLifetimeClosed,
+	}
 }
 
 func (h *SystemInfoHandler) Health(c *gin.Context) {
