@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/gin-gonic/gin"
@@ -66,10 +67,12 @@ func (h *MigrationHandler) ListNexusRepositories(c *gin.Context) {
 }
 
 type CreateMigrationRequest struct {
-	URL           string   `json:"url" binding:"required"`
-	Username      string   `json:"username"`
-	Password      string   `json:"password"`
-	SelectedRepos []string `json:"selected_repos" binding:"required"`
+	URL                string   `json:"url" binding:"required"`
+	Username           string   `json:"username"`
+	Password           string   `json:"password"`
+	SelectedRepos      []string `json:"selected_repos" binding:"required"`
+	TargetRepositoryID uint     `json:"target_repository_id"`
+	TargetRepository   string   `json:"target_repository"`
 }
 
 func (h *MigrationHandler) CreateMigration(c *gin.Context) {
@@ -79,18 +82,22 @@ func (h *MigrationHandler) CreateMigration(c *gin.Context) {
 		return
 	}
 
-	task, err := h.service.CreateTask(req.URL, req.Username, req.Password, req.SelectedRepos)
+	task, err := h.service.CreateTask(req.URL, req.Username, req.Password, req.SelectedRepos, req.TargetRepositoryID, req.TargetRepository)
 	if err != nil {
 		response.InternalError(c, "创建迁移任务失败: "+err.Error())
 		return
 	}
 
-	// 启动异步迁移
-	go func() {
-		if err := h.worker.Execute(c.Request.Context(), task); err != nil {
-			h.service.AddLog(task.ID, "迁移执行出错: "+err.Error())
+	// 启动异步迁移，使用独立的 context（不使用 HTTP 请求的 context）
+	// 因为 HTTP 请求完成后其 context 会被取消，导致迁移任务被误判为取消
+	go func(taskID uint) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		
+		if err := h.worker.Execute(ctx, task); err != nil {
+			h.service.AddLog(taskID, "迁移执行出错: "+err.Error())
 		}
-	}()
+	}(task.ID)
 
 	response.Success(c, task)
 }

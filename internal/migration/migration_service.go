@@ -39,16 +39,18 @@ func NewMigrationService(db *gorm.DB) *MigrationService {
 	}
 }
 
-func (s *MigrationService) CreateTask(sourceURL, username, password string, selectedRepos []string) (*model.MigrationTask, error) {
+func (s *MigrationService) CreateTask(sourceURL, username, password string, selectedRepos []string, targetRepoID uint, targetRepoName string) (*model.MigrationTask, error) {
 	reposJSON, _ := json.Marshal(selectedRepos)
 
 	task := &model.MigrationTask{
-		SourceType:    "nexus",
-		SourceURL:     sourceURL,
-		Username:      username,
-		Password:      password,
-		Status:        model.MigrationPending,
-		SelectedRepos: string(reposJSON),
+		SourceType:         "nexus",
+		SourceURL:          sourceURL,
+		Username:           username,
+		Password:           password,
+		Status:             model.MigrationPending,
+		SelectedRepos:      string(reposJSON),
+		TargetRepositoryID: targetRepoID,
+		TargetRepository:   targetRepoName,
 	}
 
 	if err := s.db.Create(task).Error; err != nil {

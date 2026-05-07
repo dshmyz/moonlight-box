@@ -31,7 +31,7 @@ export interface Repository {
   allow_delete?: boolean
   created_at: string
   updated_at: string
-  members?: RepositoryGroup[]
+  members?: RepositoryGroup[] | string[]
   metadata_sync_enabled?: boolean
   metadata_sync_interval?: number
   sync_mode?: 'metadata_only' | 'full'

@@ -12,41 +12,65 @@
       </div>
     </header>
 
-    <div class="content-panel">
-      <el-steps :active="currentStep" finish-status="success" class="step-bar">
-        <el-step title="连接 Nexus" />
-        <el-step title="选择仓库" />
-        <el-step title="执行迁移" />
-      </el-steps>
+    <div class="content-wrapper">
+      <div class="main-content">
+        <div class="step-container">
+          <el-steps :active="currentStep" finish-status="success" class="step-bar">
+            <el-step title="连接 Nexus" />
+            <el-step title="选择仓库" />
+            <el-step title="执行迁移" />
+          </el-steps>
 
-      <NexusConnectionForm
-        v-if="currentStep === 0"
-        @connected="onConnected"
-      />
+          <div class="step-content">
+            <NexusConnectionForm
+              v-if="currentStep === 0"
+              @connected="onConnected"
+            />
 
-      <template v-if="currentStep === 1">
-        <RepositorySelector
-          :repositories="nexusRepos"
-          @selected="onSelected"
-        />
-        <div class="actions">
-          <el-button type="primary" @click="startMigration" :disabled="selectedRepos.length === 0">
-            开始迁移
-          </el-button>
+            <template v-if="currentStep === 1">
+              <RepositorySelector
+                :repositories="nexusRepos"
+                @selected="onSelected"
+              />
+              <div class="target-repo-section">
+                <label class="section-label">目标仓库</label>
+                <el-select
+                  v-model="targetRepoId"
+                  placeholder="选择目标仓库"
+                  class="repo-select"
+                >
+                  <el-option
+                    v-for="repo in localRepos"
+                    :key="repo.id"
+                    :label="repo.name"
+                    :value="repo.id"
+                  />
+                </el-select>
+                <span class="tip">迁移的包将存储到选定的目标仓库</span>
+              </div>
+              <div class="actions">
+                <el-button type="primary" @click="startMigration" :disabled="selectedRepos.length === 0 || !targetRepoId">
+                  开始迁移
+                </el-button>
+              </div>
+            </template>
+
+            <MigrationProgress
+              v-if="currentStep === 2"
+              :status="migrationStatus"
+              :total="totalItems"
+              :processed="processedItems"
+              :failed="failedItems"
+              :logs="logs"
+              @cancel="onCancel"
+            />
+          </div>
         </div>
-      </template>
+      </div>
 
-      <MigrationProgress
-        v-if="currentStep === 2"
-        :status="migrationStatus"
-        :total="totalItems"
-        :processed="processedItems"
-        :failed="failedItems"
-        :logs="logs"
-        @cancel="onCancel"
-      />
-
-      <MigrationHistory :tasks="historyTasks" />
+      <div class="sidebar">
+        <MigrationHistory :tasks="historyTasks" />
+      </div>
     </div>
   </div>
 </template>
@@ -67,6 +91,7 @@ import {
   type NexusRepo,
   type MigrationTask,
 } from '@/api/migration'
+import { repositoryApi } from '@/api/repository'
 
 const currentStep = ref(0)
 const nexusRepos = ref<NexusRepo[]>([])
@@ -79,8 +104,19 @@ const logs = ref<string[]>([])
 const historyTasks = ref<MigrationTask[]>([])
 const currentTaskId = ref(0)
 const pollingTimer = ref<number | null>(null)
+const localRepos = ref<any[]>([])
+const targetRepoId = ref<number | undefined>(undefined)
 
 const nexusCredentials = ref({ url: '', username: '', password: '' })
+
+async function loadLocalRepos() {
+  try {
+    const res = (await repositoryApi.list()) as any
+    localRepos.value = (res?.list || res || []).filter((r: any) => r.type === 'local')
+  } catch {
+    // ignore errors
+  }
+}
 
 async function onConnected(data: { url: string; username: string; password: string }) {
   nexusCredentials.value = data
@@ -99,9 +135,12 @@ function onSelected(repos: string[]) {
 
 async function startMigration() {
   try {
+    const selectedRepo = localRepos.value.find((r: any) => r.id === targetRepoId.value)
     const res = (await createMigration({
       ...nexusCredentials.value,
       selected_repos: selectedRepos.value,
+      target_repository_id: targetRepoId.value,
+      target_repository: selectedRepo?.name || '',
     })) as any
     currentTaskId.value = res?.id || res?.task?.id
     currentStep.value = 2
@@ -163,6 +202,7 @@ async function loadHistory() {
 
 onMounted(() => {
   loadHistory()
+  loadLocalRepos()
 })
 
 onUnmounted(() => {
@@ -174,13 +214,14 @@ onUnmounted(() => {
 .migration-page {
   min-height: 100%;
   background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  padding-bottom: 32px;
 }
 
 .page-header {
   padding: 20px 24px;
   background: #fff;
   border-radius: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 24px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
@@ -216,7 +257,19 @@ onUnmounted(() => {
   margin: 4px 0 0;
 }
 
-.content-panel {
+.content-wrapper {
+  display: grid;
+  grid-template-columns: 1fr 420px;
+  gap: 24px;
+}
+
+.main-content {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.step-container {
   background: #fff;
   border-radius: 16px;
   padding: 24px;
@@ -227,7 +280,55 @@ onUnmounted(() => {
   margin-bottom: 32px;
 }
 
+.step-content {
+  min-height: 380px;
+}
+
+.target-repo-section {
+  margin-top: 24px;
+  padding: 20px;
+  background: #f8fafc;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+}
+
+.section-label {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  color: #374151;
+  margin-bottom: 12px;
+}
+
+.repo-select {
+  width: 100%;
+  max-width: 320px;
+}
+
+.tip {
+  display: block;
+  font-size: 12px;
+  color: #9ca3af;
+  margin-top: 8px;
+}
+
 .actions {
-  margin-top: 20px;
+  margin-top: 24px;
+}
+
+.sidebar {
+  position: sticky;
+  top: 24px;
+  height: fit-content;
+}
+
+@media (max-width: 1200px) {
+  .content-wrapper {
+    grid-template-columns: 1fr;
+  }
+  
+  .sidebar {
+    position: static;
+  }
 }
 </style>
