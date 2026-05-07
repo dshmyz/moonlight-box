@@ -231,7 +231,6 @@ func seedTestPackages() error {
 		{"maven-local", "Maven 本地仓库", model.PackageTypeMaven},
 		{"pypi-local", "PyPI 本地仓库", model.PackageTypePyPI},
 		{"go-local", "Go 本地仓库", model.PackageTypeGo},
-		{"nuget-local", "NuGet 本地仓库", model.PackageTypeNuGet},
 		{"generic-local", "Generic 本地仓库", model.PackageTypeGeneric},
 	}
 
@@ -343,24 +342,6 @@ func seedTestPackages() error {
 	}
 
 	// NuGet 测试包
-	nugetPackages := []struct {
-		name        string
-		description string
-		homepage    string
-		license     string
-		downloads   int64
-		versions    []string
-	}{
-		{"Newtonsoft.Json", "Json.NET is a popular high-performance JSON framework for .NET.", "https://www.newtonsoft.com/json", "MIT", 45678901, []string{"13.0.3", "13.0.2", "13.0.1"}},
-		{"Microsoft.EntityFrameworkCore", "Entity Framework Core is a modern object-database mapper.", "https://docs.microsoft.com/ef/core", "MIT", 23456789, []string{"8.0.4", "8.0.3", "7.0.18"}},
-		{"Serilog", "Simple .NET logging with fully-structured events.", "https://serilog.net", "Apache-2.0", 34567890, []string{"3.1.1", "3.1.0", "3.0.1"}},
-		{"AutoMapper", "A convention-based object-object mapper.", "https://automapper.org", "MIT", 18765432, []string{"13.0.1", "13.0.0", "12.0.1"}},
-	}
-
-	for _, np2 := range nugetPackages {
-		insertPackage(repoMap[string(model.PackageTypeNuGet)], adminUser.ID, model.PackageTypeNuGet, np2.name, np2.description, np2.homepage, np2.license, np2.downloads, np2.versions)
-	}
-
 	// Generic 测试包
 	genericPackages := []struct {
 		name        string
