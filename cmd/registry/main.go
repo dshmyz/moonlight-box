@@ -168,7 +168,7 @@ func main() {
 	goAdapter := adapter.NewGoAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
 	genericAdapter := adapter.NewGenericAdapter(packageRepo, repoRepo, storageSvc, auditSvc)
 	yumAdapter := adapter.NewYumAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
-	aptAdapter := adapter.NewAptAdapter(packageRepo, repoRepo, storageSvc, auditSvc)
+	aptAdapter := adapter.NewAptAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
 
 	// 构建 adapter map 用于 ProxyRouter
 	adapterMap := map[string]types.Adapter{
