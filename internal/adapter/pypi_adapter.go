@@ -304,31 +304,44 @@ func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
 		return
 	}
 
-	if a.proxyRouter == nil {
-		slog.Warn("proxyRouter is nil")
+	if a.proxyRouter == nil || a.proxyDownloadSvc == nil {
+		slog.Warn("proxyRouter or proxyDownloadSvc is nil")
 		response.NotFound(c, "package not found")
 		return
 	}
 
-	urlBuilder := func(repo *model.Repository, pkgName, _ string) string {
-		url := fmt.Sprintf("%s/packages/%s", strings.TrimSuffix(repo.RemoteURL, "/"), filename)
+	urlBuilder := func(r *model.Repository, pkgName, _ string) string {
+		url := fmt.Sprintf("%s/packages/%s", strings.TrimSuffix(r.RemoteURL, "/"), filename)
 		slog.Info("Built proxy URL", "url", url)
 		return url
 	}
 
-	slog.Info("Calling ResolveSmart", "repo", repo != nil, "name", name, "version", version)
-	if !a.DownloadFromProxyAndCache(c, &ProxyDownloadAndCacheOpts{
-		PkgType:     model.PackageTypePyPI,
-		Name:        name,
-		Version:     actualFilename,
-		Filename:    actualFilename,
-		ContentType: a.storageSvc.GetContentType(actualFilename),
-		Repo:        repo,
-		URLBuilder:  urlBuilder,
-	}) {
-		slog.Error("DownloadFromProxyAndCache failed")
+	slog.Info("Calling ProxyDownloadService.Download", "repo", repo != nil, "name", name, "version", version)
+	result, downloadErr := a.proxyDownloadSvc.Download(c.Request.Context(), &service.ProxyDownloadRequest{
+		PkgType:        "pypi",
+		Name:           name,
+		Version:        actualFilename,
+		Filename:       actualFilename,
+		Repo:           repo,
+		URLBuilder:     urlBuilder,
+		PackageType:    model.PackageTypePyPI,
+		RepositoryType: repo.Type,
+		FileType:       model.FileTypePrimary,
+		ResolutionMode: service.ResolutionModeSmart,
+		IPAddress:      c.ClientIP(),
+		UserAgent:      c.Request.UserAgent(),
+		UserID:         getUintPtr(c.GetUint("userID")),
+	})
+
+	if downloadErr != nil {
+		slog.Error("ProxyDownloadService.Download failed", "error", downloadErr)
 		response.NotFound(c, "package not found")
+		return
 	}
+
+	contentType := a.storageSvc.GetContentType(actualFilename)
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, actualFilename))
+	c.Data(200, contentType, result.Content)
 }
 
 func (a *PyPIAdapter) handleChecksumRequest(c *gin.Context, filename string) {
