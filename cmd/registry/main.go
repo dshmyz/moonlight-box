@@ -162,6 +162,15 @@ func main() {
 	logBatcher := service.NewLogBatcher(proxyDownloadLogRepo, 100, 5*time.Second)
 	defer logBatcher.Stop()
 
+	// 初始化日志清理服务
+	logCleanupSvc := service.NewLogCleanupService(
+		proxyDownloadLogRepo,
+		cfg.Logging.LogRetentionDays,
+		cfg.Logging.CleanupInterval,
+	)
+	logCleanupSvc.Start()
+	defer logCleanupSvc.Stop()
+
 	// 创建共享的代理下载服务
 	proxyDownloadSvc := service.NewProxyDownloadService(packageRepo, storageSvc, nil, proxyDownloadLogRepo, logBatcher, countBatcher)
 
