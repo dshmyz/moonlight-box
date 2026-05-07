@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
@@ -20,10 +21,12 @@ import (
 
 type GenericAdapter struct {
 	*BaseAdapter
-	pkgRepo    *repository.PackageRepository
-	repoRepo   *repository.RepositoryRepository
-	storageSvc *service.StorageService
-	auditSvc   *service.AuditService
+	pkgRepo          *repository.PackageRepository
+	repoRepo         *repository.RepositoryRepository
+	storageSvc       *service.StorageService
+	auditSvc         *service.AuditService
+	proxyRouter      *proxy.ProxyRouter
+	proxyDownloadSvc *service.ProxyDownloadService
 }
 
 type FileEntry struct {
@@ -39,13 +42,17 @@ func NewGenericAdapter(
 	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
+	proxyRouter *proxy.ProxyRouter,
+	proxyDownloadSvc *service.ProxyDownloadService,
 ) *GenericAdapter {
 	return &GenericAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
-		pkgRepo:     pkgRepo,
-		repoRepo:    repoRepo,
-		storageSvc:  storageSvc,
-		auditSvc:    auditSvc,
+		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
+		pkgRepo:          pkgRepo,
+		repoRepo:         repoRepo,
+		storageSvc:       storageSvc,
+		auditSvc:         auditSvc,
+		proxyRouter:      proxyRouter,
+		proxyDownloadSvc: proxyDownloadSvc,
 	}
 }
 
@@ -82,50 +89,89 @@ func (a *GenericAdapter) DownloadOrBrowse(c *gin.Context) {
 
 	backend := a.storageSvc.GetDefaultBackend()
 	exists, err := backend.Exists(c.Request.Context(), storageKey)
-	if err != nil || !exists {
-		response.NotFound(c, "file not found")
-		return
-	}
-
-	size, err := backend.Size(c.Request.Context(), storageKey)
-	if err != nil {
-		content, entries := a.listDirectory(c, backend, storageKey, filePath)
-		if content != nil {
-			c.Header("Content-Type", "text/html; charset=utf-8")
-			_ = browseHTML.Execute(c.Writer, gin.H{
-				"path":    filePath,
-				"entries": entries,
-			})
+	if err == nil && exists {
+		size, err := backend.Size(c.Request.Context(), storageKey)
+		if err != nil {
+			content, entries := a.listDirectory(c, backend, storageKey, filePath)
+			if content != nil {
+				c.Header("Content-Type", "text/html; charset=utf-8")
+				_ = browseHTML.Execute(c.Writer, gin.H{
+					"path":    filePath,
+					"entries": entries,
+				})
+				return
+			}
+			response.NotFound(c, "path not found")
 			return
 		}
-		response.NotFound(c, "path not found")
+
+		filename := filepath.Base(filePath)
+
+		var repo *model.Repository
+		if r, ok := c.Get("repo"); ok {
+			repo = r.(*model.Repository)
+		}
+
+		decision := a.CheckDownloadPermission(c, repo, model.PackageTypeGeneric, filePath, "", filename)
+		if !decision.Allow {
+			c.JSON(decision.Code, gin.H{"error": decision.Message})
+			return
+		}
+
+		content, err := backend.Get(c.Request.Context(), storageKey)
+		if err != nil {
+			response.NotFound(c, "file not found")
+			return
+		}
+		defer content.Close()
+
+		contentType := a.storageSvc.GetContentType(filename)
+
+		c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, url.PathEscape(filename)))
+		c.DataFromReader(200, size, contentType, content, nil)
 		return
 	}
 
-	filename := filepath.Base(filePath)
+	if a.proxyDownloadSvc != nil {
+		var repo *model.Repository
+		if r, ok := c.Get("repo"); ok {
+			repo = r.(*model.Repository)
+		}
 
-	var repo *model.Repository
-	if r, ok := c.Get("repo"); ok {
-		repo = r.(*model.Repository)
+		if repo != nil {
+			filename := filepath.Base(filePath)
+			decision := a.CheckDownloadPermission(c, repo, model.PackageTypeGeneric, filePath, "", filename)
+			if !decision.Allow {
+				c.JSON(decision.Code, gin.H{"error": decision.Message})
+				return
+			}
+
+			urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
+				baseURL := strings.TrimSuffix(r.RemoteURL, "/")
+				return fmt.Sprintf("%s/%s", baseURL, filePath)
+			}
+
+			req := &service.ProxyDownloadRequest{
+				PkgType:     "generic",
+				Name:        filePath,
+				Version:     "",
+				Filename:    filename,
+				Repo:        repo,
+				URLBuilder:  urlBuilder,
+				PackageType: model.PackageTypeGeneric,
+			}
+
+			result, err := a.proxyDownloadSvc.Download(c.Request.Context(), req)
+			if err == nil && result != nil {
+				contentType := a.storageSvc.GetContentType(filename)
+				c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, url.PathEscape(filename)))
+				c.Data(200, contentType, result.Content)
+				return
+			}
+		}
 	}
 
-	decision := a.CheckDownloadPermission(c, repo, model.PackageTypeGeneric, filePath, "", filename)
-	if !decision.Allow {
-		c.JSON(decision.Code, gin.H{"error": decision.Message})
-		return
-	}
-
-	content, err := backend.Get(c.Request.Context(), storageKey)
-	if err != nil {
-		response.NotFound(c, "file not found")
-		return
-	}
-	defer content.Close()
-
-	contentType := a.storageSvc.GetContentType(filename)
-
-	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, url.PathEscape(filename)))
-	c.DataFromReader(200, size, contentType, content, nil)
+	response.NotFound(c, "file not found")
 }
 
 func (a *GenericAdapter) UploadFile(c *gin.Context) {
