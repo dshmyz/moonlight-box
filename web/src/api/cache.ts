@@ -30,6 +30,10 @@ export interface CacheListResponse {
   limit: number
 }
 
+export interface CleanupExpiredResponse {
+  cleaned: number
+}
+
 export const cacheApi = {
   getStats() {
     return request.get<CacheStats>('/cache/stats')
@@ -52,6 +56,6 @@ export const cacheApi = {
   },
 
   cleanupExpired() {
-    return request.delete('/cache/expired')
+    return request.delete<CleanupExpiredResponse>('/cache/expired')
   },
 }
