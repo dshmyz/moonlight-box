@@ -83,7 +83,7 @@ func setupPyPITestEnv() {
 	proxyRouter := proxy.NewProxyRouter(pypiTestDB, cacheSvc, remoteClient, repoRepo, groupRepo, nil)
 
 	logRepo := repository.NewProxyDownloadLogRepository(pypiTestDB)
-	pypiAdapter = adapter.NewPyPIAdapter(pypiPkgRepo, repoRepo, pypiStorageSvc, auditSvc, proxyRouter, logRepo)
+	pypiAdapter = adapter.NewPyPIAdapter(pypiPkgRepo, repoRepo, pypiStorageSvc, auditSvc, proxyRouter, logRepo, nil)
 
 	router := setupPyPIRouter()
 	pypiTestServer = httptest.NewServer(router)
@@ -110,7 +110,7 @@ func setupPyPIRouter() *gin.Engine {
 		}
 	}
 
-	repoRouter := handler.NewRepoRouter(pypiRepoSvc)
+	repoRouter := handler.NewRepoRouter(pypiRepoSvc, nil)
 	repoRouter.RegisterAdapter("pypi", pypiAdapter)
 
 	repoGroup := router.Group("/repo/:repoName")

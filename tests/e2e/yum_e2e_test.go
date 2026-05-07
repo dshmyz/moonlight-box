@@ -109,7 +109,7 @@ func setupYumRouter() *gin.Engine {
 		}
 	}
 
-	repoRouter := handler.NewRepoRouter(yumRepoSvc)
+	repoRouter := handler.NewRepoRouter(yumRepoSvc, nil)
 	repoRouter.RegisterAdapter("yum", yumAdapter)
 
 	repoGroup := router.Group("/repo/:repoName")

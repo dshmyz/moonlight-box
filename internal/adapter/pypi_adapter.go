@@ -44,7 +44,7 @@ func NewPyPIAdapter(
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *PyPIAdapter {
 	return &PyPIAdapter{
-		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc),
+		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
 		pkgRepo:          pkgRepo,
 		repoRepo:         repoRepo,
 		storageSvc:       storageSvc,
@@ -268,7 +268,6 @@ func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
 	filename := c.Param("filename")
 	slog.Info("DownloadPackage called", "filename", filename)
 
-	// 检查是否是校验文件请求
 	if strings.HasSuffix(filename, ".sha256") {
 		a.handleChecksumRequest(c, filename)
 		return
@@ -279,6 +278,17 @@ func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
 	slog.Info("Parsed filename", "name", name, "version", version, "actualFilename", actualFilename)
 	if name == "" {
 		response.BadRequest(c, "invalid filename", "unable to parse package name from filename")
+		return
+	}
+
+	var repo *model.Repository
+	if r, ok := c.Get("repo"); ok {
+		repo = r.(*model.Repository)
+	}
+
+	decision := a.CheckDownloadPermission(c, repo, model.PackageTypePyPI, name, version, actualFilename)
+	if !decision.Allow {
+		c.JSON(decision.Code, gin.H{"error": decision.Message})
 		return
 	}
 
@@ -304,11 +314,6 @@ func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
 		url := fmt.Sprintf("%s/packages/%s", strings.TrimSuffix(repo.RemoteURL, "/"), filename)
 		slog.Info("Built proxy URL", "url", url)
 		return url
-	}
-
-	var repo *model.Repository
-	if r, ok := c.Get("repo"); ok {
-		repo = r.(*model.Repository)
 	}
 
 	slog.Info("Calling ResolveSmart", "repo", repo != nil, "name", name, "version", version)
@@ -572,7 +577,7 @@ func (a *PyPIAdapter) GetMetadata(ctx context.Context, name string) (*PackageMet
 }
 
 func (a *PyPIAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version)
+	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypePyPI)
 }
 
 func (a *PyPIAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {
@@ -695,6 +700,13 @@ func (a *PyPIAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) {
 		response.InternalError(c, err.Error())
 		return
 	}
+
+	pkg, _ := a.pkgRepo.FindByNameAndType(name, model.PackageTypePyPI)
+	var pkgID *uint
+	if pkg != nil {
+		pkgID = &pkg.ID
+	}
+	a.LogDeleteAudit(c, repo.Name, name, version, pkgID)
 
 	a.TriggerWebhook(model.WebhookEventPackageDeleted, name, version, repo.Name, nil)
 

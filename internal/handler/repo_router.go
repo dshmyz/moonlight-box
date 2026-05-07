@@ -13,17 +13,44 @@ import (
 )
 
 type RepoRouter struct {
-	repoSvc      *service.RepositoryService
-	adapters     map[string]adapter.RepoAwareAdapter
-	typeDetector *proxy.TypeDetector
+	repoSvc        *service.RepositoryService
+	auditSvc       *service.AuditService
+	adapters       map[string]adapter.RepoAwareAdapter
+	typeDetector   *proxy.TypeDetector
+	downloadPlugin *adapter.DownloadPluginChain
 }
 
-func NewRepoRouter(repoSvc *service.RepositoryService) *RepoRouter {
+func NewRepoRouter(repoSvc *service.RepositoryService, auditSvc *service.AuditService) *RepoRouter {
 	return &RepoRouter{
 		repoSvc:      repoSvc,
+		auditSvc:     auditSvc,
 		adapters:     make(map[string]adapter.RepoAwareAdapter),
 		typeDetector: proxy.NewTypeDetector(),
 	}
+}
+
+func (r *RepoRouter) SetDownloadPlugin(plugin *adapter.DownloadPluginChain) {
+	r.downloadPlugin = plugin
+}
+
+func (r *RepoRouter) CheckDownloadPermission(c *gin.Context, repo *model.Repository, pkgType model.PackageType, name, version, filename string) *adapter.DownloadDecision {
+	if r.downloadPlugin == nil {
+		return adapter.AllowDownload()
+	}
+
+	userID := c.GetUint("userID")
+	downloadCtx := &adapter.DownloadContext{
+		Ctx:      c,
+		Repo:     repo,
+		PkgType:  pkgType,
+		Name:     name,
+		Version:  version,
+		Filename: filename,
+		UserID:   userID,
+		ClientIP: c.ClientIP(),
+	}
+
+	return r.downloadPlugin.Execute(downloadCtx)
 }
 
 func (r *RepoRouter) RegisterAdapter(pkgType string, adp adapter.RepoAwareAdapter) {
@@ -70,6 +97,10 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 	if !ok {
 		response.NotFound(c, fmt.Sprintf("不支持的包类型: %s", pkgType))
 		return
+	}
+
+	if r.downloadPlugin != nil {
+		c.Set("downloadPlugin", r.downloadPlugin)
 	}
 
 	adp.HandleRepoRequest(c, repo, strings.TrimPrefix(path, "/"))

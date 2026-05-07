@@ -110,7 +110,7 @@ func NewMavenAdapter(
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *MavenAdapter {
 	return &MavenAdapter{
-		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc),
+		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
 		pkgRepo:          pkgRepo,
 		storageSvc:       storageSvc,
 		auditSvc:         auditSvc,
@@ -123,6 +123,7 @@ func NewMavenAdapter(
 
 func (a *MavenAdapter) SetProxyRouter(pr *proxy.ProxyRouter) {
 	a.proxyRouter = pr
+	a.BaseAdapter.SetProxyRouter(pr)
 }
 
 func (a *MavenAdapter) Type() PackageType   { return MavenType }
@@ -329,8 +330,34 @@ func groupArtifactToStorageName(groupArtifact string) string {
 	return groupId + "/" + parts[1]
 }
 
+func (a *MavenAdapter) getStorageNamesForGroupArtifact(groupArtifact string, parts []string) []string {
+	storageNames := make([]string, 0, 2)
+
+	storageNames = append(storageNames, groupArtifactToStorageName(groupArtifact))
+
+	if len(parts) >= 4 {
+		legacyGroupID := strings.Join(parts[:len(parts)-3], ".")
+		legacyArtifactID := parts[len(parts)-3]
+		legacyName := legacyGroupID + "/" + legacyArtifactID
+		if legacyName != storageNames[0] {
+			storageNames = append(storageNames, legacyName)
+		}
+	}
+
+	return storageNames
+}
+
+func (a *MavenAdapter) findPackageInStorage(ctx context.Context, pkgType string, storageNames []string, storageVersion string) (io.ReadCloser, int64, string, error) {
+	for _, storageName := range storageNames {
+		content, size, err := a.storageSvc.GetPackage(ctx, pkgType, storageName, storageVersion)
+		if err == nil {
+			return content, size, storageName, nil
+		}
+	}
+	return nil, 0, "", fmt.Errorf("package not found in storage")
+}
+
 func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
-	// 检查是否是校验文件请求
 	if strings.HasSuffix(fullPath, ".sha1") || strings.HasSuffix(fullPath, ".md5") {
 		a.handleChecksumRequest(c, fullPath)
 		return
@@ -345,22 +372,27 @@ func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
 	version := parts[len(parts)-2]
 	filename := parts[len(parts)-1]
 	groupArtifact := strings.Join(parts[:len(parts)-2], "/")
+	pkgName := groupArtifactToName(groupArtifact)
 
-	// 转换为存储名称格式
-	storageName := groupArtifactToStorageName(groupArtifact)
+	var repo *model.Repository
+	if r, ok := c.Get("repo"); ok {
+		repo = r.(*model.Repository)
+	}
+
+	decision := a.CheckDownloadPermission(c, repo, model.PackageTypeMaven, pkgName, version, filename)
+	if !decision.Allow {
+		c.JSON(decision.Code, gin.H{"error": decision.Message})
+		return
+	}
+
 	storageVersion := version + "/" + filename
 
-	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "maven", storageName, storageVersion)
-	if err != nil {
-		legacyGroupID := strings.Join(parts[:len(parts)-3], ".")
-		legacyArtifactID := parts[len(parts)-3]
-		legacyName := legacyGroupID + "/" + legacyArtifactID
-		content, size, err = a.storageSvc.GetPackage(c.Request.Context(), "maven", legacyName, storageVersion)
-	}
+	storageNames := a.getStorageNamesForGroupArtifact(groupArtifact, parts)
+	content, size, storageName, err := a.findPackageInStorage(c.Request.Context(), "maven", storageNames, storageVersion)
+
 	if err == nil {
 		defer content.Close()
 
-		pkgName := groupArtifactToName(groupArtifact)
 		a.IncrementDownloadCountForPackage(pkgName, model.PackageTypeMaven, version, filename)
 
 		contentType := a.storageSvc.GetContentType(filename)
@@ -673,7 +705,16 @@ func (a *MavenAdapter) GetMetadata(ctx context.Context, name string) (*PackageMe
 }
 
 func (a *MavenAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version)
+	storageName := groupArtifactToStorageName(identity.Name)
+	prefix := fmt.Sprintf("maven2/%s/%s/", storageName, identity.Version)
+	entries, err := a.storageSvc.GetDefaultBackend().List(ctx, prefix)
+	if err == nil {
+		for _, entry := range entries {
+			a.storageSvc.GetDefaultBackend().Delete(ctx, entry.Key)
+		}
+	}
+
+	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeMaven)
 }
 
 func (a *MavenAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {
@@ -761,7 +802,8 @@ func (a *MavenAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) 
 	artifactID := parts[len(parts)-3]
 	version := parts[len(parts)-2]
 
-	name := groupID + "/" + artifactID
+	groupArtifact := groupID + "/" + artifactID
+	name := groupArtifactToStorageName(groupArtifact)
 	identity := &PackageIdentity{
 		Name:    name,
 		Version: version,
@@ -772,6 +814,13 @@ func (a *MavenAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) 
 		response.InternalError(c, err.Error())
 		return
 	}
+
+	pkg, _ := a.pkgRepo.FindByNameAndType(identity.Name, model.PackageTypeMaven)
+	var pkgID *uint
+	if pkg != nil {
+		pkgID = &pkg.ID
+	}
+	a.LogDeleteAudit(c, repo.Name, identity.Name, identity.Version, pkgID)
 
 	a.TriggerWebhook(model.WebhookEventPackageDeleted, name, version, repo.Name, nil)
 

@@ -88,12 +88,32 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 		return nil, err
 	}
 
-	// 填充仓库名称
-	for i := range packages {
-		if packages[i].RepositoryID > 0 {
-			var repo model.Repository
-			if err := s.db.Select("name").First(&repo, packages[i].RepositoryID).Error; err == nil {
-				packages[i].RepositoryName = repo.Name
+	// 批量获取仓库名称，避免 N+1 问题
+	if len(packages) > 0 {
+		var repoIDs []uint
+		for i := range packages {
+			if packages[i].RepositoryID > 0 {
+				repoIDs = append(repoIDs, packages[i].RepositoryID)
+			}
+		}
+
+		if len(repoIDs) > 0 {
+			type RepoName struct {
+				ID   uint
+				Name string
+			}
+			var repoNames []RepoName
+			s.db.Model(&model.Repository{}).Select("id, name").Where("id IN ?", repoIDs).Find(&repoNames)
+
+			repoNameMap := make(map[uint]string)
+			for _, rn := range repoNames {
+				repoNameMap[rn.ID] = rn.Name
+			}
+
+			for i := range packages {
+				if packages[i].RepositoryID > 0 {
+					packages[i].RepositoryName = repoNameMap[packages[i].RepositoryID]
+				}
 			}
 		}
 	}

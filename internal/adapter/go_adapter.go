@@ -36,7 +36,7 @@ func NewGoAdapter(
 	proxyRouter *proxy.ProxyRouter,
 ) *GoAdapter {
 	return &GoAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
+		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
 		pkgRepo:     pkgRepo,
 		storageSvc:  storageSvc,
 		auditSvc:    auditSvc,
@@ -248,6 +248,17 @@ func (a *GoAdapter) handleGoMod(c *gin.Context, module, version string) {
 }
 
 func (a *GoAdapter) handleDownloadZip(c *gin.Context, module, version string) {
+	var repo *model.Repository
+	if r, ok := c.Get("repo"); ok {
+		repo = r.(*model.Repository)
+	}
+
+	decision := a.CheckDownloadPermission(c, repo, model.PackageTypeGo, module, version, version+".zip")
+	if !decision.Allow {
+		c.JSON(decision.Code, gin.H{"error": decision.Message})
+		return
+	}
+
 	storageVersion := filepath.Join("@v", version+".zip")
 	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "go", module, storageVersion)
 	if err == nil {
@@ -263,11 +274,6 @@ func (a *GoAdapter) handleDownloadZip(c *gin.Context, module, version string) {
 	if a.proxyRouter != nil {
 		urlBuilder := func(repo *model.Repository, pkgName, pkgVersion string) string {
 			return fmt.Sprintf("%s/%s/@v/%s.zip", strings.TrimSuffix(repo.RemoteURL, "/"), encodeGoModulePath(pkgName), pkgVersion)
-		}
-
-		var repo *model.Repository
-		if r, ok := c.Get("repo"); ok {
-			repo = r.(*model.Repository)
 		}
 
 		if !a.DownloadFromProxyAndCache(c, &ProxyDownloadAndCacheOpts{
@@ -420,7 +426,7 @@ func (a *GoAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta,
 }
 
 func (a *GoAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version)
+	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeGo)
 }
 
 func (a *GoAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {

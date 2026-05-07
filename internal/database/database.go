@@ -60,17 +60,20 @@ func Initialize(cfg *config.Config) error {
 		return fmt.Errorf("failed to get sql.DB: %w", err)
 	}
 
-	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetMaxOpenConns(100)
-	sqlDB.SetConnMaxLifetime(time.Hour)
+	sqlDB.SetMaxOpenConns(cfg.Database.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.Database.MaxIdleConns)
+	sqlDB.SetConnMaxLifetime(cfg.Database.ConnMaxLifetime)
+	sqlDB.SetConnMaxIdleTime(cfg.Database.ConnMaxIdleTime)
 
 	DB = db
 
 	logrus.WithFields(logrus.Fields{
-		"module":         "database",
-		"driver":         cfg.Database.Driver,
-		"max_idle_conns": 10,
-		"max_open_conns": 100,
+		"module":             "database",
+		"driver":             cfg.Database.Driver,
+		"max_open_conns":     cfg.Database.MaxOpenConns,
+		"max_idle_conns":     cfg.Database.MaxIdleConns,
+		"conn_max_lifetime":  cfg.Database.ConnMaxLifetime,
+		"conn_max_idle_time": cfg.Database.ConnMaxIdleTime,
 	}).Info("Database connection established")
 
 	return nil

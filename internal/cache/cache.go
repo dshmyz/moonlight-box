@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"crypto/sha256"
 	"sync"
 	"time"
 )
@@ -17,23 +18,48 @@ func (i *Item) IsExpired() bool {
 	return time.Now().After(i.ExpiresAt)
 }
 
-type MemoryCache struct {
+type Shard struct {
 	mu       sync.RWMutex
 	items    map[string]*Item
-	cleaner  *time.Ticker
-	stopChan chan struct{}
+}
+
+type MemoryCache struct {
+	shards    []*Shard
+	numShards int
+	cleaner   *time.Ticker
+	stopChan  chan struct{}
 }
 
 func NewMemoryCache() *MemoryCache {
+	return NewMemoryCacheWithShards(16)
+}
+
+func NewMemoryCacheWithShards(numShards int) *MemoryCache {
+	if numShards <= 0 {
+		numShards = 16
+	}
 	c := &MemoryCache{
-		items:    make(map[string]*Item),
-		stopChan: make(chan struct{}),
+		shards:    make([]*Shard, numShards),
+		numShards: numShards,
+		stopChan:  make(chan struct{}),
+	}
+
+	for i := 0; i < numShards; i++ {
+		c.shards[i] = &Shard{
+			items: make(map[string]*Item),
+		}
 	}
 
 	c.cleaner = time.NewTicker(5 * time.Minute)
 	go c.startCleaner()
 
 	return c
+}
+
+func (c *MemoryCache) getShard(key string) *Shard {
+	hash := sha256.Sum256([]byte(key))
+	shardIndex := int(hash[0]) % c.numShards
+	return c.shards[shardIndex]
 }
 
 func (c *MemoryCache) startCleaner() {
@@ -49,37 +75,40 @@ func (c *MemoryCache) startCleaner() {
 }
 
 func (c *MemoryCache) deleteExpired() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	now := time.Now()
-	for key, item := range c.items {
-		if !item.ExpiresAt.IsZero() && now.After(item.ExpiresAt) {
-			delete(c.items, key)
+	for _, shard := range c.shards {
+		shard.mu.Lock()
+		now := time.Now()
+		for key, item := range shard.items {
+			if !item.ExpiresAt.IsZero() && now.After(item.ExpiresAt) {
+				delete(shard.items, key)
+			}
 		}
+		shard.mu.Unlock()
 	}
 }
 
 func (c *MemoryCache) Set(key string, value interface{}, ttl time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	shard := c.getShard(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
 	var expiresAt time.Time
 	if ttl > 0 {
 		expiresAt = time.Now().Add(ttl)
 	}
 
-	c.items[key] = &Item{
+	shard.items[key] = &Item{
 		Value:     value,
 		ExpiresAt: expiresAt,
 	}
 }
 
 func (c *MemoryCache) Get(key string) (interface{}, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	shard := c.getShard(key)
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
 
-	item, exists := c.items[key]
+	item, exists := shard.items[key]
 	if !exists {
 		return nil, false
 	}
@@ -92,60 +121,67 @@ func (c *MemoryCache) Get(key string) (interface{}, bool) {
 }
 
 func (c *MemoryCache) Delete(key string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	shard := c.getShard(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	delete(c.items, key)
+	delete(shard.items, key)
 }
 
 func (c *MemoryCache) Clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.items = make(map[string]*Item)
+	for _, shard := range c.shards {
+		shard.mu.Lock()
+		shard.items = make(map[string]*Item)
+		shard.mu.Unlock()
+	}
 }
 
 func (c *MemoryCache) Invalidate(pattern string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	for key := range c.items {
-		if matchPattern(key, pattern) {
-			delete(c.items, key)
+	for _, shard := range c.shards {
+		shard.mu.Lock()
+		for key := range shard.items {
+			if matchPattern(key, pattern) {
+				delete(shard.items, key)
+			}
 		}
+		shard.mu.Unlock()
 	}
 }
 
 func (c *MemoryCache) Count() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	count := 0
-	for _, item := range c.items {
-		if !item.IsExpired() {
-			count++
+	for _, shard := range c.shards {
+		shard.mu.RLock()
+		for _, item := range shard.items {
+			if !item.IsExpired() {
+				count++
+			}
 		}
+		shard.mu.RUnlock()
 	}
 	return count
 }
 
 func (c *MemoryCache) Stats() map[string]interface{} {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	total := len(c.items)
+	total := 0
 	expired := 0
 
-	for _, item := range c.items {
-		if item.IsExpired() {
-			expired++
+	for _, shard := range c.shards {
+		shard.mu.RLock()
+		for _, item := range shard.items {
+			total++
+			if item.IsExpired() {
+				expired++
+			}
 		}
+		shard.mu.RUnlock()
 	}
 
 	return map[string]interface{}{
-		"total_items":  total,
-		"active_items": total - expired,
+		"total_items":   total,
+		"active_items":  total - expired,
 		"expired_items": expired,
+		"num_shards":    c.numShards,
 	}
 }
 

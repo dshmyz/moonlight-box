@@ -55,6 +55,10 @@ type Repository struct {
 	LastSyncError        string     `json:"last_sync_error" gorm:"type:text"`
 }
 
+func (Repository) TableName() string {
+	return "repositories"
+}
+
 // GetAuthConfig 解析认证配置JSON字符串为结构体
 func (r *Repository) GetAuthConfig() (*ProxyAuthConfig, error) {
 	if r.AuthConfig == "" {
@@ -120,6 +124,10 @@ type RepositoryGroup struct {
 
 	VirtualRepo Repository `json:"virtual_repo,omitempty" gorm:"foreignKey:VirtualRepoID"`
 	MemberRepo  Repository `json:"member_repo,omitempty" gorm:"foreignKey:MemberRepoID"`
+}
+
+func (RepositoryGroup) TableName() string {
+	return "repository_groups"
 }
 
 // ProxyAuthConfig 代理仓库认证配置

@@ -1,124 +1,77 @@
 package middleware
 
 import (
-	"io/fs"
+	"html/template"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
+// FrontendConfig 前端配置
 type FrontendConfig struct {
-	StaticDir    string
-	IndexFile    string
-	APIPrefixes  []string
-	StaticAssets []string
+	StaticDir string // 静态文件目录
+	IndexFile string // 默认首页文件
 }
 
+// DefaultFrontendConfig 返回默认前端配置
 func DefaultFrontendConfig() FrontendConfig {
 	return FrontendConfig{
-		StaticDir:    "web/dist",
-		IndexFile:    "index.html",
-		APIPrefixes:  []string{"/api/", "/repo/", "/npm/", "/maven2/", "/health", "/metrics", "/docs"},
-		StaticAssets: []string{"/assets/", "/favicon.ico"},
+		StaticDir: "./cmd/registry/dist",
+		IndexFile: "index.html",
 	}
 }
 
-func isAPIRequest(path string, prefixes []string) bool {
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(path, prefix) {
-			return true
+// ServeFrontend 创建前端静态文件服务中间件
+func ServeFrontend(cfg FrontendConfig) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 获取请求路径
+		path := c.Request.URL.Path
+
+		// 构建文件路径
+		filePath := filepath.Join(cfg.StaticDir, path)
+
+		// 检查文件是否存在
+		_, err := os.Stat(filePath)
+		if err != nil {
+			// 文件不存在，返回 index.html（SPA 路由）
+			serveIndex(c, cfg)
+			return
 		}
+
+		// 文件存在，直接提供静态文件
+		c.File(filePath)
 	}
-	return false
 }
 
-func isStaticAsset(path string, assets []string) bool {
-	for _, asset := range assets {
-		if strings.Contains(path, asset) {
-			return true
-		}
-	}
-	return false
-}
-
-func ServeFrontend(config FrontendConfig) gin.HandlerFunc {
-	staticDir, err := filepath.Abs(config.StaticDir)
+// serveIndex 返回首页
+func serveIndex(c *gin.Context, cfg FrontendConfig) {
+	indexPath := filepath.Join(cfg.StaticDir, cfg.IndexFile)
+	
+	// 读取并渲染 index.html
+	content, err := os.ReadFile(indexPath)
 	if err != nil {
-		panic("invalid frontend static dir: " + config.StaticDir)
+		c.Status(http.StatusInternalServerError)
+		return
 	}
 
-	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
-		panic("frontend build not found: " + staticDir + ". Run 'cd web && npm run build' first.")
-	}
-
-	fileServer := http.FileServer(http.Dir(staticDir))
-	indexFile := filepath.Join(staticDir, config.IndexFile)
-
-	return func(c *gin.Context) {
-		path := c.Request.URL.Path
-
-		if isAPIRequest(path, config.APIPrefixes) {
-			c.Next()
-			return
-		}
-
-		if isStaticAsset(path, config.StaticAssets) {
-			fileServer.ServeHTTP(c.Writer, c.Request)
-			return
-		}
-
-		if _, err := os.Stat(filepath.Join(staticDir, path)); err == nil {
-			fileServer.ServeHTTP(c.Writer, c.Request)
-			return
-		}
-
-		if _, err := os.Stat(indexFile); err == nil {
-			c.File(indexFile)
-			return
-		}
-
-		c.Status(http.StatusNotFound)
-	}
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.String(http.StatusOK, string(content))
 }
 
-func ServeFrontendFS(fsys fs.FS, config FrontendConfig) gin.HandlerFunc {
-	if fsys == nil {
-		panic("frontend filesystem is nil")
+// RenderIndex 渲染首页模板（用于 SSR）
+func RenderIndex(c *gin.Context, cfg FrontendConfig, data map[string]interface{}) {
+	indexPath := filepath.Join(cfg.StaticDir, cfg.IndexFile)
+	
+	tmpl, err := template.ParseFiles(indexPath)
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
 	}
 
-	fileServer := http.FileServer(http.FS(fsys))
-	indexFile := config.IndexFile
-
-	return func(c *gin.Context) {
-		path := c.Request.URL.Path
-
-		if isAPIRequest(path, config.APIPrefixes) {
-			c.Next()
-			return
-		}
-
-		if isStaticAsset(path, config.StaticAssets) {
-			fileServer.ServeHTTP(c.Writer, c.Request)
-			return
-		}
-
-		f, err := fsys.Open(strings.TrimPrefix(path, "/"))
-		if err == nil {
-			f.Close()
-			fileServer.ServeHTTP(c.Writer, c.Request)
-			return
-		}
-
-		f, err = fsys.Open(indexFile)
-		if err == nil {
-			f.Close()
-			http.ServeFileFS(c.Writer, c.Request, fsys, indexFile)
-			return
-		}
-
-		c.Status(http.StatusNotFound)
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	if err := tmpl.Execute(c.Writer, data); err != nil {
+		c.Status(http.StatusInternalServerError)
 	}
 }

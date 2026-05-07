@@ -42,12 +42,19 @@ func (s *RepositoryService) Create(repo *model.Repository, members []string) err
 		// 如果是虚拟仓库且提供了成员列表，则添加成员关系
 		if repo.Type == model.RepoTypeVirtual && len(members) > 0 {
 			for i, memberName := range members {
-				memberRepo, err := s.repoRepo.FindByName(memberName)
-				if err != nil {
+				var memberRepo model.Repository
+				if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
 					// 成员仓库不存在则跳过
 					continue
 				}
-				s.groupRepo.AddMember(repo.ID, memberRepo.ID, i)
+				group := model.RepositoryGroup{
+					VirtualRepoID: repo.ID,
+					MemberRepoID:  memberRepo.ID,
+					Priority:      i,
+				}
+				if err := tx.Create(&group).Error; err != nil {
+					return err
+				}
 			}
 		}
 

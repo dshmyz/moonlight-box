@@ -56,6 +56,18 @@
       </el-select>
       <span class="form-hint">虚拟仓库可聚合多种包类型的仓库</span>
     </el-form-item>
+
+    <el-form-item label="存储后端" v-if="form.type !== 'virtual'">
+      <el-select v-model="storageBackendId" placeholder="选择存储后端（不选则使用默认）" style="width: 100%" clearable>
+        <el-option
+          v-for="backend in storageBackends"
+          :key="backend.id"
+          :label="`${backend.name} (${backend.type}${backend.is_default ? ', 默认' : ''})`"
+          :value="backend.id"
+        />
+      </el-select>
+      <span class="form-hint">选择此仓库使用的存储后端</span>
+    </el-form-item>
     
     <el-form-item label="显示名称" prop="display_name">
       <el-input v-model="form.display_name" placeholder="例如：NPM 内部仓库" />
@@ -73,7 +85,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { storageBackendApi, type StorageBackend } from '@/api/storageBackend'
 
 interface FormModel {
   name: string
@@ -87,15 +100,18 @@ interface Props {
   form: FormModel
   disabled?: boolean
   selectedPackageTypes?: string[]
+  storageBackendId?: number | null
 }
 
 interface Emits {
   (e: 'update:selectedPackageTypes', value: string[]): void
+  (e: 'update:storageBackendId', value: number | null): void
 }
 
 const props = withDefaults(defineProps<Props>(), {
   disabled: false,
   selectedPackageTypes: () => [],
+  storageBackendId: null,
 })
 
 const emit = defineEmits<Emits>()
@@ -103,6 +119,22 @@ const emit = defineEmits<Emits>()
 const selectedPackageTypes = computed({
   get: () => props.selectedPackageTypes,
   set: (val: string[]) => emit('update:selectedPackageTypes', val),
+})
+
+const storageBackendId = computed({
+  get: () => props.storageBackendId,
+  set: (val: number | null) => emit('update:storageBackendId', val),
+})
+
+const storageBackends = ref<StorageBackend[]>([])
+
+onMounted(async () => {
+  try {
+    const res = await storageBackendApi.list()
+    storageBackends.value = res || []
+  } catch (e) {
+    console.error('Failed to load storage backends:', e)
+  }
 })
 </script>
 

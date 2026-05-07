@@ -30,7 +30,7 @@ func NewNuGetAdapter(
 	auditSvc *service.AuditService,
 ) *NuGetAdapter {
 	return &NuGetAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc),
+		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
 		pkgRepo:     pkgRepo,
 		storageSvc:  storageSvc,
 		auditSvc:    auditSvc,
@@ -95,6 +95,17 @@ func (a *NuGetAdapter) ServiceIndex(c *gin.Context) {
 func (a *NuGetAdapter) DownloadNupkg(c *gin.Context) {
 	id := strings.ToLower(c.Param("id"))
 	version := c.Param("version")
+
+	var repo *model.Repository
+	if r, ok := c.Get("repo"); ok {
+		repo = r.(*model.Repository)
+	}
+
+	decision := a.CheckDownloadPermission(c, repo, model.PackageTypeNuGet, id, version, id+"."+version+".nupkg")
+	if !decision.Allow {
+		c.JSON(decision.Code, gin.H{"error": decision.Message})
+		return
+	}
 
 	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "nuget", id, version)
 	if err != nil {
@@ -313,7 +324,7 @@ func (a *NuGetAdapter) GetMetadata(ctx context.Context, name string) (*PackageMe
 }
 
 func (a *NuGetAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version)
+	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeNuGet)
 }
 
 func (a *NuGetAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {

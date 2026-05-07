@@ -253,9 +253,9 @@ func (r *PackageRepository) FindFileByVersionAndFilename(versionID uint, filenam
 	return &file, nil
 }
 
-func (r *PackageRepository) DeleteByNameAndVersion(name string, version string) error {
+func (r *PackageRepository) DeleteByNameAndVersion(name string, version string, pkgType model.PackageType) error {
 	var pkg model.Package
-	result := r.db.Where("name = ? AND type = ?", name, model.PackageTypeNPM).First(&pkg)
+	result := r.db.Where("name = ? AND type = ?", name, pkgType).First(&pkg)
 	if result.Error != nil {
 		return result.Error
 	}

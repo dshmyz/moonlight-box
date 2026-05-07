@@ -16,21 +16,60 @@ import (
 )
 
 type BaseAdapter struct {
-	pkgRepo     *repository.PackageRepository
-	storageSvc  *service.StorageService
-	webhookSvc  *service.WebhookService
-	proxyRouter *proxy.ProxyRouter
+	pkgRepo        *repository.PackageRepository
+	storageSvc     *service.StorageService
+	webhookSvc     *service.WebhookService
+	auditSvc       *service.AuditService
+	proxyRouter    *proxy.ProxyRouter
+	downloadPlugin *DownloadPluginChain
+	logRepo        *repository.ProxyDownloadLogRepository
 }
 
-func NewBaseAdapter(pkgRepo *repository.PackageRepository, storageSvc *service.StorageService) *BaseAdapter {
+func NewBaseAdapter(pkgRepo *repository.PackageRepository, storageSvc *service.StorageService, auditSvc *service.AuditService) *BaseAdapter {
 	return &BaseAdapter{
 		pkgRepo:    pkgRepo,
 		storageSvc: storageSvc,
+		auditSvc:   auditSvc,
 	}
 }
 
 func (b *BaseAdapter) SetProxyRouter(pr *proxy.ProxyRouter) {
 	b.proxyRouter = pr
+}
+
+func (b *BaseAdapter) SetDownloadPlugin(plugin *DownloadPluginChain) {
+	b.downloadPlugin = plugin
+}
+
+func (b *BaseAdapter) SetLogRepo(logRepo *repository.ProxyDownloadLogRepository) {
+	b.logRepo = logRepo
+}
+
+func (b *BaseAdapter) CheckDownloadPermission(c *gin.Context, repo *model.Repository, pkgType model.PackageType, name, version, filename string) *DownloadDecision {
+	var pluginChain *DownloadPluginChain
+	if b.downloadPlugin != nil {
+		pluginChain = b.downloadPlugin
+	} else if chain, ok := c.Get("downloadPlugin"); ok {
+		pluginChain = chain.(*DownloadPluginChain)
+	}
+
+	if pluginChain == nil {
+		return AllowDownload()
+	}
+
+	userID := c.GetUint("userID")
+	downloadCtx := &DownloadContext{
+		Ctx:      c,
+		Repo:     repo,
+		PkgType:  pkgType,
+		Name:     name,
+		Version:  version,
+		Filename: filename,
+		UserID:   userID,
+		ClientIP: c.ClientIP(),
+	}
+
+	return pluginChain.Execute(downloadCtx)
 }
 
 func (b *BaseAdapter) SetWebhookService(webhookSvc *service.WebhookService) {
@@ -183,6 +222,10 @@ func (b *BaseAdapter) StoreProxyPackageFromResult(ctx context.Context, pkgType m
 }
 
 func (b *BaseAdapter) IncrementDownloadCountForPackage(pkgName string, pkgType model.PackageType, version string, filename string) {
+	go b.incrementDownloadCountAsync(pkgName, pkgType, version, filename)
+}
+
+func (b *BaseAdapter) incrementDownloadCountAsync(pkgName string, pkgType model.PackageType, version string, filename string) {
 	pkg, err := b.pkgRepo.FindByNameAndType(pkgName, pkgType)
 	if err != nil {
 		return
@@ -283,6 +326,19 @@ func (b *BaseAdapter) ExecuteUpload(ctx context.Context, opts *UploadHelperOpts,
 		return nil, err
 	}
 
+	if b.auditSvc != nil && opts.UploadedBy > 0 {
+		uploadedBy := opts.UploadedBy
+		_ = b.auditSvc.Log(
+			ctx,
+			&uploadedBy,
+			model.ActionPackageUpload,
+			"package",
+			&result.PackageID,
+			opts.Name,
+			fmt.Sprintf(`{"version":"%s","filename":"%s","size":%d}`, opts.Version, opts.Filename, size),
+		)
+	}
+
 	return &PackageVersionResult{
 		PackageID:  result.PackageID,
 		VersionID:  result.VersionID,
@@ -304,18 +360,30 @@ type ProxyDownloadAndCacheOpts struct {
 }
 
 func (b *BaseAdapter) DownloadFromProxyAndCache(c *gin.Context, opts *ProxyDownloadAndCacheOpts) bool {
+	startTime := time.Now()
+
 	if b.proxyRouter == nil {
+		b.recordProxyDownloadLog(opts, model.DownloadStatusFailed, 0, 0, int(time.Since(startTime).Milliseconds()), false, fmt.Errorf("proxy router is nil"))
 		return false
+	}
+
+	// 执行下载前插件检查
+	decision := b.CheckDownloadPermission(c, opts.Repo, opts.PkgType, opts.Name, opts.Version, opts.Filename)
+	if !decision.Allow {
+		c.JSON(decision.Code, gin.H{"error": decision.Message})
+		return true // 返回 true 表示已处理请求（阻断）
 	}
 
 	result, err := b.proxyRouter.ResolveSmart(c.Request.Context(), opts.Repo, string(opts.PkgType), opts.Name, opts.Version, opts.URLBuilder)
 	if err != nil {
+		b.recordProxyDownloadLog(opts, model.DownloadStatusFailed, 0, 0, int(time.Since(startTime).Milliseconds()), false, err)
 		return false
 	}
 	defer result.Content.Close()
 
 	body, readErr := io.ReadAll(result.Content)
 	if readErr != nil {
+		b.recordProxyDownloadLog(opts, model.DownloadStatusFailed, 0, 0, int(time.Since(startTime).Milliseconds()), false, readErr)
 		return false
 	}
 
@@ -343,15 +411,54 @@ func (b *BaseAdapter) DownloadFromProxyAndCache(c *gin.Context, opts *ProxyDownl
 		contentType = b.storageSvc.GetContentType(opts.Filename)
 	}
 	c.Data(200, contentType, body)
+
+	// 记录成功日志
+	b.recordProxyDownloadLog(opts, model.DownloadStatusSuccess, 200, result.Size, int(time.Since(startTime).Milliseconds()), result.FromCache, nil)
+
 	return true
 }
 
-func (b *BaseAdapter) GetMetadataFromProxy(c *gin.Context, repo *model.Repository, urlBuilder proxy.URLBuilder) bool {
+func (b *BaseAdapter) recordProxyDownloadLog(opts *ProxyDownloadAndCacheOpts, status string, statusCode int, sizeBytes int64, durationMs int, fromCache bool, err error) {
+	if b.logRepo == nil {
+		return
+	}
+
+	// 异步执行，不阻塞主流程
+	go func() {
+		var repoID uint
+		if opts.Repo != nil {
+			repoID = opts.Repo.ID
+		}
+
+		log := &model.ProxyDownloadLog{
+			RepositoryID: repoID,
+			PackageType:  string(opts.PkgType),
+			PackageName:  opts.Name,
+			Version:      opts.Version,
+			Filename:     opts.Filename,
+			Status:       status,
+			StatusCode:   statusCode,
+			SizeBytes:    sizeBytes,
+			DurationMs:   durationMs,
+			FromCache:    fromCache,
+		}
+
+		if err != nil {
+			log.ErrorMessage = err.Error()
+		}
+
+		if createErr := b.logRepo.Create(log); createErr != nil {
+			// 日志记录失败不影响主流程
+		}
+	}()
+}
+
+func (b *BaseAdapter) GetMetadataFromProxy(c *gin.Context, repo *model.Repository, name string, urlBuilder proxy.URLBuilder) bool {
 	if b.proxyRouter == nil {
 		return false
 	}
 
-	result, err := b.proxyRouter.ResolveProxyOnlyForRepo(c.Request.Context(), repo, "", "", urlBuilder)
+	result, err := b.proxyRouter.ResolveProxyOnlyForRepo(c.Request.Context(), repo, name, "", urlBuilder)
 	if err != nil {
 		return false
 	}
@@ -359,4 +466,30 @@ func (b *BaseAdapter) GetMetadataFromProxy(c *gin.Context, repo *model.Repositor
 
 	c.DataFromReader(200, result.Size, "application/json", result.Content, nil)
 	return true
+}
+
+func (b *BaseAdapter) LogDeleteAudit(c *gin.Context, repoName, pkgName, version string, pkgID *uint) {
+	if b.auditSvc == nil {
+		return
+	}
+
+	userID := c.GetUint("userID")
+	var uid *uint
+	if userID > 0 {
+		uid = &userID
+	}
+
+	details := fmt.Sprintf(`{"repo":"%s","name":"%s","version":"%s"}`, repoName, pkgName, version)
+
+	b.auditSvc.LogWithRequest(
+		c.Request.Context(),
+		uid,
+		model.ActionPackageDelete,
+		"package",
+		pkgID,
+		pkgName,
+		details,
+		c.ClientIP(),
+		c.Request.UserAgent(),
+	)
 }

@@ -17,10 +17,10 @@ import (
 	"gorm.io/gorm"
 )
 
-// ErrPackageNotFound 包未找到错误
 var ErrPackageNotFound = fmt.Errorf("package not found")
+var ErrNotComposite = fmt.Errorf("cannot add/remove members from non-composite repository")
+var ErrMemberNotFound = fmt.Errorf("member repository not found")
 
-// ProxyRouter 多代理路由引擎，负责根据虚拟仓配置将包请求路由到正确的来源
 type ProxyRouter struct {
 	db                 *gorm.DB
 	cache              *CacheService
@@ -33,7 +33,6 @@ type ProxyRouter struct {
 	virtualRepoCache   *VirtualRepoCache
 }
 
-// NewProxyRouter 创建一个新的代理路由引擎实例
 func NewProxyRouter(
 	db *gorm.DB,
 	cache *CacheService,
@@ -60,12 +59,10 @@ func (r *ProxyRouter) SetVirtualRepoCache(cache *VirtualRepoCache) {
 	r.virtualRepoCache = cache
 }
 
-// SetHealthCheckService 设置健康检查服务（可选）
 func (r *ProxyRouter) SetHealthCheckService(svc *HealthCheckService) {
 	r.healthCheckSvc = svc
 }
 
-// RouteResult 路由结果，包含内容流和元信息
 type RouteResult struct {
 	Source     string        // 来源仓库名称
 	SourceType string        // 来源类型：local 或 proxy
@@ -74,6 +71,7 @@ type RouteResult struct {
 	Size       int64         // 内容大小
 	FromCache  bool          // 是否来自缓存
 	CacheTTL   int           // 缓存 TTL（秒）
+	IsLarge    bool          // 是否大文件（流式处理）
 }
 
 type URLBuilder func(repo *model.Repository, name, version string) string
@@ -102,75 +100,58 @@ func (r *ProxyRouter) ResolveProxyOnlyForRepo(ctx context.Context, repo *model.R
 
 func (r *ProxyRouter) ResolveSmart(ctx context.Context, repo *model.Repository, pkgType, name, version string, urlBuilder URLBuilder) (*RouteResult, error) {
 	if repo != nil && repo.Type == model.RepoTypeProxy {
-		return r.resolveProxyWithURL(ctx, repo, name, version, urlBuilder)
+		repoComp := NewProxyRepository(repo, r)
+		return repoComp.Resolve(ctx, pkgType, name, version, urlBuilder)
 	}
 
 	virtualRepo, err := r.getVirtualRepo(pkgType)
 	if err != nil {
 		if repo != nil && repo.Type == model.RepoTypeProxy {
-			return r.resolveProxyWithURL(ctx, repo, name, version, urlBuilder)
+			repoComp := NewProxyRepository(repo, r)
+			return repoComp.Resolve(ctx, pkgType, name, version, urlBuilder)
 		}
 		return nil, ErrPackageNotFound
 	}
 
-	members, err := r.getMembers(virtualRepo.ID)
+	virtualRepoComp, err := r.buildCompositeRepository(virtualRepo)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, member := range members {
-		memberRepo := member.MemberRepo
-		if memberRepo.Type != model.RepoTypeProxy {
-			continue
-		}
-
-		result, err := r.resolveProxyWithURL(ctx, &memberRepo, name, version, urlBuilder)
-		if err == nil && result != nil {
-			result.Source = memberRepo.Name
-			result.RepoID = memberRepo.ID
-			return result, nil
-		}
-	}
-
-	return nil, ErrPackageNotFound
+	return virtualRepoComp.Resolve(ctx, pkgType, name, version, urlBuilder)
 }
 
 func (r *ProxyRouter) ResolveForVirtualRepo(ctx context.Context, virtualRepo *model.Repository, pkgType, name, version string, urlBuilder URLBuilder) (*RouteResult, error) {
-	members, err := r.getMembers(virtualRepo.ID)
+	virtualRepoComp, err := r.buildCompositeRepository(virtualRepo)
 	if err != nil {
 		return nil, err
 	}
+	return virtualRepoComp.Resolve(ctx, pkgType, name, version, urlBuilder)
+}
 
-	for _, member := range members {
-		repo := member.MemberRepo
-
-		// 过滤不匹配类型的成员
-		if !r.isMemberTypeMatch(&repo, pkgType) {
-			continue
+func (r *ProxyRouter) buildCompositeRepository(repo *model.Repository) (Repository, error) {
+	switch repo.Type {
+	case model.RepoTypeLocal:
+		return NewLocalRepository(repo, r), nil
+	case model.RepoTypeProxy:
+		return NewProxyRepository(repo, r), nil
+	case model.RepoTypeVirtual:
+		virtualRepo := NewVirtualRepository(repo, r)
+		members, err := r.getMembers(repo.ID)
+		if err != nil {
+			return nil, err
 		}
-
-		var result *RouteResult
-		switch repo.Type {
-		case model.RepoTypeLocal:
-			result, err = r.resolveLocal(ctx, &repo, pkgType, name, version)
-		case model.RepoTypeProxy:
-			if urlBuilder != nil {
-				result, err = r.resolveProxyWithURL(ctx, &repo, name, version, urlBuilder)
-			} else {
-				result, err = r.resolveProxy(ctx, &repo, pkgType, name, version)
+		for _, member := range members {
+			memberComp, err := r.buildCompositeRepository(&member.MemberRepo)
+			if err != nil {
+				return nil, err
 			}
-		default:
-			continue
+			virtualRepo.AddMember(memberComp)
 		}
-
-		if err == nil && result != nil {
-			result.Source = repo.Name
-			result.RepoID = repo.ID
-			return result, nil
-		}
+		return virtualRepo, nil
+	default:
+		return nil, fmt.Errorf("unsupported repository type: %s", repo.Type)
 	}
-
-	return nil, ErrPackageNotFound
 }
 
 func (r *ProxyRouter) ResolveProxyOnly(ctx context.Context, pkgType, name, version string, urlBuilder URLBuilder) (*RouteResult, error) {
@@ -179,25 +160,17 @@ func (r *ProxyRouter) ResolveProxyOnly(ctx context.Context, pkgType, name, versi
 		return nil, err
 	}
 
-	members, err := r.getMembers(virtualRepo.ID)
+	virtualRepoComp, err := r.buildCompositeRepository(virtualRepo)
 	if err != nil {
 		return nil, err
 	}
 
-	var tasks []proxyResolveTask
-	for _, member := range members {
-		if member.MemberRepo.Type == model.RepoTypeProxy {
-			tasks = append(tasks, proxyResolveTask{
-				member:     member,
-				urlBuilder: urlBuilder,
-				pkgType:    pkgType,
-				name:       name,
-				version:    version,
-			})
-		}
+	virtual, ok := virtualRepoComp.(*VirtualRepository)
+	if !ok {
+		return nil, ErrPackageNotFound
 	}
 
-	return r.resolveConcurrent(ctx, tasks)
+	return virtual.ResolveConcurrent(ctx, pkgType, name, version, urlBuilder)
 }
 
 func (r *ProxyRouter) resolveFull(ctx context.Context, pkgType, name, version string, urlBuilder URLBuilder) (*RouteResult, error) {
@@ -206,59 +179,30 @@ func (r *ProxyRouter) resolveFull(ctx context.Context, pkgType, name, version st
 		return nil, err
 	}
 
-	members, err := r.getMembers(virtualRepo.ID)
+	virtualRepoComp, err := r.buildCompositeRepository(virtualRepo)
 	if err != nil {
 		return nil, err
 	}
-
-	for _, member := range members {
-		repo := member.MemberRepo
-
-		var result *RouteResult
-		switch repo.Type {
-		case model.RepoTypeLocal:
-			result, err = r.resolveLocal(ctx, &repo, pkgType, name, version)
-		case model.RepoTypeProxy:
-			if urlBuilder != nil {
-				result, err = r.resolveProxyWithURL(ctx, &repo, name, version, urlBuilder)
-			} else {
-				result, err = r.resolveProxy(ctx, &repo, pkgType, name, version)
-			}
-		default:
-			continue
-		}
-
-		if err == nil && result != nil {
-			result.Source = repo.Name
-			result.RepoID = repo.ID
-			return result, nil
-		}
-	}
-
-	return nil, ErrPackageNotFound
+	return virtualRepoComp.Resolve(ctx, pkgType, name, version, urlBuilder)
 }
 
-// resolveLocal 从本地仓库解析包
 func (r *ProxyRouter) resolveLocal(ctx context.Context, repo *model.Repository, pkgType, name, version string) (*RouteResult, error) {
 	adp, ok := r.adapters[pkgType]
 	if !ok {
 		return nil, fmt.Errorf("no adapter for package type: %s", pkgType)
 	}
 
-	// 构造包标识
 	identity := &types.PackageIdentity{
 		Type:    types.PackageType(pkgType),
 		Name:    name,
 		Version: version,
 	}
 
-	// 通过适配器下载包内容
 	content, err := adp.Download(ctx, identity)
 	if err != nil {
 		return nil, err
 	}
 
-	// 将 Content 转换为 io.ReadCloser
 	var readCloser io.ReadCloser
 	switch v := content.Content.(type) {
 	case io.ReadCloser:
@@ -326,6 +270,10 @@ func (r *ProxyRouter) resolveProxyWithURL(ctx context.Context, repo *model.Repos
 		InsecureSkipVerify: repo.InsecureSkipVerify,
 	}
 
+	if r.largeFileThreshold > 0 {
+		return r.resolveProxyStream(ctx, repo, remoteURL, cacheKey, opts, authCfg, failureRules)
+	}
+
 	content, contentType, err := r.client.GetBytes(ctx, remoteURL, opts, toProxyAuthConfig(authCfg))
 	if err != nil {
 		slog.Error("failed to fetch from remote", "error", err, "remoteURL", remoteURL)
@@ -375,13 +323,51 @@ func (r *ProxyRouter) resolveProxyWithURL(ctx context.Context, repo *model.Repos
 	}, nil
 }
 
+func (r *ProxyRouter) resolveProxyStream(ctx context.Context, repo *model.Repository, remoteURL, cacheKey string, opts RequestOptions, authCfg *model.ProxyAuthConfig, failureRules FailureCacheRules) (*RouteResult, error) {
+	resp, err := r.client.GetStream(ctx, remoteURL, opts, toProxyAuthConfig(authCfg))
+	if err != nil {
+		slog.Error("failed to fetch stream from remote", "error", err, "remoteURL", remoteURL)
+
+		if r.healthCheckSvc != nil {
+			r.healthCheckSvc.GetOrCreateCircuitBreaker(repo.ID).RecordFailure()
+		}
+
+		if remoteErr, ok := err.(*RemoteError); ok {
+			slog.Error("remote error details", "statusCode", remoteErr.StatusCode, "url", remoteErr.URL)
+			if failureRules.ShouldCache(remoteErr.StatusCode) {
+				ttl := failureRules.Match(remoteErr.StatusCode)
+				r.cache.SetNegative(ctx, cacheKey, time.Duration(ttl)*time.Second)
+			} else if remoteErr.IsNotFound() {
+				r.cache.SetNegative(ctx, cacheKey, time.Duration(repo.CacheNegativeTTL)*time.Second)
+			}
+		}
+		return nil, err
+	}
+
+	if r.healthCheckSvc != nil {
+		r.healthCheckSvc.GetOrCreateCircuitBreaker(repo.ID).RecordSuccess()
+	}
+
+	contentLength := resp.ContentLength
+	slog.Info("successfully fetched stream from remote", "remoteURL", remoteURL, "contentLength", contentLength)
+
+	return &RouteResult{
+		Source:     repo.Name,
+		SourceType: "proxy",
+		RepoID:     repo.ID,
+		Content:    resp.Body,
+		Size:       contentLength,
+		FromCache:  false,
+		CacheTTL:   repo.CacheTTLSeconds,
+		IsLarge:    true,
+	}, nil
+}
+
 func (r *ProxyRouter) resolveProxy(ctx context.Context, repo *model.Repository, pkgType, name, version string) (*RouteResult, error) {
 	cacheKey := fmt.Sprintf("proxy:%s:%s:%s", repo.Name, name, version)
 
-	// 尝试从缓存获取
 	cached, err := r.cache.Get(ctx, cacheKey)
 	if err == nil && cached != nil {
-		// 负向缓存：之前请求过且不存在
 		if cached.IsNegative {
 			return nil, ErrPackageNotFound
 		}
@@ -394,34 +380,27 @@ func (r *ProxyRouter) resolveProxy(ctx context.Context, repo *model.Repository, 
 		}, nil
 	}
 
-	// 检查断路器状态
 	if r.healthCheckSvc != nil && r.healthCheckSvc.ShouldSkipRequest(repo.ID) {
 		retryAfter := r.healthCheckSvc.GetRetryAfter(repo.ID)
 		slog.Warn("circuit breaker open, skipping request", "repo", repo.Name, "retry_after", retryAfter)
 		return nil, fmt.Errorf("circuit breaker open for repo %s, retry after %d seconds", repo.Name, retryAfter)
 	}
 
-	// 缓存未命中，向远程仓库发起请求
 	remoteURL := fmt.Sprintf("%s/%s/%s", repo.RemoteURL, name, version)
 	authCfg, err := repo.GetAuthConfig()
 	if err != nil {
 		return nil, err
 	}
 
-	// 计算超时时间
 	readTimeout := r.calcReadTimeout(repo, -1)
-
-	// 解析失败缓存规则
 	failureRules, _ := ParseFailureCacheRules(repo.FailureCacheRules)
 
-	// 构建请求选项
 	opts := RequestOptions{
 		ReadTimeout:        readTimeout,
 		MaxRedirects:       repo.MaxRedirects,
 		InsecureSkipVerify: repo.InsecureSkipVerify,
 	}
 
-	// 获取远程内容
 	content, contentType, err := r.client.GetBytes(ctx, remoteURL, opts, toProxyAuthConfig(authCfg))
 	if err != nil {
 		if r.healthCheckSvc != nil {
@@ -429,12 +408,10 @@ func (r *ProxyRouter) resolveProxy(ctx context.Context, repo *model.Repository, 
 		}
 
 		if remoteErr, ok := err.(*RemoteError); ok {
-			// 根据失败缓存规则决定是否缓存
 			if failureRules.ShouldCache(remoteErr.StatusCode) {
 				ttl := failureRules.Match(remoteErr.StatusCode)
 				r.cache.SetNegative(ctx, cacheKey, time.Duration(ttl)*time.Second)
 			} else if remoteErr.IsNotFound() {
-				// 兼容现有的 404 负向缓存逻辑
 				r.cache.SetNegative(ctx, cacheKey, time.Duration(repo.CacheNegativeTTL)*time.Second)
 			}
 		}
@@ -474,6 +451,11 @@ type proxyResolveTask struct {
 	version    string
 }
 
+type proxyResolveError struct {
+	repoName string
+	err      error
+}
+
 func (r *ProxyRouter) resolveConcurrent(ctx context.Context, tasks []proxyResolveTask) (*RouteResult, error) {
 	if len(tasks) == 0 {
 		return nil, ErrPackageNotFound
@@ -492,7 +474,7 @@ func (r *ProxyRouter) resolveConcurrent(ctx context.Context, tasks []proxyResolv
 	}
 
 	resultCh := make(chan *RouteResult, len(tasks))
-	errCh := make(chan error, len(tasks))
+	errCh := make(chan proxyResolveError, len(tasks))
 	var wg sync.WaitGroup
 	ctxDone := ctx.Done()
 
@@ -527,9 +509,9 @@ func (r *ProxyRouter) resolveConcurrent(ctx context.Context, tasks []proxyResolv
 				case resultCh <- result:
 				case <-ctxDone:
 				}
-			} else {
+			} else if err != nil {
 				select {
-				case errCh <- err:
+				case errCh <- proxyResolveError{repoName: repo.Name, err: err}:
 				case <-ctxDone:
 				}
 			}
@@ -549,25 +531,31 @@ func (r *ProxyRouter) resolveConcurrent(ctx context.Context, tasks []proxyResolv
 		return nil, ctx.Err()
 	}
 
-	var lastErr error
+	var errors []proxyResolveError
 	for err := range errCh {
-		lastErr = err
+		errors = append(errors, err)
 	}
 
-	if lastErr != nil {
-		return nil, lastErr
+	if len(errors) > 0 {
+		errMsg := fmt.Sprintf("failed to resolve package from %d repos: ", len(errors))
+		for i, e := range errors {
+			if i > 0 {
+				errMsg += "; "
+			}
+			errMsg += fmt.Sprintf("%s: %v", e.repoName, e.err)
+		}
+		return nil, fmt.Errorf("%s", errMsg)
 	}
+
 	return nil, ErrPackageNotFound
 }
 
-// calcReadTimeout 计算读取超时时间，大文件动态延长
 func (r *ProxyRouter) calcReadTimeout(repo *model.Repository, contentLength int64) time.Duration {
 	var baseTimeout time.Duration
 
 	if repo.TimeoutSeconds > 0 {
 		baseTimeout = time.Duration(repo.TimeoutSeconds) * time.Second
 	} else {
-		// 使用全局默认值
 		cfg := config.Get()
 		if cfg != nil {
 			baseTimeout = cfg.Proxy.DefaultTimeout
@@ -576,9 +564,8 @@ func (r *ProxyRouter) calcReadTimeout(repo *model.Repository, contentLength int6
 		}
 	}
 
-	// 大文件动态延长超时
 	if contentLength > 0 {
-		threshold := int64(50 * 1024 * 1024) // 50MB
+		threshold := int64(50 * 1024 * 1024)
 		cfg := config.Get()
 		if cfg != nil && cfg.Proxy.LargeFileThreshold > 0 {
 			threshold = cfg.Proxy.LargeFileThreshold
@@ -591,7 +578,6 @@ func (r *ProxyRouter) calcReadTimeout(repo *model.Repository, contentLength int6
 	return baseTimeout
 }
 
-// toProxyAuthConfig 将 model.ProxyAuthConfig 转换为 proxy.ProxyAuthConfig
 func toProxyAuthConfig(cfg *model.ProxyAuthConfig) *ProxyAuthConfig {
 	if cfg == nil {
 		return nil
@@ -617,7 +603,6 @@ func toProxyAuthConfig(cfg *model.ProxyAuthConfig) *ProxyAuthConfig {
 }
 
 func (r *ProxyRouter) isMemberTypeMatch(repo *model.Repository, pkgType string) bool {
-	// 支持 PackageTypes 多类型的成员
 	if repo.PackageTypes != "" {
 		var types []string
 		if err := json.Unmarshal([]byte(repo.PackageTypes), &types); err == nil {
@@ -630,6 +615,5 @@ func (r *ProxyRouter) isMemberTypeMatch(repo *model.Repository, pkgType string) 
 		}
 	}
 
-	// 回退到单一 PackageType
 	return repo.PackageType == pkgType
 }

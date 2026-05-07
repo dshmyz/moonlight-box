@@ -150,12 +150,13 @@
 import { ref, computed, onMounted } from 'vue'
 import { Plus, ArrowDown, Refresh, Clock } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { repositoryApi, type Repository } from '@/api/repository'
+import { repositoryApi, type Repository, type RepoHealthInfo } from '@/api/repository'
 import RepositoryFormDialog from '@/components/repository/RepositoryFormDialog.vue'
 import SyncHistoryDrawer from '@/components/repository/SyncHistoryDrawer.vue'
 
 interface LocalRepository extends Repository {
   syncing?: boolean
+  healthInfo?: RepoHealthInfo
 }
 
 const loading = ref(false)
@@ -214,11 +215,15 @@ const handleRowLeave = () => {
   hoveredRow.value = null
 }
 
-const getHealthClass = (row: Repository) => {
+const getHealthClass = (row: LocalRepository) => {
   if (!row.enabled) return 'health-dot--disabled'
   if (row.type === 'proxy') {
-    if (row.last_sync_status === 'failed') return 'health-dot--error'
-    if (row.last_sync_status === 'success') return 'health-dot--healthy'
+    if (row.healthInfo?.health_status) {
+      const health = row.healthInfo.health_status
+      if (!health.is_healthy) return 'health-dot--error'
+      if (health.consecutive_failures > 0) return 'health-dot--warning'
+      return 'health-dot--healthy'
+    }
     return 'health-dot--warning'
   }
   return 'health-dot--healthy'
@@ -237,10 +242,30 @@ const loadRepos = async () => {
   try {
     const res = await repositoryApi.list()
     repos.value = res || []
+    await loadHealthStatuses()
   } catch (err) {
     ElMessage.error('加载仓库列表失败')
   } finally {
     loading.value = false
+  }
+}
+
+const loadHealthStatuses = async () => {
+  try {
+    const healthRes = await repositoryApi.getAllHealthStatuses()
+    if (healthRes?.items) {
+      const healthMap = new Map<number, RepoHealthInfo>()
+      healthRes.items.forEach(item => healthMap.set(item.repo_id, item))
+      
+      repos.value.forEach(repo => {
+        const health = healthMap.get(repo.id)
+        if (health) {
+          repo.healthInfo = health
+        }
+      })
+    }
+  } catch (err) {
+    console.warn('加载健康状态失败:', err)
   }
 }
 

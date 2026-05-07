@@ -71,3 +71,15 @@ func (r *BlockRuleRepository) FindEnabledWildcardRules(pkgType string) ([]model.
 		pkgType, true, model.BlockMatchWildcard).Find(&rules).Error
 	return rules, err
 }
+
+func (r *BlockRuleRepository) FindAllEnabledExactRules() ([]model.BlockRule, error) {
+	var rules []model.BlockRule
+	err := r.db.Where("enabled = ? AND match_type = ?", true, model.BlockMatchExact).Find(&rules).Error
+	return rules, err
+}
+
+func (r *BlockRuleRepository) FindAllEnabledWildcardRules() ([]model.BlockRule, error) {
+	var rules []model.BlockRule
+	err := r.db.Where("enabled = ? AND match_type = ?", true, model.BlockMatchWildcard).Find(&rules).Error
+	return rules, err
+}

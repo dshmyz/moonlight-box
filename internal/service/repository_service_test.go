@@ -16,6 +16,13 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("failed to connect database: %v", err)
 	}
 
+	// 限制为单连接，避免 SQLite :memory: 模式下多连接导致数据不一致
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("failed to get sql.DB: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+
 	db.AutoMigrate(&model.Repository{}, &model.RepositoryGroup{})
 	return db
 }
@@ -71,7 +78,7 @@ func TestRepositoryService_Create_ProxyRepo(t *testing.T) {
 }
 
 func TestRepositoryService_Create_VirtualRepo(t *testing.T) {
-	service, db := setupRepositoryService(t)
+	service, _ := setupRepositoryService(t)
 
 	// 先创建本地仓库
 	localRepo := &model.Repository{
@@ -80,7 +87,9 @@ func TestRepositoryService_Create_VirtualRepo(t *testing.T) {
 		PackageType: "npm",
 		Enabled:     true,
 	}
-	db.Create(localRepo)
+	if err := service.Create(localRepo, nil); err != nil {
+		t.Fatalf("failed to create local repo: %v", err)
+	}
 
 	// 创建代理仓库
 	proxyRepo := &model.Repository{
@@ -90,7 +99,9 @@ func TestRepositoryService_Create_VirtualRepo(t *testing.T) {
 		RemoteURL:   "https://registry.npmjs.org",
 		Enabled:     true,
 	}
-	db.Create(proxyRepo)
+	if err := service.Create(proxyRepo, nil); err != nil {
+		t.Fatalf("failed to create proxy repo: %v", err)
+	}
 
 	// 创建虚拟仓库并添加成员
 	virtualRepo := &model.Repository{

@@ -84,7 +84,7 @@ func TestMain(m *testing.M) {
 	remoteClient := proxy.NewRemoteClient(tm, 5)
 	proxyRouter := proxy.NewProxyRouter(testDB, cacheSvc, remoteClient, repoRepo, groupRepo, nil)
 
-	npmAdapter = adapter.NewNpmAdapter(pkgRepo, storageSvc, auditSvc, proxyRouter)
+	npmAdapter = adapter.NewNpmAdapter(pkgRepo, storageSvc, auditSvc, proxyRouter, nil, nil)
 
 	router := setupRouter()
 	testServer = httptest.NewServer(router)
@@ -110,7 +110,7 @@ func setupRouter() *gin.Engine {
 		}
 	}
 
-	repoRouter := handler.NewRepoRouter(repoSvc)
+	repoRouter := handler.NewRepoRouter(repoSvc, nil)
 	repoRouter.RegisterAdapter("npm", npmAdapter)
 
 	repoGroup := router.Group("/repo/:repoName")

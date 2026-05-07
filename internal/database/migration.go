@@ -36,6 +36,11 @@ func SeedData() error {
 			IsSystemRole: true,
 		},
 		{
+			Name:         "maintainer",
+			Description:  "维护者，可删除包",
+			IsSystemRole: true,
+		},
+		{
 			Name:         "developer",
 			Description:  "开发者，可发布和管理包",
 			IsSystemRole: true,
@@ -104,6 +109,12 @@ func SeedData() error {
 		{Resource: "maven", Action: "write"},
 		{Resource: "maven", Action: "delete"},
 		{Resource: "maven", Action: "admin"},
+
+		// 包管理（通用）
+		{Resource: "package", Action: "read"},
+		{Resource: "package", Action: "write"},
+		{Resource: "package", Action: "delete"},
+		{Resource: "package", Action: "delete_own"},
 	}
 
 	for _, perm := range permissions {
@@ -128,6 +139,19 @@ func SeedData() error {
 			PermissionID: perm.ID,
 		}
 		DB.Where(rp).FirstOrCreate(&rp)
+	}
+
+	// 为 maintainer 角色分配 package:delete 权限
+	var maintainerRole model.Role
+	if err := DB.Where("name = ?", "maintainer").First(&maintainerRole).Error; err == nil {
+		var pkgDeletePerm model.Permission
+		if err := DB.Where("resource = ? AND action = ?", "package", "delete").First(&pkgDeletePerm).Error; err == nil {
+			rp := model.RolePermission{
+				RoleID:       maintainerRole.ID,
+				PermissionID: pkgDeletePerm.ID,
+			}
+			DB.Where(rp).FirstOrCreate(&rp)
+		}
 	}
 
 	// 创建默认管理员账号

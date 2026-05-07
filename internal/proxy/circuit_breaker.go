@@ -205,7 +205,6 @@ func (cb *CircuitBreaker) transitionTo(newState CircuitState) {
 		oldState := cb.state
 		cb.state = newState
 		cb.lastStateChange = time.Now()
-
 		logrus.WithFields(logrus.Fields{
 			"module":    "circuit_breaker",
 			"old_state": string(oldState),
@@ -219,7 +218,6 @@ func (cb *CircuitBreaker) transitionTo(newState CircuitState) {
 				"reset_timeout":       cb.resetTimeout.Seconds(),
 			}).Warn("Circuit breaker opened, requests will be rejected")
 		} else if newState == CircuitClosed {
-			cb.consecutiveFailures = 0
 			logrus.WithFields(logrus.Fields{
 				"module": "circuit_breaker",
 			}).Info("Circuit breaker closed, requests allowed")

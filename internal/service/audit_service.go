@@ -2,20 +2,81 @@ package service
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/moonlight-box/registry/internal/database"
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/sirupsen/logrus"
 )
 
-type AuditService struct{}
+type AuditService struct {
+	logChan   chan *model.AuditLog
+	wg        sync.WaitGroup
+	shutdown  chan struct{}
+}
 
 func NewAuditService() *AuditService {
-	return &AuditService{}
+	svc := &AuditService{
+		logChan:  make(chan *model.AuditLog, 1000),
+		shutdown: make(chan struct{}),
+	}
+	svc.wg.Add(1)
+	go svc.worker()
+	return svc
+}
+
+func (s *AuditService) worker() {
+	defer s.wg.Done()
+	batch := make([]*model.AuditLog, 0, 100)
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case log := <-s.logChan:
+			batch = append(batch, log)
+			if len(batch) >= 100 {
+				s.flushBatch(batch)
+				batch = batch[:0]
+			}
+		case <-ticker.C:
+			if len(batch) > 0 {
+				s.flushBatch(batch)
+				batch = batch[:0]
+			}
+		case <-s.shutdown:
+			if len(batch) > 0 {
+				s.flushBatch(batch)
+			}
+			logrus.Info("Audit service worker stopped")
+			return
+		}
+	}
+}
+
+func (s *AuditService) flushBatch(batch []*model.AuditLog) {
+	if err := database.DB.CreateInBatches(batch, len(batch)).Error; err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module": "audit",
+			"error":  err,
+			"count":  len(batch),
+		}).Error("Failed to flush audit logs")
+	} else {
+		logrus.WithFields(logrus.Fields{
+			"module": "audit",
+			"count":  len(batch),
+		}).Debug("Flushed audit logs")
+	}
+}
+
+func (s *AuditService) Shutdown() {
+	close(s.shutdown)
+	s.wg.Wait()
 }
 
 func (s *AuditService) Log(ctx context.Context, userID *uint, action model.AuditAction, resourceType string, resourceID *uint, resourceName string, details string) error {
-	log := model.AuditLog{
+	log := &model.AuditLog{
 		UserID:       userID,
 		Action:       action,
 		ResourceType: resourceType,
@@ -24,11 +85,20 @@ func (s *AuditService) Log(ctx context.Context, userID *uint, action model.Audit
 		Details:      details,
 		CreatedAt:    time.Now().UTC(),
 	}
-	return database.DB.Create(&log).Error
+	select {
+	case s.logChan <- log:
+		return nil
+	default:
+		logrus.WithFields(logrus.Fields{
+			"module": "audit",
+			"action": action,
+		}).Warn("Audit log channel is full, dropping log")
+		return nil
+	}
 }
 
 func (s *AuditService) LogWithRequest(ctx context.Context, userID *uint, action model.AuditAction, resourceType string, resourceID *uint, resourceName string, details string, ipAddress string, userAgent string) error {
-	log := model.AuditLog{
+	log := &model.AuditLog{
 		UserID:       userID,
 		Action:       action,
 		ResourceType: resourceType,
@@ -39,7 +109,16 @@ func (s *AuditService) LogWithRequest(ctx context.Context, userID *uint, action 
 		Details:      details,
 		CreatedAt:    time.Now().UTC(),
 	}
-	return database.DB.Create(&log).Error
+	select {
+	case s.logChan <- log:
+		return nil
+	default:
+		logrus.WithFields(logrus.Fields{
+			"module": "audit",
+			"action": action,
+		}).Warn("Audit log channel is full, dropping log")
+		return nil
+	}
 }
 
 func (s *AuditService) List(page, pageSize int, userID *uint, action string) ([]model.AuditLog, int64, error) {

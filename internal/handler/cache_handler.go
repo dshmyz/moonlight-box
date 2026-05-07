@@ -1,21 +1,20 @@
 package handler
 
 import (
+	"strconv"
+
 	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/proxy"
 )
 
-// CacheHandler 缓存管理处理器
 type CacheHandler struct {
 	cacheSvc *proxy.CacheService
 }
 
-// NewCacheHandler 创建缓存管理处理器实例
 func NewCacheHandler(cacheSvc *proxy.CacheService) *CacheHandler {
 	return &CacheHandler{cacheSvc: cacheSvc}
 }
 
-// GetStats 获取缓存统计信息
 func (h *CacheHandler) GetStats(c *gin.Context) {
 	stats, err := h.cacheSvc.GetStats(c.Request.Context())
 	if err != nil {
@@ -23,10 +22,62 @@ func (h *CacheHandler) GetStats(c *gin.Context) {
 		return
 	}
 
-	Success(c, stats)
+	expiredCount := h.cacheSvc.GetExpiredCount()
+
+	enhancedStats := map[string]interface{}{
+		"total_items":     stats["total_items"],
+		"positive_items":  stats["positive_items"],
+		"negative_items":  stats["negative_items"],
+		"total_size":      stats["total_size"],
+		"used_bytes":      stats["used_bytes"],
+		"max_bytes":       stats["max_bytes"],
+		"max_items":       stats["max_items"],
+		"num_shards":      stats["num_shards"],
+		"expired_entries": expiredCount,
+		"max_size_gb":     float64(stats["max_bytes"].(int64)) / (1024 * 1024 * 1024),
+	}
+
+	Success(c, enhancedStats)
 }
 
-// Clear 清空所有缓存
+func (h *CacheHandler) List(c *gin.Context) {
+	offsetStr := c.DefaultQuery("offset", "0")
+	limitStr := c.DefaultQuery("limit", "50")
+	search := c.Query("search")
+
+	offset, _ := strconv.Atoi(offsetStr)
+	limit, _ := strconv.Atoi(limitStr)
+
+	items, total := h.cacheSvc.ListItems(offset, limit, search)
+
+	Success(c, gin.H{
+		"items": items,
+		"total": total,
+		"offset": offset,
+		"limit": limit,
+	})
+}
+
+func (h *CacheHandler) DeleteItem(c *gin.Context) {
+	key := c.Param("key")
+	if key == "" {
+		BadRequest(c, "key is required", nil)
+		return
+	}
+
+	if err := h.cacheSvc.DeleteItem(key); err != nil {
+		InternalError(c, err.Error())
+		return
+	}
+
+	Success(c, gin.H{"message": "Cache item deleted"})
+}
+
+func (h *CacheHandler) CleanupExpired(c *gin.Context) {
+	count := h.cacheSvc.CleanupExpired()
+	Success(c, gin.H{"cleaned": count})
+}
+
 func (h *CacheHandler) Clear(c *gin.Context) {
 	if err := h.cacheSvc.Clear(c.Request.Context()); err != nil {
 		InternalError(c, err.Error())
@@ -36,7 +87,6 @@ func (h *CacheHandler) Clear(c *gin.Context) {
 	Success(c, gin.H{"message": "Cache cleared"})
 }
 
-// Invalidate 根据模式使指定缓存失效
 func (h *CacheHandler) Invalidate(c *gin.Context) {
 	var req struct {
 		Pattern string `json:"pattern" binding:"required"`

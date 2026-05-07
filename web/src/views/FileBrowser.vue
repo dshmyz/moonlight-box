@@ -173,8 +173,8 @@ const formatSize = (bytes: number) => {
 
 const downloadFile = async (row: FileInfo) => {
   try {
-    const response = await fileApi.download(row.path)
-    const url = window.URL.createObjectURL(new Blob([response.data]))
+    const blob = await fileApi.download(row.path)
+    const url = window.URL.createObjectURL(new Blob([blob]))
     const link = document.createElement('a')
     link.href = url
     link.setAttribute('download', row.name)

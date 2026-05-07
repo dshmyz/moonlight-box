@@ -263,7 +263,11 @@ func TestPyPIAdapter_Delete(t *testing.T) {
 	}
 
 	err := adapter.Delete(context.Background(), identity)
-	assert.NotNil(t, err)
+	assert.Nil(t, err)
+
+	var count int64
+	db.Model(&model.PackageVersion{}).Where("package_id = ? AND version = ?", pkg.ID, "1.0.0").Count(&count)
+	assert.Equal(t, int64(0), count)
 }
 
 func TestPyPIAdapter_ListPackages(t *testing.T) {
