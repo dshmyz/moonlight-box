@@ -158,8 +158,12 @@ func main() {
 	countBatcher := service.NewDownloadCountBatcher(packageRepo, 10*time.Second)
 	defer countBatcher.Stop()
 
+	// 初始化日志批量处理器
+	logBatcher := service.NewLogBatcher(proxyDownloadLogRepo, 100, 5*time.Second)
+	defer logBatcher.Stop()
+
 	// 创建共享的代理下载服务
-	proxyDownloadSvc := service.NewProxyDownloadService(packageRepo, storageSvc, nil, proxyDownloadLogRepo, countBatcher)
+	proxyDownloadSvc := service.NewProxyDownloadService(packageRepo, storageSvc, nil, proxyDownloadLogRepo, logBatcher, countBatcher)
 
 	// 初始化适配器（先创建，用于构建 adapter map）
 	npmAdapter := adapter.NewNpmAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
