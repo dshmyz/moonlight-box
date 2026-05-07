@@ -278,8 +278,6 @@ func (a *GoAdapter) handleDownloadZip(c *gin.Context, module, version string) {
 	if err == nil {
 		defer content.Close()
 
-		a.IncrementDownloadCountForPackage(module, model.PackageTypeGo, version, version+".zip")
-
 		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, version))
 		c.DataFromReader(200, size, "application/zip", content, nil)
 		return

@@ -424,8 +424,6 @@ func (a *NpmAdapter) downloadTarballForRepo(c *gin.Context, repo *model.Reposito
 		}
 		defer content.Close()
 
-		a.IncrementDownloadCountForPackage(pkgName, model.PackageTypeNPM, version, filename)
-
 		contentType := a.storageSvc.GetContentType(filename)
 		c.DataFromReader(200, size, contentType, content, nil)
 
