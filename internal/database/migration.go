@@ -17,6 +17,7 @@ func AutoMigrate() error {
 		&model.RolePermission{},
 		&model.Package{},
 		&model.PackageVersion{},
+		&model.PackageFile{},
 		&model.PackageDependency{},
 		&model.AuditLog{},
 		&model.CacheEntry{},
@@ -24,6 +25,15 @@ func AutoMigrate() error {
 		&model.Repository{},
 		&model.RepositoryGroup{},
 		&model.BlockRule{},
+		&model.StorageBackend{},
+		&model.ScanResult{},
+		&model.Vulnerability{},
+		&model.Webhook{},
+		&model.WebhookDelivery{},
+		&model.Backup{},
+		&model.MigrationTask{},
+		&model.ProxyDownloadLog{},
+		&model.MetadataSyncTask{},
 	)
 }
 

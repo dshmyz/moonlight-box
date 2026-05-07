@@ -54,13 +54,13 @@ func main() {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"error": err,
+			"error":       err,
+			"config_path": *configPath,
 		}).Warn("Failed to load config file, using default configuration")
-		cfg, err = config.Load("")
-		if err != nil {
-			logrus.WithFields(logrus.Fields{
-				"error": err,
-			}).Error("Failed to load default config")
+		// 不再重新加载，直接使用默认配置（已经在 Load 函数中设置好了默认值）
+		cfg = config.Get()
+		if cfg == nil {
+			logrus.Error("Failed to get default config")
 			os.Exit(1)
 		}
 	}
@@ -779,9 +779,7 @@ func setupRouter(cfg *config.Config, authService *service.AuthService, auditSvc 
 	}
 
 	// 前端静态文件服务
-	frontendCfg := middleware.DefaultFrontendConfig()
-	r.NoRoute(middleware.ServeFrontend(frontendCfg))
-	fmt.Println("Using filesystem-based frontend from", frontendCfg.StaticDir)
+	setupFrontendRouter(r, cfg.Server.StaticDir)
 
 	return r
 }
