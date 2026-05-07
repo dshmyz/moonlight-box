@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
@@ -23,11 +24,13 @@ import (
 
 type AptAdapter struct {
 	*BaseAdapter
-	pkgRepo    *repository.PackageRepository
-	repoRepo   *repository.RepositoryRepository
-	storageSvc *service.StorageService
-	auditSvc   *service.AuditService
-	uploadSvc  *service.UploadService
+	pkgRepo          *repository.PackageRepository
+	repoRepo         *repository.RepositoryRepository
+	storageSvc       *service.StorageService
+	auditSvc         *service.AuditService
+	proxyRouter      *proxy.ProxyRouter
+	proxyDownloadSvc *service.ProxyDownloadService
+	uploadSvc        *service.UploadService
 }
 
 type AptReleaseFile struct {
@@ -71,14 +74,18 @@ func NewAptAdapter(
 	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
+	proxyRouter *proxy.ProxyRouter,
+	proxyDownloadSvc *service.ProxyDownloadService,
 ) *AptAdapter {
 	return &AptAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
-		pkgRepo:     pkgRepo,
-		repoRepo:    repoRepo,
-		storageSvc:  storageSvc,
-		auditSvc:    auditSvc,
-		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
+		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
+		pkgRepo:          pkgRepo,
+		repoRepo:         repoRepo,
+		storageSvc:       storageSvc,
+		auditSvc:         auditSvc,
+		proxyRouter:      proxyRouter,
+		proxyDownloadSvc: proxyDownloadSvc,
+		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
 	}
 }
 
@@ -256,33 +263,72 @@ func (a *AptAdapter) DownloadDeb(c *gin.Context) {
 
 	backend := a.storageSvc.GetDefaultBackend()
 	content, err := backend.Get(c.Request.Context(), storageKey)
-	if err != nil {
-		response.NotFound(c, "DEB not found")
+	if err == nil {
+		defer content.Close()
+
+		size, err := backend.Size(c.Request.Context(), storageKey)
+		if err != nil {
+			response.NotFound(c, "DEB not found")
+			return
+		}
+
+		filename := filepath.Base(filePath)
+
+		var repo *model.Repository
+		if r, ok := c.Get("repo"); ok {
+			repo = r.(*model.Repository)
+		}
+
+		decision := a.CheckDownloadPermission(c, repo, model.PackageTypeApt, filename, "", filename)
+		if !decision.Allow {
+			c.JSON(decision.Code, gin.H{"error": decision.Message})
+			return
+		}
+
+		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)))
+		c.DataFromReader(200, size, "application/vnd.debian.binary-package", content, nil)
 		return
 	}
-	defer content.Close()
 
-	size, err := backend.Size(c.Request.Context(), storageKey)
-	if err != nil {
-		response.NotFound(c, "DEB not found")
-		return
+	if a.proxyDownloadSvc != nil {
+		var repo *model.Repository
+		if r, ok := c.Get("repo"); ok {
+			repo = r.(*model.Repository)
+		}
+
+		if repo != nil {
+			filename := filepath.Base(filePath)
+			decision := a.CheckDownloadPermission(c, repo, model.PackageTypeApt, filename, "", filename)
+			if !decision.Allow {
+				c.JSON(decision.Code, gin.H{"error": decision.Message})
+				return
+			}
+
+			urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
+				baseURL := strings.TrimSuffix(r.RemoteURL, "/")
+				return fmt.Sprintf("%s/%s", baseURL, filePath)
+			}
+
+			req := &service.ProxyDownloadRequest{
+				PkgType:     "apt",
+				Name:        filename,
+				Version:     "",
+				Filename:    filename,
+				Repo:        repo,
+				URLBuilder:  urlBuilder,
+				PackageType: model.PackageTypeApt,
+			}
+
+			result, err := a.proxyDownloadSvc.Download(c.Request.Context(), req)
+			if err == nil && result != nil {
+				c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)))
+				c.Data(200, "application/vnd.debian.binary-package", result.Content)
+				return
+			}
+		}
 	}
 
-	filename := filepath.Base(filePath)
-
-	var repo *model.Repository
-	if r, ok := c.Get("repo"); ok {
-		repo = r.(*model.Repository)
-	}
-
-	decision := a.CheckDownloadPermission(c, repo, model.PackageTypeApt, filename, "", filename)
-	if !decision.Allow {
-		c.JSON(decision.Code, gin.H{"error": decision.Message})
-		return
-	}
-
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)))
-	c.DataFromReader(200, size, "application/vnd.debian.binary-package", content, nil)
+	response.NotFound(c, "DEB not found")
 }
 
 func (a *AptAdapter) UploadDeb(c *gin.Context) {
