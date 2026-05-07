@@ -25,11 +25,12 @@ import (
 
 type YumAdapter struct {
 	*BaseAdapter
-	pkgRepo     *repository.PackageRepository
-	storageSvc  *service.StorageService
-	auditSvc    *service.AuditService
-	proxyRouter *proxy.ProxyRouter
-	uploadSvc   *service.UploadService
+	pkgRepo          *repository.PackageRepository
+	storageSvc       *service.StorageService
+	auditSvc         *service.AuditService
+	proxyRouter      *proxy.ProxyRouter
+	proxyDownloadSvc *service.ProxyDownloadService
+	uploadSvc        *service.UploadService
 }
 
 type RepoMD struct {
@@ -131,14 +132,16 @@ func NewYumAdapter(
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
 	proxyRouter *proxy.ProxyRouter,
+	proxyDownloadSvc *service.ProxyDownloadService,
 ) *YumAdapter {
 	return &YumAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
-		pkgRepo:     pkgRepo,
-		storageSvc:  storageSvc,
-		auditSvc:    auditSvc,
-		proxyRouter: proxyRouter,
-		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
+		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
+		pkgRepo:          pkgRepo,
+		storageSvc:       storageSvc,
+		auditSvc:         auditSvc,
+		proxyRouter:      proxyRouter,
+		proxyDownloadSvc: proxyDownloadSvc,
+		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
 	}
 }
 

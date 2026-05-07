@@ -57,7 +57,7 @@ func setupYumAdapter(t *testing.T) (*YumAdapter, *gorm.DB) {
 
 	auditSvc := service.NewAuditService()
 
-	adapter := NewYumAdapter(pkgRepo, storageSvc, auditSvc, nil)
+	adapter := NewYumAdapter(pkgRepo, storageSvc, auditSvc, nil, nil)
 	return adapter, db
 }
 
