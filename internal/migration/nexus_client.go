@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 type NexusClient struct {
@@ -124,13 +126,24 @@ func (c *NexusClient) ListComponents(ctx context.Context, repoName string) ([]Ne
 
 		resp, err := c.client.Do(req)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("request failed: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			logrus.WithFields(logrus.Fields{
+				"url":    url,
+				"status": resp.StatusCode,
+				"body":   string(body),
+			}).Error("Nexus API returned error status")
+			return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
 		}
 
 		var page NexusComponentPage
 		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
 			resp.Body.Close()
-			return nil, err
+			return nil, fmt.Errorf("failed to decode response: %w", err)
 		}
 		resp.Body.Close()
 
