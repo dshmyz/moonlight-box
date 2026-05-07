@@ -118,7 +118,11 @@ func (s *ProxyDownloadService) Download(ctx context.Context, req *ProxyDownloadR
 	case ResolutionModeVirtualRepo:
 		result, resolveErr = s.proxyRouter.ResolveForVirtualRepo(ctx, req.Repo, req.PkgType, req.Name, req.Version, req.URLBuilder)
 	default:
-		result, resolveErr = s.proxyRouter.ResolveSmart(ctx, req.Repo, req.PkgType, req.Name, req.Version, req.URLBuilder)
+		if req.URLBuilder != nil && req.Repo != nil {
+			result, resolveErr = s.proxyRouter.ResolveProxyOnlyForRepo(ctx, req.Repo, req.Name, req.Version, req.URLBuilder)
+		} else {
+			result, resolveErr = s.proxyRouter.ResolveSmart(ctx, req.Repo, req.PkgType, req.Name, req.Version, req.URLBuilder)
+		}
 	}
 
 	if resolveErr != nil {
