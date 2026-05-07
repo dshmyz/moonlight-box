@@ -13,62 +13,95 @@
     </header>
 
     <div class="content-wrapper">
-      <div class="main-content">
-        <div class="step-container">
-          <el-steps :active="currentStep" finish-status="success" class="step-bar">
-            <el-step title="连接 Nexus" />
-            <el-step title="选择仓库" />
-            <el-step title="执行迁移" />
-          </el-steps>
+      <div class="step-container">
+        <el-steps :active="currentStep" finish-status="success" class="step-bar">
+          <el-step title="连接 Nexus" />
+          <el-step title="选择仓库" />
+          <el-step title="执行迁移" />
+        </el-steps>
 
-          <div class="step-content">
-            <NexusConnectionForm
-              v-if="currentStep === 0"
-              @connected="onConnected"
+        <div class="step-content">
+          <NexusConnectionForm
+            v-if="currentStep === 0"
+            @connected="onConnected"
+          />
+
+          <template v-if="currentStep === 1">
+            <RepositorySelector
+              :repositories="nexusRepos"
+              @selected="onSelected"
             />
+            <div class="target-repo-section">
+              <label class="section-label">目标仓库</label>
+              <el-select
+                v-model="targetRepoId"
+                placeholder="选择目标仓库"
+                class="repo-select"
+              >
+                <el-option
+                  v-for="repo in localRepos"
+                  :key="repo.id"
+                  :label="repo.name"
+                  :value="repo.id"
+                />
+              </el-select>
+              <span class="tip">迁移的包将存储到选定的目标仓库</span>
+            </div>
+            <div class="advanced-config">
+              <el-collapse>
+                <el-collapse-item title="高级配置" name="advanced">
+                  <el-form label-width="120px">
+                    <el-form-item label="并发数">
+                      <el-input-number
+                        v-model="workerCount"
+                        :min="1"
+                        :max="50"
+                        :step="1"
+                      />
+                      <span class="config-tip">同时处理的组件数量（默认：10）</span>
+                    </el-form-item>
+                    <el-form-item label="最大重试次数">
+                      <el-input-number
+                        v-model="maxRetries"
+                        :min="1"
+                        :max="10"
+                        :step="1"
+                      />
+                      <span class="config-tip">失败后的重试次数（默认：3）</span>
+                    </el-form-item>
+                    <el-form-item label="批处理大小">
+                      <el-input-number
+                        v-model="batchSize"
+                        :min="10"
+                        :max="500"
+                        :step="10"
+                      />
+                      <span class="config-tip">每批处理的组件数量（默认：50）</span>
+                    </el-form-item>
+                  </el-form>
+                </el-collapse-item>
+              </el-collapse>
+            </div>
+            <div class="actions">
+              <el-button type="primary" @click="startMigration" :disabled="selectedRepos.length === 0 || !targetRepoId">
+                开始迁移
+              </el-button>
+            </div>
+          </template>
 
-            <template v-if="currentStep === 1">
-              <RepositorySelector
-                :repositories="nexusRepos"
-                @selected="onSelected"
-              />
-              <div class="target-repo-section">
-                <label class="section-label">目标仓库</label>
-                <el-select
-                  v-model="targetRepoId"
-                  placeholder="选择目标仓库"
-                  class="repo-select"
-                >
-                  <el-option
-                    v-for="repo in localRepos"
-                    :key="repo.id"
-                    :label="repo.name"
-                    :value="repo.id"
-                  />
-                </el-select>
-                <span class="tip">迁移的包将存储到选定的目标仓库</span>
-              </div>
-              <div class="actions">
-                <el-button type="primary" @click="startMigration" :disabled="selectedRepos.length === 0 || !targetRepoId">
-                  开始迁移
-                </el-button>
-              </div>
-            </template>
-
-            <MigrationProgress
-              v-if="currentStep === 2"
-              :status="migrationStatus"
-              :total="totalItems"
-              :processed="processedItems"
-              :failed="failedItems"
-              :logs="logs"
-              @cancel="onCancel"
-            />
-          </div>
+          <MigrationProgress
+            v-if="currentStep === 2"
+            :status="migrationStatus"
+            :total="totalItems"
+            :processed="processedItems"
+            :failed="failedItems"
+            :logs="logs"
+            @cancel="onCancel"
+          />
         </div>
       </div>
 
-      <div class="sidebar">
+      <div class="history-section">
         <MigrationHistory :tasks="historyTasks" />
       </div>
     </div>
@@ -106,6 +139,9 @@ const currentTaskId = ref(0)
 const pollingTimer = ref<number | null>(null)
 const localRepos = ref<any[]>([])
 const targetRepoId = ref<number | undefined>(undefined)
+const workerCount = ref(10)
+const maxRetries = ref(3)
+const batchSize = ref(50)
 
 const nexusCredentials = ref({ url: '', username: '', password: '' })
 
@@ -141,6 +177,9 @@ async function startMigration() {
       selected_repos: selectedRepos.value,
       target_repository_id: targetRepoId.value,
       target_repository: selectedRepo?.name || '',
+      worker_count: workerCount.value,
+      max_retries: maxRetries.value,
+      batch_size: batchSize.value,
     })) as any
     currentTaskId.value = res?.id || res?.task?.id
     currentStep.value = 2
@@ -258,12 +297,6 @@ onUnmounted(() => {
 }
 
 .content-wrapper {
-  display: grid;
-  grid-template-columns: 1fr 420px;
-  gap: 24px;
-}
-
-.main-content {
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -316,19 +349,16 @@ onUnmounted(() => {
   margin-top: 24px;
 }
 
-.sidebar {
-  position: sticky;
-  top: 24px;
-  height: fit-content;
+.history-section {
+  background: #fff;
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 @media (max-width: 1200px) {
   .content-wrapper {
-    grid-template-columns: 1fr;
-  }
-  
-  .sidebar {
-    position: static;
+    gap: 16px;
   }
 }
 </style>
