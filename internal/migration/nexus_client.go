@@ -158,6 +158,47 @@ func (c *NexusClient) ListComponents(ctx context.Context, repoName string) ([]Ne
 	return allComponents, nil
 }
 
+func (c *NexusClient) ListComponentsPage(ctx context.Context, repoName, continuationToken string) ([]NexusComponent, string, error) {
+	url := fmt.Sprintf("%s/service/rest/v1/components?repository=%s", c.baseURL, repoName)
+	if continuationToken != "" {
+		url += "&continuationToken=" + continuationToken
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.SetBasicAuth(c.username, c.password)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		logrus.WithFields(logrus.Fields{
+			"url":    url,
+			"status": resp.StatusCode,
+			"body":   string(body),
+		}).Error("Nexus API returned error status")
+		return nil, "", fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var page NexusComponentPage
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		return nil, "", fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	nextToken := ""
+	if page.ContinuationToken != nil {
+		nextToken = *page.ContinuationToken
+	}
+
+	return page.Items, nextToken, nil
+}
+
 func (c *NexusClient) DownloadAsset(ctx context.Context, assetURL string) (io.ReadCloser, string, int64, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", assetURL, nil)
 	if err != nil {
