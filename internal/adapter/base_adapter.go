@@ -519,3 +519,10 @@ func (b *BaseAdapter) LogDeleteAudit(c *gin.Context, repoName, pkgName, version 
 		c.Request.UserAgent(),
 	)
 }
+
+func getUintPtr(val uint) *uint {
+	if val == 0 {
+		return nil
+	}
+	return &val
+}

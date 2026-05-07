@@ -1092,10 +1092,3 @@ func (a *NpmAdapter) HandleSearch(c *gin.Context) {
 	resp := a.formatSearchResponse(packages, total)
 	c.JSON(200, resp)
 }
-
-func getUintPtr(val uint) *uint {
-	if val == 0 {
-		return nil
-	}
-	return &val
-}
