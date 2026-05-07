@@ -19,6 +19,7 @@ import (
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
 	"github.com/moonlight-box/registry/internal/util"
+	"github.com/sirupsen/logrus"
 
 	"github.com/gin-gonic/gin"
 )
@@ -482,26 +483,35 @@ func (a *NpmAdapter) downloadFromVirtual(c *gin.Context, repo *model.Repository,
 
 	storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "npm", name, version, bytes.NewReader(body), result.Size)
 	if storeErr != nil {
-		// 存储失败不影响返回内容，但记录警告
-	} else {
-		_, _, _, dbErr := a.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
-			Name:           name,
-			Type:           model.PackageTypeNPM,
-			RepositoryID:   result.RepoID,
-			RepositoryType: model.RepoTypeProxy,
-		}, &model.PackageVersion{
-			Version:     version,
-			Status:      model.StatusPublished,
-			StoragePath: filepath.Dir(storageKey),
-		}, &model.PackageFile{
-			Filename:    filename,
-			FileType:    model.FileTypePrimary,
-			StoragePath: storageKey,
-			SizeBytes:   result.Size,
-		})
-		if dbErr != nil {
-			// 数据库写入失败不影响返回内容，但记录警告
-		}
+		logrus.Warnf("failed to store proxy package %s/%s to storage: %v", name, version, storeErr)
+		a.recordProxyDownloadLog(&ProxyDownloadAndCacheOpts{
+			PkgType:  model.PackageTypeNPM,
+			Name:     name,
+			Version:  version,
+			Filename: filename,
+			Repo:     repo,
+		}, model.DownloadStatusFailed, 500, result.Size, 0, false, fmt.Errorf("storage failed: %w", storeErr))
+		response.InternalError(c, "failed to store package")
+		return
+	}
+
+	_, _, _, dbErr := a.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
+		Name:           name,
+		Type:           model.PackageTypeNPM,
+		RepositoryID:   result.RepoID,
+		RepositoryType: model.RepoTypeProxy,
+	}, &model.PackageVersion{
+		Version:     version,
+		Status:      model.StatusPublished,
+		StoragePath: filepath.Dir(storageKey),
+	}, &model.PackageFile{
+		Filename:    filename,
+		FileType:    model.FileTypePrimary,
+		StoragePath: storageKey,
+		SizeBytes:   result.Size,
+	})
+	if dbErr != nil {
+		logrus.Warnf("failed to store proxy package %s/%s to database: %v", name, version, dbErr)
 	}
 
 	contentType := a.storageSvc.GetContentType(filename)
@@ -651,29 +661,45 @@ func (a *NpmAdapter) DownloadTarballPath(c *gin.Context, fullPath string) {
 
 	storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "npm", pkgName, version, bytes.NewReader(body), result.Size)
 	if storeErr != nil {
-		// 存储失败不影响返回内容，但记录警告
-	} else {
-		storedPkg, storedVer, storedFile, dbErr := a.pkgRepo.StorePackageFile(c.Request.Context(), &model.Package{
-			Name:           pkgName,
-			Type:           model.PackageTypeNPM,
-			RepositoryID:   result.RepoID,
-			RepositoryType: model.RepoTypeProxy,
-		}, &model.PackageVersion{
-			Version:     version,
-			Status:      model.StatusPublished,
-			StoragePath: filepath.Dir(storageKey),
-		}, &model.PackageFile{
-			Filename:    filename,
-			FileType:    model.FileTypePrimary,
-			StoragePath: storageKey,
-			SizeBytes:   result.Size,
-		})
+		logrus.Warnf("failed to store proxy package %s/%s to storage: %v", pkgName, version, storeErr)
+		a.recordProxyDownloadLog(&ProxyDownloadAndCacheOpts{
+			PkgType:  model.PackageTypeNPM,
+			Name:     pkgName,
+			Version:  version,
+			Filename: filename,
+			Repo:     repo,
+		}, model.DownloadStatusFailed, 500, result.Size, 0, false, fmt.Errorf("storage failed: %w", storeErr))
+		response.InternalError(c, "failed to store package")
+		return
+	}
 
-		if dbErr != nil {
-			// 数据库写入失败不影响返回内容，但记录警告
-		} else if storedPkg != nil && storedVer != nil && storedFile != nil {
-			a.pkgRepo.IncrementDownloadCount(storedPkg.ID, storedVer.ID, storedFile.ID)
-		}
+	storedPkg, storedVer, storedFile, dbErr := a.pkgRepo.StorePackageFile(c.Request.Context(), &model.Package{
+		Name:           pkgName,
+		Type:           model.PackageTypeNPM,
+		RepositoryID:   result.RepoID,
+		RepositoryType: model.RepoTypeProxy,
+	}, &model.PackageVersion{
+		Version:     version,
+		Status:      model.StatusPublished,
+		StoragePath: filepath.Dir(storageKey),
+	}, &model.PackageFile{
+		Filename:    filename,
+		FileType:    model.FileTypePrimary,
+		StoragePath: storageKey,
+		SizeBytes:   result.Size,
+	})
+
+	if dbErr != nil {
+		logrus.Warnf("failed to store proxy package %s/%s to database: %v", pkgName, version, dbErr)
+		a.recordProxyDownloadLog(&ProxyDownloadAndCacheOpts{
+			PkgType:  model.PackageTypeNPM,
+			Name:     pkgName,
+			Version:  version,
+			Filename: filename,
+			Repo:     repo,
+		}, model.DownloadStatusFailed, 500, result.Size, 0, false, fmt.Errorf("database insert failed: %w", dbErr))
+	} else if storedPkg != nil && storedVer != nil && storedFile != nil {
+		a.pkgRepo.IncrementDownloadCount(storedPkg.ID, storedVer.ID, storedFile.ID)
 	}
 
 	localContent, localSize, localErr := a.storageSvc.GetPackage(c.Request.Context(), "npm", pkgName, version)
@@ -897,24 +923,31 @@ func (a *NpmAdapter) storeProxyContent(ctx context.Context, result *proxy.RouteR
 	}
 
 	storageKey, storeErr := a.storageSvc.StorePackage(ctx, "npm", name, version, bytes.NewReader(body), result.Size)
-	if storeErr == nil {
-		a.pkgRepo.StorePackageFile(ctx, &model.Package{
-			Name:           name,
-			Type:           model.PackageTypeNPM,
-			RepositoryID:   result.RepoID,
-			RepositoryType: model.RepoTypeProxy,
-		}, &model.PackageVersion{
-			Version:     version,
-			Status:      model.StatusPublished,
-			StoragePath: filepath.Dir(storageKey),
-		}, &model.PackageFile{
-			Filename:    filename,
-			FileType:    model.FileTypePrimary,
-			StoragePath: storageKey,
-			SizeBytes:   result.Size,
-		})
+	if storeErr != nil {
+		return storeErr
 	}
-	return storeErr
+
+	_, _, _, dbErr := a.pkgRepo.StorePackageFile(ctx, &model.Package{
+		Name:           name,
+		Type:           model.PackageTypeNPM,
+		RepositoryID:   result.RepoID,
+		RepositoryType: model.RepoTypeProxy,
+	}, &model.PackageVersion{
+		Version:     version,
+		Status:      model.StatusPublished,
+		StoragePath: filepath.Dir(storageKey),
+	}, &model.PackageFile{
+		Filename:    filename,
+		FileType:    model.FileTypePrimary,
+		StoragePath: storageKey,
+		SizeBytes:   result.Size,
+	})
+
+	if dbErr != nil {
+		return dbErr
+	}
+
+	return nil
 }
 
 func parseTime(s string) time.Time {

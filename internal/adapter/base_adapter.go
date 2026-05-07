@@ -13,6 +13,7 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
+	"github.com/sirupsen/logrus"
 )
 
 type BaseAdapter struct {
@@ -389,26 +390,29 @@ func (b *BaseAdapter) DownloadFromProxyAndCache(c *gin.Context, opts *ProxyDownl
 
 	storageKey, storeErr := b.storageSvc.StorePackage(c.Request.Context(), string(opts.PkgType), opts.Name, opts.Version, bytes.NewReader(body), result.Size)
 	if storeErr != nil {
-		// 存储失败不影响返回内容，但记录警告
-	} else {
-		_, _, _, dbErr := b.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
-			Name:           opts.Name,
-			Type:           opts.PkgType,
-			RepositoryID:   result.RepoID,
-			RepositoryType: model.RepoTypeProxy,
-		}, &model.PackageVersion{
-			Version:     opts.Version,
-			Status:      model.StatusPublished,
-			StoragePath: storageKey,
-		}, &model.PackageFile{
-			Filename:    opts.Filename,
-			FileType:    model.FileTypePrimary,
-			StoragePath: storageKey,
-			SizeBytes:   result.Size,
-		})
-		if dbErr != nil {
-			// 数据库写入失败不影响返回内容，但记录警告
-		}
+		logrus.Warnf("failed to store proxy package %s/%s to storage: %v", opts.Name, opts.Version, storeErr)
+		b.recordProxyDownloadLog(opts, model.DownloadStatusFailed, 500, result.Size, int(time.Since(startTime).Milliseconds()), false, fmt.Errorf("storage failed: %w", storeErr))
+		c.JSON(500, gin.H{"error": "failed to store package"})
+		return true
+	}
+
+	_, _, _, dbErr := b.pkgRepo.StorePackageFileAndIncrementDownload(c.Request.Context(), &model.Package{
+		Name:           opts.Name,
+		Type:           opts.PkgType,
+		RepositoryID:   result.RepoID,
+		RepositoryType: model.RepoTypeProxy,
+	}, &model.PackageVersion{
+		Version:     opts.Version,
+		Status:      model.StatusPublished,
+		StoragePath: storageKey,
+	}, &model.PackageFile{
+		Filename:    opts.Filename,
+		FileType:    model.FileTypePrimary,
+		StoragePath: storageKey,
+		SizeBytes:   result.Size,
+	})
+	if dbErr != nil {
+		logrus.Warnf("failed to store proxy package %s/%s to database: %v", opts.Name, opts.Version, dbErr)
 	}
 
 	contentType := opts.ContentType
