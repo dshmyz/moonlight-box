@@ -146,7 +146,11 @@ func (s *ProxyDownloadService) Download(ctx context.Context, req *ProxyDownloadR
 		storageVersion = req.Version + "/" + req.Filename
 	}
 
-	storageKey, storeErr := s.storageSvc.StorePackage(ctx, req.PkgType, req.Name, storageVersion, bytes.NewReader(body), result.Size)
+	var backendID uint
+	if req.Repo != nil && req.Repo.StorageBackendID != nil {
+		backendID = *req.Repo.StorageBackendID
+	}
+	storageKey, storeErr := s.storageSvc.StorePackageWithBackend(ctx, req.PkgType, req.Name, storageVersion, bytes.NewReader(body), result.Size, backendID)
 	if storeErr != nil {
 		logrus.Warnf("failed to store proxy package %s: %v", req.Name, storeErr)
 	} else if storageKey != "" {

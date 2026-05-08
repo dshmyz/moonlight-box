@@ -133,6 +133,7 @@ func main() {
 	groupRepo := repository.NewGroupRepository(db)
 	blockRuleRepo := repository.NewBlockRuleRepository(db)
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
+	migrationItemRepo := repository.NewMigrationItemRepository(db)
 	// 初始化缓存服务
 	cacheOpts := proxy.CacheServiceOptions{
 		MaxBytes: cfg.Cache.MaxSizeGB * 1024 * 1024 * 1024,
@@ -189,12 +190,12 @@ func main() {
 	proxyDownloadSvc := service.NewProxyDownloadService(packageRepo, storageSvc, nil, proxyDownloadLogRepo, logBatcher, countBatcher)
 
 	// 初始化适配器（先创建，用于构建 adapter map）
-	npmAdapter := adapter.NewNpmAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
-	mavenAdapter := adapter.NewMavenAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
+	npmAdapter := adapter.NewNpmAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
+	mavenAdapter := adapter.NewMavenAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
 	pypiAdapter := adapter.NewPyPIAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
-	goAdapter := adapter.NewGoAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
+	goAdapter := adapter.NewGoAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
 	genericAdapter := adapter.NewGenericAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
-	yumAdapter := adapter.NewYumAdapter(packageRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
+	yumAdapter := adapter.NewYumAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
 	aptAdapter := adapter.NewAptAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
 
 	// 构建 adapter map 用于 ProxyRouter
@@ -359,7 +360,7 @@ func main() {
 
 	// 初始化迁移服务
 	migrationSvc := migration.NewMigrationService(db)
-	migrationWorker := migration.NewMigrationWorker(migrationSvc, storageSvc, packageRepo, 5)
+	migrationWorker := migration.NewMigrationWorkerV2(migrationSvc, storageSvc, packageRepo, repoRepo, migrationItemRepo, 5, 3, 50)
 	migrationHandler := handler.NewMigrationHandler(migrationSvc, migrationWorker)
 
 	// 初始化代理下载日志 handler

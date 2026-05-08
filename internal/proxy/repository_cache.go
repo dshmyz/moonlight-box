@@ -13,6 +13,7 @@ import (
 type RepositoryCache struct {
 	mu        sync.RWMutex
 	repos     map[string]*repositoryCacheEntry
+	reposByID map[uint]*repositoryCacheEntry
 	members   map[uint][]*memberCacheEntry
 	repoRepo  *repository.RepositoryRepository
 	groupRepo *repository.GroupRepository
@@ -36,6 +37,7 @@ func NewRepositoryCache(repoRepo *repository.RepositoryRepository, groupRepo *re
 
 	return &RepositoryCache{
 		repos:     make(map[string]*repositoryCacheEntry),
+		reposByID: make(map[uint]*repositoryCacheEntry),
 		members:   make(map[uint][]*memberCacheEntry),
 		repoRepo:  repoRepo,
 		groupRepo: groupRepo,
@@ -58,10 +60,7 @@ func (c *RepositoryCache) GetByName(name string) (*model.Repository, error) {
 	}
 
 	c.mu.Lock()
-	c.repos[name] = &repositoryCacheEntry{
-		repo:      repo,
-		expiresAt: time.Now().Add(c.ttl),
-	}
+	c.setCacheEntry(repo)
 	c.mu.Unlock()
 
 	slog.Debug("Cached repository",
@@ -71,6 +70,42 @@ func (c *RepositoryCache) GetByName(name string) (*model.Repository, error) {
 	)
 
 	return repo, nil
+}
+
+func (c *RepositoryCache) GetByID(id uint) (*model.Repository, error) {
+	c.mu.RLock()
+	entry, exists := c.reposByID[id]
+	c.mu.RUnlock()
+
+	if exists && time.Now().Before(entry.expiresAt) {
+		return entry.repo, nil
+	}
+
+	repo, err := c.repoRepo.FindByID(id)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	c.setCacheEntry(repo)
+	c.mu.Unlock()
+
+	slog.Debug("Cached repository by ID",
+		"module", "repository_cache",
+		"repo_id", repo.ID,
+		"repo_name", repo.Name,
+	)
+
+	return repo, nil
+}
+
+func (c *RepositoryCache) setCacheEntry(repo *model.Repository) {
+	entry := &repositoryCacheEntry{
+		repo:      repo,
+		expiresAt: time.Now().Add(c.ttl),
+	}
+	c.repos[repo.Name] = entry
+	c.reposByID[repo.ID] = entry
 }
 
 func (c *RepositoryCache) GetVirtualRepo(pkgType string) (*model.Repository, error) {
@@ -90,10 +125,7 @@ func (c *RepositoryCache) GetVirtualRepo(pkgType string) (*model.Repository, err
 	}
 
 	c.mu.Lock()
-	c.repos[repo.Name] = &repositoryCacheEntry{
-		repo:      repo,
-		expiresAt: time.Now().Add(c.ttl),
-	}
+	c.setCacheEntry(repo)
 	c.mu.Unlock()
 
 	slog.Debug("Cached virtual repository",
@@ -158,6 +190,7 @@ func (c *RepositoryCache) Invalidate(name string) {
 
 	if name == "*" {
 		c.repos = make(map[string]*repositoryCacheEntry)
+		c.reposByID = make(map[uint]*repositoryCacheEntry)
 		c.members = make(map[uint][]*memberCacheEntry)
 		slog.Info("Invalidated all repository cache",
 			"module", "repository_cache",
@@ -167,10 +200,27 @@ func (c *RepositoryCache) Invalidate(name string) {
 
 	if entry, exists := c.repos[name]; exists {
 		delete(c.repos, name)
+		delete(c.reposByID, entry.repo.ID)
 		delete(c.members, entry.repo.ID)
 		slog.Info("Invalidated repository cache",
 			"module", "repository_cache",
 			"repo_name", name,
+		)
+	}
+}
+
+func (c *RepositoryCache) InvalidateByID(id uint) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if entry, exists := c.reposByID[id]; exists {
+		delete(c.repos, entry.repo.Name)
+		delete(c.reposByID, id)
+		delete(c.members, id)
+		slog.Info("Invalidated repository cache by ID",
+			"module", "repository_cache",
+			"repo_id", id,
+			"repo_name", entry.repo.Name,
 		)
 	}
 }
@@ -203,6 +253,7 @@ func (c *RepositoryCache) cleanup() {
 	for name, entry := range c.repos {
 		if now.After(entry.expiresAt) {
 			delete(c.repos, name)
+			delete(c.reposByID, entry.repo.ID)
 		}
 	}
 

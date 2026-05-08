@@ -82,7 +82,7 @@ func setupMavenTestEnv() {
 	remoteClient := proxy.NewRemoteClient(tm, 5)
 	proxyRouter := proxy.NewProxyRouter(mavenTestDB, cacheSvc, remoteClient, repoRepo, groupRepo, nil)
 
-	mavenAdapter = adapter.NewMavenAdapter(mavenPkgRepo, mavenStorageSvc, auditSvc, proxyRouter, nil, nil)
+	mavenAdapter = adapter.NewMavenAdapter(mavenPkgRepo, repoRepo, mavenStorageSvc, auditSvc, proxyRouter, nil, nil)
 
 	router := setupMavenRouter()
 	mavenTestServer = httptest.NewServer(router)

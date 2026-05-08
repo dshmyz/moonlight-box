@@ -74,7 +74,7 @@ func NewAptAdapter(
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *AptAdapter {
 	adapter := &AptAdapter{
-		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
+		BaseAdapter:      NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc),
 		repoRepo:         repoRepo,
 		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),

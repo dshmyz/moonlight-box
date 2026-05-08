@@ -28,13 +28,14 @@ type GoAdapter struct {
 
 func NewGoAdapter(
 	pkgRepo *repository.PackageRepository,
+	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
 	proxyRouter *proxy.ProxyRouter,
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *GoAdapter {
 	adapter := &GoAdapter{
-		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
+		BaseAdapter:      NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc),
 		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
 	}

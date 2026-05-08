@@ -126,13 +126,14 @@ type YumDependency struct {
 
 func NewYumAdapter(
 	pkgRepo *repository.PackageRepository,
+	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
 	proxyRouter *proxy.ProxyRouter,
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *YumAdapter {
 	return &YumAdapter{
-		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
+		BaseAdapter:      NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc),
 		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
 	}

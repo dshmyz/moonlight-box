@@ -20,6 +20,8 @@ import (
 type BaseAdapter struct {
 	pkgRepo        *repository.PackageRepository
 	pkgCache       *cache.PackageCache
+	repoRepo       *repository.RepositoryRepository
+	repoCache      *proxy.RepositoryCache
 	storageSvc     *service.StorageService
 	webhookSvc     *service.WebhookService
 	auditSvc       *service.AuditService
@@ -28,12 +30,17 @@ type BaseAdapter struct {
 	logRepo        *repository.ProxyDownloadLogRepository
 }
 
-func NewBaseAdapter(pkgRepo *repository.PackageRepository, storageSvc *service.StorageService, auditSvc *service.AuditService) *BaseAdapter {
+func NewBaseAdapter(pkgRepo *repository.PackageRepository, repoRepo *repository.RepositoryRepository, storageSvc *service.StorageService, auditSvc *service.AuditService) *BaseAdapter {
 	return &BaseAdapter{
 		pkgRepo:    pkgRepo,
+		repoRepo:   repoRepo,
 		storageSvc: storageSvc,
 		auditSvc:   auditSvc,
 	}
+}
+
+func (b *BaseAdapter) SetRepoCache(repoCache *proxy.RepositoryCache) {
+	b.repoCache = repoCache
 }
 
 func (b *BaseAdapter) SetProxyRouter(pr *proxy.ProxyRouter) {
@@ -50,6 +57,26 @@ func (b *BaseAdapter) SetLogRepo(logRepo *repository.ProxyDownloadLogRepository)
 
 func (b *BaseAdapter) SetPackageCache(pkgCache *cache.PackageCache) {
 	b.pkgCache = pkgCache
+}
+
+func (b *BaseAdapter) getBackendID(repoID uint) uint {
+	if repoID == 0 {
+		return 0
+	}
+
+	if b.repoCache != nil {
+		if repo, err := b.repoCache.GetByID(repoID); err == nil && repo.StorageBackendID != nil {
+			return *repo.StorageBackendID
+		}
+	}
+
+	if b.repoRepo != nil {
+		if repo, err := b.repoRepo.FindByID(repoID); err == nil && repo.StorageBackendID != nil {
+			return *repo.StorageBackendID
+		}
+	}
+
+	return 0
 }
 
 func (b *BaseAdapter) getPackage(name string, pkgType model.PackageType) (*model.Package, error) {
@@ -196,7 +223,8 @@ func (b *BaseAdapter) GetLocalPackageWithIDs(ctx context.Context, pkgType model.
 }
 
 func (b *BaseAdapter) StoreProxyPackage(ctx context.Context, info *ProxyPackageInfo) (string, error) {
-	storageKey, err := b.storageSvc.StorePackage(ctx, string(info.PackageType), info.Name, info.Version, bytes.NewReader(info.Content), info.Size)
+	backendID := b.getBackendID(info.RepoID)
+	storageKey, err := b.storageSvc.StorePackageWithBackend(ctx, string(info.PackageType), info.Name, info.Version, bytes.NewReader(info.Content), info.Size, backendID)
 	if err != nil {
 		return "", err
 	}
@@ -222,7 +250,8 @@ func (b *BaseAdapter) StoreProxyPackage(ctx context.Context, info *ProxyPackageI
 }
 
 func (b *BaseAdapter) StoreProxyPackageFromReader(ctx context.Context, pkgType model.PackageType, name, version string, content io.Reader, size int64, repoID uint, metadata map[string]interface{}) (string, error) {
-	storageKey, err := b.storageSvc.StorePackage(ctx, string(pkgType), name, version, content, size)
+	backendID := b.getBackendID(repoID)
+	storageKey, err := b.storageSvc.StorePackageWithBackend(ctx, string(pkgType), name, version, content, size, backendID)
 	if err != nil {
 		return "", err
 	}

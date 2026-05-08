@@ -42,7 +42,7 @@ func NewGenericAdapter(
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *GenericAdapter {
 	adapter := &GenericAdapter{
-		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
+		BaseAdapter:      NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc),
 		repoRepo:         repoRepo,
 		proxyDownloadSvc: proxyDownloadSvc,
 	}

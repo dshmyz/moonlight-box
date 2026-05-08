@@ -17,19 +17,22 @@ import (
 )
 
 type MigrationWorkerV2 struct {
-	service     *MigrationService
-	storageSvc  *service.StorageService
-	pkgRepo     *repository.PackageRepository
-	itemRepo    *repository.MigrationItemRepository
-	concurrency int
-	maxRetries  int
-	batchSize   int
+	service         *MigrationService
+	storageSvc      *service.StorageService
+	pkgRepo         *repository.PackageRepository
+	repoRepo        *repository.RepositoryRepository
+	itemRepo        *repository.MigrationItemRepository
+	concurrency     int
+	maxRetries      int
+	batchSize       int
+	targetBackendID uint
 }
 
 func NewMigrationWorkerV2(
 	migrationSvc *MigrationService,
 	storageSvc *service.StorageService,
 	pkgRepo *repository.PackageRepository,
+	repoRepo *repository.RepositoryRepository,
 	itemRepo *repository.MigrationItemRepository,
 	concurrency int,
 	maxRetries int,
@@ -39,6 +42,7 @@ func NewMigrationWorkerV2(
 		service:     migrationSvc,
 		storageSvc:  storageSvc,
 		pkgRepo:     pkgRepo,
+		repoRepo:    repoRepo,
 		itemRepo:    itemRepo,
 		concurrency: concurrency,
 		maxRetries:  maxRetries,
@@ -63,6 +67,35 @@ func (w *MigrationWorkerV2) Execute(ctx context.Context, task *model.MigrationTa
 
 	client := NewNexusClient(task.SourceURL, task.Username, mustGetPasswordV2(task))
 	w.service.RegisterNexusClient(task.ID, client)
+
+	if task.TargetRepositoryID > 0 && w.repoRepo != nil {
+		targetRepo, err := w.repoRepo.FindByID(task.TargetRepositoryID)
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"module":           "migration",
+				"task_id":          task.ID,
+				"target_repo_id":   task.TargetRepositoryID,
+				"target_repo_name": task.TargetRepository,
+				"error":            err,
+			}).Warn("Failed to get target repository, using default storage backend")
+		} else {
+			if targetRepo.StorageBackendID != nil {
+				w.targetBackendID = *targetRepo.StorageBackendID
+				logrus.WithFields(logrus.Fields{
+					"module":         "migration",
+					"task_id":        task.ID,
+					"target_repo_id": task.TargetRepositoryID,
+					"backend_id":     w.targetBackendID,
+				}).Info("Using target repository's storage backend (v2)")
+			} else {
+				logrus.WithFields(logrus.Fields{
+					"module":           "migration",
+					"task_id":          task.ID,
+					"target_repo_name": task.TargetRepository,
+				}).Info("Target repository has no storage backend configured, using default (v2)")
+			}
+		}
+	}
 
 	now := time.Now()
 	startedAt := &now
@@ -190,9 +223,9 @@ func (w *MigrationWorkerV2) produceComponents(ctx context.Context, taskID uint, 
 					for _, item := range allItems {
 						if !queue.TryPush(item) {
 							logrus.WithFields(logrus.Fields{
-								"module":      "migration",
-								"task_id":     taskID,
-								"queue_size":  queue.Len(),
+								"module":     "migration",
+								"task_id":    taskID,
+								"queue_size": queue.Len(),
 							}).Warn("Queue full, waiting...")
 							queue.Push(item)
 						}
@@ -289,23 +322,23 @@ func (w *MigrationWorkerV2) consumeComponents(
 
 		if err := w.migrateComponentWithRetry(ctx, taskID, client, comp, item.ID, item.RetryCount); err != nil {
 			logrus.WithFields(logrus.Fields{
-				"module":       "migration",
-				"task_id":      taskID,
-				"component":    item.ComponentName,
-				"version":      item.Version,
-				"worker_id":    workerID,
-				"error":        err,
+				"module":    "migration",
+				"task_id":   taskID,
+				"component": item.ComponentName,
+				"version":   item.Version,
+				"worker_id": workerID,
+				"error":     err,
 			}).Warn("Failed to migrate component")
 			w.service.AddLog(taskID, fmt.Sprintf("迁移 %s (v%s) 失败: %v", item.ComponentName, item.Version, err))
 			w.itemRepo.UpdateStatus(item.ID, model.MigrationItemFailed, err.Error())
 			progressUpdater.IncrementFailed()
 		} else {
 			logrus.WithFields(logrus.Fields{
-				"module":       "migration",
-				"task_id":      taskID,
-				"component":    item.ComponentName,
-				"version":      item.Version,
-				"worker_id":    workerID,
+				"module":    "migration",
+				"task_id":   taskID,
+				"component": item.ComponentName,
+				"version":   item.Version,
+				"worker_id": workerID,
 			}).Info("Component migrated successfully")
 			w.itemRepo.UpdateStatus(item.ID, model.MigrationItemCompleted, "")
 			progressUpdater.IncrementProcessed()
@@ -383,7 +416,7 @@ func (w *MigrationWorkerV2) storeMavenAsset(taskID uint, comp NexusComponent, as
 	storageName := groupArtifactToStorageName(comp.Group, comp.Name)
 	storageVersion := comp.Version + "/" + filepath.Base(asset.Path)
 
-	storageKey, err := w.storageSvc.StorePackage(context.Background(), "maven", storageName, storageVersion, reader, size)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "maven", storageName, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -434,7 +467,7 @@ func (w *MigrationWorkerV2) storeNpmAsset(taskID uint, comp NexusComponent, _ Ne
 	}
 
 	storageVersion := version + "/package.tgz"
-	storageKey, err := w.storageSvc.StorePackage(context.Background(), "npm", name, storageVersion, reader, size)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "npm", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -473,7 +506,7 @@ func (w *MigrationWorkerV2) storePypiAsset(taskID uint, comp NexusComponent, ass
 	}
 
 	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackage(context.Background(), "pypi", name, storageVersion, reader, size)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "pypi", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -512,7 +545,7 @@ func (w *MigrationWorkerV2) storeGoAsset(taskID uint, comp NexusComponent, asset
 	}
 
 	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackage(context.Background(), "go", name, storageVersion, reader, size)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "go", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
