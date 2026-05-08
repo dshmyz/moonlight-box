@@ -348,21 +348,9 @@ func (w *MigrationWorkerV2) consumeComponents(
 }
 
 func (w *MigrationWorkerV2) migrateComponentWithRetry(ctx context.Context, taskID uint, client *NexusClient, comp NexusComponent, itemID uint, retryCount int) error {
-	components, _, err := client.ListComponentsPage(ctx, comp.Repository, "")
+	targetComp, err := client.GetComponentByID(ctx, comp.ID)
 	if err != nil {
 		return fmt.Errorf("failed to get component details: %w", err)
-	}
-
-	var targetComp *NexusComponent
-	for i := range components {
-		if components[i].ID == comp.ID {
-			targetComp = &components[i]
-			break
-		}
-	}
-
-	if targetComp == nil {
-		return fmt.Errorf("component not found in repository")
 	}
 
 	return w.migrateComponent(taskID, client, *targetComp)
