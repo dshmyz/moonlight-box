@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/moonlight-box/registry/internal/config"
@@ -31,6 +32,15 @@ func Initialize(cfg *config.Config) error {
 		fallthrough
 	default:
 		dsn := cfg.Database.DSN
+		// SQLite 配置优化
+		// - _journal_mode=WAL: 启用 Write-Ahead Logging 提高并发性能
+		// - _busy_timeout: 设置锁等待超时时间（毫秒）
+		// - _synchronous=NORMAL: 平衡性能和安全性
+		if !strings.Contains(dsn, "?") {
+			dsn += "?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL"
+		} else if !strings.Contains(dsn, "_journal_mode") {
+			dsn += "&_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL"
+		}
 		dialector = sqlite.Open(dsn)
 	}
 
@@ -60,10 +70,16 @@ func Initialize(cfg *config.Config) error {
 		return fmt.Errorf("failed to get sql.DB: %w", err)
 	}
 
-	sqlDB.SetMaxOpenConns(cfg.Database.MaxOpenConns)
-	sqlDB.SetMaxIdleConns(cfg.Database.MaxIdleConns)
-	sqlDB.SetConnMaxLifetime(cfg.Database.ConnMaxLifetime)
-	sqlDB.SetConnMaxIdleTime(cfg.Database.ConnMaxIdleTime)
+	if cfg.Database.Driver == "sqlite" {
+		// SQLite 不支持多个并发写入，限制最大打开连接数为 1
+		sqlDB.SetMaxOpenConns(1)
+		sqlDB.SetMaxIdleConns(1)
+	} else {
+		sqlDB.SetMaxOpenConns(cfg.Database.MaxOpenConns)
+		sqlDB.SetMaxIdleConns(cfg.Database.MaxIdleConns)
+		sqlDB.SetConnMaxLifetime(cfg.Database.ConnMaxLifetime)
+		sqlDB.SetConnMaxIdleTime(cfg.Database.ConnMaxIdleTime)
+	}
 
 	DB = db
 
