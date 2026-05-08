@@ -199,6 +199,39 @@ func (c *NexusClient) ListComponentsPage(ctx context.Context, repoName, continua
 	return page.Items, nextToken, nil
 }
 
+func (c *NexusClient) GetComponentByID(ctx context.Context, componentID string) (*NexusComponent, error) {
+	url := fmt.Sprintf("%s/service/rest/v1/components/%s", c.baseURL, componentID)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(c.username, c.password)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		logrus.WithFields(logrus.Fields{
+			"url":    url,
+			"status": resp.StatusCode,
+			"body":   string(body),
+		}).Error("Nexus API returned error status")
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var comp NexusComponent
+	if err := json.NewDecoder(resp.Body).Decode(&comp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return &comp, nil
+}
+
 func (c *NexusClient) DownloadAsset(ctx context.Context, assetURL string) (io.ReadCloser, string, int64, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", assetURL, nil)
 	if err != nil {
