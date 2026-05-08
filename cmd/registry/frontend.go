@@ -105,3 +105,20 @@ func getContentType(filePath string) string {
 		return "application/octet-stream"
 	}
 }
+
+func serveEmbeddedDocs(c *gin.Context) {
+	reqPath := c.Param("filepath")
+	if reqPath == "" || reqPath == "/" {
+		reqPath = "/swagger/index.html"
+	}
+
+	filePath := path.Join("dist/docs", reqPath)
+	data, err := frontendFS.ReadFile(filePath)
+	if err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+
+	c.Header("Content-Type", getContentType(filePath))
+	c.Data(http.StatusOK, getContentType(filePath), data)
+}

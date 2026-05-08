@@ -99,7 +99,7 @@ func (ctx *RouterContext) setupPublicRoutes(r *gin.Engine, version string) {
 	})
 
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
-	r.Static("/docs", "./docs")
+	r.GET("/docs/*filepath", serveEmbeddedDocs)
 }
 
 func (ctx *RouterContext) setupAPIRoutes(r *gin.Engine) {
@@ -427,10 +427,12 @@ func (ctx *RouterContext) setupMigrationRoutes(protected *gin.RouterGroup) {
 		migration.GET("", ctx.Handlers.Migration.ListMigrations)
 		migration.POST("/nexus/test", ctx.Handlers.Migration.TestNexusConnection)
 		migration.POST("/nexus/repositories", ctx.Handlers.Migration.ListNexusRepositories)
+		migration.POST("/nexus/sync-repos", ctx.Handlers.Migration.SyncNexusRepos)
 		migration.POST("/nexus", ctx.Handlers.Migration.CreateMigration)
 		migration.GET("/:id/status", ctx.Handlers.Migration.GetMigrationStatus)
 		migration.POST("/:id/cancel", ctx.Handlers.Migration.CancelMigration)
 		migration.POST("/:id/retry", ctx.Handlers.Migration.RetryFailedMigration)
+		migration.GET("/:id/items", ctx.Handlers.Migration.ListMigrationItems)
 	}
 }
 
