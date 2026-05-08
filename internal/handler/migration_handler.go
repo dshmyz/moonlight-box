@@ -11,10 +11,10 @@ import (
 
 type MigrationHandler struct {
 	service *migration.MigrationService
-	worker  *migration.MigrationWorker
+	worker  migration.MigrationWorkerInterface
 }
 
-func NewMigrationHandler(service *migration.MigrationService, worker *migration.MigrationWorker) *MigrationHandler {
+func NewMigrationHandler(service *migration.MigrationService, worker migration.MigrationWorkerInterface) *MigrationHandler {
 	return &MigrationHandler{
 		service: service,
 		worker:  worker,

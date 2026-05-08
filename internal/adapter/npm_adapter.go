@@ -132,16 +132,9 @@ type NpmSearchScoreDetail struct {
 	Maintenance float64 `json:"maintenance"`
 }
 
-func NewNpmAdapter(
-	pkgRepo *repository.PackageRepository,
-	storageSvc *service.StorageService,
-	auditSvc *service.AuditService,
-	proxyRouter *proxy.ProxyRouter,
-	logRepo *repository.ProxyDownloadLogRepository,
-	proxyDownloadSvc *service.ProxyDownloadService,
-) *NpmAdapter {
+func NewNpmAdapter(pkgRepo *repository.PackageRepository, repoRepo *repository.RepositoryRepository, storageSvc *service.StorageService, auditSvc *service.AuditService, proxyRouter *proxy.ProxyRouter, logRepo *repository.ProxyDownloadLogRepository, proxyDownloadSvc *service.ProxyDownloadService) *NpmAdapter {
 	adapter := &NpmAdapter{
-		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
+		BaseAdapter:      NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc),
 		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
 	}
@@ -825,7 +818,8 @@ func (a *NpmAdapter) storeProxyContent(ctx context.Context, result *proxy.RouteR
 		return err
 	}
 
-	storageKey, storeErr := a.storageSvc.StorePackage(ctx, "npm", name, version, bytes.NewReader(body), result.Size)
+	backendID := a.getBackendID(result.RepoID)
+	storageKey, storeErr := a.storageSvc.StorePackageWithBackend(ctx, "npm", name, version, bytes.NewReader(body), result.Size, backendID)
 	if storeErr != nil {
 		return storeErr
 	}

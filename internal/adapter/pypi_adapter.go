@@ -41,7 +41,7 @@ func NewPyPIAdapter(
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *PyPIAdapter {
 	adapter := &PyPIAdapter{
-		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
+		BaseAdapter:      NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc),
 		repoRepo:         repoRepo,
 		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),

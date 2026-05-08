@@ -32,6 +32,7 @@ func setupYumAdapter(t *testing.T) (*YumAdapter, *gorm.DB) {
 
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
 	pkgRepo := repository.NewPackageRepository(db)
+	repoRepo := repository.NewRepositoryRepository(db)
 
 	storageSvc, err := service.NewStorageService(storageBackendRepo, "", 0)
 	if err != nil {
@@ -57,7 +58,7 @@ func setupYumAdapter(t *testing.T) (*YumAdapter, *gorm.DB) {
 
 	auditSvc := service.NewAuditService()
 
-	adapter := NewYumAdapter(pkgRepo, storageSvc, auditSvc, nil, nil)
+	adapter := NewYumAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, nil, nil)
 	return adapter, db
 }
 

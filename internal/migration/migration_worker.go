@@ -14,21 +14,25 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
+	"github.com/moonlight-box/registry/internal/storage"
 	"github.com/sirupsen/logrus"
 )
 
 type MigrationWorker struct {
-	service     *MigrationService
-	storageSvc  *service.StorageService
-	pkgRepo     *repository.PackageRepository
-	concurrency int
+	service         *MigrationService
+	storageSvc      *service.StorageService
+	pkgRepo         *repository.PackageRepository
+	repoRepo        *repository.RepositoryRepository
+	concurrency     int
+	targetBackendID uint
 }
 
-func NewMigrationWorker(migrationSvc *MigrationService, storageSvc *service.StorageService, pkgRepo *repository.PackageRepository, concurrency int) *MigrationWorker {
+func NewMigrationWorker(migrationSvc *MigrationService, storageSvc *service.StorageService, pkgRepo *repository.PackageRepository, repoRepo *repository.RepositoryRepository, concurrency int) *MigrationWorker {
 	return &MigrationWorker{
 		service:     migrationSvc,
 		storageSvc:  storageSvc,
 		pkgRepo:     pkgRepo,
+		repoRepo:    repoRepo,
 		concurrency: concurrency,
 	}
 }
@@ -46,8 +50,48 @@ func (w *MigrationWorker) Execute(ctx context.Context, task *model.MigrationTask
 		"concurrency": w.concurrency,
 	}).Info("Migration task started")
 
+	logrus.WithFields(logrus.Fields{
+		"module":           "migration",
+		"task_id":          task.ID,
+		"selected_repos":   task.SelectedRepos,
+		"target_repo_id":   task.TargetRepositoryID,
+		"target_repo_name": task.TargetRepository,
+		"worker_count":     task.WorkerCount,
+		"max_retries":      task.MaxRetries,
+		"batch_size":       task.BatchSize,
+	}).Debug("Migration task configuration")
+
 	client := NewNexusClient(task.SourceURL, task.Username, mustGetPassword(task))
 	w.service.RegisterNexusClient(task.ID, client)
+
+	if task.TargetRepositoryID > 0 && w.repoRepo != nil {
+		targetRepo, err := w.repoRepo.FindByID(task.TargetRepositoryID)
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"module":           "migration",
+				"task_id":          task.ID,
+				"target_repo_id":   task.TargetRepositoryID,
+				"target_repo_name": task.TargetRepository,
+				"error":            err,
+			}).Warn("Failed to get target repository, using default storage backend")
+		} else {
+			if targetRepo.StorageBackendID != nil {
+				w.targetBackendID = *targetRepo.StorageBackendID
+				logrus.WithFields(logrus.Fields{
+					"module":         "migration",
+					"task_id":        task.ID,
+					"target_repo_id": task.TargetRepositoryID,
+					"backend_id":     w.targetBackendID,
+				}).Info("Using target repository's storage backend")
+			} else {
+				logrus.WithFields(logrus.Fields{
+					"module":           "migration",
+					"task_id":          task.ID,
+					"target_repo_name": task.TargetRepository,
+				}).Info("Target repository has no storage backend configured, using default")
+			}
+		}
+	}
 
 	now := time.Now()
 	startedAt := &now
@@ -87,6 +131,13 @@ func (w *MigrationWorker) Execute(ctx context.Context, task *model.MigrationTask
 			"repo_name": repoName,
 		}).Info("Starting repository migration")
 
+		w.service.AddLog(task.ID, fmt.Sprintf("正在获取仓库 %s 的组件列表...", repoName))
+		logrus.WithFields(logrus.Fields{
+			"module":    "migration",
+			"task_id":   task.ID,
+			"repo_name": repoName,
+		}).Info("Listing components from repository")
+
 		components, err := client.ListComponents(ctx, repoName)
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
@@ -95,7 +146,8 @@ func (w *MigrationWorker) Execute(ctx context.Context, task *model.MigrationTask
 				"repo_name": repoName,
 				"error":     err,
 			}).Error("Failed to list components")
-			w.service.AddLog(task.ID, fmt.Sprintf("获取 %s 组件列表失败: %v", repoName, err))
+			w.service.AddLog(task.ID, fmt.Sprintf("❌ 获取仓库 %s 组件列表失败: %v", repoName, err))
+			w.service.AddLog(task.ID, fmt.Sprintf("⚠️ 请检查 Nexus 服务器连接、认证信息和仓库名称是否正确"))
 			continue
 		}
 
@@ -106,10 +158,10 @@ func (w *MigrationWorker) Execute(ctx context.Context, task *model.MigrationTask
 			"components": len(components),
 		}).Info("Components retrieved")
 
-		w.service.AddLog(task.ID, fmt.Sprintf("仓库 %s 共有 %d 个组件", repoName, len(components)))
+		w.service.AddLog(task.ID, fmt.Sprintf("✅ 仓库 %s 获取成功，共有 %d 个组件", repoName, len(components)))
 
 		if len(components) == 0 {
-			w.service.AddLog(task.ID, fmt.Sprintf("仓库 %s 没有组件，跳过", repoName))
+			w.service.AddLog(task.ID, fmt.Sprintf("ℹ️ 仓库 %s 没有组件，跳过", repoName))
 			continue
 		}
 
@@ -214,7 +266,7 @@ func (w *MigrationWorker) storeMavenAsset(taskID uint, comp NexusComponent, asse
 	storageName := groupArtifactToStorageName(comp.Group, comp.Name)
 	storageVersion := comp.Version + "/" + filepath.Base(asset.Path)
 
-	storageKey, err := w.storageSvc.StorePackage(context.Background(), "maven", storageName, storageVersion, reader, size)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "maven", storageName, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -265,7 +317,7 @@ func (w *MigrationWorker) storeNpmAsset(taskID uint, comp NexusComponent, _ Nexu
 	}
 
 	storageVersion := version + "/package.tgz"
-	storageKey, err := w.storageSvc.StorePackage(context.Background(), "npm", name, storageVersion, reader, size)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "npm", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -304,7 +356,7 @@ func (w *MigrationWorker) storePypiAsset(taskID uint, comp NexusComponent, asset
 	}
 
 	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackage(context.Background(), "pypi", name, storageVersion, reader, size)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "pypi", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -343,7 +395,7 @@ func (w *MigrationWorker) storeGoAsset(taskID uint, comp NexusComponent, asset N
 	}
 
 	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackage(context.Background(), "go", name, storageVersion, reader, size)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "go", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -378,7 +430,24 @@ func (w *MigrationWorker) storeGenericAsset(taskID uint, comp NexusComponent, as
 	}
 
 	storageKey := "generic/" + filepath.Clean(path)
-	backend := w.storageSvc.GetDefaultBackend()
+
+	var backend storage.Backend
+	var err error
+	if w.targetBackendID > 0 {
+		backend, err = w.storageSvc.GetBackend(w.targetBackendID)
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"module":     "migration",
+				"task_id":    taskID,
+				"backend_id": w.targetBackendID,
+				"error":      err,
+			}).Warn("Failed to get target backend, using default")
+			backend = w.storageSvc.GetDefaultBackend()
+		}
+	} else {
+		backend = w.storageSvc.GetDefaultBackend()
+	}
+
 	if err := backend.Put(context.Background(), storageKey, reader, size); err != nil {
 		return err
 	}
@@ -386,7 +455,7 @@ func (w *MigrationWorker) storeGenericAsset(taskID uint, comp NexusComponent, as
 	task, _ := w.service.GetTask(taskID)
 	repoType := model.RepoTypeLocal
 
-	_, _, _, err := w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
+	_, _, _, storeErr := w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:           path,
 		Type:           model.PackageTypeGeneric,
 		RepositoryID:   task.TargetRepositoryID,
@@ -403,7 +472,7 @@ func (w *MigrationWorker) storeGenericAsset(taskID uint, comp NexusComponent, as
 		SizeBytes:   size,
 	})
 
-	return err
+	return storeErr
 }
 
 func getPackaging(path string) string {
@@ -437,7 +506,8 @@ func marshalMetadata(meta map[string]interface{}) string {
 }
 
 func (w *MigrationWorker) updateTotal(taskID uint, total int) {
-	w.service.db.Model(&model.MigrationTask{}).Where("id = ?", taskID).Update("total_items", total)
+	w.service.db.Model(&model.MigrationTask{}).Where("id = ?", taskID).
+		Update("total_items", w.service.db.Raw("total_items + ?", total))
 }
 
 func (w *MigrationWorker) incrementProcessed(taskID uint) {

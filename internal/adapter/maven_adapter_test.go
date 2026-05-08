@@ -33,6 +33,7 @@ func setupMavenAdapter(t *testing.T) (*MavenAdapter, *gorm.DB) {
 
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
 	pkgRepo := repository.NewPackageRepository(db)
+	repoRepo := repository.NewRepositoryRepository(db)
 
 	storageSvc, err := service.NewStorageService(storageBackendRepo, "", 0)
 	if err != nil {
@@ -60,7 +61,7 @@ func setupMavenAdapter(t *testing.T) (*MavenAdapter, *gorm.DB) {
 	logRepo := repository.NewProxyDownloadLogRepository(db)
 	proxyDownloadSvc := service.NewProxyDownloadService(pkgRepo, storageSvc, nil, logRepo, nil)
 
-	adapter := NewMavenAdapter(pkgRepo, storageSvc, auditSvc, nil, logRepo, proxyDownloadSvc)
+	adapter := NewMavenAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, nil, logRepo, proxyDownloadSvc)
 	return adapter, db
 }
 

@@ -98,6 +98,7 @@ type MavenDependency struct {
 
 func NewMavenAdapter(
 	pkgRepo *repository.PackageRepository,
+	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
 	proxyRouter *proxy.ProxyRouter,
@@ -105,7 +106,7 @@ func NewMavenAdapter(
 	proxyDownloadSvc *service.ProxyDownloadService,
 ) *MavenAdapter {
 	adapter := &MavenAdapter{
-		BaseAdapter:      NewBaseAdapter(pkgRepo, storageSvc, auditSvc),
+		BaseAdapter:      NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc),
 		proxyDownloadSvc: proxyDownloadSvc,
 		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
 	}

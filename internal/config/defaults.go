@@ -48,7 +48,7 @@ func setDefaults(v interface {
 	v.SetDefault("cache.eviction_policy", "lru")
 
 	// Logging
-	v.SetDefault("logging.level", "info")
+	v.SetDefault("logging.level", "debug")
 	v.SetDefault("logging.format", "console")
 	v.SetDefault("logging.output", "stdout")
 	v.SetDefault("logging.log_retention_days", 30)         // 默认保留30天

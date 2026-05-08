@@ -82,7 +82,7 @@ func setupYumTestEnv() {
 	remoteClient := proxy.NewRemoteClient(tm, 5)
 	proxyRouter := proxy.NewProxyRouter(yumTestDB, cacheSvc, remoteClient, repoRepo, groupRepo, nil)
 
-	yumAdapter = adapter.NewYumAdapter(yumPkgRepo, yumStorageSvc, auditSvc, proxyRouter, nil)
+	yumAdapter = adapter.NewYumAdapter(yumPkgRepo, repoRepo, yumStorageSvc, auditSvc, proxyRouter, nil)
 
 	router := setupYumRouter()
 	yumTestServer = httptest.NewServer(router)

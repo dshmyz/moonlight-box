@@ -10,6 +10,10 @@ import (
 	"gorm.io/gorm"
 )
 
+type MigrationWorkerInterface interface {
+	Execute(ctx context.Context, task *model.MigrationTask) error
+}
+
 type MigrationService struct {
 	db           *gorm.DB
 	tasks        map[uint]*MigrationContext
