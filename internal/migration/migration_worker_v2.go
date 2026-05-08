@@ -313,11 +313,12 @@ func (w *MigrationWorkerV2) consumeComponents(
 		w.itemRepo.UpdateStatus(item.ID, model.MigrationItemProcessing, "")
 
 		comp := NexusComponent{
-			ID:      item.ComponentID,
-			Name:    item.ComponentName,
-			Group:   item.ComponentGroup,
-			Version: item.Version,
-			Format:  item.Format,
+			ID:         item.ComponentID,
+			Name:       item.ComponentName,
+			Group:      item.ComponentGroup,
+			Version:    item.Version,
+			Format:     item.Format,
+			Repository: item.Repository,
 		}
 
 		if err := w.migrateComponentWithRetry(ctx, taskID, client, comp, item.ID, item.RetryCount); err != nil {
