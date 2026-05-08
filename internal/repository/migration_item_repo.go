@@ -20,8 +20,31 @@ func (r *MigrationItemRepository) BatchCreate(items []model.MigrationItem) error
 		return nil
 	}
 	
-	// SQLite 不支持 ON CONFLICT，使用简单的批量插入
-	return r.db.CreateInBatches(items, 100).Error
+	// 去重：按 ComponentID 去重，保留第一个
+	seen := make(map[string]bool)
+	uniqueItems := make([]model.MigrationItem, 0, len(items))
+	for _, item := range items {
+		if !seen[item.ComponentID] {
+			seen[item.ComponentID] = true
+			// 截断过长的字段
+			if len(item.ComponentID) > 200 {
+				item.ComponentID = item.ComponentID[:200]
+			}
+			if len(item.ComponentName) > 500 {
+				item.ComponentName = item.ComponentName[:500]
+			}
+			if len(item.ComponentGroup) > 500 {
+				item.ComponentGroup = item.ComponentGroup[:500]
+			}
+			uniqueItems = append(uniqueItems, item)
+		}
+	}
+	
+	if len(uniqueItems) == 0 {
+		return nil
+	}
+	
+	return r.db.CreateInBatches(uniqueItems, 100).Error
 }
 
 func (r *MigrationItemRepository) GetPendingItems(taskID uint, limit int) ([]model.MigrationItem, error) {
