@@ -480,7 +480,7 @@ func (w *MigrationWorkerV2) storeNpmAsset(taskID uint, comp NexusComponent, _ Ne
 		Type:           model.PackageTypeNPM,
 		RepositoryID:   task.TargetRepositoryID,
 		RepositoryType: repoType,
-		Description:    comp.Name,
+		Description:    name,
 	}, &model.PackageVersion{
 		Version:     version,
 		Status:      model.StatusPublished,
@@ -498,7 +498,7 @@ func (w *MigrationWorkerV2) storeNpmAsset(taskID uint, comp NexusComponent, _ Ne
 func (w *MigrationWorkerV2) storePypiAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
 	name := comp.Name
 	if comp.Group != "" {
-		name = comp.Group
+		name = comp.Group + "/" + comp.Name
 	}
 	version := comp.Version
 	if version == "" {
@@ -519,7 +519,7 @@ func (w *MigrationWorkerV2) storePypiAsset(taskID uint, comp NexusComponent, ass
 		Type:           model.PackageTypePyPI,
 		RepositoryID:   task.TargetRepositoryID,
 		RepositoryType: repoType,
-		Description:    comp.Name,
+		Description:    name,
 	}, &model.PackageVersion{
 		Version:     version,
 		Status:      model.StatusPublished,
@@ -558,7 +558,7 @@ func (w *MigrationWorkerV2) storeGoAsset(taskID uint, comp NexusComponent, asset
 		Type:           model.PackageTypeGo,
 		RepositoryID:   task.TargetRepositoryID,
 		RepositoryType: repoType,
-		Description:    comp.Name,
+		Description:    name,
 	}, &model.PackageVersion{
 		Version:     version,
 		Status:      model.StatusPublished,
@@ -579,21 +579,21 @@ func (w *MigrationWorkerV2) storeGenericAsset(taskID uint, comp NexusComponent, 
 		path = comp.Name + "/" + filepath.Base(asset.DownloadURL)
 	}
 
-	storageKey := "generic/" + filepath.Clean(path)
-	backend := w.storageSvc.GetDefaultBackend()
-	if err := backend.Put(context.Background(), storageKey, reader, size); err != nil {
+	storageVersion := filepath.Base(path)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "generic", filepath.Dir(path), storageVersion, reader, size, w.targetBackendID)
+	if err != nil {
 		return err
 	}
 
 	task, _ := w.service.GetTask(taskID)
 	repoType := model.RepoTypeLocal
 
-	_, _, _, err := w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
+	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:           path,
 		Type:           model.PackageTypeGeneric,
 		RepositoryID:   task.TargetRepositoryID,
 		RepositoryType: repoType,
-		Description:    comp.Name,
+		Description:    path,
 	}, &model.PackageVersion{
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
