@@ -1,0 +1,5 @@
+registry=https://your-moonlight-domain/repo/npm-virtual/
+//your-moonlight-domain/repo/npm-virtual/:_authToken=YOUR_TOKEN_HERE
+
+# 作用域包配置（可选）
+# @mycompany:registry=https://your-moonlight-domain/repo/npm-local/
