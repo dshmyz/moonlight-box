@@ -20,6 +20,7 @@ const createWrapper = (props = {}) => {
   return mount(VirtualMembersForm, {
     props: {
       membersText: '',
+      packageType: 'group',
       ...props,
     },
     global: {

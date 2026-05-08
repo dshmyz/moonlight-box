@@ -69,7 +69,7 @@ const categories = [
         answer: `
           <p>当前版本使用用户名密码进行认证：</p>
           <ol>
-            <li><strong>NPM/PyPI/NuGet：</strong>使用您的账号密码进行认证</li>
+            <li><strong>NPM/PyPI：</strong>使用您的账号密码进行认证</li>
             <li><strong>Maven：</strong>在 settings.xml 中配置 server 信息</li>
             <li><strong>Go：</strong>通过 GOPROXY 配置，无需额外认证</li>
           </ol>

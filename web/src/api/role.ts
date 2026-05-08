@@ -37,6 +37,11 @@ export interface UpdatePermissionsRequest {
   permission_ids: number[]
 }
 
+export interface CloneRoleRequest {
+  name: string
+  description?: string
+}
+
 export const roleApi = {
   list() {
     return request.get<Role[]>('/roles')
@@ -48,6 +53,10 @@ export const roleApi = {
 
   create(data: CreateRoleRequest) {
     return request.post<Role>('/roles', data)
+  },
+
+  clone(id: number, data: CloneRoleRequest) {
+    return request.post<Role>(`/roles/${id}/clone`, data)
   },
 
   update(id: number, data: UpdateRoleRequest) {

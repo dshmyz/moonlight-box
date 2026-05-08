@@ -52,6 +52,33 @@ func (r *BlockRuleRepository) List(filter map[string]interface{}) ([]model.Block
 	return rules, err
 }
 
+func (r *BlockRuleRepository) ListWithPage(page, pageSize int, filter map[string]interface{}) ([]model.BlockRule, int64, error) {
+	var rules []model.BlockRule
+	var total int64
+	query := r.db.Model(&model.BlockRule{})
+
+	if pkgName, ok := filter["package_name"]; ok {
+		query = query.Where("package_name LIKE ?", pkgName)
+	}
+	if pkgType, ok := filter["package_type"]; ok {
+		query = query.Where("package_type = ?", pkgType)
+	}
+	if enabled, ok := filter["enabled"]; ok {
+		query = query.Where("enabled = ?", enabled)
+	}
+
+	err := query.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	err = query.Offset((page - 1) * pageSize).Limit(pageSize).
+		Order("created_at DESC").
+		Find(&rules).Error
+
+	return rules, total, err
+}
+
 func (r *BlockRuleRepository) FindEnabledByPackageType(pkgType string) ([]model.BlockRule, error) {
 	var rules []model.BlockRule
 	err := r.db.Where("package_type = ? AND enabled = ?", pkgType, true).Find(&rules).Error

@@ -1,0 +1,222 @@
+package proxy
+
+import (
+	"sync"
+	"time"
+
+	"log/slog"
+
+	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/repository"
+)
+
+type RepositoryCache struct {
+	mu        sync.RWMutex
+	repos     map[string]*repositoryCacheEntry
+	members   map[uint][]*memberCacheEntry
+	repoRepo  *repository.RepositoryRepository
+	groupRepo *repository.GroupRepository
+	ttl       time.Duration
+}
+
+type repositoryCacheEntry struct {
+	repo      *model.Repository
+	expiresAt time.Time
+}
+
+type memberCacheEntry struct {
+	member    *model.RepositoryGroup
+	expiresAt time.Time
+}
+
+func NewRepositoryCache(repoRepo *repository.RepositoryRepository, groupRepo *repository.GroupRepository, ttl time.Duration) *RepositoryCache {
+	if ttl == 0 {
+		ttl = 5 * time.Minute
+	}
+
+	return &RepositoryCache{
+		repos:     make(map[string]*repositoryCacheEntry),
+		members:   make(map[uint][]*memberCacheEntry),
+		repoRepo:  repoRepo,
+		groupRepo: groupRepo,
+		ttl:       ttl,
+	}
+}
+
+func (c *RepositoryCache) GetByName(name string) (*model.Repository, error) {
+	c.mu.RLock()
+	entry, exists := c.repos[name]
+	c.mu.RUnlock()
+
+	if exists && time.Now().Before(entry.expiresAt) {
+		return entry.repo, nil
+	}
+
+	repo, err := c.repoRepo.FindByName(name)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	c.repos[name] = &repositoryCacheEntry{
+		repo:      repo,
+		expiresAt: time.Now().Add(c.ttl),
+	}
+	c.mu.Unlock()
+
+	slog.Debug("Cached repository",
+		"module", "repository_cache",
+		"repo_name", name,
+		"repo_id", repo.ID,
+	)
+
+	return repo, nil
+}
+
+func (c *RepositoryCache) GetVirtualRepo(pkgType string) (*model.Repository, error) {
+	c.mu.RLock()
+	for _, entry := range c.repos {
+		if entry.repo.Type == model.RepoTypeVirtual && entry.repo.PackageType == pkgType && entry.repo.Enabled {
+			if time.Now().Before(entry.expiresAt) {
+				return entry.repo, nil
+			}
+		}
+	}
+	c.mu.RUnlock()
+
+	repo, err := c.repoRepo.FindVirtualByPackageType(pkgType)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	c.repos[repo.Name] = &repositoryCacheEntry{
+		repo:      repo,
+		expiresAt: time.Now().Add(c.ttl),
+	}
+	c.mu.Unlock()
+
+	slog.Debug("Cached virtual repository",
+		"module", "repository_cache",
+		"pkg_type", pkgType,
+		"repo_id", repo.ID,
+	)
+
+	return repo, nil
+}
+
+func (c *RepositoryCache) GetMembers(virtualRepoID uint) ([]model.RepositoryGroup, error) {
+	c.mu.RLock()
+	entries, exists := c.members[virtualRepoID]
+	c.mu.RUnlock()
+
+	if exists {
+		var validMembers []model.RepositoryGroup
+		allValid := true
+		for _, entry := range entries {
+			if time.Now().Before(entry.expiresAt) {
+				validMembers = append(validMembers, *entry.member)
+			} else {
+				allValid = false
+				break
+			}
+		}
+		if allValid && len(validMembers) > 0 {
+			return validMembers, nil
+		}
+	}
+
+	members, err := c.groupRepo.GetMembersByVirtualRepo(virtualRepoID)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	var entriesToCache []*memberCacheEntry
+	for i := range members {
+		memberCopy := members[i]
+		entriesToCache = append(entriesToCache, &memberCacheEntry{
+			member:    &memberCopy,
+			expiresAt: time.Now().Add(c.ttl),
+		})
+	}
+	c.members[virtualRepoID] = entriesToCache
+	c.mu.Unlock()
+
+	slog.Debug("Cached virtual repository members",
+		"module", "repository_cache",
+		"virtual_repo_id", virtualRepoID,
+		"member_count", len(members),
+	)
+
+	return members, nil
+}
+
+func (c *RepositoryCache) Invalidate(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if name == "*" {
+		c.repos = make(map[string]*repositoryCacheEntry)
+		c.members = make(map[uint][]*memberCacheEntry)
+		slog.Info("Invalidated all repository cache",
+			"module", "repository_cache",
+		)
+		return
+	}
+
+	if entry, exists := c.repos[name]; exists {
+		delete(c.repos, name)
+		delete(c.members, entry.repo.ID)
+		slog.Info("Invalidated repository cache",
+			"module", "repository_cache",
+			"repo_name", name,
+		)
+	}
+}
+
+func (c *RepositoryCache) TTL() time.Duration {
+	return c.ttl
+}
+
+func (c *RepositoryCache) StartCleanup(interval time.Duration) {
+	if interval == 0 {
+		interval = 1 * time.Minute
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			c.cleanup()
+		}
+	}()
+}
+
+func (c *RepositoryCache) cleanup() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now()
+
+	for name, entry := range c.repos {
+		if now.After(entry.expiresAt) {
+			delete(c.repos, name)
+		}
+	}
+
+	for repoID, entries := range c.members {
+		var validEntries []*memberCacheEntry
+		for _, entry := range entries {
+			if now.Before(entry.expiresAt) {
+				validEntries = append(validEntries, entry)
+			}
+		}
+		if len(validEntries) == 0 {
+			delete(c.members, repoID)
+		} else {
+			c.members[repoID] = validEntries
+		}
+	}
+}

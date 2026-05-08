@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"github.com/moonlight-box/registry/internal/response"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,28 +46,28 @@ func (h *FileBrowseHandler) ListDirectory(c *gin.Context) {
 	fullPath := filepath.Join(h.basePath, relativePath)
 
 	if !strings.HasPrefix(fullPath, h.basePath) {
-		BadRequest(c, "invalid path", "path is outside base directory")
+		response.BadRequest(c, "invalid path", "path is outside base directory")
 		return
 	}
 
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			NotFound(c, "directory not found")
+			response.NotFound(c, "directory not found")
 			return
 		}
-		InternalError(c, err.Error())
+		response.InternalError(c, err.Error())
 		return
 	}
 
 	if !info.IsDir() {
-		BadRequest(c, "not a directory", "specified path is not a directory")
+		response.BadRequest(c, "not a directory", "specified path is not a directory")
 		return
 	}
 
 	entries, err := os.ReadDir(fullPath)
 	if err != nil {
-		InternalError(c, err.Error())
+		response.InternalError(c, err.Error())
 		return
 	}
 
@@ -98,13 +99,13 @@ func (h *FileBrowseHandler) ListDirectory(c *gin.Context) {
 		IsRoot: relativePath == "" || relativePath == "/",
 	}
 
-	Success(c, result)
+	response.Success(c, result)
 }
 
 func (h *FileBrowseHandler) GetFileStats(c *gin.Context) {
 	relativePath := c.Query("path")
 	if relativePath == "" {
-		BadRequest(c, "missing path", "path parameter is required")
+		response.BadRequest(c, "missing path", "path parameter is required")
 		return
 	}
 
@@ -112,17 +113,17 @@ func (h *FileBrowseHandler) GetFileStats(c *gin.Context) {
 	fullPath := filepath.Join(h.basePath, relativePath)
 
 	if !strings.HasPrefix(fullPath, h.basePath) {
-		BadRequest(c, "invalid path", "path is outside base directory")
+		response.BadRequest(c, "invalid path", "path is outside base directory")
 		return
 	}
 
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			NotFound(c, "file not found")
+			response.NotFound(c, "file not found")
 			return
 		}
-		InternalError(c, err.Error())
+		response.InternalError(c, err.Error())
 		return
 	}
 
@@ -134,13 +135,13 @@ func (h *FileBrowseHandler) GetFileStats(c *gin.Context) {
 		ModTime: info.ModTime().Format("2006-01-02 15:04:05"),
 	}
 
-	Success(c, result)
+	response.Success(c, result)
 }
 
 func (h *FileBrowseHandler) DownloadFile(c *gin.Context) {
 	relativePath := c.Query("path")
 	if relativePath == "" {
-		BadRequest(c, "missing path", "path parameter is required")
+		response.BadRequest(c, "missing path", "path parameter is required")
 		return
 	}
 
@@ -148,22 +149,22 @@ func (h *FileBrowseHandler) DownloadFile(c *gin.Context) {
 	fullPath := filepath.Join(h.basePath, relativePath)
 
 	if !strings.HasPrefix(fullPath, h.basePath) {
-		BadRequest(c, "invalid path", "path is outside base directory")
+		response.BadRequest(c, "invalid path", "path is outside base directory")
 		return
 	}
 
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			NotFound(c, "file not found")
+			response.NotFound(c, "file not found")
 			return
 		}
-		InternalError(c, err.Error())
+		response.InternalError(c, err.Error())
 		return
 	}
 
 	if info.IsDir() {
-		BadRequest(c, "not a file", "specified path is a directory")
+		response.BadRequest(c, "not a file", "specified path is a directory")
 		return
 	}
 

@@ -23,14 +23,26 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="status" label="状态" width="100" align="center">
+      <el-table-column prop="status" label="状态" width="140" align="center">
         <template #default="{ row }">
-          <el-tag :type="getVersionStatusColor(row.status)" size="small">
-            {{ getVersionStatusLabel(row.status) }}
-          </el-tag>
+          <div class="status-cell">
+            <el-tag :type="getVersionStatusColor(row.status)" size="small">
+              {{ getVersionStatusLabel(row.status) }}
+            </el-tag>
+            <el-tooltip :content="row.files_downloaded ? '文件已下载到本地' : '仅元数据，文件未下载'" placement="top">
+              <el-tag 
+                :type="row.files_downloaded ? 'success' : 'info'" 
+                size="small" 
+                effect="plain"
+                class="download-status-tag"
+              >
+                {{ row.files_downloaded ? '已缓存' : '未缓存' }}
+              </el-tag>
+            </el-tooltip>
+          </div>
         </template>
       </el-table-column>
-      <el-table-column prop="published_at" label="发布时间" width="120">
+      <el-table-column prop="published_at" label="发布时间" width="180">
         <template #default="{ row }">
           {{ formatDate(row.published_at) }}
         </template>
@@ -257,6 +269,17 @@ function handleFileDownload(row: PackageVersion, file: PackageFile) {
 
 .latest-tag {
   margin-left: 8px;
+}
+
+.status-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.download-status-tag {
+  font-size: 11px;
 }
 
 .size-text,

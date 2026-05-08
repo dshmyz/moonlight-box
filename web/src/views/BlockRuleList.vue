@@ -105,6 +105,16 @@
                 </template>
               </el-table-column>
             </el-table>
+
+            <el-pagination
+              v-if="total > pageSize"
+              :current-page="page"
+              :page-size="pageSize"
+              :total="total"
+              layout="total, prev, pager, next"
+              class="pagination"
+              @current-change="handlePageChange"
+            />
           </div>
         </el-tab-pane>
 
@@ -244,13 +254,15 @@ const rules = ref<BlockRule[]>([])
 const searchName = ref('')
 const filterPkgType = ref('')
 const hoveredRow = ref<number | null>(null)
+const page = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
 
 const pkgTypeOptions = [
   { label: 'npm', value: 'npm' },
   { label: 'Maven', value: 'maven' },
   { label: 'PyPI', value: 'pypi' },
   { label: 'Go', value: 'go' },
-  { label: 'NuGet', value: 'nuget' },
   { label: 'Yum', value: 'yum' },
   { label: 'Apt', value: 'apt' },
   { label: 'Generic', value: 'generic' },
@@ -296,16 +308,22 @@ const handleRowLeave = () => {
 const loadRules = async () => {
   loading.value = true
   try {
-    const params: Record<string, string> = {}
+    const params: Record<string, any> = { page: page.value, page_size: pageSize.value }
     if (searchName.value) params.package_name = searchName.value
     if (filterPkgType.value) params.package_type = filterPkgType.value
     const res = await blockRuleApi.list(params)
-    rules.value = res || []
+    rules.value = res?.items || []
+    total.value = res?.pagination?.total || 0
   } catch {
     ElMessage.error('加载阻断规则失败')
   } finally {
     loading.value = false
   }
+}
+
+const handlePageChange = (p: number) => {
+  page.value = p
+  loadRules()
 }
 
 const openCreateDialog = () => {
@@ -877,5 +895,15 @@ onMounted(loadRules)
 
 .upload-actions {
   margin-bottom: 8px;
+}
+
+.pagination {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+:deep(.el-pagination) {
+  font-weight: 500;
 }
 </style>

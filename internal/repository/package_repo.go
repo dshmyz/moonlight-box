@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/util"
@@ -115,23 +116,12 @@ func (r *PackageRepository) StorePackageFile(ctx context.Context, pkg *model.Pac
 	return pkg, ver, file, nil
 }
 
-// StorePackageFileAndIncrementDownload 存储包文件并增加下载计数
-func (r *PackageRepository) StorePackageFileAndIncrementDownload(ctx context.Context, pkg *model.Package, ver *model.PackageVersion, file *model.PackageFile) (*model.Package, *model.PackageVersion, *model.PackageFile, error) {
-	storedPkg, storedVer, storedFile, err := r.StorePackageFile(ctx, pkg, ver, file)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	if storedPkg != nil && storedVer != nil && storedFile != nil {
-		r.IncrementDownloadCount(storedPkg.ID, storedVer.ID, storedFile.ID)
-	}
-
-	return storedPkg, storedVer, storedFile, nil
-}
-
 // CreateOrUpdate 兼容旧 API，内部调用 StorePackageFile
 // 注意：此方法假设文件已存储，会自动设置 FilesDownloaded = true
 func (r *PackageRepository) CreateOrUpdate(ctx context.Context, pkg *model.Package, ver *model.PackageVersion) (*model.Package, *model.PackageVersion, error) {
+	if pkg.Name == "" {
+		return nil, nil, fmt.Errorf("package name cannot be empty")
+	}
 	if ver != nil {
 		ver.FilesDownloaded = true
 	}
@@ -320,7 +310,7 @@ func (r *PackageRepository) List(page, pageSize int, pkgType string, keyword str
 	}
 
 	var versions []model.PackageVersion
-	if err := r.db.Where("package_id IN ?", packageIDs).Find(&versions).Error; err != nil {
+	if err := r.db.Where("package_id IN ?", packageIDs).Order("published_at DESC").Find(&versions).Error; err != nil {
 		return nil, 0, err
 	}
 

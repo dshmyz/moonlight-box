@@ -150,7 +150,7 @@ func (s *ProxyDownloadService) Download(ctx context.Context, req *ProxyDownloadR
 	if storeErr != nil {
 		logrus.Warnf("failed to store proxy package %s: %v", req.Name, storeErr)
 	} else if storageKey != "" {
-		_, _, _, dbErr := s.pkgRepo.StorePackageFileAndIncrementDownload(ctx, &model.Package{
+		_, _, _, dbErr := s.pkgRepo.StorePackageFile(ctx, &model.Package{
 			Name:           req.Name,
 			Type:           req.PackageType,
 			RepositoryID:   result.RepoID,
@@ -288,6 +288,7 @@ func (s *ProxyDownloadService) incrementDownloadCount(req *ProxyDownloadRequest)
 
 	var versionID uint
 	var fileID uint
+	var repoID uint
 
 	if verEntry, ok := entry.Versions[req.Version]; ok {
 		versionID = verEntry.VersionID
@@ -296,5 +297,9 @@ func (s *ProxyDownloadService) incrementDownloadCount(req *ProxyDownloadRequest)
 		}
 	}
 
-	s.countBatcher.Increment(entry.PackageID, versionID, fileID)
+	if req.Repo != nil {
+		repoID = req.Repo.ID
+	}
+
+	s.countBatcher.Increment(entry.PackageID, versionID, fileID, repoID)
 }

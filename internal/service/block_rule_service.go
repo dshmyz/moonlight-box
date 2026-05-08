@@ -233,3 +233,7 @@ func (s *BlockRuleService) GetByID(id uint) (*model.BlockRule, error) {
 func (s *BlockRuleService) List(filter map[string]interface{}) ([]model.BlockRule, error) {
 	return s.repo.List(filter)
 }
+
+func (s *BlockRuleService) ListWithPage(page, pageSize int, filter map[string]interface{}) ([]model.BlockRule, int64, error) {
+	return s.repo.ListWithPage(page, pageSize, filter)
+}

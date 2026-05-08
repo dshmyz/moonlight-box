@@ -45,6 +45,12 @@ export const menuConfig: MenuItem[] = [
         permission: { resource: 'security', action: 'read' },
       },
       {
+        index: '/admin/vuln-rules',
+        title: '漏洞规则',
+        icon: 'fa-solid fa-list-check',
+        permission: { resource: 'security', action: 'read' },
+      },
+      {
         index: '/admin/block-rules',
         title: '阻断规则',
         icon: 'fa-solid fa-ban',
@@ -112,6 +118,11 @@ export const menuConfig: MenuItem[] = [
         title: '系统信息',
         icon: 'fa-solid fa-info-circle',
         permission: { resource: 'system', action: 'read' },
+      },
+      {
+        index: '/admin/api-docs',
+        title: 'API 文档',
+        icon: 'fa-solid fa-book',
       },
       {
         index: '/admin/audit',

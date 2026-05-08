@@ -24,7 +24,6 @@
         <el-option label="Maven" value="maven" />
         <el-option label="PyPI" value="pypi" />
         <el-option label="Go" value="go" />
-        <el-option label="NuGet" value="nuget" />
         <el-option label="Yum" value="yum" />
         <el-option label="Apt" value="apt" />
         <el-option label="Generic" value="generic" />

@@ -49,16 +49,14 @@ func NewTransportManager(connectTimeout time.Duration, dnsResolver *DNSResolver)
 		MaxConnsPerHost:     100,
 		TLSHandshakeTimeout: 10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-	}
-
-	insecureTransport := baseTransport.Clone()
-	insecureTransport.TLSClientConfig = &tls.Config{
-		InsecureSkipVerify: true,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
 	}
 
 	return &TransportManager{
 		secureTransport:   baseTransport,
-		insecureTransport: insecureTransport,
+		insecureTransport: baseTransport,
 		connectTimeout:    connectTimeout,
 		dnsResolver:       dnsResolver,
 	}

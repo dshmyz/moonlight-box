@@ -36,7 +36,6 @@
                 <el-radio-button value="maven">Maven</el-radio-button>
                 <el-radio-button value="pypi">PyPI</el-radio-button>
                 <el-radio-button value="go">Go</el-radio-button>
-                <el-radio-button value="nuget">NuGet</el-radio-button>
                 <el-radio-button value="yum">Yum</el-radio-button>
                 <el-radio-button value="apt">Apt</el-radio-button>
                 <el-radio-button value="generic">Generic</el-radio-button>

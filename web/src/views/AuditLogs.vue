@@ -106,7 +106,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import request from '@/api/request'
+import { auditApi } from '@/api/audit'
 
 const loading = ref(false)
 const logs = ref<any[]>([])
@@ -168,10 +168,9 @@ async function loadLogs() {
     if (filterAction.value) params.action = filterAction.value
     if (filterIP.value) params.ip_address = filterIP.value
 
-    const res = await request.get('/audit-logs', { params })
-    const data = res as any
-    logs.value = data?.items || []
-    total.value = data?.pagination?.total || 0
+    const res = await auditApi.list(params)
+    logs.value = res?.items || []
+    total.value = res?.pagination?.total || 0
   } catch (e) {
     console.error(e)
   } finally {

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"github.com/moonlight-box/registry/internal/response"
 	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/service"
 )
@@ -19,9 +20,9 @@ func NewDashboardHandler(svc *service.DashboardService) *DashboardHandler {
 func (h *DashboardHandler) GetStats(c *gin.Context) {
 	stats, err := h.svc.GetStats(c.Request.Context())
 	if err != nil {
-		InternalError(c, err.Error())
+		response.InternalError(c, err.Error())
 		return
 	}
 
-	Success(c, stats)
+	response.Success(c, stats)
 }

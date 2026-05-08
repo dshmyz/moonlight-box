@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -14,64 +17,73 @@ import (
 	"gorm.io/gorm"
 )
 
+// StorageChecker 存储后端检查接口，避免循环依赖
+type StorageChecker interface {
+	GetDefaultBackendPath() (string, error)
+	CheckStoragePath(path string) error
+}
+
 // HealthCheckConfig 健康检查配置
 type HealthCheckConfig struct {
-	Enabled        bool          `json:"enabled"`          // 是否启用健康检查
-	Interval       time.Duration `json:"interval"`         // 检查间隔
-	Timeout        time.Duration `json:"timeout"`          // 检查超时
-	FailureThreshold int         `json:"failure_threshold"` // 失败阈值
+	Enabled          bool          `json:"enabled"`           // 是否启用健康检查
+	Interval         time.Duration `json:"interval"`          // 检查间隔
+	Timeout          time.Duration `json:"timeout"`           // 检查超时
+	FailureThreshold int           `json:"failure_threshold"` // 失败阈值
 }
 
 // DefaultHealthCheckConfig 默认健康检查配置
 func DefaultHealthCheckConfig() HealthCheckConfig {
 	return HealthCheckConfig{
-		Enabled:        true,
-		Interval:       30 * time.Second,  // 每30秒检查一次
-		Timeout:        5 * time.Second,   // 检查超时5秒
-		FailureThreshold: 3,               // 连续3次失败标记为不健康
+		Enabled:          true,
+		Interval:         30 * time.Second, // 每30秒检查一次
+		Timeout:          5 * time.Second,  // 检查超时5秒
+		FailureThreshold: 3,                // 连续3次失败标记为不健康
 	}
 }
 
 // HealthStatus 仓库健康状态
 type HealthStatus struct {
-	RepoID           uint          `json:"repo_id"`
-	RepoName         string        `json:"repo_name"`
-	IsHealthy        bool          `json:"is_healthy"`
-	LastCheckTime    time.Time     `json:"last_check_time"`
-	LastCheckError   string        `json:"last_check_error,omitempty"`
-	ResponseTime     time.Duration `json:"response_time"`
-	ConsecutiveFailures int        `json:"consecutive_failures"`
-	StatusCode       int           `json:"status_code,omitempty"`
+	RepoID              uint          `json:"repo_id"`
+	RepoName            string        `json:"repo_name"`
+	IsHealthy           bool          `json:"is_healthy"`
+	LastCheckTime       time.Time     `json:"last_check_time"`
+	LastCheckError      string        `json:"last_check_error,omitempty"`
+	ResponseTime        time.Duration `json:"response_time"`
+	ConsecutiveFailures int           `json:"consecutive_failures"`
+	StatusCode          int           `json:"status_code,omitempty"`
 }
 
 // HealthCheckService 健康检查服务
 type HealthCheckService struct {
-	mu              sync.RWMutex
-	db              *gorm.DB
-	repoRepo        *repository.RepositoryRepository
-	remoteClient    *RemoteClient
-	config          HealthCheckConfig
-	breakers        map[uint]*CircuitBreaker // repoID -> CircuitBreaker
-	statuses        map[uint]*HealthStatus   // repoID -> HealthStatus
-	stopCh          chan struct{}
-	running         bool
+	mu             sync.RWMutex
+	db             *gorm.DB
+	repoRepo       *repository.RepositoryRepository
+	storageChecker StorageChecker
+	remoteClient   *RemoteClient
+	config         HealthCheckConfig
+	breakers       map[uint]*CircuitBreaker // repoID -> CircuitBreaker
+	statuses       map[uint]*HealthStatus   // repoID -> HealthStatus
+	stopCh         chan struct{}
+	running        bool
 }
 
 // NewHealthCheckService 创建健康检查服务
 func NewHealthCheckService(
 	db *gorm.DB,
 	repoRepo *repository.RepositoryRepository,
+	storageChecker StorageChecker,
 	remoteClient *RemoteClient,
 	config HealthCheckConfig,
 ) *HealthCheckService {
 	return &HealthCheckService{
-		db:           db,
-		repoRepo:     repoRepo,
-		remoteClient: remoteClient,
-		config:       config,
-		breakers:     make(map[uint]*CircuitBreaker),
-		statuses:     make(map[uint]*HealthStatus),
-		stopCh:       make(chan struct{}),
+		db:             db,
+		repoRepo:       repoRepo,
+		storageChecker: storageChecker,
+		remoteClient:   remoteClient,
+		config:         config,
+		breakers:       make(map[uint]*CircuitBreaker),
+		statuses:       make(map[uint]*HealthStatus),
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -173,23 +185,23 @@ func (h *HealthCheckService) runHealthChecks() {
 	for {
 		select {
 		case <-ticker.C:
-			h.checkAllProxyRepos()
+			h.checkAllRepos()
 		case <-h.stopCh:
 			return
 		}
 	}
 }
 
-// checkAllProxyRepos 检查所有代理仓库
-func (h *HealthCheckService) checkAllProxyRepos() {
-	// 查询所有代理类型的仓库
+// checkAllRepos 检查所有仓库的健康状态
+func (h *HealthCheckService) checkAllRepos() {
+	// 查询所有启用的仓库
 	var repos []model.Repository
-	if err := h.db.Where("type = ? AND enabled = ?", model.RepoTypeProxy, true).Find(&repos).Error; err != nil {
-		slog.Error("failed to query proxy repositories", "error", err)
+	if err := h.db.Where("enabled = ?", true).Find(&repos).Error; err != nil {
+		slog.Error("failed to query repositories", "error", err)
 		return
 	}
 
-	slog.Debug("checking health of proxy repositories", "count", len(repos))
+	slog.Debug("checking health of all repositories", "count", len(repos))
 
 	for _, repo := range repos {
 		h.checkRepoHealth(&repo)
@@ -211,18 +223,34 @@ func (h *HealthCheckService) checkRepoHealth(repo *model.Repository) {
 		return
 	}
 
-	// 执行健康检查（简单HTTP GET请求）
-	healthURL := repo.RemoteURL
-	statusCode, err := h.doHealthCheck(ctx, healthURL)
+	// 根据仓库类型执行不同的健康检查
+	var statusCode int
+	var err error
+
+	switch repo.Type {
+	case model.RepoTypeProxy:
+		// 代理仓库：检查远程URL可达性
+		statusCode, err = h.checkProxyRepo(ctx, repo)
+	case model.RepoTypeLocal:
+		// 本地仓库：检查存储后端可用性
+		statusCode, err = h.checkLocalRepo(repo)
+	case model.RepoTypeVirtual:
+		// 虚拟仓库：检查成员仓库可用性
+		statusCode, err = h.checkVirtualRepo(repo)
+	default:
+		// 未知类型，标记为不健康
+		err = fmt.Errorf("unknown repository type: %s", repo.Type)
+	}
+
 	responseTime := time.Since(startTime)
 
 	if err != nil {
 		// 检查失败，记录失败
 		cb.RecordFailure()
 		h.updateStatus(repo, false, err.Error(), statusCode, responseTime)
-		slog.Warn("health check failed", 
-			"repo", repo.Name, 
-			"url", healthURL, 
+		slog.Warn("health check failed",
+			"repo", repo.Name,
+			"type", repo.Type,
 			"error", err,
 			"response_time", responseTime)
 	} else {
@@ -231,24 +259,138 @@ func (h *HealthCheckService) checkRepoHealth(repo *model.Repository) {
 		h.updateStatus(repo, true, "", statusCode, responseTime)
 		slog.Debug("health check passed",
 			"repo", repo.Name,
-			"url", healthURL,
+			"type", repo.Type,
 			"status_code", statusCode,
 			"response_time", responseTime)
 	}
 }
 
+// checkProxyRepo 检查代理仓库的健康状态
+func (h *HealthCheckService) checkProxyRepo(ctx context.Context, repo *model.Repository) (int, error) {
+	healthURL := repo.RemoteURL
+	return h.doHealthCheck(ctx, healthURL)
+}
+
+// checkLocalRepo 检查本地仓库的健康状态
+func (h *HealthCheckService) checkLocalRepo(repo *model.Repository) (int, error) {
+	var storagePath string
+
+	if repo.StorageBackendID != nil {
+		// 查询存储后端配置
+		var backend model.StorageBackend
+		if err := h.db.First(&backend, *repo.StorageBackendID).Error; err != nil {
+			return 0, fmt.Errorf("storage backend not found: %w", err)
+		}
+
+		// 根据存储类型获取路径
+		switch backend.Type {
+		case model.StorageTypeLocal:
+			if backend.Config.Local == nil {
+				return 0, fmt.Errorf("local storage config missing")
+			}
+			storagePath = backend.Config.Local.BasePath
+		case model.StorageTypeS3, model.StorageTypeOBS:
+			// 远程存储：配置存在即视为健康
+			if backend.Type == model.StorageTypeS3 && backend.Config.S3 == nil {
+				return 0, fmt.Errorf("s3 storage config missing")
+			}
+			if backend.Type == model.StorageTypeOBS && backend.Config.OBS == nil {
+				return 0, fmt.Errorf("obs storage config missing")
+			}
+			return http.StatusOK, nil
+		default:
+			return 0, fmt.Errorf("unsupported storage type: %s", backend.Type)
+		}
+	} else {
+		// 没有配置存储后端，使用默认后端
+		if h.storageChecker == nil {
+			return 0, fmt.Errorf("no storage backend configured and no default backend available")
+		}
+		defaultPath, err := h.storageChecker.GetDefaultBackendPath()
+		if err != nil {
+			return 0, fmt.Errorf("failed to get default backend: %w", err)
+		}
+		storagePath = defaultPath
+	}
+
+	// 检查存储路径
+	if h.storageChecker != nil {
+		return http.StatusOK, h.storageChecker.CheckStoragePath(storagePath)
+	}
+
+	// 兼容旧逻辑：直接检查路径
+	return h.checkStoragePath(storagePath)
+}
+
+// checkStoragePath 检查存储路径是否可用
+func (h *HealthCheckService) checkStoragePath(basePath string) (int, error) {
+	if _, err := os.Stat(basePath); err != nil {
+		if os.IsNotExist(err) {
+			return 0, fmt.Errorf("storage path does not exist: %s", basePath)
+		}
+		return 0, fmt.Errorf("storage path inaccessible: %w", err)
+	}
+
+	// 检查目录是否可写
+	testFile := filepath.Join(basePath, ".health_check")
+	if err := os.WriteFile(testFile, []byte{}, 0644); err != nil {
+		return 0, fmt.Errorf("storage path not writable: %w", err)
+	}
+	// 清理测试文件
+	os.Remove(testFile)
+
+	return http.StatusOK, nil
+}
+
+// checkVirtualRepo 检查虚拟仓库的健康状态
+func (h *HealthCheckService) checkVirtualRepo(repo *model.Repository) (int, error) {
+	// 检查虚拟仓库是否有成员
+	var memberCount int64
+	if err := h.db.Model(&model.RepositoryGroup{}).
+		Where("virtual_repo_id = ?", repo.ID).
+		Count(&memberCount).Error; err != nil {
+		return 0, fmt.Errorf("failed to check members: %w", err)
+	}
+
+	if memberCount == 0 {
+		return 0, fmt.Errorf("no member repositories configured")
+	}
+
+	// 检查成员仓库是否都启用
+	var disabledMembers int64
+	if err := h.db.Table("repository_groups rg").
+		Joins("JOIN repositories r ON rg.member_repo_id = r.id").
+		Where("rg.virtual_repo_id = ? AND r.enabled = ?", repo.ID, false).
+		Count(&disabledMembers).Error; err != nil {
+		return 0, fmt.Errorf("failed to check member status: %w", err)
+	}
+
+	if disabledMembers > 0 {
+		// 有成员被禁用，但仍然视为健康（部分功能可用）
+		return http.StatusPartialContent, nil
+	}
+
+	return http.StatusOK, nil
+}
+
 // doHealthCheck 执行HTTP健康检查
-func (h *HealthCheckService) doHealthCheck(ctx context.Context, url string) (int, error) {
-	// 使用简单的HTTP请求检查连通性
+func (h *HealthCheckService) doHealthCheck(ctx context.Context, rawURL string) (int, error) {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return 0, fmt.Errorf("invalid URL: %w", err)
+	}
+
+	serverName := parsedURL.Hostname()
+
 	client := &http.Client{
 		Timeout: h.config.Timeout,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
+				ServerName:         serverName,
 			},
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// 允许最多2次重定向
 			if len(via) >= 2 {
 				return http.ErrUseLastResponse
 			}
@@ -256,7 +398,7 @@ func (h *HealthCheckService) doHealthCheck(ctx context.Context, url string) (int
 		},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -269,17 +411,14 @@ func (h *HealthCheckService) doHealthCheck(ctx context.Context, url string) (int
 	}
 	defer resp.Body.Close()
 
-	// 2xx 状态码视为健康
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return resp.StatusCode, nil
 	}
 
-	// 4xx 也认为是连通的（只是可能需要认证）
 	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 		return resp.StatusCode, nil
 	}
 
-	// 5xx 服务器错误视为不健康
 	return resp.StatusCode, fmt.Errorf("server error: %d", resp.StatusCode)
 }
 
@@ -320,7 +459,7 @@ func (h *HealthCheckService) IsHealthy(repoID uint) bool {
 
 	status, exists := h.statuses[repoID]
 	if !exists {
-		return true // 没有检查记录时默认为健康
+		return false // 没有检查记录时视为未知状态，不默认为健康
 	}
 
 	return status.IsHealthy && status.ConsecutiveFailures < h.config.FailureThreshold

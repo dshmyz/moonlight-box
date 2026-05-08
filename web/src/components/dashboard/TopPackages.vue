@@ -47,7 +47,6 @@ const typeLabels: Record<string, string> = {
   maven: 'Maven',
   pypi: 'PyPI',
   go: 'Go',
-  nuget: 'NuGet',
   yum: 'Yum',
   apt: 'Apt',
   generic: 'Generic',

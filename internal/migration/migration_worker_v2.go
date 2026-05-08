@@ -61,7 +61,7 @@ func (w *MigrationWorkerV2) Execute(ctx context.Context, task *model.MigrationTa
 		"batch_size":  w.batchSize,
 	}).Info("Migration task started (v2)")
 
-	client := NewNexusClient(task.SourceURL, task.Username, task.Password)
+	client := NewNexusClient(task.SourceURL, task.Username, mustGetPasswordV2(task))
 	w.service.RegisterNexusClient(task.ID, client)
 
 	now := time.Now()
@@ -588,4 +588,9 @@ func (w *MigrationWorkerV2) completeTask(taskID uint) {
 		"status":       model.MigrationCompleted,
 		"completed_at": time.Now(),
 	})
+}
+
+func mustGetPasswordV2(task *model.MigrationTask) string {
+	password, _ := task.GetPassword()
+	return password
 }

@@ -3,9 +3,11 @@
 package response
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	apperr "github.com/moonlight-box/registry/internal/errors"
 )
 
 // Response 标准 API 响应结构
@@ -129,4 +131,59 @@ func ErrorResponse(c *gin.Context, statusCode int, message string) {
 		Code:    statusCode,
 		Message: message,
 	})
+}
+
+// WriteAppError 统一处理 AppError 并写入 HTTP 响应
+// 这是 errors 包和 response 包之间的桥梁函数
+func WriteAppError(c *gin.Context, err error) {
+	if err == nil {
+		InternalError(c, "unknown error")
+		return
+	}
+
+	var appErr *apperr.AppError
+	if errors.As(err, &appErr) {
+		switch appErr.Code {
+		case http.StatusBadRequest:
+			BadRequest(c, appErr.Message, nil)
+		case http.StatusUnauthorized:
+			Unauthorized(c, appErr.Message)
+		case http.StatusForbidden:
+			Forbidden(c, appErr.Message)
+		case http.StatusNotFound:
+			NotFound(c, appErr.Message)
+		case http.StatusConflict:
+			Conflict(c, appErr.Message)
+		default:
+			InternalError(c, appErr.Message)
+		}
+		return
+	}
+
+	if apperr.IsNotFound(err) {
+		NotFound(c, apperr.GetMessage(err))
+		return
+	}
+
+	if apperr.IsDuplicate(err) {
+		Conflict(c, apperr.GetMessage(err))
+		return
+	}
+
+	if apperr.IsUnauthorized(err) {
+		Unauthorized(c, apperr.GetMessage(err))
+		return
+	}
+
+	if apperr.IsForbidden(err) {
+		Forbidden(c, apperr.GetMessage(err))
+		return
+	}
+
+	if apperr.IsBadRequest(err) {
+		BadRequest(c, apperr.GetMessage(err), nil)
+		return
+	}
+
+	InternalError(c, err.Error())
 }

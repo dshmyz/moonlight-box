@@ -38,9 +38,6 @@ type Repository struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
-	// PackageTypes JSON 数组字符串，用于虚拟仓库支持多种包类型
-	PackageTypes string `json:"package_types" gorm:"type:text"`
-
 	Members []RepositoryGroup `json:"members,omitempty" gorm:"foreignKey:VirtualRepoID"`
 
 	// URL 计算字段，不存储到数据库

@@ -107,3 +107,32 @@ func (r *RoleRepository) ListPermissions() ([]model.Permission, error) {
 	result := r.db.Find(&perms)
 	return perms, result.Error
 }
+
+func (r *RoleRepository) CloneRole(sourceRoleID uint, newName string, newDescription string) (*model.Role, error) {
+	sourceRole, err := r.FindByID(sourceRoleID)
+	if err != nil {
+		return nil, err
+	}
+
+	newRole := &model.Role{
+		Name:         newName,
+		Description:  newDescription,
+		IsSystemRole: false,
+	}
+
+	if err := r.db.Create(newRole).Error; err != nil {
+		return nil, err
+	}
+
+	for _, perm := range sourceRole.Permissions {
+		rp := model.RolePermission{
+			RoleID:       newRole.ID,
+			PermissionID: perm.ID,
+		}
+		if err := r.db.Create(&rp).Error; err != nil {
+			return nil, err
+		}
+	}
+
+	return r.FindByID(newRole.ID)
+}

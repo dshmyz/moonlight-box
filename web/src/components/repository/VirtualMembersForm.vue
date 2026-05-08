@@ -56,6 +56,7 @@ interface Member {
 
 interface Props {
   membersText: string
+  packageType: string
 }
 
 const props = defineProps<Props>()
@@ -71,7 +72,11 @@ const loadAvailableRepos = async () => {
   loading.value = true
   try {
     const res = await repositoryApi.list()
-    availableRepos.value = res || []
+    const allRepos = res || []
+    availableRepos.value = allRepos.filter(repo => 
+      repo.type !== 'virtual' && 
+      (!props.packageType || repo.package_type === props.packageType)
+    )
   } catch {
     availableRepos.value = []
   } finally {
@@ -92,6 +97,13 @@ watch(
     }
   },
   { immediate: true }
+)
+
+watch(
+  () => props.packageType,
+  () => {
+    loadAvailableRepos()
+  }
 )
 
 const addMember = () => {

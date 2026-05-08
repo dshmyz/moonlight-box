@@ -20,41 +20,17 @@
     <el-form-item
       label="包类型"
       prop="package_type"
-      v-if="form.type !== 'virtual'"
     >
       <el-select v-model="form.package_type" :disabled="disabled" style="width: 100%">
         <el-option label="npm" value="npm" />
         <el-option label="Maven" value="maven" />
         <el-option label="PyPI" value="pypi" />
         <el-option label="Go" value="go" />
-        <el-option label="NuGet" value="nuget" />
         <el-option label="Yum" value="yum" />
         <el-option label="Apt" value="apt" />
         <el-option label="Generic" value="generic" />
       </el-select>
-    </el-form-item>
-
-    <el-form-item
-      label="包类型"
-      v-if="form.type === 'virtual'"
-    >
-      <el-select
-        v-model="selectedPackageTypes"
-        :disabled="disabled"
-        multiple
-        placeholder="选择包类型"
-        style="width: 100%"
-      >
-        <el-option label="npm" value="npm" />
-        <el-option label="Maven" value="maven" />
-        <el-option label="PyPI" value="pypi" />
-        <el-option label="Go" value="go" />
-        <el-option label="NuGet" value="nuget" />
-        <el-option label="Yum" value="yum" />
-        <el-option label="Apt" value="apt" />
-        <el-option label="Generic" value="generic" />
-      </el-select>
-      <span class="form-hint">虚拟仓库可聚合多种包类型的仓库</span>
+      <span v-if="form.type === 'virtual'" class="form-hint">虚拟仓库只能选择一种包类型，且成员仓库必须与虚拟仓库类型一致</span>
     </el-form-item>
 
     <el-form-item label="存储后端" v-if="form.type !== 'virtual'">
@@ -99,27 +75,19 @@ interface FormModel {
 interface Props {
   form: FormModel
   disabled?: boolean
-  selectedPackageTypes?: string[]
   storageBackendId?: number | null
 }
 
 interface Emits {
-  (e: 'update:selectedPackageTypes', value: string[]): void
   (e: 'update:storageBackendId', value: number | null): void
 }
 
 const props = withDefaults(defineProps<Props>(), {
   disabled: false,
-  selectedPackageTypes: () => [],
   storageBackendId: null,
 })
 
 const emit = defineEmits<Emits>()
-
-const selectedPackageTypes = computed({
-  get: () => props.selectedPackageTypes,
-  set: (val: string[]) => emit('update:selectedPackageTypes', val),
-})
 
 const storageBackendId = computed({
   get: () => props.storageBackendId,

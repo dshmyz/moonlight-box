@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/moonlight-box/registry/internal/cache"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
@@ -18,6 +19,7 @@ import (
 
 type BaseAdapter struct {
 	pkgRepo        *repository.PackageRepository
+	pkgCache       *cache.PackageCache
 	storageSvc     *service.StorageService
 	webhookSvc     *service.WebhookService
 	auditSvc       *service.AuditService
@@ -44,6 +46,17 @@ func (b *BaseAdapter) SetDownloadPlugin(plugin *DownloadPluginChain) {
 
 func (b *BaseAdapter) SetLogRepo(logRepo *repository.ProxyDownloadLogRepository) {
 	b.logRepo = logRepo
+}
+
+func (b *BaseAdapter) SetPackageCache(pkgCache *cache.PackageCache) {
+	b.pkgCache = pkgCache
+}
+
+func (b *BaseAdapter) getPackage(name string, pkgType model.PackageType) (*model.Package, error) {
+	if b.pkgCache != nil {
+		return b.pkgCache.GetByNameAndType(name, pkgType)
+	}
+	return b.pkgRepo.FindByNameAndType(name, pkgType)
 }
 
 func (b *BaseAdapter) CheckDownloadPermission(c *gin.Context, repo *model.Repository, pkgType model.PackageType, name, version, filename string) *DownloadDecision {
@@ -323,7 +336,7 @@ func (b *BaseAdapter) ExecuteUpload(ctx context.Context, opts *UploadHelperOpts,
 
 	if b.auditSvc != nil && opts.UploadedBy > 0 {
 		uploadedBy := opts.UploadedBy
-		_ = b.auditSvc.Log(
+		_ = b.auditSvc.LogWithStatus(
 			ctx,
 			&uploadedBy,
 			model.ActionPackageUpload,
@@ -331,6 +344,8 @@ func (b *BaseAdapter) ExecuteUpload(ctx context.Context, opts *UploadHelperOpts,
 			&result.PackageID,
 			opts.Name,
 			fmt.Sprintf(`{"version":"%s","filename":"%s","size":%d}`, opts.Version, opts.Filename, size),
+			201,
+			0,
 		)
 	}
 
@@ -372,7 +387,7 @@ func (b *BaseAdapter) LogDeleteAudit(c *gin.Context, repoName, pkgName, version 
 
 	details := fmt.Sprintf(`{"repo":"%s","name":"%s","version":"%s"}`, repoName, pkgName, version)
 
-	b.auditSvc.LogWithRequest(
+	b.auditSvc.LogWithRequestAndStatus(
 		c.Request.Context(),
 		uid,
 		model.ActionPackageDelete,
@@ -382,6 +397,8 @@ func (b *BaseAdapter) LogDeleteAudit(c *gin.Context, repoName, pkgName, version 
 		details,
 		c.ClientIP(),
 		c.Request.UserAgent(),
+		200,
+		0,
 	)
 }
 

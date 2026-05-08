@@ -2,11 +2,11 @@ package handler
 
 import (
 	"log/slog"
-	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/proxy"
+	"github.com/moonlight-box/registry/internal/response"
 )
 
 // HealthCheckHandler 健康检查API处理器
@@ -27,17 +27,13 @@ func (h *HealthCheckHandler) GetHealthStatus(c *gin.Context) {
 	repoIDStr := c.Param("id")
 	repoID, err := strconv.ParseUint(repoIDStr, 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "invalid repository ID",
-		})
+		response.BadRequest(c, "invalid repository ID", "")
 		return
 	}
 
 	status := h.healthCheckSvc.GetHealthStatus(uint(repoID))
 	if status == nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "health status not found",
-		})
+		response.NotFound(c, "health status not found")
 		return
 	}
 
@@ -47,7 +43,7 @@ func (h *HealthCheckHandler) GetHealthStatus(c *gin.Context) {
 		cbStats = cb.GetStats()
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	response.Success(c, gin.H{
 		"health_status":   status,
 		"circuit_breaker": cbStats,
 	})
@@ -73,7 +69,7 @@ func (h *HealthCheckHandler) GetAllHealthStatuses(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	response.Success(c, gin.H{
 		"total": len(result),
 		"items": result,
 	})
@@ -85,16 +81,14 @@ func (h *HealthCheckHandler) ResetCircuitBreaker(c *gin.Context) {
 	repoIDStr := c.Param("id")
 	repoID, err := strconv.ParseUint(repoIDStr, 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "invalid repository ID",
-		})
+		response.BadRequest(c, "invalid repository ID", "")
 		return
 	}
 
 	h.healthCheckSvc.ResetCircuitBreaker(uint(repoID))
 
 	slog.Info("circuit breaker reset via API", "repo_id", repoID)
-	c.JSON(http.StatusOK, gin.H{
+	response.Success(c, gin.H{
 		"message": "circuit breaker reset successfully",
 		"repo_id": repoID,
 	})

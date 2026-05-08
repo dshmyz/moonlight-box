@@ -31,7 +31,6 @@ CREATE TABLE `repositories` (
   `allow_overwrite` TINYINT(1) NOT NULL DEFAULT 0,
   `allow_delete` TINYINT(1) NOT NULL DEFAULT 0,
   `download_count` BIGINT NOT NULL DEFAULT 0,
-  `package_types` TEXT,
   `metadata_sync_enabled` TINYINT(1) NOT NULL DEFAULT 0,
   `metadata_sync_interval` INT NOT NULL DEFAULT 3600,
   `sync_mode` VARCHAR(20) NOT NULL DEFAULT 'metadata_only',
@@ -81,7 +80,10 @@ CREATE TABLE `packages` (
   UNIQUE KEY `idx_pkg_name_type` (`name`, `type`),
   INDEX `idx_display_name` (`display_name`),
   INDEX `idx_repository_id` (`repository_id`),
-  INDEX `idx_repository_type` (`repository_type`)
+  INDEX `idx_repository_type` (`repository_type`),
+  INDEX `idx_repo_id_type` (`repository_id`, `type`),
+  INDEX `idx_download_count` (`download_count`),
+  INDEX `idx_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='包表';
 
 -- 包版本表
@@ -94,7 +96,7 @@ CREATE TABLE `package_versions` (
   `published_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `published_by` INT UNSIGNED DEFAULT NULL,
   `metadata` TEXT,
-  `download_count` INT NOT NULL DEFAULT 0,
+  `download_count` BIGINT NOT NULL DEFAULT 0,
   `size_bytes` BIGINT NOT NULL DEFAULT 0,
   `checksum_md5` VARCHAR(32) NOT NULL DEFAULT '',
   `checksum_sha256` VARCHAR(64) NOT NULL DEFAULT '',
@@ -114,7 +116,7 @@ CREATE TABLE `package_files` (
   `size_bytes` BIGINT NOT NULL DEFAULT 0,
   `checksum_sha256` VARCHAR(64) NOT NULL DEFAULT '',
   `checksum_md5` VARCHAR(32) NOT NULL DEFAULT '',
-  `download_count` INT NOT NULL DEFAULT 0,
+  `download_count` BIGINT NOT NULL DEFAULT 0,
   UNIQUE KEY `idx_file_ver_filename` (`version_id`, `filename`),
   INDEX `idx_file_type` (`file_type`),
   FOREIGN KEY (`version_id`) REFERENCES `package_versions` (`id`) ON DELETE CASCADE
@@ -442,7 +444,7 @@ CREATE TABLE `migration_tasks` (
   `source_type` VARCHAR(50) NOT NULL DEFAULT '',
   `source_url` VARCHAR(500) NOT NULL DEFAULT '',
   `username` VARCHAR(100) NOT NULL DEFAULT '',
-  `password` VARCHAR(200) NOT NULL DEFAULT '',
+  `password_encrypted` TEXT NOT NULL DEFAULT '',
   `status` VARCHAR(20) NOT NULL DEFAULT 'pending',
   `total_items` INT NOT NULL DEFAULT 0,
   `processed_items` INT NOT NULL DEFAULT 0,

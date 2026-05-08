@@ -46,7 +46,7 @@ func (w *MigrationWorker) Execute(ctx context.Context, task *model.MigrationTask
 		"concurrency": w.concurrency,
 	}).Info("Migration task started")
 
-	client := NewNexusClient(task.SourceURL, task.Username, task.Password)
+	client := NewNexusClient(task.SourceURL, task.Username, mustGetPassword(task))
 	w.service.RegisterNexusClient(task.ID, client)
 
 	now := time.Now()
@@ -470,4 +470,9 @@ func (w *MigrationWorker) completeTask(taskID uint) {
 		"status":       model.MigrationCompleted,
 		"completed_at": time.Now(),
 	})
+}
+
+func mustGetPassword(task *model.MigrationTask) string {
+	password, _ := task.GetPassword()
+	return password
 }

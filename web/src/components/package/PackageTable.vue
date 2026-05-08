@@ -199,12 +199,6 @@ const handleRowLeave = () => {
   border: none;
 }
 
-.type-tag--nuget {
-  background: linear-gradient(135deg, #fbcfe8 0%, #f9a8d4 100%);
-  color: #be185d;
-  border: none;
-}
-
 .source-tag {
   font-size: 11px;
   padding: 3px 10px;

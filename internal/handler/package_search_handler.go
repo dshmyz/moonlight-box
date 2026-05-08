@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"github.com/moonlight-box/registry/internal/response"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -42,9 +43,9 @@ func (h *PackageSearchHandler) Search(c *gin.Context) {
 
 	result, err := h.svc.Search(c.Request.Context(), req)
 	if err != nil {
-		InternalError(c, err.Error())
+		response.InternalError(c, err.Error())
 		return
 	}
 
-	Success(c, result)
+	response.Success(c, result)
 }

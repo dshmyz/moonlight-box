@@ -16,6 +16,51 @@
       </el-button>
     </header>
 
+    <div class="content-panel schedule-panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <i class="fa-solid fa-clock"></i>
+          <span>定时备份设置</span>
+        </div>
+        <el-button type="primary" size="small" @click="saveScheduleConfig" :loading="savingConfig">
+          <i class="fa-solid fa-save"></i> 保存
+        </el-button>
+      </div>
+      <el-form :model="scheduleConfig" label-width="100px" class="schedule-form">
+        <el-row :gutter="24">
+          <el-col :span="8">
+            <el-form-item label="启用定时备份">
+              <el-switch v-model="scheduleConfig.enabled" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="备份间隔">
+              <el-select v-model="scheduleConfig.interval" placeholder="选择备份间隔" :disabled="!scheduleConfig.enabled">
+                <el-option label="每 1 小时" value="1h" />
+                <el-option label="每 6 小时" value="6h" />
+                <el-option label="每 12 小时" value="12h" />
+                <el-option label="每 24 小时" value="24h" />
+                <el-option label="每 48 小时" value="48h" />
+                <el-option label="每 7 天" value="168h" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="备份时间">
+              <el-time-picker
+                v-model="scheduleTime"
+                format="HH:mm"
+                value-format="HH:mm"
+                placeholder="选择时间"
+                :disabled="!scheduleConfig.enabled"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+        </el-row>
+      </el-form>
+    </div>
+
     <div class="content-panel" v-loading="loading">
       <el-table
         :data="backups"
@@ -106,20 +151,35 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { backupApi, type Backup } from '@/api/backup'
 
 const loading = ref(false)
 const creating = ref(false)
+const savingConfig = ref(false)
 const backups = ref<Backup[]>([])
 const createVisible = ref(false)
 const createFormRef = ref<FormInstance>()
 const hoveredRow = ref<number | null>(null)
+const scheduleTime = ref('02:00')
 
 const createForm = ref({
   name: '',
   description: '',
+})
+
+const scheduleConfig = ref({
+  enabled: true,
+  interval: '24h',
+  time: '02:00',
+})
+
+watch(() => scheduleConfig.value.enabled, (enabled) => {
+  if (!enabled) {
+    scheduleConfig.value.interval = '24h'
+    scheduleTime.value = '02:00'
+  }
 })
 
 const createRules: FormRules = {
@@ -174,6 +234,33 @@ const loadBackups = async () => {
     ElMessage.error('加载备份列表失败')
   } finally {
     loading.value = false
+  }
+}
+
+const loadScheduleConfig = async () => {
+  try {
+    const config = await backupApi.getConfig()
+    scheduleConfig.value = config as any
+    scheduleTime.value = (config as any).time || '02:00'
+  } catch {
+    ElMessage.error('加载备份配置失败')
+  }
+}
+
+const saveScheduleConfig = async () => {
+  savingConfig.value = true
+  try {
+    await backupApi.updateConfig({
+      enabled: scheduleConfig.value.enabled,
+      interval: scheduleConfig.value.interval,
+      time: scheduleTime.value,
+    })
+    ElMessage.success('备份配置保存成功')
+    await loadScheduleConfig()
+  } catch {
+    ElMessage.error('保存备份配置失败')
+  } finally {
+    savingConfig.value = false
   }
 }
 
@@ -246,7 +333,10 @@ const handleDelete = async (backup: Backup) => {
   }
 }
 
-onMounted(loadBackups)
+onMounted(() => {
+  loadBackups()
+  loadScheduleConfig()
+})
 </script>
 
 <style scoped>
@@ -323,6 +413,45 @@ onMounted(loadBackups)
   border-radius: 16px;
   padding: 20px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.schedule-panel {
+  margin-bottom: 16px;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.panel-title i {
+  color: #06b6d4;
+}
+
+.schedule-form {
+  padding: 8px 0;
+}
+
+.schedule-form :deep(.el-form-item) {
+  margin-bottom: 0;
+}
+
+.schedule-form :deep(.el-form-item__label) {
+  font-weight: 500;
+  color: #475569;
 }
 
 :deep(.el-table .row-hovered) {

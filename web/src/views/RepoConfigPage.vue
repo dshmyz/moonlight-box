@@ -97,9 +97,8 @@ const packageTypeLabel = computed(() => {
     maven: 'Maven',
     pypi: 'PyPI',
     go: 'Go',
-    nuget: 'NuGet',
     yum: 'Yum',
-    apt: 'APT',
+    apt: 'Apt',
     generic: 'Generic',
   }
   return map[repoConfig.value.package_type] || repoConfig.value.package_type

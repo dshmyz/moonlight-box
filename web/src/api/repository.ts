@@ -13,7 +13,6 @@ export interface Repository {
   description: string
   type: 'local' | 'proxy' | 'virtual'
   package_type: string
-  package_types?: string
   enabled: boolean
   remote_url?: string
   auth_type?: string

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"github.com/moonlight-box/registry/internal/response"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -34,13 +35,26 @@ func (h *BlockRuleHandler) List(c *gin.Context) {
 		filter["enabled"] = enabled == "true"
 	}
 
-	rules, err := h.svc.List(filter)
-	if err != nil {
-		InternalError(c, err.Error())
-		return
+	if p := c.Query("page"); p != "" {
+		page, _ := strconv.Atoi(p)
+		pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+		if page < 1 {
+			page = 1
+		}
+		rules, total, err := h.svc.ListWithPage(page, pageSize, filter)
+		if err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+		response.SuccessWithPagination(c, rules, page, pageSize, total)
+	} else {
+		rules, err := h.svc.List(filter)
+		if err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+		response.Success(c, rules)
 	}
-
-	Success(c, rules)
 }
 
 func (h *BlockRuleHandler) Create(c *gin.Context) {
@@ -54,12 +68,12 @@ func (h *BlockRuleHandler) Create(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		BadRequest(c, "Invalid request", err.Error())
+		response.BadRequest(c, "Invalid request", err.Error())
 		return
 	}
 
 	if req.MatchType != string(model.BlockMatchExact) && req.MatchType != string(model.BlockMatchWildcard) {
-		BadRequest(c, "Invalid match_type", "must be 'exact' or 'wildcard'")
+		response.BadRequest(c, "Invalid match_type", "must be 'exact' or 'wildcard'")
 		return
 	}
 
@@ -83,47 +97,47 @@ func (h *BlockRuleHandler) Create(c *gin.Context) {
 	}
 
 	if err := h.svc.Create(rule); err != nil {
-		InternalError(c, err.Error())
+		response.InternalError(c, err.Error())
 		return
 	}
 
-	Created(c, rule)
+	response.Created(c, rule)
 }
 
 func (h *BlockRuleHandler) Update(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		BadRequest(c, "Invalid id", err.Error())
+		response.BadRequest(c, "Invalid id", err.Error())
 		return
 	}
 
 	var updates map[string]interface{}
 	if err := c.ShouldBindJSON(&updates); err != nil {
-		BadRequest(c, "Invalid request", err.Error())
+		response.BadRequest(c, "Invalid request", err.Error())
 		return
 	}
 
 	if err := h.svc.Update(uint(id), updates); err != nil {
-		InternalError(c, err.Error())
+		response.InternalError(c, err.Error())
 		return
 	}
 
-	Success(c, gin.H{"message": "Block rule updated"})
+	response.Success(c, gin.H{"message": "Block rule updated"})
 }
 
 func (h *BlockRuleHandler) Delete(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		BadRequest(c, "Invalid id", err.Error())
+		response.BadRequest(c, "Invalid id", err.Error())
 		return
 	}
 
 	if err := h.svc.Delete(uint(id)); err != nil {
-		InternalError(c, err.Error())
+		response.InternalError(c, err.Error())
 		return
 	}
 
-	Success(c, gin.H{"message": "Block rule deleted"})
+	response.Success(c, gin.H{"message": "Block rule deleted"})
 }
 
 func (h *BlockRuleHandler) ListBlockLogs(c *gin.Context) {
@@ -138,11 +152,11 @@ func (h *BlockRuleHandler) ListBlockLogs(c *gin.Context) {
 
 	logs, total, err := h.auditSvc.List(page, pageSize, nil, string(model.ActionBlock))
 	if err != nil {
-		InternalError(c, err.Error())
+		response.InternalError(c, err.Error())
 		return
 	}
 
-	SuccessWithPagination(c, logs, page, pageSize, total)
+	response.SuccessWithPagination(c, logs, page, pageSize, total)
 }
 
 func (h *BlockRuleHandler) BatchImport(c *gin.Context) {
@@ -158,7 +172,7 @@ func (h *BlockRuleHandler) BatchImport(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		BadRequest(c, "Invalid request", err.Error())
+		response.BadRequest(c, "Invalid request", err.Error())
 		return
 	}
 
@@ -190,11 +204,11 @@ func (h *BlockRuleHandler) BatchImport(c *gin.Context) {
 
 	success, failed, err := h.svc.BatchCreate(rules)
 	if err != nil {
-		InternalError(c, err.Error())
+		response.InternalError(c, err.Error())
 		return
 	}
 
-	Success(c, gin.H{
+	response.Success(c, gin.H{
 		"success": success,
 		"failed":  failed,
 		"total":   len(req.Rules),
@@ -219,9 +233,9 @@ func (h *BlockRuleHandler) GetBlockStats(c *gin.Context) {
 
 	stats, err := h.auditRepo.GetBlockStats(hours)
 	if err != nil {
-		InternalError(c, err.Error())
+		response.InternalError(c, err.Error())
 		return
 	}
 
-	Success(c, stats)
+	response.Success(c, stats)
 }

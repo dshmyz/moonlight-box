@@ -56,7 +56,6 @@ func (s *MigrationService) CreateTask(sourceURL, username, password string, sele
 		SourceType:         "nexus",
 		SourceURL:          sourceURL,
 		Username:           username,
-		Password:           password,
 		Status:             model.MigrationPending,
 		SelectedRepos:      string(reposJSON),
 		TargetRepositoryID: targetRepoID,
@@ -64,6 +63,10 @@ func (s *MigrationService) CreateTask(sourceURL, username, password string, sele
 		WorkerCount:        workerCount,
 		MaxRetries:         maxRetries,
 		BatchSize:          batchSize,
+	}
+
+	if err := task.SetPassword(password); err != nil {
+		return nil, err
 	}
 
 	if err := s.db.Create(task).Error; err != nil {

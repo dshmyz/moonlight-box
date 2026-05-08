@@ -19,19 +19,45 @@ var (
 	ErrTaskRunning   = errors.New("a task is already running")
 	ErrCircuitBreak  = errors.New("circuit breaker open")
 	ErrAdapterNotFnd = errors.New("adapter not found")
+	ErrValidation    = errors.New("validation error")
+	ErrTimeout       = errors.New("operation timeout")
+	ErrRateLimit     = errors.New("rate limit exceeded")
+	ErrServiceUnavailable = errors.New("service unavailable")
+)
+
+type ErrorCategory string
+
+const (
+	CategoryValidation    ErrorCategory = "validation"
+	CategoryAuthentication ErrorCategory = "authentication"
+	CategoryAuthorization  ErrorCategory = "authorization"
+	CategoryNotFound       ErrorCategory = "not_found"
+	CategoryConflict       ErrorCategory = "conflict"
+	CategoryInternal       ErrorCategory = "internal"
+	CategoryExternal       ErrorCategory = "external"
+	CategoryTimeout        ErrorCategory = "timeout"
+	CategoryRateLimit      ErrorCategory = "rate_limit"
 )
 
 type AppError struct {
-	Code    int
-	Message string
-	Err     error
+	Code     int
+	Message  string
+	Err      error
+	Category ErrorCategory
+	Op       string
 }
 
 func (e *AppError) Error() string {
 	if e.Message != "" {
+		if e.Op != "" {
+			return fmt.Sprintf("%s: %s", e.Op, e.Message)
+		}
 		return e.Message
 	}
 	if e.Err != nil {
+		if e.Op != "" {
+			return fmt.Sprintf("%s: %v", e.Op, e.Err)
+		}
 		return e.Err.Error()
 	}
 	return "unknown error"
@@ -46,6 +72,25 @@ func NewAppError(code int, message string, err error) *AppError {
 		Code:    code,
 		Message: message,
 		Err:     err,
+	}
+}
+
+func NewAppErrorWithCategory(code int, category ErrorCategory, message string, err error) *AppError {
+	return &AppError{
+		Code:     code,
+		Category: category,
+		Message:  message,
+		Err:      err,
+	}
+}
+
+func NewAppErrorWithOp(code int, category ErrorCategory, op, message string, err error) *AppError {
+	return &AppError{
+		Code:     code,
+		Category: category,
+		Op:       op,
+		Message:  message,
+		Err:      err,
 	}
 }
 
@@ -66,6 +111,18 @@ func WrapWithCode(code int, err error, message string) error {
 	}
 	return &AppError{
 		Code:    code,
+		Message: message,
+		Err:     err,
+	}
+}
+
+func WrapWithOp(op string, err error, message string) error {
+	if err == nil {
+		return nil
+	}
+	return &AppError{
+		Code:    500,
+		Op:      op,
 		Message: message,
 		Err:     err,
 	}

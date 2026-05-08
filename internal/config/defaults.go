@@ -44,7 +44,7 @@ func setDefaults(v interface {
 	// Cache
 	v.SetDefault("cache.enabled", true)
 	v.SetDefault("cache.default_ttl", 24*time.Hour)
-	v.SetDefault("cache.max_size_gb", 10)
+	v.SetDefault("cache.max_size_gb", 2)
 	v.SetDefault("cache.eviction_policy", "lru")
 
 	// Logging

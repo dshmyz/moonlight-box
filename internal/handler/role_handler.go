@@ -78,7 +78,7 @@ func (h *RoleHandler) Create(c *gin.Context) {
 		if operatorID > 0 {
 			opID = &operatorID
 		}
-		_ = h.auditSvc.LogWithRequest(
+		_ = h.auditSvc.LogWithRequestAndStatus(
 			c.Request.Context(),
 			opID,
 			model.ActionRoleAssign,
@@ -88,6 +88,8 @@ func (h *RoleHandler) Create(c *gin.Context) {
 			`{"action":"create"}`,
 			c.ClientIP(),
 			c.Request.UserAgent(),
+			201,
+			0,
 		)
 	}
 
@@ -172,17 +174,6 @@ func (h *RoleHandler) UpdatePermissions(c *gin.Context) {
 		return
 	}
 
-	role, err := h.roleRepo.FindByID(uint(id))
-	if err != nil {
-		response.NotFound(c, "role not found")
-		return
-	}
-
-	if role.IsSystemRole {
-		response.BadRequest(c, "cannot modify system role", "system role permissions cannot be modified")
-		return
-	}
-
 	var req struct {
 		PermissionIDs []uint `json:"permission_ids"`
 	}
@@ -208,6 +199,59 @@ func (h *RoleHandler) ListPermissions(c *gin.Context) {
 		return
 	}
 	response.Success(c, perms)
+}
+
+func (h *RoleHandler) CloneRole(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid role ID", "role ID must be a positive integer")
+		return
+	}
+
+	var req struct {
+		Name        string `json:"name" binding:"required"`
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request", err.Error())
+		return
+	}
+
+	existing, _ := h.roleRepo.FindByName(req.Name)
+	if existing != nil {
+		response.BadRequest(c, "role already exists", "a role with this name already exists")
+		return
+	}
+
+	clonedRole, err := h.roleRepo.CloneRole(uint(id), req.Name, req.Description)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	if h.auditSvc != nil {
+		operatorID := c.GetUint("userID")
+		var opID *uint
+		if operatorID > 0 {
+			opID = &operatorID
+		}
+		_ = h.auditSvc.LogWithRequestAndStatus(
+			c.Request.Context(),
+			opID,
+			model.ActionRoleAssign,
+			"role",
+			&clonedRole.ID,
+			clonedRole.Name,
+			`{"action":"clone","source_role_id":`+strconv.FormatUint(id, 10)+`}`,
+			c.ClientIP(),
+			c.Request.UserAgent(),
+			201,
+			0,
+		)
+	}
+
+	response.Created(c, clonedRole)
 }
 
 var _ = http.StatusOK

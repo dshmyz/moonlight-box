@@ -60,13 +60,12 @@ const GROUP_CONFIG: Record<string, { label: string; icon: string; color: string 
   maven: { label: 'Maven', icon: 'M', color: '#e65100' },
   pypi: { label: 'PyPI', icon: '🐍', color: '#3775a9' },
   go: { label: 'Go', icon: 'Go', color: '#00add8' },
-  nuget: { label: 'NuGet', icon: 'N', color: '#004880' },
   yum: { label: 'Yum', icon: 'Y', color: '#2e6da4' },
   apt: { label: 'Apt', icon: 'A', color: '#d70a53' },
   generic: { label: 'Generic', icon: 'G', color: '#606266' },
 }
 
-const GROUP_ORDER = ['npm', 'maven', 'pypi', 'go', 'nuget', 'yum', 'apt', 'generic']
+const GROUP_ORDER = ['npm', 'maven', 'pypi', 'go', 'yum', 'apt', 'generic']
 
 const groupedRepos = computed<RepoGroup[]>(() => {
   const groups: Record<string, Repository[]> = {}
@@ -118,8 +117,6 @@ function getRegistryUrl(repo: Repository): string {
       return `${base}/`
     case 'pypi':
       return `${base}/simple`
-    case 'nuget':
-      return `${base}/v3/index.json`
     default:
       return `${base}/`
   }
@@ -137,8 +134,6 @@ function getConfigCommand(repo: Repository): string {
       return url
     case 'go':
       return `GOPROXY=${url} go mod tidy`
-    case 'nuget':
-      return `dotnet nuget add source ${url} -n ${repo.name}`
     case 'yum':
       return `sudo yum-config-manager --add-repo ${url}repodata/repomd.xml`
     case 'apt':

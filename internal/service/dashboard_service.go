@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
 	"gorm.io/gorm"
 )
@@ -56,9 +57,10 @@ type PackageTop struct {
 
 // DashboardService 仪表盘服务
 type DashboardService struct {
-	db          *gorm.DB
-	repoRepo    *repository.RepositoryRepository
-	storagePath string
+	db             *gorm.DB
+	repoRepo       *repository.RepositoryRepository
+	healthCheckSvc *proxy.HealthCheckService
+	storagePath    string
 
 	cacheMu        sync.RWMutex
 	cachedStats    *DashboardStats
@@ -67,16 +69,68 @@ type DashboardService struct {
 	storageSize    int64
 	storageSizeMu  sync.RWMutex
 	storageUpdated time.Time
+
+	cacheInfoMu        sync.RWMutex
+	cachedCacheInfo    *CacheInfo
+	cacheInfoUpdatedAt time.Time
+	cacheInfoTTL       time.Duration
+
+	stopCh chan struct{}
 }
 
 // NewDashboardService 创建仪表盘服务实例
-func NewDashboardService(db *gorm.DB, repoRepo *repository.RepositoryRepository, storagePath string) *DashboardService {
-	return &DashboardService{
-		db:          db,
-		repoRepo:    repoRepo,
-		storagePath: storagePath,
-		cacheTTL:    30 * time.Second,
+func NewDashboardService(db *gorm.DB, repoRepo *repository.RepositoryRepository, healthCheckSvc *proxy.HealthCheckService, storagePath string) *DashboardService {
+	svc := &DashboardService{
+		db:             db,
+		repoRepo:       repoRepo,
+		healthCheckSvc: healthCheckSvc,
+		storagePath:    storagePath,
+		cacheTTL:       30 * time.Second,
+		cacheInfoTTL:   5 * time.Minute,
+		stopCh:         make(chan struct{}),
 	}
+
+	// 启动后台任务定期计算目录大小
+	go svc.storageSizeWorker()
+
+	return svc
+}
+
+// storageSizeWorker 后台定期计算目录大小
+func (s *DashboardService) storageSizeWorker() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	// 立即执行一次
+	s.updateStorageSize()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.updateStorageSize()
+		case <-s.stopCh:
+			return
+		}
+	}
+}
+
+// updateStorageSize 更新存储大小
+func (s *DashboardService) updateStorageSize() {
+	if s.storagePath == "" {
+		return
+	}
+
+	size := calculateDirSize(s.storagePath)
+
+	s.storageSizeMu.Lock()
+	s.storageSize = size
+	s.storageUpdated = time.Now()
+	s.storageSizeMu.Unlock()
+}
+
+// Stop 停止后台任务
+func (s *DashboardService) Stop() {
+	close(s.stopCh)
 }
 
 // GetStats 获取仪表盘统计数据
@@ -134,14 +188,38 @@ func (s *DashboardService) computeStats(ctx context.Context) (*DashboardStats, e
 		pkgCountMap[pc.RepositoryID] = pc.Count
 	}
 
+	var todayDownloads []struct {
+		RepositoryID uint
+		Count        int64
+	}
+	if len(repoIDs) > 0 {
+		todayStart := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 0, 0, 0, 0, time.Now().Location())
+		s.db.Model(&model.ProxyDownloadLog{}).
+			Select("repository_id, COUNT(*) as count").
+			Where("repository_id IN ? AND created_at >= ?", repoIDs, todayStart).
+			Group("repository_id").
+			Scan(&todayDownloads)
+	}
+
+	todayDownloadMap := make(map[uint]int64)
+	for _, td := range todayDownloads {
+		todayDownloadMap[td.RepositoryID] = td.Count
+	}
+
+	healthStatuses := s.getHealthStatuses()
+
 	repoStatuses := make([]RepoStatus, 0, len(repos))
 	for _, repo := range repos {
+		healthStatus := healthStatuses[repo.ID]
+
 		status := RepoStatus{
-			Name:         repo.Name,
-			Type:         string(repo.Type),
-			PackageType:  repo.PackageType,
-			Status:       "healthy",
-			PackageCount: pkgCountMap[repo.ID],
+			Name:               repo.Name,
+			Type:               string(repo.Type),
+			PackageType:        repo.PackageType,
+			Status:             s.getRepoHealthStatus(healthStatus),
+			PackageCount:       pkgCountMap[repo.ID],
+			DownloadCountToday: todayDownloadMap[repo.ID],
+			StorageBytes:       s.getRepoStorageBytes(repo),
 		}
 		repoStatuses = append(repoStatuses, status)
 	}
@@ -160,6 +238,57 @@ func (s *DashboardService) computeStats(ctx context.Context) (*DashboardStats, e
 	}
 
 	return stats, nil
+}
+
+func (s *DashboardService) getHealthStatuses() map[uint]*proxy.HealthStatus {
+	if s.healthCheckSvc == nil {
+		return nil
+	}
+	return s.healthCheckSvc.GetAllHealthStatuses()
+}
+
+func (s *DashboardService) getRepoHealthStatus(healthStatus *proxy.HealthStatus) string {
+	if healthStatus == nil {
+		return "unknown"
+	}
+
+	if healthStatus.ConsecutiveFailures > 0 {
+		return "warning"
+	}
+
+	if healthStatus.IsHealthy {
+		return "healthy"
+	}
+
+	return "error"
+}
+
+func (s *DashboardService) getRepoStorageBytes(repo model.Repository) int64 {
+	if repo.Type != model.RepoTypeLocal {
+		return 0
+	}
+
+	if repo.StorageBackendID == nil {
+		return s.getDirStorageBytes(s.storagePath)
+	}
+
+	var backend model.StorageBackend
+	if err := s.db.First(&backend, *repo.StorageBackendID).Error; err != nil {
+		return 0
+	}
+
+	if backend.Type == model.StorageTypeLocal && backend.Config.Local != nil {
+		return s.getDirStorageBytes(backend.Config.Local.BasePath)
+	}
+
+	return 0
+}
+
+func (s *DashboardService) getDirStorageBytes(path string) int64 {
+	if path == "" {
+		return 0
+	}
+	return calculateDirSize(path)
 }
 
 // getTopPackages 获取下载量最高的包
@@ -203,32 +332,23 @@ func (s *DashboardService) getStorageInfo() StorageInfo {
 		}
 	}
 
-	usedBytes := getDirSize(s.storagePath)
-
-	s.storageSizeMu.Lock()
-	s.storageSize = usedBytes
-	s.storageUpdated = time.Now()
-	s.storageSizeMu.Unlock()
-
 	var totalBytes int64
-	if usedBytes > 0 {
-		totalBytes = usedBytes * 2
-	}
-
 	var usagePercent float64
-	if totalBytes > 0 {
-		usagePercent = float64(usedBytes) / float64(totalBytes) * 100
+	if cached > 0 {
+		totalBytes = cached * 2
+		usagePercent = float64(cached) / float64(totalBytes) * 100
 	}
 
+	// 返回缓存值，后台任务会定期更新
 	return StorageInfo{
 		TotalBytes:   totalBytes,
-		UsedBytes:    usedBytes,
+		UsedBytes:    cached,
 		UsagePercent: usagePercent,
 	}
 }
 
-// getDirSize 计算目录总大小
-func getDirSize(path string) int64 {
+// calculateDirSize 计算目录总大小
+func calculateDirSize(path string) int64 {
 	var size int64
 	filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
 		if err == nil && !info.IsDir() {
@@ -239,8 +359,31 @@ func getDirSize(path string) int64 {
 	return size
 }
 
-// getCacheInfo 获取缓存统计信息
+// getCacheInfo 获取缓存统计信息（带缓存优化）
 func (s *DashboardService) getCacheInfo() CacheInfo {
+	s.cacheInfoMu.RLock()
+	if s.cachedCacheInfo != nil && time.Since(s.cacheInfoUpdatedAt) < s.cacheInfoTTL {
+		cached := *s.cachedCacheInfo
+		s.cacheInfoMu.RUnlock()
+		return cached
+	}
+	s.cacheInfoMu.RUnlock()
+
+	s.cacheInfoMu.Lock()
+	defer s.cacheInfoMu.Unlock()
+
+	if s.cachedCacheInfo != nil && time.Since(s.cacheInfoUpdatedAt) < s.cacheInfoTTL {
+		return *s.cachedCacheInfo
+	}
+
+	cacheInfo := s.computeCacheInfo()
+	s.cachedCacheInfo = &cacheInfo
+	s.cacheInfoUpdatedAt = time.Now()
+	return cacheInfo
+}
+
+// computeCacheInfo 实际计算缓存统计信息
+func (s *DashboardService) computeCacheInfo() CacheInfo {
 	var totalEntries int64
 	s.db.Model(&model.CacheEntry{}).Count(&totalEntries)
 

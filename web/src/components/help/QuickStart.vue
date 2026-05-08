@@ -19,7 +19,7 @@
         <el-timeline>
           <el-timeline-item>
             <template #dot><i class="fa-solid fa-key"></i></template>
-            <p><strong>NPM/PyPI/NuGet：</strong>使用您的账号密码进行认证</p>
+            <p><strong>NPM/PyPI：</strong>使用您的账号密码进行认证</p>
           </el-timeline-item>
           <el-timeline-item>
             <template #dot><i class="fa-solid fa-file-code"></i></template>
@@ -63,10 +63,6 @@
           <el-radio-button label="go">
             <i class="fa-brands fa-golang"></i>
             <span>Go</span>
-          </el-radio-button>
-          <el-radio-button label="nuget">
-            <i class="fa-solid fa-box"></i>
-            <span>NuGet</span>
           </el-radio-button>
         </el-radio-group>
 
@@ -128,8 +124,7 @@ const managerTitle = computed(() => {
     npm: 'NPM',
     maven: 'Maven',
     pypi: 'PyPI',
-    go: 'Go',
-    nuget: 'NuGet'
+    go: 'Go'
   }
   return titles[selectedManager.value]
 })
@@ -193,16 +188,6 @@ export GOSUMDB=off</code></pre>
           下载环境变量脚本
         </el-button>
       </p>
-    `,
-    nuget: `
-      <p>运行以下命令：</p>
-      <pre><code>nuget sources add -name moonlight -source ${registry}/nuget/v3/index.json
-nuget sources update -name moonlight -username YOUR_USERNAME -password YOUR_PASSWORD</code></pre>
-      <p style="margin-top: 10px">
-        <el-button size="small" @click="downloadTemplate('NuGet.Config')">
-          下载 NuGet.Config 模板
-        </el-button>
-      </p>
     `
   }
 
@@ -218,8 +203,7 @@ const downloadConfig = () => {
     npm: '.npmrc',
     maven: 'settings.xml',
     pypi: 'pip.conf',
-    go: 'go-env.sh',
-    nuget: 'NuGet.Config'
+    go: 'go-env.sh'
   }
   downloadTemplate(filenames[selectedManager.value])
 }

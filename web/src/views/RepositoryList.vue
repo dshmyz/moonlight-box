@@ -97,9 +97,11 @@
               </el-table-column>
               <el-table-column label="状态" width="80" align="center">
                 <template #default="{ row }">
-                  <el-tag :class="['status-tag', row.enabled ? 'status-tag--enabled' : 'status-tag--disabled']" size="small">
-                    {{ row.enabled ? '启用' : '禁用' }}
-                  </el-tag>
+                  <el-switch
+                    :model-value="row.enabled"
+                    size="small"
+                    @change="(val: boolean) => toggleEnabled(row, val)"
+                  />
                 </template>
               </el-table-column>
               <el-table-column label="操作" width="220">
@@ -225,16 +227,17 @@ const handleRowLeave = () => {
 
 const getHealthClass = (row: LocalRepository) => {
   if (!row.enabled) return 'health-dot--disabled'
-  if (row.type === 'proxy') {
-    if (row.healthInfo?.health_status) {
-      const health = row.healthInfo.health_status
-      if (!health.is_healthy) return 'health-dot--error'
-      if (health.consecutive_failures > 0) return 'health-dot--warning'
-      return 'health-dot--healthy'
-    }
-    return 'health-dot--warning'
+  
+  // 所有类型的仓库都检查健康状态
+  if (row.healthInfo?.health_status) {
+    const health = row.healthInfo.health_status
+    if (!health.is_healthy) return 'health-dot--error'
+    if (health.consecutive_failures > 0) return 'health-dot--warning'
+    return 'health-dot--healthy'
   }
-  return 'health-dot--healthy'
+  
+  // 没有健康检查记录时显示未知状态
+  return 'health-dot--unknown'
 }
 
 const handleProxyCommand = (cmd: string, row: LocalRepository) => {
@@ -304,6 +307,16 @@ const deleteRepo = async (name: string) => {
     loadRepos()
   } catch (err) {
     ElMessage.error('删除失败')
+  }
+}
+
+const toggleEnabled = async (repo: Repository, enabled: boolean) => {
+  try {
+    await repositoryApi.update(repo.name, { enabled })
+    ElMessage.success(enabled ? '已启用' : '已禁用')
+    loadRepos()
+  } catch (err) {
+    ElMessage.error('状态更新失败')
   }
 }
 
@@ -677,7 +690,6 @@ onMounted(loadRepos)
 .remote-url {
   font-size: 13px;
   color: #059669;
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   white-space: nowrap;
 }
 
@@ -750,6 +762,12 @@ onMounted(loadRepos)
 .health-dot--disabled {
   background: #94a3b8;
   box-shadow: none;
+}
+
+.health-dot--unknown {
+  background: #94a3b8;
+  box-shadow: none;
+  border: 1px dashed #64748b;
 }
 
 .status-tag {

@@ -50,11 +50,14 @@
             <span class="time-text">{{ formatDate(row.created_at) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="180" align="center">
+        <el-table-column label="操作" width="240" align="center">
           <template #default="{ row }">
             <div class="operation-buttons">
               <el-button class="btn-perm" size="small" @click="showPermissionDialog(row)">
                 <i class="fa-solid fa-key"></i> 权限
+              </el-button>
+              <el-button class="btn-clone" size="small" @click="showCloneDialog(row)">
+                <i class="fa-solid fa-clone"></i> 克隆
               </el-button>
               <el-popconfirm title="确定删除此角色?" @confirm="deleteRole(row)" :disabled="row.is_system_role">
                 <template #reference>
@@ -110,6 +113,25 @@
         <el-button type="primary" @click="updatePermissions">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="cloneVisible" title="克隆角色" width="500px" class="clone-dialog">
+      <div class="clone-source-info">
+        <i class="fa-solid fa-clone"></i>
+        <span>基于角色：<strong>{{ cloneSourceRole?.name }}</strong> 创建新角色</span>
+      </div>
+      <el-form :model="cloneForm" label-width="80px">
+        <el-form-item label="角色名称" required>
+          <el-input v-model="cloneForm.name" placeholder="请输入新角色名称（英文）" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="cloneForm.description" type="textarea" :rows="3" placeholder="请输入新角色描述" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="cloneVisible = false">取消</el-button>
+        <el-button type="primary" @click="cloneRole">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -125,6 +147,10 @@ const hoveredRow = ref<number | null>(null)
 
 const createVisible = ref(false)
 const createForm = ref({ name: '', description: '' })
+
+const cloneVisible = ref(false)
+const cloneSourceRole = ref<Role | null>(null)
+const cloneForm = ref({ name: '', description: '' })
 
 const permissionVisible = ref(false)
 const currentRole = ref<Role | null>(null)
@@ -257,6 +283,30 @@ async function deleteRole(role: Role) {
   }
 }
 
+function showCloneDialog(role: Role) {
+  cloneSourceRole.value = role
+  cloneForm.value = { name: `${role.name}-copy`, description: role.description }
+  cloneVisible.value = true
+}
+
+async function cloneRole() {
+  if (!cloneForm.value.name) {
+    ElMessage.error('请输入角色名称')
+    return
+  }
+
+  if (!cloneSourceRole.value) return
+
+  try {
+    await roleApi.clone(cloneSourceRole.value.id, cloneForm.value)
+    ElMessage.success('角色克隆成功')
+    cloneVisible.value = false
+    loadRoles()
+  } catch {
+    ElMessage.error('角色克隆失败')
+  }
+}
+
 onMounted(() => {
   loadRoles()
   loadPermissions()
@@ -379,6 +429,16 @@ onMounted(() => {
   background: #e0f2fe;
 }
 
+.btn-clone {
+  background: #f0fdf4;
+  color: #166534;
+  border-color: #bbf7d0;
+}
+
+.btn-clone:hover {
+  background: #dcfce7;
+}
+
 .btn-delete {
   color: #ef4444;
 }
@@ -408,5 +468,20 @@ onMounted(() => {
 .resource-name {
   font-weight: 500;
   color: #374151;
+}
+
+.clone-source-info {
+  margin-bottom: 16px;
+  padding: 12px;
+  background: #f0fdf4;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #166534;
+}
+
+.clone-source-info i {
+  color: #22c55e;
 }
 </style>

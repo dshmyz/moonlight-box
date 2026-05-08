@@ -14,10 +14,11 @@ import (
 )
 
 type SecurityScanner struct {
-	scanRepo  *repository.ScanRepository
-	pkgRepo   *repository.PackageRepository
-	blockRepo *repository.BlockRuleRepository
-	logger    *logrus.Logger
+	scanRepo        *repository.ScanRepository
+	pkgRepo         *repository.PackageRepository
+	blockRepo       *repository.BlockRuleRepository
+	vulnRuleService *VulnRuleService
+	logger          *logrus.Logger
 }
 
 type ScanRule struct {
@@ -133,6 +134,10 @@ func NewSecurityScanner(scanRepo *repository.ScanRepository, pkgRepo *repository
 	}
 }
 
+func (s *SecurityScanner) SetVulnRuleService(vulnRuleService *VulnRuleService) {
+	s.vulnRuleService = vulnRuleService
+}
+
 func (s *SecurityScanner) ScanPackage(ctx context.Context, versionID uint, pkgType, name, version string) *model.ScanResult {
 	s.logger.Infof("Scanning %s@%s (type: %s, versionID: %d)", name, version, pkgType, versionID)
 
@@ -220,10 +225,21 @@ func (s *SecurityScanner) ListVulnerabilities(scanResultID uint) ([]model.Vulner
 	return s.scanRepo.ListVulnerabilities(scanResultID)
 }
 
+func (s *SecurityScanner) ListVulnerabilitiesPaginated(page, pageSize int, severity, pkgType string) ([]model.Vulnerability, int64, error) {
+	return s.scanRepo.ListVulnerabilitiesPaginated(page, pageSize, severity, pkgType)
+}
+
 func (s *SecurityScanner) detectVulnerabilities(pkgType, name, version string) ([]model.Vulnerability, error) {
 	var vulns []model.Vulnerability
 
-	for _, rule := range scanRules {
+	rules := scanRules
+	if s.vulnRuleService != nil {
+		if allRules, err := s.vulnRuleService.GetAllScanRules(); err == nil {
+			rules = allRules
+		}
+	}
+
+	for _, rule := range rules {
 		if rule.PackagePattern.MatchString(name) {
 			if rule.MaxVersion == "" || isVersionLessThan(version, rule.MaxVersion) {
 				vulns = append(vulns, model.Vulnerability{

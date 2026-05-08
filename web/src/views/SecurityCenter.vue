@@ -56,7 +56,7 @@
     </div>
 
     <div class="content-panel" v-loading="loading">
-      <el-tabs v-model="activeTab" class="type-tabs">
+      <el-tabs v-model="activeTab" class="type-tabs" @tab-click="handleTabClick">
         <el-tab-pane label="漏洞列表" name="vulnerabilities">
           <div class="tab-content">
             <div class="filter-bar">
@@ -141,9 +141,9 @@
               style="width: 100%"
               :header-cell-style="{ background: '#fafbfc' }"
             >
-              <el-table-column prop="id" label="ID" width="60" align="center" />
-              <el-table-column prop="version_id" label="版本 ID" width="100" align="center" />
-              <el-table-column prop="scan_status" label="状态" width="100" align="center">
+              <el-table-column prop="id" label="ID" width="80" align="center" />
+              <el-table-column prop="version_id" label="版本 ID" width="120" align="center" />
+              <el-table-column prop="scan_status" label="状态" width="120" align="center">
                 <template #default="{ row }">
                   <el-tag :class="['status-tag', `status-tag--${row.scan_status}`]" size="small">
                     {{ scanStatusLabel(row.scan_status) }}
@@ -173,12 +173,22 @@
                   <span class="count-low">{{ row.low_count }}</span>
                 </template>
               </el-table-column>
-              <el-table-column prop="scanned_at" label="扫描时间" width="170" align="center">
+              <el-table-column prop="scanned_at" label="扫描时间" min-width="170" align="center">
                 <template #default="{ row }">
                   {{ formatDate(row.scanned_at) }}
                 </template>
               </el-table-column>
             </el-table>
+
+            <el-pagination
+              v-if="scanTotal > scanPageSize"
+              :current-page="scanPage"
+              :page-size="scanPageSize"
+              :total="scanTotal"
+              layout="total, prev, pager, next"
+              class="pagination"
+              @current-change="handleScanPageChange"
+            />
           </div>
         </el-tab-pane>
       </el-tabs>
@@ -189,7 +199,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, type TabsPaneContext } from 'element-plus'
 import { securityApi, type SecurityStats, type Vulnerability, type ScanResult } from '@/api/security'
 
 const activeTab = ref('vulnerabilities')
@@ -200,6 +210,9 @@ const scanResults = ref<ScanResult[]>([])
 const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
+const scanPage = ref(1)
+const scanPageSize = ref(20)
+const scanTotal = ref(0)
 const filterSeverity = ref('')
 const filterPkgType = ref('')
 const hoveredRow = ref<number | null>(null)
@@ -216,7 +229,6 @@ const pkgTypeOptions = [
   { label: 'maven', value: 'maven' },
   { label: 'pypi', value: 'pypi' },
   { label: 'go', value: 'go' },
-  { label: 'nuget', value: 'nuget' },
 ]
 
 function severityLabel(s: string): string {
@@ -272,9 +284,34 @@ async function loadVulnerabilities() {
   }
 }
 
+async function loadScanResults() {
+  loading.value = true
+  try {
+    const params: Record<string, any> = { page: scanPage.value, page_size: scanPageSize.value }
+    const res = await securityApi.listScanResults(params)
+    scanResults.value = res?.items || []
+    scanTotal.value = res?.pagination?.total || 0
+  } catch {
+    console.error('Failed to load scan results')
+  } finally {
+    loading.value = false
+  }
+}
+
 function handlePageChange(p: number) {
   page.value = p
   loadVulnerabilities()
+}
+
+function handleScanPageChange(p: number) {
+  scanPage.value = p
+  loadScanResults()
+}
+
+function handleTabClick(tab: TabsPaneContext) {
+  if (tab.paneName === 'scanResults' && scanResults.value.length === 0) {
+    loadScanResults()
+  }
 }
 
 async function triggerFullScan() {
