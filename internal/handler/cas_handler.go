@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -16,7 +17,7 @@ func NewCASHandler(casService *service.CASService) *CASHandler {
 
 func (h *CASHandler) Login(c *gin.Context) {
 	if !h.casService.IsEnabled() {
-		BadRequest(c, "CAS login is not enabled", "please configure CAS in server settings")
+		response.BadRequest(c, "CAS login is not enabled", "please configure CAS in server settings")
 		return
 	}
 
@@ -27,27 +28,27 @@ func (h *CASHandler) Login(c *gin.Context) {
 
 func (h *CASHandler) Callback(c *gin.Context) {
 	if !h.casService.IsEnabled() {
-		BadRequest(c, "CAS login is not enabled", "please configure CAS in server settings")
+		response.BadRequest(c, "CAS login is not enabled", "please configure CAS in server settings")
 		return
 	}
 
 	ticket := c.Query("ticket")
 	if ticket == "" {
-		BadRequest(c, "missing ticket parameter", "ticket is required for CAS callback")
+		response.BadRequest(c, "missing ticket parameter", "ticket is required for CAS callback")
 		return
 	}
 
 	resp, err := h.casService.LoginByTicket(ticket)
 	if err != nil {
-		Unauthorized(c, err.Error())
+		response.Unauthorized(c, err.Error())
 		return
 	}
 
-	Success(c, resp)
+	response.Success(c, resp)
 }
 
 func (h *CASHandler) Config(c *gin.Context) {
-	Success(c, gin.H{
+	response.Success(c, gin.H{
 		"enabled":   h.casService.IsEnabled(),
 		"login_url": h.casService.GetLoginURL(""),
 	})

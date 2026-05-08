@@ -2,10 +2,10 @@ package handler
 
 import (
 	"encoding/json"
-	"net/http"
 	"strconv"
 
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -32,38 +32,38 @@ type storageBackendRequest struct {
 func (h *StorageBackendHandler) List(c *gin.Context) {
 	backends, err := h.svc.List()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		response.InternalError(c, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, backends)
+	response.Success(c, backends)
 }
 
 func (h *StorageBackendHandler) Get(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		response.BadRequest(c, "invalid id", "")
 		return
 	}
 
 	backend, err := h.svc.GetByID(uint(id))
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "storage backend not found"})
+		response.NotFound(c, "storage backend not found")
 		return
 	}
-	c.JSON(http.StatusOK, backend)
+	response.Success(c, backend)
 }
 
 func (h *StorageBackendHandler) Create(c *gin.Context) {
 	var req storageBackendRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		response.BadRequest(c, "invalid request", err.Error())
 		return
 	}
 
 	configData, _ := json.Marshal(req.Config)
 	var cfg model.StorageBackendConfig
 	if err := json.Unmarshal(configData, &cfg); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid config"})
+		response.BadRequest(c, "invalid config", "")
 		return
 	}
 
@@ -83,29 +83,29 @@ func (h *StorageBackendHandler) Create(c *gin.Context) {
 
 	result, err := h.svc.Create(backend)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		response.BadRequest(c, err.Error(), "")
 		return
 	}
-	c.JSON(http.StatusCreated, result)
+	response.Created(c, result)
 }
 
 func (h *StorageBackendHandler) Update(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		response.BadRequest(c, "invalid id", "")
 		return
 	}
 
 	var req storageBackendRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		response.BadRequest(c, "invalid request", err.Error())
 		return
 	}
 
 	configData, _ := json.Marshal(req.Config)
 	var cfg model.StorageBackendConfig
 	if err := json.Unmarshal(configData, &cfg); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid config"})
+		response.BadRequest(c, "invalid config", "")
 		return
 	}
 
@@ -126,51 +126,51 @@ func (h *StorageBackendHandler) Update(c *gin.Context) {
 
 	result, err := h.svc.Update(backend)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		response.BadRequest(c, err.Error(), "")
 		return
 	}
-	c.JSON(http.StatusOK, result)
+	response.Success(c, result)
 }
 
 func (h *StorageBackendHandler) Delete(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		response.BadRequest(c, "invalid id", "")
 		return
 	}
 
 	if err := h.svc.Delete(uint(id)); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		response.BadRequest(c, err.Error(), "")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+	response.Success(c, gin.H{"message": "deleted"})
 }
 
 func (h *StorageBackendHandler) SetDefault(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		response.BadRequest(c, "invalid id", "")
 		return
 	}
 
 	if err := h.svc.SetDefault(uint(id)); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		response.BadRequest(c, err.Error(), "")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "default updated"})
+	response.Success(c, gin.H{"message": "default updated"})
 }
 
 func (h *StorageBackendHandler) TestConnection(c *gin.Context) {
 	var req storageBackendRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		response.BadRequest(c, "invalid request", err.Error())
 		return
 	}
 
 	configData, _ := json.Marshal(req.Config)
 	var cfg model.StorageBackendConfig
 	if err := json.Unmarshal(configData, &cfg); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid config"})
+		response.BadRequest(c, "invalid config", "")
 		return
 	}
 
@@ -180,8 +180,8 @@ func (h *StorageBackendHandler) TestConnection(c *gin.Context) {
 	}
 
 	if err := h.svc.TestConnection(backend); err != nil {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+		response.Success(c, gin.H{"success": false, "message": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "connection successful"})
+	response.Success(c, gin.H{"success": true, "message": "connection successful"})
 }

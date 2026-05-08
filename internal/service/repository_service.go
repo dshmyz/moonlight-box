@@ -1,9 +1,8 @@
 package service
 
 import (
-	"encoding/json"
-
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
 	"gorm.io/gorm"
 )
@@ -12,6 +11,7 @@ import (
 type RepositoryService struct {
 	repoRepo  *repository.RepositoryRepository
 	groupRepo *repository.GroupRepository
+	repoCache *proxy.RepositoryCache
 	db        *gorm.DB
 }
 
@@ -24,27 +24,29 @@ func NewRepositoryService(repoRepo *repository.RepositoryRepository, groupRepo *
 	}
 }
 
+// SetRepoCache 设置仓库缓存
+func (s *RepositoryService) SetRepoCache(cache *proxy.RepositoryCache) {
+	s.repoCache = cache
+}
+
+// invalidateCache 失效缓存
+func (s *RepositoryService) invalidateCache(name string) {
+	if s.repoCache != nil {
+		s.repoCache.Invalidate(name)
+	}
+}
+
 // Create 创建仓库，如果是虚拟仓则同时添加成员
 func (s *RepositoryService) Create(repo *model.Repository, members []string) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		// 如果 PackageTypes 非空，取第一个值填充 PackageType（向后兼容）
-		if repo.PackageTypes != "" && repo.PackageType == "" {
-			types := parseJSONStringArray(repo.PackageTypes)
-			if len(types) > 0 {
-				repo.PackageType = types[0]
-			}
-		}
-
 		if err := tx.Create(repo).Error; err != nil {
 			return err
 		}
 
-		// 如果是虚拟仓库且提供了成员列表，则添加成员关系
 		if repo.Type == model.RepoTypeVirtual && len(members) > 0 {
 			for i, memberName := range members {
 				var memberRepo model.Repository
 				if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
-					// 成员仓库不存在则跳过
 					continue
 				}
 				group := model.RepositoryGroup{
@@ -57,6 +59,8 @@ func (s *RepositoryService) Create(repo *model.Repository, members []string) err
 				}
 			}
 		}
+
+		s.invalidateCache("*")
 
 		return nil
 	})
@@ -79,15 +83,6 @@ func (s *RepositoryService) GetByID(id uint) (*model.Repository, error) {
 
 // Update 更新仓库信息
 func (s *RepositoryService) Update(name string, updates map[string]interface{}) error {
-	// 如果更新了 PackageTypes，同步更新 PackageType
-	if packageTypes, ok := updates["package_types"].(string); ok && packageTypes != "" {
-		types := parseJSONStringArray(packageTypes)
-		if len(types) > 0 {
-			updates["package_type"] = types[0]
-		}
-	}
-
-	// 处理虚拟仓库成员更新
 	var members []string
 	if membersRaw, ok := updates["members"]; ok {
 		delete(updates, "members")
@@ -105,7 +100,7 @@ func (s *RepositoryService) Update(name string, updates map[string]interface{}) 
 	}
 
 	if len(members) > 0 {
-		return s.db.Transaction(func(tx *gorm.DB) error {
+		err := s.db.Transaction(func(tx *gorm.DB) error {
 			// 在事务中直接更新仓库基本信息
 			if err := tx.Model(&model.Repository{}).Where("name = ?", name).Updates(updates).Error; err != nil {
 				return err
@@ -137,14 +132,26 @@ func (s *RepositoryService) Update(name string, updates map[string]interface{}) 
 
 			return nil
 		})
+		if err == nil {
+			s.invalidateCache(name)
+		}
+		return err
 	}
 
-	return s.repoRepo.Update(name, updates)
+	err := s.repoRepo.Update(name, updates)
+	if err == nil {
+		s.invalidateCache(name)
+	}
+	return err
 }
 
 // Delete 删除仓库
 func (s *RepositoryService) Delete(name string) error {
-	return s.repoRepo.Delete(name)
+	err := s.repoRepo.Delete(name)
+	if err == nil {
+		s.invalidateCache(name)
+	}
+	return err
 }
 
 // AddMember 向虚拟仓库添加成员
@@ -157,7 +164,11 @@ func (s *RepositoryService) AddMember(virtualRepoName, memberRepoName string, pr
 	if err != nil {
 		return err
 	}
-	return s.groupRepo.AddMember(virtualRepo.ID, memberRepo.ID, priority)
+	err = s.groupRepo.AddMember(virtualRepo.ID, memberRepo.ID, priority)
+	if err == nil {
+		s.invalidateCache(virtualRepoName)
+	}
+	return err
 }
 
 // RemoveMember 从虚拟仓库移除成员
@@ -170,7 +181,11 @@ func (s *RepositoryService) RemoveMember(virtualRepoName, memberRepoName string)
 	if err != nil {
 		return err
 	}
-	return s.groupRepo.RemoveMember(virtualRepo.ID, memberRepo.ID)
+	err = s.groupRepo.RemoveMember(virtualRepo.ID, memberRepo.ID)
+	if err == nil {
+		s.invalidateCache(virtualRepoName)
+	}
+	return err
 }
 
 // GetMembers 获取虚拟仓库的所有成员
@@ -180,13 +195,4 @@ func (s *RepositoryService) GetMembers(virtualRepoName string) ([]model.Reposito
 		return nil, err
 	}
 	return s.groupRepo.GetMembersByVirtualRepo(virtualRepo.ID)
-}
-
-// parseJSONStringArray 解析 JSON 字符串数组
-func parseJSONStringArray(s string) []string {
-	var result []string
-	if err := json.Unmarshal([]byte(s), &result); err != nil {
-		return nil
-	}
-	return result
 }

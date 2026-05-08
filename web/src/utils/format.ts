@@ -17,7 +17,7 @@ export const formatNumber = (num: number | undefined): string => {
  */
 export const formatDate = (date: string | undefined): string => {
   if (!date) return '-'
-  return new Date(date).toLocaleDateString('zh-CN')
+  return new Date(date).toLocaleString('zh-CN')
 }
 
 /**

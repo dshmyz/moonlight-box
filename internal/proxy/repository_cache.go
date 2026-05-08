@@ -10,47 +10,79 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 )
 
-type VirtualRepoCache struct {
+type RepositoryCache struct {
 	mu        sync.RWMutex
-	virtuals  map[string]*virtualRepoEntry
-	members   map[uint][]*memberEntry
+	repos     map[string]*repositoryCacheEntry
+	members   map[uint][]*memberCacheEntry
 	repoRepo  *repository.RepositoryRepository
 	groupRepo *repository.GroupRepository
 	ttl       time.Duration
 }
 
-type virtualRepoEntry struct {
+type repositoryCacheEntry struct {
 	repo      *model.Repository
 	expiresAt time.Time
 }
 
-type memberEntry struct {
+type memberCacheEntry struct {
 	member    *model.RepositoryGroup
 	expiresAt time.Time
 }
 
-func NewVirtualRepoCache(repoRepo *repository.RepositoryRepository, groupRepo *repository.GroupRepository, ttl time.Duration) *VirtualRepoCache {
+func NewRepositoryCache(repoRepo *repository.RepositoryRepository, groupRepo *repository.GroupRepository, ttl time.Duration) *RepositoryCache {
 	if ttl == 0 {
 		ttl = 5 * time.Minute
 	}
 
-	return &VirtualRepoCache{
-		virtuals:  make(map[string]*virtualRepoEntry),
-		members:   make(map[uint][]*memberEntry),
+	return &RepositoryCache{
+		repos:     make(map[string]*repositoryCacheEntry),
+		members:   make(map[uint][]*memberCacheEntry),
 		repoRepo:  repoRepo,
 		groupRepo: groupRepo,
 		ttl:       ttl,
 	}
 }
 
-func (c *VirtualRepoCache) GetVirtualRepo(pkgType string) (*model.Repository, error) {
+func (c *RepositoryCache) GetByName(name string) (*model.Repository, error) {
 	c.mu.RLock()
-	entry, exists := c.virtuals[pkgType]
+	entry, exists := c.repos[name]
 	c.mu.RUnlock()
 
 	if exists && time.Now().Before(entry.expiresAt) {
 		return entry.repo, nil
 	}
+
+	repo, err := c.repoRepo.FindByName(name)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	c.repos[name] = &repositoryCacheEntry{
+		repo:      repo,
+		expiresAt: time.Now().Add(c.ttl),
+	}
+	c.mu.Unlock()
+
+	slog.Debug("Cached repository",
+		"module", "repository_cache",
+		"repo_name", name,
+		"repo_id", repo.ID,
+	)
+
+	return repo, nil
+}
+
+func (c *RepositoryCache) GetVirtualRepo(pkgType string) (*model.Repository, error) {
+	c.mu.RLock()
+	for _, entry := range c.repos {
+		if entry.repo.Type == model.RepoTypeVirtual && entry.repo.PackageType == pkgType && entry.repo.Enabled {
+			if time.Now().Before(entry.expiresAt) {
+				return entry.repo, nil
+			}
+		}
+	}
+	c.mu.RUnlock()
 
 	repo, err := c.repoRepo.FindVirtualByPackageType(pkgType)
 	if err != nil {
@@ -58,14 +90,14 @@ func (c *VirtualRepoCache) GetVirtualRepo(pkgType string) (*model.Repository, er
 	}
 
 	c.mu.Lock()
-	c.virtuals[pkgType] = &virtualRepoEntry{
+	c.repos[repo.Name] = &repositoryCacheEntry{
 		repo:      repo,
 		expiresAt: time.Now().Add(c.ttl),
 	}
 	c.mu.Unlock()
 
 	slog.Debug("Cached virtual repository",
-		"module", "virtual_repo_cache",
+		"module", "repository_cache",
 		"pkg_type", pkgType,
 		"repo_id", repo.ID,
 	)
@@ -73,7 +105,7 @@ func (c *VirtualRepoCache) GetVirtualRepo(pkgType string) (*model.Repository, er
 	return repo, nil
 }
 
-func (c *VirtualRepoCache) GetMembers(virtualRepoID uint) ([]model.RepositoryGroup, error) {
+func (c *RepositoryCache) GetMembers(virtualRepoID uint) ([]model.RepositoryGroup, error) {
 	c.mu.RLock()
 	entries, exists := c.members[virtualRepoID]
 	c.mu.RUnlock()
@@ -100,10 +132,10 @@ func (c *VirtualRepoCache) GetMembers(virtualRepoID uint) ([]model.RepositoryGro
 	}
 
 	c.mu.Lock()
-	var entriesToCache []*memberEntry
+	var entriesToCache []*memberCacheEntry
 	for i := range members {
 		memberCopy := members[i]
-		entriesToCache = append(entriesToCache, &memberEntry{
+		entriesToCache = append(entriesToCache, &memberCacheEntry{
 			member:    &memberCopy,
 			expiresAt: time.Now().Add(c.ttl),
 		})
@@ -112,7 +144,7 @@ func (c *VirtualRepoCache) GetMembers(virtualRepoID uint) ([]model.RepositoryGro
 	c.mu.Unlock()
 
 	slog.Debug("Cached virtual repository members",
-		"module", "virtual_repo_cache",
+		"module", "repository_cache",
 		"virtual_repo_id", virtualRepoID,
 		"member_count", len(members),
 	)
@@ -120,30 +152,34 @@ func (c *VirtualRepoCache) GetMembers(virtualRepoID uint) ([]model.RepositoryGro
 	return members, nil
 }
 
-func (c *VirtualRepoCache) Invalidate(pkgType string) {
+func (c *RepositoryCache) Invalidate(name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if pkgType == "*" {
-		c.virtuals = make(map[string]*virtualRepoEntry)
-		c.members = make(map[uint][]*memberEntry)
-		slog.Info("Invalidated all virtual repo cache",
-			"module", "virtual_repo_cache",
+	if name == "*" {
+		c.repos = make(map[string]*repositoryCacheEntry)
+		c.members = make(map[uint][]*memberCacheEntry)
+		slog.Info("Invalidated all repository cache",
+			"module", "repository_cache",
 		)
 		return
 	}
 
-	if repo, exists := c.virtuals[pkgType]; exists {
-		delete(c.virtuals, pkgType)
-		delete(c.members, repo.repo.ID)
-		slog.Info("Invalidated virtual repo cache",
-			"module", "virtual_repo_cache",
-			"pkg_type", pkgType,
+	if entry, exists := c.repos[name]; exists {
+		delete(c.repos, name)
+		delete(c.members, entry.repo.ID)
+		slog.Info("Invalidated repository cache",
+			"module", "repository_cache",
+			"repo_name", name,
 		)
 	}
 }
 
-func (c *VirtualRepoCache) StartCleanup(interval time.Duration) {
+func (c *RepositoryCache) TTL() time.Duration {
+	return c.ttl
+}
+
+func (c *RepositoryCache) StartCleanup(interval time.Duration) {
 	if interval == 0 {
 		interval = 1 * time.Minute
 	}
@@ -158,20 +194,20 @@ func (c *VirtualRepoCache) StartCleanup(interval time.Duration) {
 	}()
 }
 
-func (c *VirtualRepoCache) cleanup() {
+func (c *RepositoryCache) cleanup() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	now := time.Now()
 
-	for pkgType, entry := range c.virtuals {
+	for name, entry := range c.repos {
 		if now.After(entry.expiresAt) {
-			delete(c.virtuals, pkgType)
+			delete(c.repos, name)
 		}
 	}
 
 	for repoID, entries := range c.members {
-		var validEntries []*memberEntry
+		var validEntries []*memberCacheEntry
 		for _, entry := range entries {
 			if now.Before(entry.expiresAt) {
 				validEntries = append(validEntries, entry)

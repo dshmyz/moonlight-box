@@ -69,6 +69,10 @@ export const securityApi = {
     return request.post(`/security/packages/${packageId}/scan/trigger`)
   },
 
+  listScanResults(params?: { page?: number; page_size?: number; status?: string; pkg_type?: string }) {
+    return request.get<{ items: ScanResult[]; pagination: { total: number; page: number; page_size: number } }>('/security/scan-results', { params })
+  },
+
   blockByCVE(cve: string) {
     return request.post(`/security/block/${cve}`)
   },

@@ -14,6 +14,7 @@ import (
 
 type RepoRouter struct {
 	repoSvc        *service.RepositoryService
+	repoCache      *proxy.RepositoryCache
 	auditSvc       *service.AuditService
 	adapters       map[string]adapter.RepoAwareAdapter
 	typeDetector   *proxy.TypeDetector
@@ -27,6 +28,10 @@ func NewRepoRouter(repoSvc *service.RepositoryService, auditSvc *service.AuditSe
 		adapters:     make(map[string]adapter.RepoAwareAdapter),
 		typeDetector: proxy.NewTypeDetector(),
 	}
+}
+
+func (r *RepoRouter) SetRepoCache(cache *proxy.RepositoryCache) {
+	r.repoCache = cache
 }
 
 func (r *RepoRouter) SetDownloadPlugin(plugin *adapter.DownloadPluginChain) {
@@ -57,11 +62,18 @@ func (r *RepoRouter) RegisterAdapter(pkgType string, adp adapter.RepoAwareAdapte
 	r.adapters[pkgType] = adp
 }
 
+func (r *RepoRouter) getRepo(name string) (*model.Repository, error) {
+	if r.repoCache != nil {
+		return r.repoCache.GetByName(name)
+	}
+	return r.repoSvc.Get(name)
+}
+
 func (r *RepoRouter) HandleRequest(c *gin.Context) {
 	repoName := c.Param("repoName")
 	path := c.Param("path")
 
-	repo, err := r.repoSvc.Get(repoName)
+	repo, err := r.getRepo(repoName)
 	if err != nil {
 		response.NotFound(c, "仓库不存在")
 		return
@@ -74,8 +86,7 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 
 	var pkgType string
 
-	// 虚拟仓库且配置了多类型
-	if repo.Type == model.RepoTypeVirtual && repo.PackageTypes != "" {
+	if repo.Type == model.RepoTypeVirtual {
 		trimmedPath := strings.TrimPrefix(path, "/")
 		pkgType = r.typeDetector.Detect(trimmedPath)
 
@@ -85,7 +96,7 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 			return
 		}
 
-		if !r.typeDetector.IsSupportedType(pkgType, repo.PackageTypes) {
+		if pkgType != repo.PackageType {
 			response.NotFound(c, fmt.Sprintf("此虚拟仓库不支持 %s 类型的包", pkgType))
 			return
 		}
@@ -109,7 +120,7 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 func (r *RepoRouter) HandlePublish(c *gin.Context) {
 	repoName := c.Param("repoName")
 
-	repo, err := r.repoSvc.Get(repoName)
+	repo, err := r.getRepo(repoName)
 	if err != nil {
 		response.NotFound(c, "仓库不存在")
 		return
@@ -148,7 +159,7 @@ func (r *RepoRouter) HandlePublish(c *gin.Context) {
 func (r *RepoRouter) HandleDelete(c *gin.Context) {
 	repoName := c.Param("repoName")
 
-	repo, err := r.repoSvc.Get(repoName)
+	repo, err := r.getRepo(repoName)
 	if err != nil {
 		response.NotFound(c, "仓库不存在")
 		return

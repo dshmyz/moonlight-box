@@ -3,7 +3,7 @@ package middleware
 import (
 	"strings"
 
-	"github.com/moonlight-box/registry/internal/handler"
+	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -13,14 +13,14 @@ func Auth(authService *service.AuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractToken(c)
 		if token == "" {
-			handler.Unauthorized(c, "missing authorization header")
+			response.Unauthorized(c, "missing authorization header")
 			c.Abort()
 			return
 		}
 
 		claims, err := authService.ValidateToken(token)
 		if err != nil {
-			handler.Unauthorized(c, "invalid or expired token")
+			response.Unauthorized(c, "invalid or expired token")
 			c.Abort()
 			return
 		}

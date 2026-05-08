@@ -36,7 +36,7 @@
                     <i class="fa-solid fa-key"></i>
                   </div>
                   <div class="timeline-content">
-                    <strong>NPM/PyPI/NuGet</strong>
+                    <strong>NPM/PyPI</strong>
                     <p>使用您的账号密码进行认证</p>
                   </div>
                 </div>
@@ -97,10 +97,6 @@
                   <el-radio-button label="go" class="manager-option">
                     <i class="fa-brands fa-golang"></i>
                     <span>Go</span>
-                  </el-radio-button>
-                  <el-radio-button label="nuget" class="manager-option">
-                    <i class="fa-solid fa-cube"></i>
-                    <span>NuGet</span>
                   </el-radio-button>
                   <el-radio-button label="yum" class="manager-option">
                     <i class="fa-solid fa-server"></i>
@@ -247,7 +243,6 @@ const managerTitle = computed(() => {
     maven: 'Maven',
     pypi: 'PyPI',
     go: 'Go',
-    nuget: 'NuGet',
     yum: 'Yum/APT'
   }
   return titles[selectedManager.value]
@@ -301,16 +296,6 @@ export GOSUMDB=off</code></pre>
         <span>Go 模块代理无需额外认证</span>
       </div>
     `,
-    nuget: `
-      <div class="code-block-wrapper">
-        <pre><code>nuget sources add -name moonlight \\
-  -source ${registry.value}/nuget/v3/index.json</code></pre>
-      </div>
-      <div class="config-note">
-        <i class="fa-solid fa-info-circle"></i>
-        <span>使用 nuget setapikey 或在 NuGet.Config 中配置认证</span>
-      </div>
-    `,
     yum: `
       <div class="code-block-wrapper">
         <pre><code># CentOS/RHEL (Yum)
@@ -341,7 +326,6 @@ const verifyCommand = computed(() => {
     maven: 'mvn help:effective-settings',
     pypi: 'pip config list',
     go: 'go env GOPROXY',
-    nuget: 'nuget sources list',
     yum: 'yum repolist | grep moonlight'
   }
   return commands[selectedManager.value]
@@ -381,14 +365,6 @@ const guides = [
     color: 'linear-gradient(135deg, #00ADD8 0%, #007D9C 100%)'
   },
   {
-    name: 'nuget',
-    title: 'NuGet 配置',
-    description: '配置 NuGet 包源',
-    file: 'NuGet.Config',
-    icon: 'fa-solid fa-cube',
-    color: 'linear-gradient(135deg, #004880 0%, #003366 100%)'
-  },
-  {
     name: 'yum',
     title: 'Yum/APT 配置',
     description: '配置 Yum 或 APT 使用私有仓库',
@@ -405,7 +381,7 @@ const faqs = [
     content: `
       <p>当前版本使用用户名密码进行认证：</p>
       <ul>
-        <li><strong>NPM/PyPI/NuGet：</strong>使用您的账号密码进行认证</li>
+        <li><strong>NPM/PyPI：</strong>使用您的账号密码进行认证</li>
         <li><strong>Maven：</strong>在 settings.xml 中配置 server 信息</li>
         <li><strong>Go：</strong>通过 GOPROXY 配置，无需额外认证</li>
       </ul>

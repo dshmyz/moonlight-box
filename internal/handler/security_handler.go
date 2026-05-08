@@ -67,42 +67,47 @@ func (h *SecurityHandler) ListVulnerabilities(c *gin.Context) {
 	severity := c.Query("severity")
 	pkgType := c.Query("pkg_type")
 
-	results, total, err := h.securityScanner.ListScanResults(page, pageSize, "", pkgType)
+	vulns, total, err := h.securityScanner.ListVulnerabilitiesPaginated(page, pageSize, severity, pkgType)
+	if err != nil {
+		response.InternalError(c, "failed to list vulnerabilities")
+		return
+	}
+
+	var vulnList []map[string]interface{}
+	for _, v := range vulns {
+		vulnList = append(vulnList, map[string]interface{}{
+			"id":              v.ID,
+			"scan_result_id":  v.ScanResultID,
+			"cve_id":          v.CVEID,
+			"severity":        v.Severity,
+			"cvss_score":      v.CVSSScore,
+			"dependency_name": v.DependencyName,
+			"current_version": v.CurrentVersion,
+			"fixed_version":   v.FixedVersion,
+			"is_direct_dep":   v.IsDirectDep,
+			"title":           v.Title,
+			"description":     v.Description,
+			"references":      v.References,
+			"created_at":      v.CreatedAt,
+		})
+	}
+
+	response.SuccessWithPagination(c, vulnList, page, pageSize, total)
+}
+
+func (h *SecurityHandler) ListScanResults(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	status := c.Query("status")
+	pkgType := c.Query("pkg_type")
+
+	results, total, err := h.securityScanner.ListScanResults(page, pageSize, status, pkgType)
 	if err != nil {
 		response.InternalError(c, "failed to list scan results")
 		return
 	}
 
-	var allVulns []map[string]interface{}
-	for _, result := range results {
-		vulns, err := h.securityScanner.ListVulnerabilities(result.ID)
-		if err != nil {
-			continue
-		}
-		for _, v := range vulns {
-			if severity != "" && string(v.Severity) != severity {
-				continue
-			}
-			allVulns = append(allVulns, map[string]interface{}{
-				"id":              v.ID,
-				"scan_result_id":  v.ScanResultID,
-				"cve_id":          v.CVEID,
-				"severity":        v.Severity,
-				"cvss_score":      v.CVSSScore,
-				"dependency_name": v.DependencyName,
-				"current_version": v.CurrentVersion,
-				"fixed_version":   v.FixedVersion,
-				"is_direct_dep":   v.IsDirectDep,
-				"title":           v.Title,
-				"description":     v.Description,
-				"references":      v.References,
-				"created_at":      v.CreatedAt,
-				"scan_result":     result,
-			})
-		}
-	}
-
-	response.SuccessWithPagination(c, allVulns, page, pageSize, total)
+	response.SuccessWithPagination(c, results, page, pageSize, total)
 }
 
 func (h *SecurityHandler) GetSecurityStats(c *gin.Context) {

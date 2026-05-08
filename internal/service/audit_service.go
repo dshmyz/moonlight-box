@@ -76,14 +76,20 @@ func (s *AuditService) Shutdown() {
 }
 
 func (s *AuditService) Log(ctx context.Context, userID *uint, action model.AuditAction, resourceType string, resourceID *uint, resourceName string, details string) error {
+	return s.LogWithStatus(ctx, userID, action, resourceType, resourceID, resourceName, details, 0, 0)
+}
+
+func (s *AuditService) LogWithStatus(ctx context.Context, userID *uint, action model.AuditAction, resourceType string, resourceID *uint, resourceName string, details string, responseStatus int, durationMs int) error {
 	log := &model.AuditLog{
-		UserID:       userID,
-		Action:       action,
-		ResourceType: resourceType,
-		ResourceID:   resourceID,
-		ResourceName: resourceName,
-		Details:      details,
-		CreatedAt:    time.Now().UTC(),
+		UserID:         userID,
+		Action:         action,
+		ResourceType:   resourceType,
+		ResourceID:     resourceID,
+		ResourceName:   resourceName,
+		Details:        details,
+		ResponseStatus: responseStatus,
+		DurationMs:     durationMs,
+		CreatedAt:      time.Now().UTC(),
 	}
 	select {
 	case s.logChan <- log:
@@ -98,16 +104,22 @@ func (s *AuditService) Log(ctx context.Context, userID *uint, action model.Audit
 }
 
 func (s *AuditService) LogWithRequest(ctx context.Context, userID *uint, action model.AuditAction, resourceType string, resourceID *uint, resourceName string, details string, ipAddress string, userAgent string) error {
+	return s.LogWithRequestAndStatus(ctx, userID, action, resourceType, resourceID, resourceName, details, ipAddress, userAgent, 0, 0)
+}
+
+func (s *AuditService) LogWithRequestAndStatus(ctx context.Context, userID *uint, action model.AuditAction, resourceType string, resourceID *uint, resourceName string, details string, ipAddress string, userAgent string, responseStatus int, durationMs int) error {
 	log := &model.AuditLog{
-		UserID:       userID,
-		Action:       action,
-		ResourceType: resourceType,
-		ResourceID:   resourceID,
-		ResourceName: resourceName,
-		IPAddress:    ipAddress,
-		UserAgent:    userAgent,
-		Details:      details,
-		CreatedAt:    time.Now().UTC(),
+		UserID:         userID,
+		Action:         action,
+		ResourceType:   resourceType,
+		ResourceID:     resourceID,
+		ResourceName:   resourceName,
+		IPAddress:      ipAddress,
+		UserAgent:      userAgent,
+		Details:        details,
+		ResponseStatus: responseStatus,
+		DurationMs:     durationMs,
+		CreatedAt:      time.Now().UTC(),
 	}
 	select {
 	case s.logChan <- log:

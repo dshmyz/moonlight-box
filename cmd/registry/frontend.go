@@ -31,11 +31,15 @@ func serveEmbeddedFrontend() gin.HandlerFunc {
 		filePath := path.Join("dist", reqPath)
 		data, err := frontendFS.ReadFile(filePath)
 		if err != nil {
-			data, err = frontendFS.ReadFile("dist/index.html")
+			fallbackPath := "dist/index.html"
+			data, err = frontendFS.ReadFile(fallbackPath)
 			if err != nil {
 				c.Status(http.StatusInternalServerError)
 				return
 			}
+			c.Header("Content-Type", getContentType(fallbackPath))
+			c.Data(http.StatusOK, getContentType(fallbackPath), data)
+			return
 		}
 
 		c.Header("Content-Type", getContentType(filePath))
@@ -46,6 +50,9 @@ func serveEmbeddedFrontend() gin.HandlerFunc {
 func serveFilesystemFrontend(staticDir string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		reqPath := c.Request.URL.Path
+		if reqPath == "/" {
+			reqPath = "/index.html"
+		}
 		filePath := filepath.Join(staticDir, reqPath)
 
 		_, err := os.Stat(filePath)

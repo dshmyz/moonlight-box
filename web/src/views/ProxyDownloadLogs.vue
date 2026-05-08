@@ -86,7 +86,6 @@
           <el-option label="Maven" value="maven" />
           <el-option label="PyPI" value="pypi" />
           <el-option label="Go" value="go" />
-          <el-option label="NuGet" value="nuget" />
           <el-option label="Yum" value="yum" />
           <el-option label="Apt" value="apt" />
           <el-option label="Generic" value="generic" />
@@ -122,51 +121,50 @@
         @row-mouse-enter="handleRowEnter"
         @row-mouse-leave="handleRowLeave"
       >
-        <el-table-column prop="id" label="ID" width="60" />
-        <el-table-column prop="repository" label="仓库" width="140">
+        <el-table-column label="仓库" width="160">
           <template #default="{ row }">
-            <span class="repo-name">{{ row.repository?.display_name || row.repository?.name || '-' }}</span>
+            <div class="cell-multi-line">
+              <span class="repo-name">{{ row.repository?.display_name || row.repository?.name || '-' }}</span>
+              <div class="cell-line-secondary">
+                <el-tag :class="['pkg-type-tag', `pkg-type-tag--${row.package_type}`]" size="small">{{ row.package_type }}</el-tag>
+              </div>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column prop="package_type" label="类型" width="80" align="center">
+        <el-table-column label="包信息" min-width="200">
           <template #default="{ row }">
-            <el-tag :class="['pkg-type-tag', `pkg-type-tag--${row.package_type}`]" size="small">{{ row.package_type }}</el-tag>
+            <div class="cell-multi-line">
+              <div class="cell-line-primary">{{ row.package_name || '-' }}</div>
+              <div class="cell-line-secondary">
+                <span v-if="row.version" class="version-text">{{ row.version }}</span>
+              </div>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column prop="package_name" label="包名" min-width="150" show-overflow-tooltip />
-        <el-table-column prop="version" label="版本" width="100" align="center" />
-        <el-table-column prop="status" label="状态" width="80" align="center">
+        <el-table-column label="状态" width="100" align="center">
           <template #default="{ row }">
-            <el-tag :class="['status-tag', `status-tag--${row.status}`]" size="small">{{ statusLabel(row.status) }}</el-tag>
+            <div class="cell-multi-line cell-multi-line--center">
+              <el-tag :class="['status-tag', `status-tag--${row.status}`]" size="small">{{ statusLabel(row.status) }}</el-tag>
+              <span v-if="row.status_code" :class="['status-code', getStatusCodeClass(row.status_code)]">{{ row.status_code }}</span>
+              <span v-else class="no-code">-</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="下载信息" width="130" align="center">
+          <template #default="{ row }">
+            <div class="cell-multi-line cell-multi-line--center">
+              <span class="size-text">{{ formatBytes(row.size_bytes) }}</span>
+              <div class="meta-row">
+                <span v-if="row.duration_ms" class="duration-text">{{ row.duration_ms }}ms</span>
+                <el-tag v-if="row.from_cache" type="info" size="small" class="cache-tag">缓存</el-tag>
+              </div>
+            </div>
           </template>
         </el-table-column>
         <el-table-column prop="error_message" label="失败原因" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">
             <span v-if="row.error_message" class="error-message">{{ row.error_message }}</span>
             <span v-else class="no-error">-</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="status_code" label="HTTP状态" width="100" align="center">
-          <template #default="{ row }">
-            <span v-if="row.status_code" :class="['status-code', getStatusCodeClass(row.status_code)]">{{ row.status_code }}</span>
-            <span v-else class="no-code">-</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="size_bytes" label="大小" width="100" align="center">
-          <template #default="{ row }">
-            {{ formatBytes(row.size_bytes) }}
-          </template>
-        </el-table-column>
-        <el-table-column prop="duration_ms" label="耗时" width="90" align="center">
-          <template #default="{ row }">
-            <span v-if="row.duration_ms">{{ row.duration_ms }}ms</span>
-            <span v-else>-</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="from_cache" label="缓存" width="70" align="center">
-          <template #default="{ row }">
-            <el-tag v-if="row.from_cache" type="info" size="small">命中</el-tag>
-            <span v-else class="no-cache">-</span>
           </template>
         </el-table-column>
         <el-table-column prop="ip_address" label="IP" width="130" />
@@ -492,6 +490,62 @@ onMounted(() => {
 .repo-name {
   color: #334155;
   font-size: 13px;
+}
+
+.cell-multi-line {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cell-multi-line--center {
+  align-items: center;
+}
+
+.cell-line-primary {
+  font-size: 13px;
+  color: #1e293b;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-line-secondary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.version-text {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.size-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.duration-text {
+  color: #94a3b8;
+}
+
+.cache-tag {
+  font-size: 10px;
+  padding: 0 4px;
+  height: 18px;
+  line-height: 18px;
 }
 
 .pkg-type-tag {

@@ -43,8 +43,8 @@ func NewSchedulerService(
 func (s *SchedulerService) Start() error {
 	logrus.Info("Starting scheduler service")
 
-	if err := s.ScheduleDailyBackup(); err != nil {
-		logrus.WithError(err).Error("Failed to schedule daily backup")
+	if err := s.ScheduleBackupFromConfig(); err != nil {
+		logrus.WithError(err).Error("Failed to schedule backup from config")
 	}
 
 	s.ScheduleConfigSync()
@@ -132,25 +132,52 @@ func (s *SchedulerService) Stop() {
 	}
 }
 
-func (s *SchedulerService) ScheduleDailyBackup() error {
+// ScheduleBackupFromConfig 根据系统配置调度备份任务
+func (s *SchedulerService) ScheduleBackupFromConfig() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.tickers["daily_backup"]; exists {
-		return fmt.Errorf("daily backup already scheduled")
+	// 移除旧的备份任务
+	if ticker, exists := s.tickers["daily_backup"]; exists {
+		ticker.Stop()
+		delete(s.tickers, "daily_backup")
 	}
 
+	// 读取备份配置
+	enabled, _ := s.getBoolConfig("backup.enabled", true)
+	if !enabled {
+		logrus.Info("Scheduled backup is disabled")
+		return nil
+	}
+
+	intervalStr, _ := s.getConfigValue("backup.interval", "24h")
+	interval, err := time.ParseDuration(intervalStr)
+	if err != nil {
+		logrus.WithError(err).Warn("Invalid backup interval, using default 24h")
+		interval = 24 * time.Hour
+	}
+
+	timeStr, _ := s.getConfigValue("backup.time", "02:00")
+	hour, minute := s.parseTimeStr(timeStr)
+
+	// 计算下次备份时间
 	now := time.Now()
-	nextBackup := time.Date(now.Year(), now.Month(), now.Day(), 2, 0, 0, 0, now.Location())
-	if nextBackup.Before(now) {
-		nextBackup = nextBackup.Add(24 * time.Hour)
+	nextBackup := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
+	if nextBackup.Before(now) || nextBackup.Equal(now) {
+		nextBackup = nextBackup.Add(interval)
+	}
+
+	// 如果间隔小于24小时，使用固定间隔而非固定时间
+	if interval < 24*time.Hour {
+		return s.scheduleBackupWithInterval(interval)
 	}
 
 	initialDelay := nextBackup.Sub(now)
 	logrus.WithFields(logrus.Fields{
 		"initial_delay": initialDelay,
 		"next_backup":   nextBackup,
-	}).Info("Scheduling daily backup")
+		"interval":      interval,
+	}).Info("Scheduling backup from config")
 
 	go func() {
 		select {
@@ -160,7 +187,7 @@ func (s *SchedulerService) ScheduleDailyBackup() error {
 			return
 		}
 
-		ticker := time.NewTicker(24 * time.Hour)
+		ticker := time.NewTicker(interval)
 		s.mu.Lock()
 		s.tickers["daily_backup"] = ticker
 		s.mu.Unlock()
@@ -176,6 +203,77 @@ func (s *SchedulerService) ScheduleDailyBackup() error {
 	}()
 
 	return nil
+}
+
+// scheduleBackupWithInterval 使用固定间隔调度备份
+func (s *SchedulerService) scheduleBackupWithInterval(interval time.Duration) error {
+	if _, exists := s.tickers["daily_backup"]; exists {
+		return fmt.Errorf("backup already scheduled")
+	}
+
+	ticker := time.NewTicker(interval)
+	s.tickers["daily_backup"] = ticker
+
+	go func() {
+		// 立即执行一次
+		s.performBackup()
+
+		for {
+			select {
+			case <-ticker.C:
+				s.performBackup()
+			case <-s.stopChan:
+				return
+			}
+		}
+	}()
+
+	logrus.WithField("interval", interval).Info("Scheduled backup with interval")
+	return nil
+}
+
+// UpdateBackupSchedule 更新备份计划（热更新）
+func (s *SchedulerService) UpdateBackupSchedule() error {
+	// 移除旧任务
+	s.RemoveTask("daily_backup")
+	// 重新调度
+	return s.ScheduleBackupFromConfig()
+}
+
+// getBoolConfig 获取布尔配置值
+func (s *SchedulerService) getBoolConfig(key string, defaultVal bool) (bool, error) {
+	if s.configSvc == nil {
+		return defaultVal, nil
+	}
+	config, err := s.configSvc.Get(key)
+	if err != nil {
+		return defaultVal, err
+	}
+	return config.Value == "true" || config.Value == "1", nil
+}
+
+// getConfigValue 获取字符串配置值
+func (s *SchedulerService) getConfigValue(key, defaultVal string) (string, error) {
+	if s.configSvc == nil {
+		return defaultVal, nil
+	}
+	config, err := s.configSvc.Get(key)
+	if err != nil {
+		return defaultVal, err
+	}
+	return config.Value, nil
+}
+
+// parseTimeStr 解析时间字符串 "HH:MM"
+func (s *SchedulerService) parseTimeStr(timeStr string) (hour, minute int) {
+	fmt.Sscanf(timeStr, "%d:%d", &hour, &minute)
+	if hour < 0 || hour > 23 {
+		hour = 2
+	}
+	if minute < 0 || minute > 59 {
+		minute = 0
+	}
+	return
 }
 
 func (s *SchedulerService) performBackup() {

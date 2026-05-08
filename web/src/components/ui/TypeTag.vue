@@ -6,7 +6,7 @@
 
 <script setup lang="ts">
 interface Props {
-  type: 'npm' | 'pypi' | 'maven' | 'nuget' | 'go'
+  type: 'npm' | 'pypi' | 'maven' | 'go'
 }
 
 defineProps<Props>()
@@ -34,11 +34,6 @@ defineProps<Props>()
 .type-tag--maven {
   background: #fef3c7;
   color: #92400e;
-}
-
-.type-tag--nuget {
-  background: #fce7f3;
-  color: #9f1239;
 }
 
 .type-tag--go {

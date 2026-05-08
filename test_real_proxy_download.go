@@ -67,13 +67,18 @@ func main() {
 	remoteClient := proxy.NewRemoteClient(tm, 5)
 	proxyRouter := proxy.NewProxyRouter(db, cacheSvc, remoteClient, repoRepo, groupRepo, nil)
 
-	countBatcher := service.NewDownloadCountBatcher(pkgRepo, 10*time.Second)
+	countBatcher := service.NewDownloadCountBatcher(db, 10*time.Second)
+	defer countBatcher.Stop()
+
+	logBatcher := service.NewLogBatcher(logRepo, 100, 5*time.Second)
+	defer logBatcher.Stop()
 
 	proxyDownloadSvc := service.NewProxyDownloadService(
 		pkgRepo,
 		storageSvc,
 		proxyRouter,
 		logRepo,
+		logBatcher,
 		countBatcher,
 	)
 

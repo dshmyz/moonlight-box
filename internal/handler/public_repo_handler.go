@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"github.com/moonlight-box/registry/internal/response"
 	"fmt"
 
 	"github.com/gin-gonic/gin"
@@ -40,12 +41,12 @@ func (h *PublicRepoHandler) GetRepoConfig(c *gin.Context) {
 
 	repo, err := h.repoSvc.Get(name)
 	if err != nil {
-		NotFound(c, "仓库不存在")
+		response.NotFound(c, "仓库不存在")
 		return
 	}
 
 	if !repo.Enabled {
-		NotFound(c, "仓库已禁用")
+		response.NotFound(c, "仓库已禁用")
 		return
 	}
 
@@ -71,7 +72,7 @@ func (h *PublicRepoHandler) GetRepoConfig(c *gin.Context) {
 		ConfigGuide: guide,
 	}
 
-	Success(c, resp)
+	response.Success(c, resp)
 }
 
 func buildRegistryURL(baseURL string, repo *model.Repository) string {

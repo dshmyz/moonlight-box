@@ -28,6 +28,8 @@ func AutoMigrate() error {
 		&model.StorageBackend{},
 		&model.ScanResult{},
 		&model.Vulnerability{},
+		&model.VulnRule{},
+		&model.VulnDataSource{},
 		&model.Webhook{},
 		&model.WebhookDelivery{},
 		&model.Backup{},
@@ -39,7 +41,21 @@ func AutoMigrate() error {
 }
 
 func SeedData() error {
-	// 创建预置角色
+	// 清理旧角色数据（除 admin 外）
+	oldRoles := []string{"maintainer", "developer", "readonly"}
+	for _, roleName := range oldRoles {
+		var oldRole model.Role
+		if err := DB.Where("name = ?", roleName).First(&oldRole).Error; err == nil {
+			// 删除角色权限关联
+			DB.Where("role_id = ?", oldRole.ID).Delete(&model.RolePermission{})
+			// 删除用户角色关联
+			DB.Where("role_id = ?", oldRole.ID).Delete(&model.UserRole{})
+			// 删除角色
+			DB.Delete(&oldRole)
+		}
+	}
+
+	// 创建新的四角色体系
 	roles := []model.Role{
 		{
 			Name:         "admin",
@@ -47,18 +63,18 @@ func SeedData() error {
 			IsSystemRole: true,
 		},
 		{
-			Name:         "maintainer",
-			Description:  "维护者，可删除包",
+			Name:         "operations",
+			Description:  "运维人员，管理基础设施和仓库",
 			IsSystemRole: true,
 		},
 		{
 			Name:         "developer",
-			Description:  "开发者，可发布和管理包",
+			Description:  "普通开发人员，使用包管理服务",
 			IsSystemRole: true,
 		},
 		{
-			Name:         "readonly",
-			Description:  "只读用户，仅可下载包",
+			Name:         "security-auditor",
+			Description:  "安全员/审计，安全审计和合规检查",
 			IsSystemRole: true,
 		},
 	}
@@ -152,16 +168,106 @@ func SeedData() error {
 		DB.Where(rp).FirstOrCreate(&rp)
 	}
 
-	// 为 maintainer 角色分配 package:delete 权限
-	var maintainerRole model.Role
-	if err := DB.Where("name = ?", "maintainer").First(&maintainerRole).Error; err == nil {
-		var pkgDeletePerm model.Permission
-		if err := DB.Where("resource = ? AND action = ?", "package", "delete").First(&pkgDeletePerm).Error; err == nil {
-			rp := model.RolePermission{
-				RoleID:       maintainerRole.ID,
-				PermissionID: pkgDeletePerm.ID,
+	// 为 operations 角色分配运维权限
+	var operationsRole model.Role
+	if err := DB.Where("name = ?", "operations").First(&operationsRole).Error; err == nil {
+		opsPermissions := []struct {
+			resource string
+			action   string
+		}{
+			{"system", "read"},
+			{"repositories", "read"},
+			{"repositories", "write"},
+			{"repositories", "delete"},
+			{"cache", "read"},
+			{"cache", "write"},
+			{"storage-backends", "read"},
+			{"storage-backends", "write"},
+			{"webhooks", "read"},
+			{"webhooks", "write"},
+			{"npm", "read"},
+			{"npm", "write"},
+			{"npm", "delete"},
+			{"maven", "read"},
+			{"maven", "write"},
+			{"maven", "delete"},
+			{"package", "read"},
+			{"package", "write"},
+			{"package", "delete"},
+			{"audit", "read"},
+		}
+
+		for _, permDef := range opsPermissions {
+			var perm model.Permission
+			if err := DB.Where("resource = ? AND action = ?", permDef.resource, permDef.action).First(&perm).Error; err == nil {
+				rp := model.RolePermission{
+					RoleID:       operationsRole.ID,
+					PermissionID: perm.ID,
+				}
+				DB.Where(rp).FirstOrCreate(&rp)
 			}
-			DB.Where(rp).FirstOrCreate(&rp)
+		}
+	}
+
+	// 为 developer 角色分配开发权限
+	var developerRole model.Role
+	if err := DB.Where("name = ?", "developer").First(&developerRole).Error; err == nil {
+		devPermissions := []struct {
+			resource string
+			action   string
+		}{
+			{"npm", "read"},
+			{"npm", "write"},
+			{"maven", "read"},
+			{"maven", "write"},
+			{"package", "read"},
+			{"package", "write"},
+			{"package", "delete_own"},
+			{"repositories", "read"},
+		}
+
+		for _, permDef := range devPermissions {
+			var perm model.Permission
+			if err := DB.Where("resource = ? AND action = ?", permDef.resource, permDef.action).First(&perm).Error; err == nil {
+				rp := model.RolePermission{
+					RoleID:       developerRole.ID,
+					PermissionID: perm.ID,
+				}
+				DB.Where(rp).FirstOrCreate(&rp)
+			}
+		}
+	}
+
+	// 为 security-auditor 角色分配安全审计权限
+	var securityAuditorRole model.Role
+	if err := DB.Where("name = ?", "security-auditor").First(&securityAuditorRole).Error; err == nil {
+		secPermissions := []struct {
+			resource string
+			action   string
+		}{
+			{"audit", "read"},
+			{"security", "read"},
+			{"security", "write"},
+			{"block-rules", "read"},
+			{"block-rules", "write"},
+			{"block-rules", "delete"},
+			{"system", "read"},
+			{"repositories", "read"},
+			{"users", "read"},
+			{"npm", "read"},
+			{"maven", "read"},
+			{"package", "read"},
+		}
+
+		for _, permDef := range secPermissions {
+			var perm model.Permission
+			if err := DB.Where("resource = ? AND action = ?", permDef.resource, permDef.action).First(&perm).Error; err == nil {
+				rp := model.RolePermission{
+					RoleID:       securityAuditorRole.ID,
+					PermissionID: perm.ID,
+				}
+				DB.Where(rp).FirstOrCreate(&rp)
+			}
 		}
 	}
 

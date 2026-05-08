@@ -23,10 +23,6 @@
           <GoConfig />
         </el-tab-pane>
 
-        <el-tab-pane label="NuGet" name="nuget">
-          <NuGetConfig />
-        </el-tab-pane>
-
         <el-tab-pane label="Yum/APT" name="yum">
           <YumAPTConfig />
         </el-tab-pane>
@@ -41,7 +37,6 @@ import NPMConfig from '@/components/help/managers/NPMConfig.vue'
 import MavenConfig from '@/components/help/managers/MavenConfig.vue'
 import PyPIConfig from '@/components/help/managers/PyPIConfig.vue'
 import GoConfig from '@/components/help/managers/GoConfig.vue'
-import NuGetConfig from '@/components/help/managers/NuGetConfig.vue'
 import YumAPTConfig from '@/components/help/managers/YumAPTConfig.vue'
 
 const activeManager = ref('npm')

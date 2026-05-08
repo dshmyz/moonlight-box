@@ -84,8 +84,6 @@ const registryUrl = computed(() => {
       return `${base}/repo/${repo}/`
     case 'pypi':
       return `${base}/repo/${repo}/simple`
-    case 'nuget':
-      return `${base}/repo/${repo}/v3/index.json`
     default:
       return `${base}/repo/${repo}/`
   }
@@ -93,7 +91,6 @@ const registryUrl = computed(() => {
 
 const configCommand = computed(() => {
   const url = registryUrl.value
-  const repo = props.pkg.repository || 'default'
   switch (normalizePackageType(props.pkg.type)) {
     case 'npm':
       return `npm config set registry ${url}`
@@ -103,8 +100,6 @@ const configCommand = computed(() => {
       return url
     case 'go':
       return `GOPROXY=${url} go mod tidy`
-    case 'nuget':
-      return `dotnet nuget add source ${url} -n ${repo}`
     default:
       return url
   }

@@ -56,6 +56,34 @@ func (r *ScanRepository) ListVulnerabilities(scanResultID uint) ([]model.Vulnera
 	return vulns, err
 }
 
+func (r *ScanRepository) ListVulnerabilitiesPaginated(page, pageSize int, severity, pkgType string) ([]model.Vulnerability, int64, error) {
+	var vulns []model.Vulnerability
+	var total int64
+
+	query := r.db.Model(&model.Vulnerability{}).
+		Joins("JOIN scan_results ON scan_results.id = vulnerabilities.scan_result_id").
+		Joins("JOIN package_versions ON package_versions.id = scan_results.version_id").
+		Joins("JOIN packages ON packages.id = package_versions.package_id")
+
+	if severity != "" {
+		query = query.Where("vulnerabilities.severity = ?", severity)
+	}
+	if pkgType != "" {
+		query = query.Where("packages.type = ?", pkgType)
+	}
+
+	err := query.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	err = query.Offset((page - 1) * pageSize).Limit(pageSize).
+		Order("vulnerabilities.cvss_score DESC").
+		Find(&vulns).Error
+
+	return vulns, total, err
+}
+
 func (r *ScanRepository) ListScanResults(page, pageSize int, status string, pkgType string) ([]model.ScanResult, int64, error) {
 	var results []model.ScanResult
 	var total int64

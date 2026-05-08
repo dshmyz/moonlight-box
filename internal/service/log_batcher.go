@@ -16,6 +16,7 @@ type LogBatcher struct {
 	batchSize    int
 	flushInterval time.Duration
 	stopCh       chan struct{}
+	flushing     bool
 }
 
 func NewLogBatcher(logRepo *repository.ProxyDownloadLogRepository, batchSize int, flushInterval time.Duration) *LogBatcher {
@@ -45,7 +46,8 @@ func (b *LogBatcher) Record(log *model.ProxyDownloadLog) {
 
 	b.logs = append(b.logs, log)
 
-	if len(b.logs) >= b.batchSize {
+	if len(b.logs) >= b.batchSize && !b.flushing {
+		b.flushing = true
 		go b.flush()
 	}
 }
@@ -69,6 +71,7 @@ func (b *LogBatcher) flush() {
 	b.mu.Lock()
 	logs := b.logs
 	b.logs = make([]*model.ProxyDownloadLog, 0, b.batchSize)
+	b.flushing = false
 	b.mu.Unlock()
 
 	if len(logs) == 0 {

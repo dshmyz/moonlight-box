@@ -25,7 +25,6 @@
           <BasicInfoForm
             :form="formData"
             :disabled="isEditMode"
-            v-model:selected-package-types="selectedPackageTypes"
             v-model:storage-backend-id="storageBackendId"
           />
         </el-tab-pane>
@@ -98,6 +97,7 @@
           </template>
           <VirtualMembersForm
             :members-text="membersText"
+            :package-type="formData.package_type"
             @update:members-text="handleMembersUpdate"
           />
         </el-tab-pane>
@@ -214,7 +214,6 @@ const authConfig = ref({
 })
 
 const membersText = ref('')
-const selectedPackageTypes = ref<string[]>([])
 const storageBackendId = ref<number | null>(null)
 
 const formRules = computed<FormRules>(() => ({
@@ -240,7 +239,6 @@ const resetForm = () => {
     key_value: '',
   }
   membersText.value = ''
-  selectedPackageTypes.value = []
   storageBackendId.value = null
   activeTab.value = 'basic'
   formRef.value?.clearValidate()
@@ -300,14 +298,6 @@ watch(
           .filter(Boolean)
           .join('\n')
       }
-
-      if (repo.package_types) {
-        try {
-          selectedPackageTypes.value = repo.package_types.split(',').filter(Boolean)
-        } catch {
-          selectedPackageTypes.value = []
-        }
-      }
     } else {
       resetForm()
     }
@@ -362,11 +352,6 @@ const buildSubmitData = (): Partial<Repository> => {
     type: formData.value.type,
     package_type: formData.value.package_type,
     storage_backend_id: storageBackendId.value || undefined,
-  }
-
-  if (formData.value.type === 'virtual' && selectedPackageTypes.value.length > 0) {
-    data.package_types = selectedPackageTypes.value.join(',')
-    data.package_type = selectedPackageTypes.value[0]
   }
 
   if (formData.value.type === 'proxy') {

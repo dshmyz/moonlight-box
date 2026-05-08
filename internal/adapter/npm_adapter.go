@@ -21,6 +21,7 @@ import (
 	"github.com/moonlight-box/registry/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type NpmAdapter struct {
@@ -1013,7 +1014,9 @@ func (a *NpmAdapter) searchPackages(ctx context.Context, query string, size, fro
 
 	db.Count(&total)
 
-	err := db.Preload("Versions").
+	err := db.Preload("Versions", func(db *gorm.DB) *gorm.DB {
+		return db.Order("published_at DESC").Limit(1)
+	}).
 		Order("updated_at DESC").
 		Offset(from).
 		Limit(size).

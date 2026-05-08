@@ -114,7 +114,7 @@ func (h *SystemConfigHandler) Set(c *gin.Context) {
 
 	if h.auditSvc != nil && userID > 0 {
 		uid := userID
-		_ = h.auditSvc.LogWithRequest(
+		_ = h.auditSvc.LogWithRequestAndStatus(
 			c.Request.Context(),
 			&uid,
 			model.ActionConfigChange,
@@ -124,6 +124,8 @@ func (h *SystemConfigHandler) Set(c *gin.Context) {
 			`{"action":"set"}`,
 			c.ClientIP(),
 			c.Request.UserAgent(),
+			200,
+			0,
 		)
 	}
 
@@ -247,7 +249,7 @@ func getDatabasePoolStats() gin.H {
 }
 
 func (h *SystemInfoHandler) Health(c *gin.Context) {
-	c.JSON(200, gin.H{
+	response.Success(c, gin.H{
 		"status":  "ok",
 		"version": h.version,
 	})

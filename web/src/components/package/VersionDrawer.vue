@@ -23,14 +23,14 @@
               <el-tag :type="getVersionStatusColor(row.status)" size="small">
                 {{ getVersionStatusLabel(row.status) }}
               </el-tag>
-              <el-tooltip :content="row.files_downloaded ? '文件已下载到本地' : '文件未下载'" placement="top">
+              <el-tooltip :content="row.files_downloaded ? '文件已下载到本地' : '仅元数据，文件未下载'" placement="top">
                 <el-tag 
                   :type="row.files_downloaded ? 'success' : 'info'" 
                   size="small" 
                   effect="plain"
                   class="download-status-tag"
                 >
-                  {{ row.files_downloaded ? '已下载' : '未下载' }}
+                  {{ row.files_downloaded ? '已缓存' : '未缓存' }}
                 </el-tag>
               </el-tooltip>
             </div>

@@ -10,11 +10,11 @@ import (
 )
 
 type cacheEntry struct {
-	key          string
-	content      []byte
+	key         string
+	content     []byte
 	contentType string
-	size         int64
-	expiry       time.Time
+	size        int64
+	expiry      time.Time
 	isNegative  bool
 }
 
@@ -27,44 +27,61 @@ type CacheItem struct {
 }
 
 type CacheShard struct {
-	mu       sync.RWMutex
-	store    map[string]*cacheEntry
-	lruList  *list.List
-	lruIndex map[string]*list.Element
-	maxItems int
-	maxBytes int64
+	mu        sync.RWMutex
+	store     map[string]*cacheEntry
+	lruList   *list.List
+	lruIndex  map[string]*list.Element
+	maxItems  int
+	maxBytes  int64
 	usedBytes int64
 }
 
 type CacheService struct {
-	shards     []*CacheShard
-	numShards  int
-	maxItems   int
-	maxBytes   int64
+	shards    []*CacheShard
+	numShards int
+	maxItems  int
+	maxBytes  int64
+}
+
+type CacheServiceOptions struct {
+	MaxItems  int
+	MaxBytes  int64
+	NumShards int
 }
 
 func NewCacheService() *CacheService {
-	return NewCacheServiceWithShards(16)
+	return NewCacheServiceWithOptions(CacheServiceOptions{
+		MaxItems:  10000,
+		MaxBytes:  2 * 1024 * 1024 * 1024,
+		NumShards: 16,
+	})
 }
 
-func NewCacheServiceWithShards(numShards int) *CacheService {
-	if numShards <= 0 {
-		numShards = 16
+func NewCacheServiceWithOptions(opts CacheServiceOptions) *CacheService {
+	if opts.NumShards <= 0 {
+		opts.NumShards = 16
 	}
-	c := &CacheService{
-		shards:    make([]*CacheShard, numShards),
-		numShards: numShards,
-		maxItems:  10000,
-		maxBytes:  10 * 1024 * 1024 * 1024,
+	if opts.MaxItems <= 0 {
+		opts.MaxItems = 10000
+	}
+	if opts.MaxBytes <= 0 {
+		opts.MaxBytes = 2 * 1024 * 1024 * 1024
 	}
 
-	for i := 0; i < numShards; i++ {
+	c := &CacheService{
+		shards:    make([]*CacheShard, opts.NumShards),
+		numShards: opts.NumShards,
+		maxItems:  opts.MaxItems,
+		maxBytes:  opts.MaxBytes,
+	}
+
+	for i := 0; i < opts.NumShards; i++ {
 		c.shards[i] = &CacheShard{
 			store:    make(map[string]*cacheEntry),
 			lruList:  list.New(),
 			lruIndex: make(map[string]*list.Element),
-			maxItems: 10000 / numShards,
-			maxBytes: (10 * 1024 * 1024 * 1024) / int64(numShards),
+			maxItems: opts.MaxItems / opts.NumShards,
+			maxBytes: opts.MaxBytes / int64(opts.NumShards),
 		}
 	}
 
@@ -161,14 +178,14 @@ func (c *CacheService) GetStats(ctx context.Context) (map[string]interface{}, er
 	}
 
 	return map[string]interface{}{
-		"total_items":     totalItems,
-		"positive_items":  positiveItems,
-		"negative_items":  negativeItems,
-		"total_size":      totalSize,
-		"used_bytes":      usedBytes,
-		"max_bytes":       c.maxBytes,
-		"max_items":       c.maxItems,
-		"num_shards":      c.numShards,
+		"total_items":    totalItems,
+		"positive_items": positiveItems,
+		"negative_items": negativeItems,
+		"total_size":     totalSize,
+		"used_bytes":     usedBytes,
+		"max_bytes":      c.maxBytes,
+		"max_items":      c.maxItems,
+		"num_shards":     c.numShards,
 	}, nil
 }
 

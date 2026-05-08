@@ -15,6 +15,18 @@ export interface BackupCreateRequest {
   description?: string
 }
 
+export interface BackupConfig {
+  enabled: boolean
+  interval: string
+  time: string
+}
+
+export interface BackupConfigUpdateRequest {
+  enabled: boolean
+  interval: string
+  time: string
+}
+
 export const backupApi = {
   list() {
     return request.get<{ list: Backup[] }>('/backups')
@@ -30,5 +42,13 @@ export const backupApi = {
 
   delete(id: number) {
     return request.delete(`/backups/${id}`)
+  },
+
+  getConfig() {
+    return request.get<BackupConfig>('/backups/config')
+  },
+
+  updateConfig(data: BackupConfigUpdateRequest) {
+    return request.put<BackupConfig>('/backups/config', data)
   },
 }

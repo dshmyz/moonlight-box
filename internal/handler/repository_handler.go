@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"github.com/moonlight-box/registry/internal/response"
 	"fmt"
 	"strconv"
 	"time"
@@ -68,7 +69,7 @@ func (h *RepositoryHandler) List(c *gin.Context) {
 
 	repos, err := h.svc.List(filter)
 	if err != nil {
-		InternalError(c, "Failed to list repositories")
+		response.InternalError(c, "Failed to list repositories")
 		return
 	}
 
@@ -79,7 +80,7 @@ func (h *RepositoryHandler) List(c *gin.Context) {
 		repos[i].AuthConfig = repos[i].MaskAuthConfig()
 	}
 
-	Success(c, repos)
+	response.Success(c, repos)
 }
 
 // Get 根据名称获取仓库详情
@@ -87,7 +88,7 @@ func (h *RepositoryHandler) Get(c *gin.Context) {
 	name := c.Param("name")
 	repo, err := h.svc.Get(name)
 	if err != nil {
-		NotFound(c, "Repository not found")
+		response.NotFound(c, "Repository not found")
 		return
 	}
 
@@ -96,7 +97,7 @@ func (h *RepositoryHandler) Get(c *gin.Context) {
 
 	repo.AuthConfig = repo.MaskAuthConfig()
 
-	Success(c, repo)
+	response.Success(c, repo)
 }
 
 // Create 创建新仓库
@@ -120,7 +121,7 @@ func (h *RepositoryHandler) Create(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		BadRequest(c, "Invalid request", err.Error())
+		response.BadRequest(c, "Invalid request", err.Error())
 		return
 	}
 
@@ -144,14 +145,14 @@ func (h *RepositoryHandler) Create(c *gin.Context) {
 
 	if err := h.svc.Create(&repo, req.Members); err != nil {
 		if apperr.IsDuplicate(err) {
-			Conflict(c, "仓库名称已存在")
+			response.Conflict(c, "仓库名称已存在")
 			return
 		}
-		InternalError(c, "Failed to create repository")
+		response.InternalError(c, "Failed to create repository")
 		return
 	}
 
-	Created(c, repo)
+	response.Created(c, repo)
 }
 
 // Update 更新仓库信息
@@ -159,27 +160,27 @@ func (h *RepositoryHandler) Update(c *gin.Context) {
 	name := c.Param("name")
 	var updates map[string]interface{}
 	if err := c.ShouldBindJSON(&updates); err != nil {
-		BadRequest(c, "Invalid request", err.Error())
+		response.BadRequest(c, "Invalid request", err.Error())
 		return
 	}
 
 	if err := h.svc.Update(name, updates); err != nil {
-		InternalError(c, "Failed to update repository")
+		response.InternalError(c, "Failed to update repository")
 		return
 	}
 
-	Success(c, gin.H{"message": "Repository updated"})
+	response.Success(c, gin.H{"message": "Repository updated"})
 }
 
 // Delete 删除仓库
 func (h *RepositoryHandler) Delete(c *gin.Context) {
 	name := c.Param("name")
 	if err := h.svc.Delete(name); err != nil {
-		InternalError(c, "Failed to delete repository")
+		response.InternalError(c, "Failed to delete repository")
 		return
 	}
 
-	Success(c, gin.H{"message": "Repository deleted"})
+	response.Success(c, gin.H{"message": "Repository deleted"})
 }
 
 // GetMembers 获取虚拟仓库的成员列表
@@ -187,11 +188,11 @@ func (h *RepositoryHandler) GetMembers(c *gin.Context) {
 	name := c.Param("name")
 	members, err := h.svc.GetMembers(name)
 	if err != nil {
-		InternalError(c, "Failed to get members")
+		response.InternalError(c, "Failed to get members")
 		return
 	}
 
-	Success(c, members)
+	response.Success(c, members)
 }
 
 // AddMember 向虚拟仓库添加成员
@@ -203,16 +204,16 @@ func (h *RepositoryHandler) AddMember(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		BadRequest(c, "Invalid request", err.Error())
+		response.BadRequest(c, "Invalid request", err.Error())
 		return
 	}
 
 	if err := h.svc.AddMember(name, req.MemberName, req.Priority); err != nil {
-		InternalError(c, "Failed to add member")
+		response.InternalError(c, "Failed to add member")
 		return
 	}
 
-	Success(c, gin.H{"message": "Member added"})
+	response.Success(c, gin.H{"message": "Member added"})
 }
 
 // RemoveMember 从虚拟仓库移除成员
@@ -221,11 +222,11 @@ func (h *RepositoryHandler) RemoveMember(c *gin.Context) {
 	memberName := c.Param("memberName")
 
 	if err := h.svc.RemoveMember(name, memberName); err != nil {
-		InternalError(c, "Failed to remove member")
+		response.InternalError(c, "Failed to remove member")
 		return
 	}
 
-	Success(c, gin.H{"message": "Member removed"})
+	response.Success(c, gin.H{"message": "Member removed"})
 }
 
 // TriggerMetadataSync 手动触发元数据同步
@@ -234,38 +235,38 @@ func (h *RepositoryHandler) TriggerMetadataSync(c *gin.Context) {
 
 	repo, err := h.svc.Get(name)
 	if err != nil {
-		NotFound(c, "Repository not found")
+		response.NotFound(c, "Repository not found")
 		return
 	}
 
 	if repo.Type != model.RepoTypeProxy {
-		BadRequest(c, "Only proxy repository supports metadata sync", "")
+		response.BadRequest(c, "Only proxy repository supports metadata sync", "")
 		return
 	}
 
 	userID, exists := c.Get("userID")
 	if !exists {
-		Unauthorized(c, "User not authenticated")
+		response.Unauthorized(c, "User not authenticated")
 		return
 	}
 
 	uid, ok := userID.(uint)
 	if !ok {
-		InternalError(c, "Invalid user ID type")
+		response.InternalError(c, "Invalid user ID type")
 		return
 	}
 
 	task, err := h.metadataSyncSvc.TriggerManualSync(repo.ID, uid)
 	if err != nil {
 		if apperr.IsDuplicate(err) {
-			Conflict(c, "A sync task is already running")
+			response.Conflict(c, "A sync task is already running")
 			return
 		}
-		InternalError(c, "Failed to trigger metadata sync")
+		response.InternalError(c, "Failed to trigger metadata sync")
 		return
 	}
 
-	Success(c, task)
+	response.Success(c, task)
 }
 
 // GetSyncHistory 获取同步历史
@@ -273,7 +274,7 @@ func (h *RepositoryHandler) GetSyncHistory(c *gin.Context) {
 	repoIDStr := c.Param("id")
 	repoID, err := strconv.ParseUint(repoIDStr, 10, 32)
 	if err != nil {
-		BadRequest(c, "Invalid repository ID", "")
+		response.BadRequest(c, "Invalid repository ID", "")
 		return
 	}
 
@@ -285,11 +286,11 @@ func (h *RepositoryHandler) GetSyncHistory(c *gin.Context) {
 
 	tasks, err := h.metadataSyncSvc.GetRepositorySyncHistory(uint(repoID), limit)
 	if err != nil {
-		InternalError(c, "Failed to get sync history")
+		response.InternalError(c, "Failed to get sync history")
 		return
 	}
 
-	Success(c, tasks)
+	response.Success(c, tasks)
 }
 
 // GetSyncTaskStatus 获取同步任务状态
@@ -297,17 +298,17 @@ func (h *RepositoryHandler) GetSyncTaskStatus(c *gin.Context) {
 	taskIDStr := c.Param("taskId")
 	taskID, err := strconv.ParseUint(taskIDStr, 10, 32)
 	if err != nil {
-		BadRequest(c, "Invalid task ID", "")
+		response.BadRequest(c, "Invalid task ID", "")
 		return
 	}
 
 	task, err := h.metadataSyncSvc.GetTaskStatus(uint(taskID))
 	if err != nil {
-		NotFound(c, "Task not found")
+		response.NotFound(c, "Task not found")
 		return
 	}
 
-	Success(c, task)
+	response.Success(c, task)
 }
 
 // CancelSyncTask 取消同步任务
@@ -315,16 +316,16 @@ func (h *RepositoryHandler) CancelSyncTask(c *gin.Context) {
 	taskIDStr := c.Param("taskId")
 	taskID, err := strconv.ParseUint(taskIDStr, 10, 32)
 	if err != nil {
-		BadRequest(c, "Invalid task ID", "")
+		response.BadRequest(c, "Invalid task ID", "")
 		return
 	}
 
 	if err := h.metadataSyncSvc.CancelTask(uint(taskID)); err != nil {
-		InternalError(c, "Failed to cancel task")
+		response.InternalError(c, "Failed to cancel task")
 		return
 	}
 
-	Success(c, gin.H{"message": "Task cancelled"})
+	response.Success(c, gin.H{"message": "Task cancelled"})
 }
 
 // UpdateMetadataSyncConfig 更新元数据同步配置
@@ -337,14 +338,14 @@ func (h *RepositoryHandler) UpdateMetadataSyncConfig(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		BadRequest(c, "Invalid request", "")
+		response.BadRequest(c, "Invalid request", "")
 		return
 	}
 
 	// 获取仓库信息
 	repo, err := h.svc.Get(name)
 	if err != nil {
-		NotFound(c, "Repository not found")
+		response.NotFound(c, "Repository not found")
 		return
 	}
 
@@ -355,7 +356,7 @@ func (h *RepositoryHandler) UpdateMetadataSyncConfig(c *gin.Context) {
 	}
 
 	if err := h.svc.Update(repo.Name, updates); err != nil {
-		InternalError(c, "Failed to update metadata sync config")
+		response.InternalError(c, "Failed to update metadata sync config")
 		return
 	}
 
@@ -367,7 +368,7 @@ func (h *RepositoryHandler) UpdateMetadataSyncConfig(c *gin.Context) {
 				interval = time.Hour
 			}
 			if err := h.schedulerSvc.ScheduleMetadataSync(repo.ID, interval); err != nil {
-				InternalError(c, "Failed to schedule metadata sync")
+				response.InternalError(c, "Failed to schedule metadata sync")
 				return
 			}
 		} else {
@@ -377,7 +378,7 @@ func (h *RepositoryHandler) UpdateMetadataSyncConfig(c *gin.Context) {
 		}
 	}
 
-	Success(c, gin.H{"message": "Metadata sync config updated"})
+	response.Success(c, gin.H{"message": "Metadata sync config updated"})
 }
 
 // RegisterRoutes 注册路由

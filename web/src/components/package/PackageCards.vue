@@ -169,11 +169,6 @@ defineEmits<{
   color: #047857;
 }
 
-.type-tag--nuget {
-  background: linear-gradient(135deg, #fbcfe8 0%, #f9a8d4 100%);
-  color: #be185d;
-}
-
 .source-tag--proxy {
   background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
   color: #d97706;

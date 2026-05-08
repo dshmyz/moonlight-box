@@ -1,6 +1,8 @@
 package config
 
 import (
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -183,8 +185,57 @@ func Load(configPath string) (*Config, error) {
 		return nil, err
 	}
 
+	// 解析带单位的文件大小字符串（如 "50MB", "1GB", "50m"）
+	if raw := v.GetString("proxy.large_file_threshold"); raw != "" {
+		if size, err := ParseSize(raw); err == nil {
+			cfg.Proxy.LargeFileThreshold = size
+		}
+	}
+
 	globalConfig = &cfg
 	return &cfg, nil
+}
+
+// ParseSize 解析带单位的文件大小字符串为字节数
+// 支持: "50MB", "1GB", "50m", "100k", "500B", 或纯数字
+func ParseSize(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+
+	var multipliers = map[string]int64{
+		"B":  1,
+		"K":  1024,
+		"KB": 1024,
+		"M":  1024 * 1024,
+		"MB": 1024 * 1024,
+		"G":  1024 * 1024 * 1024,
+		"GB": 1024 * 1024 * 1024,
+	}
+
+	upper := strings.ToUpper(s)
+	for suffix, mult := range multipliers {
+		if strings.HasSuffix(upper, suffix) {
+			numStr := strings.TrimSuffix(upper, suffix)
+			numStr = strings.TrimSpace(numStr)
+			if numStr == "" {
+				return 0, nil
+			}
+			num, err := strconv.ParseFloat(numStr, 64)
+			if err != nil {
+				return 0, err
+			}
+			return int64(num * float64(mult)), nil
+		}
+	}
+
+	// 纯数字
+	num, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, err
+	}
+	return int64(num), nil
 }
 
 func Get() *Config {

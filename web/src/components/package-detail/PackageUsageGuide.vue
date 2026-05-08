@@ -118,12 +118,6 @@ const installCommands = computed<CommandItem[]>(() => {
         { label: 'go get', command: `go get ${name}@${version}` },
         { label: 'go mod tidy', command: `go mod tidy` },
       ]
-    case 'nuget':
-      return [
-        { label: '.NET CLI', command: `dotnet add package ${name} -v ${version}` },
-        { label: 'NuGet CLI', command: `nuget install ${name} -Version ${version}` },
-        { label: 'PackageReference', command: `<PackageReference Include="${name}" Version="${version}" />` },
-      ]
     case 'yum':
       return [
         { label: 'yum', command: `yum install ${name}-${version}` },
@@ -169,13 +163,6 @@ const configSnippets = computed<CodeItem[]>(() => {
         {
           label: 'go.mod',
           code: `require ${name} ${version}`,
-        },
-      ]
-    case 'nuget':
-      return [
-        {
-          label: 'csproj',
-          code: `<PackageReference Include="${name}" Version="${version}" />`,
         },
       ]
     default:

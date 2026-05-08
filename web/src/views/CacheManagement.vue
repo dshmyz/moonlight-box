@@ -16,45 +16,46 @@
       </el-button>
     </header>
 
+    <div class="cache-tabs">
+      <div
+        v-for="c in cacheList"
+        :key="c.name"
+        class="cache-tab"
+        :class="{ active: selectedCache === c.name }"
+        @click="selectCache(c.name)"
+      >
+        <span class="tab-name">{{ c.name }}</span>
+        <span class="tab-type">{{ c.description }}</span>
+      </div>
+    </div>
+
     <div class="stats-bar">
-      <div class="stat-card stat-card--entries">
-        <div class="stat-icon">
-          <i class="fa-solid fa-boxes"></i>
-        </div>
+      <div v-for="(stat, name) in allStats" :key="name" class="stat-card stat-card--entries">
         <div class="stat-info">
-          <span class="stat-value">{{ stats.positive_items.toLocaleString() }}</span>
-          <span class="stat-label">正缓存条目</span>
+          <span class="stat-label">{{ name }}</span>
+          <span class="stat-value">{{ stat.active_items ?? stat.total_items ?? 0 }}</span>
         </div>
       </div>
-      <div class="stat-card stat-card--negative">
-        <div class="stat-icon">
-          <i class="fa-solid fa-circle-xmark"></i>
-        </div>
-        <div class="stat-info">
-          <span class="stat-value">{{ stats.negative_items.toLocaleString() }}</span>
-          <span class="stat-label">负缓存条目</span>
-        </div>
-      </div>
-      <div class="stat-card stat-card--size">
+      <div v-if="selectedCacheStats" class="stat-card stat-card--size">
         <div class="stat-icon">
           <i class="fa-solid fa-hdd"></i>
         </div>
         <div class="stat-info">
-          <span class="stat-value">{{ formatSize(stats.used_bytes) }}</span>
+          <span class="stat-value">{{ formatSize(selectedCacheStats.used_bytes || 0) }}</span>
           <span class="stat-label">已用空间</span>
         </div>
       </div>
-      <div class="stat-card stat-card--expired">
+      <div v-if="selectedCacheStats" class="stat-card stat-card--expired">
         <div class="stat-icon">
           <i class="fa-solid fa-clock"></i>
         </div>
         <div class="stat-info">
-          <span class="stat-value">{{ stats.expired_entries.toLocaleString() }}</span>
+          <span class="stat-value">{{ selectedCacheStats.expired_items ?? selectedCacheStats.expired_entries ?? 0 }}</span>
           <span class="stat-label">过期条目</span>
         </div>
         <el-button
-          v-if="stats.expired_entries > 0"
-          type="warning"
+          v-if="selectedCacheStats.expired_items ?? selectedCacheStats.expired_entries ?? 0"
+          type="danger"
           size="small"
           class="cleanup-btn"
           @click="handleCleanupExpired"
@@ -63,15 +64,6 @@
           清理
         </el-button>
       </div>
-      <div class="stat-card stat-card--max">
-        <div class="stat-icon">
-          <i class="fa-solid fa-gauge-high"></i>
-        </div>
-        <div class="stat-info">
-          <span class="stat-value">{{ stats.max_size_gb.toFixed(1) }} GB</span>
-          <span class="stat-label">最大容量</span>
-        </div>
-      </div>
     </div>
 
     <div class="content-panel">
@@ -79,6 +71,7 @@
         <div class="panel-title">
           <i class="fa-solid fa-list"></i>
           <span>缓存项列表</span>
+          <el-tag v-if="selectedCache" size="small" type="info">{{ selectedCache }}</el-tag>
         </div>
         <div class="header-actions">
           <div class="search-wrapper">
@@ -110,6 +103,11 @@
         class="cache-table"
         :header-cell-style="{ background: '#f8fafc', color: '#475569', fontWeight: 600 }"
       >
+        <el-table-column prop="source_cache" label="缓存类型" width="140" v-if="!selectedCache">
+          <template #default="{ row }">
+            <el-tag size="small">{{ row.source_cache }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="key" label="缓存键" min-width="300" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="key-cell">
@@ -201,7 +199,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { cacheApi, type CacheListItem, type CacheStats } from '@/api/cache'
 
@@ -210,6 +208,15 @@ const clearing = ref(false)
 const invalidating = ref(false)
 const cleaningExpired = ref(false)
 const deletingKey = ref<string | null>(null)
+
+const cacheList = ref<{name: string, type: string, description: string}[]>([])
+const selectedCache = ref('')
+const allStats = ref<Record<string, CacheStats>>({})
+
+const selectedCacheStats = computed(() => {
+  if (!selectedCache.value) return null
+  return allStats.value[selectedCache.value] || null
+})
 
 const stats = ref<CacheStats>({
   total_items: 0,
@@ -233,6 +240,12 @@ const searchQuery = ref('')
 const invalidateForm = ref({
   pattern: '',
 })
+
+const selectCache = (name: string) => {
+  selectedCache.value = name
+  currentPage.value = 1
+  loadItems()
+}
 
 const formatSize = (bytes: number) => {
   if (!bytes || bytes < 0) return '0 B'
@@ -262,20 +275,38 @@ const formatTime = (timeStr: string) => {
   })
 }
 
+const loadCacheList = async () => {
+  try {
+    const res = await cacheApi.listCaches()
+    cacheList.value = res
+    if (res.length > 0 && !selectedCache.value) {
+      selectedCache.value = res[0].name
+    }
+  } catch {
+    ElMessage.error('加载缓存列表失败')
+  }
+}
+
 const loadStats = async () => {
   try {
     const res = await cacheApi.getStats()
-    stats.value = {
-      total_items: res.total_items || 0,
-      positive_items: res.positive_items || 0,
-      negative_items: res.negative_items || 0,
-      total_size: res.total_size || 0,
-      used_bytes: res.used_bytes || 0,
-      max_bytes: res.max_bytes || 0,
-      max_items: res.max_items || 0,
-      num_shards: res.num_shards || 0,
-      expired_entries: res.expired_entries || 0,
-      max_size_gb: res.max_size_gb || 0,
+    if ('total_items' in res && typeof res.total_items === 'number') {
+      const singleCache = res as CacheStats
+      stats.value = {
+        total_items: singleCache.total_items || 0,
+        positive_items: singleCache.positive_items || 0,
+        negative_items: singleCache.negative_items || 0,
+        total_size: singleCache.total_size || 0,
+        used_bytes: singleCache.used_bytes || 0,
+        max_bytes: singleCache.max_bytes || 0,
+        max_items: singleCache.max_items || 0,
+        num_shards: singleCache.num_shards || 0,
+        expired_entries: singleCache.expired_entries || 0,
+        max_size_gb: singleCache.max_size_gb || 0,
+      }
+      allStats.value = { 'proxy-content': singleCache }
+    } else {
+      allStats.value = res as Record<string, CacheStats>
     }
   } catch {
     ElMessage.error('加载缓存统计失败')
@@ -286,11 +317,15 @@ const loadItems = async () => {
   loading.value = true
   try {
     const offset = (currentPage.value - 1) * pageSize.value
-    const res = await cacheApi.list({
+    const params: any = {
       offset,
       limit: pageSize.value,
       search: searchQuery.value,
-    })
+    }
+    if (selectedCache.value) {
+      params.cacheName = selectedCache.value
+    }
+    const res = await cacheApi.list(params)
     items.value = res.items
     total.value = res.total
   } catch {
@@ -343,7 +378,7 @@ const handleDeleteItem = async (item: CacheListItem) => {
       type: 'warning',
     })
     deletingKey.value = item.key
-    await cacheApi.deleteItem(item.key)
+    await cacheApi.deleteItem(item.key, selectedCache.value)
     ElMessage.success('删除成功')
     await loadStats()
     await loadItems()
@@ -364,7 +399,7 @@ const handleCleanupExpired = async () => {
       type: 'warning',
     })
     cleaningExpired.value = true
-    const res = await cacheApi.cleanupExpired()
+    const res = await cacheApi.cleanupExpired(selectedCache.value)
     ElMessage.success(`已清理 ${res.cleaned} 个过期项`)
     await loadStats()
     await loadItems()
@@ -384,7 +419,7 @@ const handleInvalidate = async () => {
   }
   invalidating.value = true
   try {
-    await cacheApi.invalidate({ pattern: invalidateForm.value.pattern })
+    await cacheApi.invalidate({ name: selectedCache.value, pattern: invalidateForm.value.pattern })
     ElMessage.success('缓存失效操作成功')
     await loadStats()
     await loadItems()
@@ -397,6 +432,7 @@ const handleInvalidate = async () => {
 }
 
 onMounted(() => {
+  loadCacheList()
   loadStats()
   loadItems()
 })
@@ -469,6 +505,41 @@ onMounted(() => {
   background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+.cache-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.cache-tab {
+  padding: 8px 16px;
+  background: #fff;
+  border-radius: 10px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: all 0.2s ease;
+}
+
+.cache-tab.active {
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+.cache-tab .tab-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.cache-tab .tab-type {
+  font-size: 11px;
+  opacity: 0.7;
 }
 
 .stats-bar {

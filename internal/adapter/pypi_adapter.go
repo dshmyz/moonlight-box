@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -297,13 +299,52 @@ func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
 		return
 	}
 
-	urlBuilder := func(r *model.Repository, pkgName, _ string) string {
-		url := fmt.Sprintf("%s/packages/%s", strings.TrimSuffix(r.RemoteURL, "/"), filename)
-		slog.Info("Built proxy URL", "url", url)
-		return url
+	var remoteURL string
+
+	// PyPI 需要从 JSON API 获取文件的真实下载 URL
+	if repo != nil && strings.Contains(repo.RemoteURL, "pypi.org") {
+		jsonURL := fmt.Sprintf("https://pypi.org/pypi/%s/%s/json", normalizePackageName(name), version)
+		slog.Info("Fetching PyPI JSON API", "url", jsonURL)
+
+		req, reqErr := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, jsonURL, nil)
+		if reqErr == nil {
+			req.Header.Set("Accept", "application/json")
+			resp, respErr := http.DefaultClient.Do(req)
+			if respErr == nil {
+				defer resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					var pkgJSON struct {
+						URLs []struct {
+							URL      string `json:"url"`
+							Filename string `json:"filename"`
+						} `json:"urls"`
+					}
+					if parseErr := json.NewDecoder(resp.Body).Decode(&pkgJSON); parseErr == nil {
+						for _, file := range pkgJSON.URLs {
+							if file.Filename == actualFilename {
+								remoteURL = file.URL
+								slog.Info("Found download URL from PyPI JSON API", "url", remoteURL)
+								break
+							}
+						}
+					}
+				}
+			} else {
+				slog.Warn("Failed to fetch PyPI JSON API", "error", respErr)
+			}
+		}
 	}
 
-	slog.Info("Calling ProxyDownloadService.Download", "repo", repo != nil, "name", name, "version", version)
+	if remoteURL == "" && repo != nil {
+		remoteURL = fmt.Sprintf("%s/packages/%s", strings.TrimSuffix(repo.RemoteURL, "/"), filename)
+		slog.Info("Built fallback proxy URL", "url", remoteURL)
+	}
+
+	urlBuilder := func(r *model.Repository, pkgName, _ string) string {
+		return remoteURL
+	}
+
+	slog.Info("Calling ProxyDownloadService.Download", "repo", repo != nil, "name", name, "version", version, "remoteURL", remoteURL)
 	result, downloadErr := a.proxyDownloadSvc.Download(c.Request.Context(), &service.ProxyDownloadRequest{
 		PkgType:        "pypi",
 		Name:           name,
@@ -318,6 +359,7 @@ func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
 		IPAddress:      c.ClientIP(),
 		UserAgent:      c.Request.UserAgent(),
 		UserID:         getUintPtr(c.GetUint("userID")),
+		RemoteURL:      remoteURL,
 	})
 
 	if downloadErr != nil {

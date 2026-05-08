@@ -56,3 +56,48 @@ type Vulnerability struct {
 	References     string                `gorm:"type:text" json:"references,omitempty"`
 	CreatedAt      time.Time             `gorm:"autoCreateTime" json:"created_at"`
 }
+
+type VulnRuleSource string
+
+const (
+	VulnRuleSourceBuiltin VulnRuleSource = "builtin"
+	VulnRuleSourceCustom  VulnRuleSource = "custom"
+	VulnRuleSourceSynced  VulnRuleSource = "synced"
+)
+
+type VulnRule struct {
+	ID             uint                  `gorm:"primaryKey" json:"id"`
+	PackagePattern string                `gorm:"size:200;not null;index" json:"package_pattern"`
+	PackageType    string                `gorm:"size:20;index" json:"package_type"`
+	MaxVersion     string                `gorm:"size:50" json:"max_version"`
+	MinVersion     string                `gorm:"size:50" json:"min_version"`
+	CVE            string                `gorm:"size:30;not null;uniqueIndex" json:"cve"`
+	Severity       VulnerabilitySeverity `gorm:"not null" json:"severity"`
+	CVSS           float64               `json:"cvss"`
+	Title          string                `gorm:"size:500" json:"title"`
+	Description    string                `gorm:"type:text" json:"description"`
+	FixedVersion   string                `gorm:"size:50" json:"fixed_version"`
+	References     string                `gorm:"type:text" json:"references,omitempty"`
+	Source         VulnRuleSource        `gorm:"size:20;not null;default:custom;index" json:"source"`
+	Enabled        bool                  `gorm:"default:true;index" json:"enabled"`
+	ExternalID     string                `gorm:"size:100;index" json:"external_id,omitempty"`
+	SyncedAt       *time.Time            `json:"synced_at,omitempty"`
+	CreatedAt      time.Time             `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt      time.Time             `gorm:"autoUpdateTime" json:"updated_at"`
+}
+
+type VulnDataSource struct {
+	ID         uint       `gorm:"primaryKey" json:"id"`
+	Name       string     `gorm:"size:100;not null" json:"name"`
+	Type       string     `gorm:"size:20;not null" json:"type"`
+	URL        string     `gorm:"size:500" json:"url,omitempty"`
+	AuthType   string     `gorm:"size:20" json:"auth_type,omitempty"`
+	AuthToken  string     `gorm:"size:500" json:"-"`
+	Enabled    bool       `gorm:"default:true" json:"enabled"`
+	SyncCron   string     `gorm:"size:50" json:"sync_cron,omitempty"`
+	LastSyncAt *time.Time `json:"last_sync_at,omitempty"`
+	LastStatus string     `gorm:"size:20" json:"last_status,omitempty"`
+	LastError  string     `gorm:"type:text" json:"last_error,omitempty"`
+	CreatedAt  time.Time  `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt  time.Time  `gorm:"autoUpdateTime" json:"updated_at"`
+}

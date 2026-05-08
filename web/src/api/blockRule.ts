@@ -23,8 +23,8 @@ export interface BlockRuleCreateParams {
 }
 
 export const blockRuleApi = {
-  list(params?: { package_name?: string; package_type?: string; enabled?: string }) {
-    return request.get<BlockRule[]>('/block-rules', { params })
+  list(params?: { page?: number; page_size?: number; package_name?: string; package_type?: string; enabled?: string }) {
+    return request.get<{ items: BlockRule[]; pagination: { total: number; page: number; page_size: number } }>('/block-rules', { params })
   },
 
   create(data: BlockRuleCreateParams) {

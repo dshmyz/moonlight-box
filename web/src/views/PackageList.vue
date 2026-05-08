@@ -37,7 +37,6 @@
           <el-radio-button label="maven">Maven</el-radio-button>
           <el-radio-button label="pypi">PyPI</el-radio-button>
           <el-radio-button label="go">Go</el-radio-button>
-          <el-radio-button label="nuget">NuGet</el-radio-button>
           <el-radio-button label="yum">Yum</el-radio-button>
           <el-radio-button label="apt">Apt</el-radio-button>
           <el-radio-button label="generic">Generic</el-radio-button>

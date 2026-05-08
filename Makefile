@@ -1,7 +1,7 @@
 # Makefile
 .PHONY: build run clean test lint
 
-APP_NAME=moonlight-registry
+APP_NAME=moonlight-box
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_TIME=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 GIT_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")

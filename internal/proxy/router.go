@@ -3,7 +3,6 @@ package proxy
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -30,7 +29,7 @@ type ProxyRouter struct {
 	adapters           map[string]types.Adapter
 	healthCheckSvc     *HealthCheckService
 	largeFileThreshold int64
-	virtualRepoCache   *VirtualRepoCache
+	repoCache          *RepositoryCache
 }
 
 func NewProxyRouter(
@@ -55,8 +54,8 @@ func (r *ProxyRouter) SetLargeFileThreshold(threshold int64) {
 	r.largeFileThreshold = threshold
 }
 
-func (r *ProxyRouter) SetVirtualRepoCache(cache *VirtualRepoCache) {
-	r.virtualRepoCache = cache
+func (r *ProxyRouter) SetRepoCache(cache *RepositoryCache) {
+	r.repoCache = cache
 }
 
 func (r *ProxyRouter) SetHealthCheckService(svc *HealthCheckService) {
@@ -77,15 +76,15 @@ type RouteResult struct {
 type URLBuilder func(repo *model.Repository, name, version string) string
 
 func (r *ProxyRouter) getVirtualRepo(pkgType string) (*model.Repository, error) {
-	if r.virtualRepoCache != nil {
-		return r.virtualRepoCache.GetVirtualRepo(pkgType)
+	if r.repoCache != nil {
+		return r.repoCache.GetVirtualRepo(pkgType)
 	}
 	return r.repoRepo.FindVirtualByPackageType(pkgType)
 }
 
 func (r *ProxyRouter) getMembers(virtualRepoID uint) ([]model.RepositoryGroup, error) {
-	if r.virtualRepoCache != nil {
-		return r.virtualRepoCache.GetMembers(virtualRepoID)
+	if r.repoCache != nil {
+		return r.repoCache.GetMembers(virtualRepoID)
 	}
 	return r.groupRepo.GetMembersByVirtualRepo(virtualRepoID)
 }
@@ -603,17 +602,5 @@ func toProxyAuthConfig(cfg *model.ProxyAuthConfig) *ProxyAuthConfig {
 }
 
 func (r *ProxyRouter) isMemberTypeMatch(repo *model.Repository, pkgType string) bool {
-	if repo.PackageTypes != "" {
-		var types []string
-		if err := json.Unmarshal([]byte(repo.PackageTypes), &types); err == nil {
-			for _, t := range types {
-				if t == pkgType {
-					return true
-				}
-			}
-			return false
-		}
-	}
-
 	return repo.PackageType == pkgType
 }

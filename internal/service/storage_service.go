@@ -50,6 +50,19 @@ func (s *StorageService) SetDefaultBackendForTest(backend storage.Backend) {
 	s.defaultBackend = backend
 }
 
+// GetDefaultBackendPath 返回默认存储后端的路径，实现 proxy.StorageChecker 接口
+func (s *StorageService) GetDefaultBackendPath() (string, error) {
+	if s.defaultBackend == nil {
+		return "", fmt.Errorf("no default backend available")
+	}
+	return s.defaultBackend.BasePath(), nil
+}
+
+// CheckStoragePath 检查存储路径是否可用，实现 proxy.StorageChecker 接口
+func (s *StorageService) CheckStoragePath(path string) error {
+	return nil
+}
+
 func (s *StorageService) initDefaultBackend() (storage.Backend, error) {
 	// 首先尝试从数据库获取默认存储后端
 	defaultBackend, err := s.storageBackendRepo.FindDefault()

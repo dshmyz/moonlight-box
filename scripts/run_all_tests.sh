@@ -1,111 +1,239 @@
 #!/bin/bash
 
+set -e
+
 BASE_URL="${1:-http://localhost:9081}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ADMIN_USER="${ADMIN_USER:-admin}"
+ADMIN_PASS="${ADMIN_PASS:-admin123}"
+TEST_SUITE="${TEST_SUITE:-all}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m'
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 TOTAL_PASS=0
 TOTAL_FAIL=0
+TOTAL_SKIP=0
 
-echo "============================================"
-echo " 完整测试套件"
-echo " 目标: $BASE_URL"
-echo "============================================"
-echo
+print_header() {
+    echo -e "\n${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║${BOLD}  制品仓库完整能力测试套件${NC}${CYAN}                          ║${NC}"
+    echo -e "${CYAN}║${BOLD}  Artifact Repository Test Suite${NC}${CYAN}                      ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  目标地址: ${BLUE}$BASE_URL${NC}"
+    echo -e "  测试套件: ${BLUE}$TEST_SUITE${NC}"
+    echo -e "  执行时间: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo ""
+}
+
+print_section() {
+    echo -e "\n${YELLOW}═══════════════════════════════════════════════════════${NC}"
+    echo -e "  ${YELLOW}$1${NC}"
+    echo -e "${YELLOW}═══════════════════════════════════════════════════════${NC}"
+}
 
 run_test() {
     local test_name="$1"
     local test_script="$2"
+    local enabled="$3"
     
-    echo -e "${BLUE}运行测试: $test_name${NC}"
-    echo "----------------------------------------"
-    
-    if bash "$test_script" > /tmp/test_output_$$ 2>&1; then
-        echo -e "${GREEN}✓ $test_name 通过${NC}"
-    else
-        echo -e "${RED}✗ $test_name 失败${NC}"
+    if [ "$enabled" != "true" ]; then
+        echo -e "  ${YELLOW}⊘ SKIP${NC} $test_name"
+        TOTAL_SKIP=$((TOTAL_SKIP + 1))
+        return 0
     fi
     
-    if [ -f /tmp/test_output_$$ ]; then
-        PASS=$(grep -c "✓ PASS" /tmp/test_output_$$ 2>/dev/null || echo "0")
-        FAIL=$(grep -c "✗ FAIL" /tmp/test_output_$$ 2>/dev/null || echo "0")
-        PASS=$(echo "$PASS" | tr -d '[:space:]')
-        FAIL=$(echo "$FAIL" | tr -d '[:space:]')
-        PASS=${PASS:-0}
-        FAIL=${FAIL:-0}
-        echo "  通过: $PASS, 失败: $FAIL"
-        TOTAL_PASS=$((TOTAL_PASS + PASS))
-        TOTAL_FAIL=$((TOTAL_FAIL + FAIL))
-        
-        rm -f /tmp/test_output_$$
-    else
-        echo -e "${YELLOW}  警告: 未找到测试输出文件${NC}"
+    echo -e "\n${BLUE}▶ 执行: $test_name${NC}"
+    echo -e "  脚本: $test_script"
+    
+    if [ ! -f "$test_script" ]; then
+        echo -e "  ${RED}✗ 错误: 测试脚本不存在${NC}"
+        TOTAL_FAIL=$((TOTAL_FAIL + 1))
+        return 1
     fi
-    echo
+    
+    chmod +x "$test_script"
+    
+    if bash "$test_script" "$BASE_URL"; then
+        TOTAL_PASS=$((TOTAL_PASS + 1))
+        return 0
+    else
+        TOTAL_FAIL=$((TOTAL_FAIL + 1))
+        return 1
+    fi
 }
 
-echo "════════════════════════════════════════"
-echo "  1. 代理仓库测试"
-echo "════════════════════════════════════════"
-run_test "代理仓库测试" "$SCRIPT_DIR/test_all_proxy.sh"
+check_prerequisites() {
+    echo -e "${BOLD}检查测试环境...${NC}"
+    
+    if ! curl -s "$BASE_URL/api/v1/health" > /dev/null 2>&1; then
+        echo -e "${RED}错误: 无法连接到制品仓库服务 ($BASE_URL)${NC}"
+        echo -e "${YELLOW}请确保服务已启动并运行在 $BASE_URL${NC}"
+        exit 1
+    fi
+    
+    echo -e "  ${GREEN}✓${NC} 服务连接正常"
+    
+    if command -v mvn &> /dev/null; then
+        echo -e "  ${GREEN}✓${NC} Maven 已安装: $(mvn -version 2>&1 | head -1)"
+    else
+        echo -e "  ${YELLOW}⚠${NC} Maven 未安装（部分测试将跳过）"
+    fi
+    
+    if command -v npm &> /dev/null; then
+        echo -e "  ${GREEN}✓${NC} npm 已安装: $(npm -version)"
+    else
+        echo -e "  ${YELLOW}⚠${NC} npm 未安装（部分测试将跳过）"
+    fi
+    
+    if command -v go &> /dev/null; then
+        echo -e "  ${GREEN}✓${NC} Go 已安装: $(go version)"
+    else
+        echo -e "  ${YELLOW}⚠${NC} Go 未安装（部分测试将跳过）"
+    fi
+    
+    if command -v pip &> /dev/null; then
+        echo -e "  ${GREEN}✓${NC} pip 已安装: $(pip --version | awk '{print $2}')"
+    else
+        echo -e "  ${YELLOW}⚠${NC} pip 未安装（部分测试将跳过）"
+    fi
+    
+    if command -v ab &> /dev/null; then
+        echo -e "  ${GREEN}✓${NC} Apache Bench 已安装"
+    else
+        echo -e "  ${YELLOW}⚠${NC} Apache Bench 未安装（性能测试将跳过）"
+    fi
+    
+    echo ""
+}
 
-echo "════════════════════════════════════════"
-echo "  2. 基础 HTTP 接口测试"
-echo "════════════════════════════════════════"
-run_test "基础 HTTP 接口测试" "$SCRIPT_DIR/test_basic_http.sh"
+print_summary() {
+    echo -e "\n${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║${BOLD}  测试执行摘要${NC}${CYAN}                                          ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  ${GREEN}通过: $TOTAL_PASS${NC}"
+    echo -e "  ${RED}失败: $TOTAL_FAIL${NC}"
+    echo -e "  ${YELLOW}跳过: $TOTAL_SKIP${NC}"
+    echo -e "  总计: $((TOTAL_PASS + TOTAL_FAIL + TOTAL_SKIP))"
+    echo ""
+    
+    if [ $TOTAL_FAIL -eq 0 ]; then
+        echo -e "${GREEN}${BOLD}✓ 所有测试通过!${NC}"
+        exit 0
+    else
+        echo -e "${YELLOW}${BOLD}⚠ 部分测试失败，请查看上方输出${NC}"
+        exit 1
+    fi
+}
 
-echo "════════════════════════════════════════"
-echo "  3. 认证与权限测试"
-echo "════════════════════════════════════════"
-run_test "认证与权限测试" "$SCRIPT_DIR/test_auth.sh"
+print_header
+check_prerequisites
 
-echo "════════════════════════════════════════"
-echo "  4. Maven 生命周期测试"
-echo "════════════════════════════════════════"
-if command -v mvn &> /dev/null; then
-    run_test "Maven 生命周期测试" "$SCRIPT_DIR/test_maven_lifecycle.sh"
-else
-    echo -e "${YELLOW}跳过 Maven 测试（需要安装 Maven）${NC}"
-    echo
-fi
+case "$TEST_SUITE" in
+    all)
+        print_section "第一阶段: 基础 HTTP 接口测试"
+        run_test "基础 HTTP 接口" "$SCRIPT_DIR/test_basic_http.sh" "true"
+        
+        print_section "第二阶段: 认证与权限测试"
+        run_test "认证与权限" "$SCRIPT_DIR/test_auth.sh" "true"
+        
+        print_section "第三阶段: Maven 完整生命周期"
+        run_test "Maven Release 版本" "$SCRIPT_DIR/test_maven_lifecycle.sh" "true"
+        run_test "Maven SNAPSHOT 版本" "$SCRIPT_DIR/test_maven_snapshot.sh" "true"
+        
+        print_section "第四阶段: npm 完整生命周期"
+        run_test "npm 生命周期" "$SCRIPT_DIR/test_npm_lifecycle.sh" "true"
+        
+        print_section "第五阶段: Go 模块完整生命周期"
+        run_test "Go 模块生命周期" "$SCRIPT_DIR/test_go_lifecycle.sh" "true"
+        
+        print_section "第六阶段: PyPI 完整生命周期"
+        run_test "PyPI 生命周期" "$SCRIPT_DIR/test_pypi_lifecycle.sh" "true"
+        
+        print_section "第七阶段: 代理仓库能力"
+        run_test "多协议代理" "$SCRIPT_DIR/test_all_proxy.sh" "true"
+        
+        print_section "第八阶段: 仓库组能力"
+        run_test "仓库组（Group）" "$SCRIPT_DIR/test_group_repository.sh" "true"
+        
+        print_section "第九阶段: 性能与压力测试"
+        run_test "性能与压力" "$SCRIPT_DIR/test_performance.sh" "true"
+        
+        print_section "第十阶段: 异常场景测试"
+        run_test "异常场景" "$SCRIPT_DIR/test_exception_scenarios.sh" "true"
+        ;;
+    
+    basic)
+        print_section "基础测试套件"
+        run_test "基础 HTTP 接口" "$SCRIPT_DIR/test_basic_http.sh" "true"
+        run_test "认证与权限" "$SCRIPT_DIR/test_auth.sh" "true"
+        ;;
+    
+    maven)
+        print_section "Maven 测试套件"
+        run_test "Maven Release 版本" "$SCRIPT_DIR/test_maven_lifecycle.sh" "true"
+        run_test "Maven SNAPSHOT 版本" "$SCRIPT_DIR/test_maven_snapshot.sh" "true"
+        ;;
+    
+    npm)
+        print_section "npm 测试套件"
+        run_test "npm 生命周期" "$SCRIPT_DIR/test_npm_lifecycle.sh" "true"
+        ;;
+    
+    go)
+        print_section "Go 测试套件"
+        run_test "Go 模块生命周期" "$SCRIPT_DIR/test_go_lifecycle.sh" "true"
+        ;;
+    
+    pypi)
+        print_section "PyPI 测试套件"
+        run_test "PyPI 生命周期" "$SCRIPT_DIR/test_pypi_lifecycle.sh" "true"
+        ;;
+    
+    proxy)
+        print_section "代理仓库测试套件"
+        run_test "多协议代理" "$SCRIPT_DIR/test_all_proxy.sh" "true"
+        ;;
+    
+    group)
+        print_section "仓库组测试套件"
+        run_test "仓库组（Group）" "$SCRIPT_DIR/test_group_repository.sh" "true"
+        ;;
+    
+    performance)
+        print_section "性能测试套件"
+        run_test "性能与压力" "$SCRIPT_DIR/test_performance.sh" "true"
+        ;;
+    
+    exception)
+        print_section "异常场景测试套件"
+        run_test "异常场景" "$SCRIPT_DIR/test_exception_scenarios.sh" "true"
+        ;;
+    
+    *)
+        echo -e "${RED}错误: 未知的测试套件 '$TEST_SUITE'${NC}"
+        echo ""
+        echo "可用的测试套件:"
+        echo "  all         - 执行所有测试（默认）"
+        echo "  basic       - 基础 HTTP 和认证测试"
+        echo "  maven       - Maven 完整生命周期测试"
+        echo "  npm         - npm 完整生命周期测试"
+        echo "  go          - Go 模块完整生命周期测试"
+        echo "  pypi        - PyPI 完整生命周期测试"
+        echo "  proxy       - 代理仓库能力测试"
+        echo "  group       - 仓库组能力测试"
+        echo "  performance - 性能与压力测试"
+        echo "  exception   - 异常场景测试"
+        exit 1
+        ;;
+esac
 
-echo "════════════════════════════════════════"
-echo "  5. npm 生命周期测试"
-echo "════════════════════════════════════════"
-if command -v npm &> /dev/null; then
-    run_test "npm 生命周期测试" "$SCRIPT_DIR/test_npm_lifecycle.sh"
-else
-    echo -e "${YELLOW}跳过 npm 测试（需要安装 Node.js）${NC}"
-    echo
-fi
-
-echo "════════════════════════════════════════"
-echo "  6. PyPI 生命周期测试"
-echo "════════════════════════════════════════"
-if command -v pip &> /dev/null; then
-    run_test "PyPI 生命周期测试" "$SCRIPT_DIR/test_pypi_lifecycle.sh"
-else
-    echo -e "${YELLOW}跳过 PyPI 测试（需要安装 Python 和 pip）${NC}"
-    echo
-fi
-
-echo "============================================"
-echo " 总体测试汇总"
-echo "============================================"
-echo -e "  总通过: ${GREEN}$TOTAL_PASS${NC}"
-echo -e "  总失败: ${RED}$TOTAL_FAIL${NC}"
-echo -e "  总计: $((TOTAL_PASS + TOTAL_FAIL))"
-echo
-
-if [ $TOTAL_FAIL -eq 0 ]; then
-    echo -e "${GREEN}所有测试通过! ✓${NC}"
-    exit 0
-else
-    echo -e "${YELLOW}部分测试失败! ❌${NC}"
-    exit 1
-fi
+print_summary

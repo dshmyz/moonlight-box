@@ -71,7 +71,7 @@ type PackageVersion struct {
 	PublishedAt    time.Time           `gorm:"autoCreateTime" json:"published_at"`
 	PublishedBy    uint                `json:"published_by"`
 	Metadata       string              `gorm:"type:text" json:"metadata,omitempty"`
-	DownloadCount  int                 `gorm:"default:0" json:"download_count"`
+	DownloadCount  int64               `gorm:"default:0" json:"download_count"`
 	SizeBytes      int64               `gorm:"default:0" json:"size_bytes"`
 	ChecksumMD5    string              `gorm:"size:32" json:"checksum_md5,omitempty"`
 	ChecksumSHA256 string              `gorm:"size:64" json:"checksum_sha256,omitempty"`
@@ -92,7 +92,7 @@ type PackageFile struct {
 	SizeBytes      int64           `gorm:"default:0" json:"size_bytes"`
 	ChecksumSHA256 string          `gorm:"size:64" json:"checksum_sha256,omitempty"`
 	ChecksumMD5    string          `gorm:"size:32" json:"checksum_md5,omitempty"`
-	DownloadCount  int             `gorm:"default:0" json:"download_count"`
+	DownloadCount  int64           `gorm:"default:0" json:"download_count"`
 	Version        PackageVersion  `gorm:"foreignKey:VersionID" json:"-"`
 }
 
