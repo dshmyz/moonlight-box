@@ -204,7 +204,7 @@ func ParseSize(s string) (int64, error) {
 		return 0, nil
 	}
 
-	var multipliers = map[string]int64{
+	multipliers := map[string]int64{
 		"B":  1,
 		"K":  1024,
 		"KB": 1024,
@@ -215,7 +215,9 @@ func ParseSize(s string) (int64, error) {
 	}
 
 	upper := strings.ToUpper(s)
-	for suffix, mult := range multipliers {
+
+	suffixes := []string{"GB", "MB", "KB", "G", "M", "K", "B"}
+	for _, suffix := range suffixes {
 		if strings.HasSuffix(upper, suffix) {
 			numStr := strings.TrimSuffix(upper, suffix)
 			numStr = strings.TrimSpace(numStr)
@@ -226,7 +228,7 @@ func ParseSize(s string) (int64, error) {
 			if err != nil {
 				return 0, err
 			}
-			return int64(num * float64(mult)), nil
+			return int64(num * float64(multipliers[suffix])), nil
 		}
 	}
 
