@@ -12,7 +12,13 @@
 
     <div class="help-content">
       <el-tabs v-model="activeTab" type="card" class="help-tabs">
-        <el-tab-pane label="🚀 快速开始" name="quickstart">
+        <el-tab-pane name="quickstart">
+          <template #label>
+            <span class="tab-label">
+              <i class="fa-solid fa-rocket"></i>
+              <span>快速开始</span>
+            </span>
+          </template>
           <div class="tab-content">
             <div class="steps-container">
               <el-steps :active="activeStep" finish-status="success" align-center class="steps-wrapper">
@@ -153,7 +159,13 @@
           </div>
         </el-tab-pane>
 
-        <el-tab-pane label="📖 配置指南" name="guide">
+        <el-tab-pane name="guide">
+          <template #label>
+            <span class="tab-label">
+              <i class="fa-solid fa-book"></i>
+              <span>配置指南</span>
+            </span>
+          </template>
           <div class="tab-content">
             <div class="guide-intro">
               <i class="fa-solid fa-file-text"></i>
@@ -184,7 +196,13 @@
           </div>
         </el-tab-pane>
 
-        <el-tab-pane label="❓ 常见问题" name="faq">
+        <el-tab-pane name="faq">
+          <template #label>
+            <span class="tab-label">
+              <i class="fa-solid fa-circle-question"></i>
+              <span>常见问题</span>
+            </span>
+          </template>
           <div class="tab-content">
             <div class="search-wrapper">
               <el-input

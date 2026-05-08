@@ -102,7 +102,7 @@
       </div>
 
       <div class="history-section">
-        <MigrationHistory :tasks="historyTasks" />
+        <MigrationHistory :tasks="historyTasks" :loading="historyLoading" />
       </div>
     </div>
   </div>
@@ -135,6 +135,7 @@ const failedItems = ref(0)
 const totalItems = ref(0)
 const logs = ref<string[]>([])
 const historyTasks = ref<MigrationTask[]>([])
+const historyLoading = ref(false)
 const currentTaskId = ref(0)
 const pollingTimer = ref<number | null>(null)
 const localRepos = ref<any[]>([])
@@ -231,11 +232,15 @@ async function onCancel() {
 }
 
 async function loadHistory() {
+  historyLoading.value = true
   try {
     const res = (await listMigrations()) as any
-    historyTasks.value = res?.list || res || []
-  } catch {
-    // ignore errors when loading history
+    const data = res?.data?.list || res?.data || res?.list || res || []
+    historyTasks.value = Array.isArray(data) ? data : []
+  } catch (e) {
+    console.error('Load history failed:', e)
+  } finally {
+    historyLoading.value = false
   }
 }
 

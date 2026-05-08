@@ -29,7 +29,7 @@
         <el-table-column prop="type" label="类型" width="110" align="center">
           <template #default="{ row }">
             <el-tag :class="['type-tag', `type-tag--${row.type}`]" size="small">
-              <span class="tag-icon">{{ getTypeIcon(row.type) }}</span>
+              <span class="tag-icon"><i :class="getTypeIcon(row.type)"></i></span>
               {{ getTypeLabel(row.type) }}
             </el-tag>
           </template>
@@ -63,13 +63,9 @@
               <el-button class="btn-edit" size="small" @click="handleEdit(row)">
                 <i class="fa-solid fa-pencil"></i>
               </el-button>
-              <el-popconfirm title="确定删除此存储?" @confirm="handleDelete(row)" :disabled="row.is_default">
-                <template #reference>
-                  <el-button class="btn-delete" size="small" type="text" :disabled="row.is_default">
-                    <i class="fa-solid fa-trash"></i>
-                  </el-button>
-                </template>
-              </el-popconfirm>
+              <el-button class="btn-delete" size="small" link @click="handleDelete(row)" :disabled="row.is_default">
+                <i class="fa-solid fa-trash"></i>
+              </el-button>
             </div>
           </template>
         </el-table-column>
@@ -174,11 +170,11 @@ function handleRowLeave() {
 
 function getTypeIcon(type: string): string {
   const icons: Record<string, string> = {
-    local: '📁',
-    s3: '☁️',
-    obs: '☁️',
+    local: 'fa-solid fa-folder',
+    s3: 'fa-solid fa-cloud',
+    obs: 'fa-solid fa-cloud',
   }
-  return icons[type] || '📦'
+  return icons[type] || 'fa-solid fa-box'
 }
 
 const typeOptions = [
@@ -509,9 +505,5 @@ function getTypeLabel(type: string) {
 
 .btn-delete:hover {
   background: #fef2f2;
-}
-
-:deep(.el-popconfirm) {
-  display: inline;
 }
 </style>

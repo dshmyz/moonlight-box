@@ -2,7 +2,9 @@
   <div class="repository-list">
     <header class="list-header">
       <div class="header-content">
-        <div class="header-icon">🗄️</div>
+        <div class="header-icon">
+          <i class="fa-solid fa-server"></i>
+        </div>
         <div class="header-text">
           <h2>仓库管理</h2>
           <p class="header-subtitle">管理本地、代理和虚拟仓库</p>
@@ -16,21 +18,27 @@
 
     <div class="stats-bar">
       <div class="stat-card stat-card--local">
-        <div class="stat-icon">📁</div>
+        <div class="stat-icon">
+          <i class="fa-solid fa-folder"></i>
+        </div>
         <div class="stat-info">
           <span class="stat-value">{{ localCount }}</span>
           <span class="stat-label">Local 仓库</span>
         </div>
       </div>
       <div class="stat-card stat-card--proxy">
-        <div class="stat-icon">🔄</div>
+        <div class="stat-icon">
+          <i class="fa-solid fa-rotate"></i>
+        </div>
         <div class="stat-info">
           <span class="stat-value">{{ proxyCount }}</span>
           <span class="stat-label">Proxy 仓库</span>
         </div>
       </div>
       <div class="stat-card stat-card--virtual">
-        <div class="stat-icon">✨</div>
+        <div class="stat-icon">
+          <i class="fa-solid fa-wand-magic-sparkles"></i>
+        </div>
         <div class="stat-info">
           <span class="stat-value">{{ virtualCount }}</span>
           <span class="stat-label">Virtual 仓库</span>
@@ -47,14 +55,11 @@
               row-key="name" 
               style="width: 100%"
               :header-cell-style="{ background: '#fafbfc' }"
-              :row-class-name="tableRowClass"
-              @row-mouse-enter="handleRowEnter"
-              @row-mouse-leave="handleRowLeave"
             >
               <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip>
                 <template #default="{ row }">
                   <div class="repo-info">
-                    <div class="repo-icon" :class="`repo-icon--${row.type}`">{{ getRepoIcon(row.type) }}</div>
+                    <div class="repo-icon" :class="`repo-icon--${row.type}`"><i :class="getRepoIcon(row.type)"></i></div>
                     <div class="repo-content">
                       <div class="repo-name">{{ row.display_name || row.name }}</div>
                       <div class="repo-description">{{ row.description || '暂无描述' }}</div>
@@ -92,7 +97,9 @@
               </el-table-column>
               <el-table-column label="健康" width="80" align="center">
                 <template #default="{ row }">
-                  <span class="health-dot" :class="getHealthClass(row)"></span>
+                  <el-tooltip :content="getHealthTooltip(row)" placement="top" :show-after="300">
+                    <span class="health-dot" :class="getHealthClass(row)"></span>
+                  </el-tooltip>
                 </template>
               </el-table-column>
               <el-table-column label="状态" width="80" align="center">
@@ -110,12 +117,8 @@
                     <el-button class="btn-edit" size="small" @click="openEditDialog(row)">
                       编辑
                     </el-button>
-                    <el-popconfirm title="确定删除此仓库?" @confirm="deleteRepo(row.name)">
-                      <template #reference>
-                        <el-button class="btn-delete" size="small" type="text">删除</el-button>
-                      </template>
-                    </el-popconfirm>
-                    <el-dropdown v-if="row.type === 'proxy'" trigger="click" @command="(cmd: string) => handleProxyCommand(cmd, row)">
+                    <el-button class="btn-delete" size="small" link @click="confirmDelete(row)">删除</el-button>
+                    <!-- <el-dropdown v-if="row.type === 'proxy'" trigger="click" @command="(cmd: string) => handleProxyCommand(cmd, row)">
                       <el-button class="btn-proxy" size="small" type="primary">
                         更多
                         <el-icon class="el-icon--right"><ArrowDown /></el-icon>
@@ -132,7 +135,7 @@
                           </el-dropdown-item>
                         </el-dropdown-menu>
                       </template>
-                    </el-dropdown>
+                    </el-dropdown> -->
                   </div>
                 </template>
               </el-table-column>
@@ -160,13 +163,13 @@
 import { ref, computed, onMounted } from 'vue'
 import { Plus, ArrowDown, Refresh, Clock } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { repositoryApi, type Repository, type RepoHealthInfo } from '@/api/repository'
+import { repositoryApi, type Repository, type RepositoryWithHealth } from '@/api/repository'
 import RepositoryFormDialog from '@/components/repository/RepositoryFormDialog.vue'
 import SyncHistoryDrawer from '@/components/repository/SyncHistoryDrawer.vue'
+import { confirm, success, error } from '@/utils/message'
 
-interface LocalRepository extends Repository {
+interface LocalRepository extends RepositoryWithHealth {
   syncing?: boolean
-  healthInfo?: RepoHealthInfo
 }
 
 const loading = ref(false)
@@ -177,7 +180,6 @@ const repos = ref<LocalRepository[]>([])
 const showSyncHistory = ref(false)
 const selectedRepoId = ref<number | null>(null)
 const selectedRepoName = ref('')
-const hoveredRow = ref<number | null>(null)
 
 const tabOptions = [
   { name: 'all', label: '全部' },
@@ -197,10 +199,10 @@ const filteredRepos = computed(() => {
 
 const getRepoIcon = (type: string) => {
   switch (type) {
-    case 'local': return '📁'
-    case 'proxy': return '🔄'
-    case 'virtual': return '✨'
-    default: return '📦'
+    case 'local': return 'fa-solid fa-folder'
+    case 'proxy': return 'fa-solid fa-rotate'
+    case 'virtual': return 'fa-solid fa-wand-magic-sparkles'
+    default: return 'fa-solid fa-box'
   }
 }
 
@@ -213,31 +215,36 @@ const getSyncStatusClass = (status: string) => {
   }
 }
 
-const tableRowClass = ({ rowIndex }: { rowIndex: number }) => {
-  return hoveredRow.value === rowIndex ? 'row-hovered' : ''
-}
-
-const handleRowEnter = ({ rowIndex }: { rowIndex: number }) => {
-  hoveredRow.value = rowIndex
-}
-
-const handleRowLeave = () => {
-  hoveredRow.value = null
-}
-
 const getHealthClass = (row: LocalRepository) => {
   if (!row.enabled) return 'health-dot--disabled'
   
-  // 所有类型的仓库都检查健康状态
-  if (row.healthInfo?.health_status) {
-    const health = row.healthInfo.health_status
+  if (row.health_info?.health_status) {
+    const health = row.health_info.health_status
     if (!health.is_healthy) return 'health-dot--error'
     if (health.consecutive_failures > 0) return 'health-dot--warning'
     return 'health-dot--healthy'
   }
   
-  // 没有健康检查记录时显示未知状态
   return 'health-dot--unknown'
+}
+
+const getHealthTooltip = (row: LocalRepository) => {
+  if (!row.enabled) return '仓库已禁用，健康检查未运行'
+  
+  if (row.health_info?.health_status) {
+    const health = row.health_info.health_status
+    const responseTimeMs = Math.round(health.response_time / 1_000_000)
+    
+    if (!health.is_healthy) {
+      return `不健康 | 错误: ${health.last_check_error || '未知错误'} | 连续失败: ${health.consecutive_failures}次`
+    }
+    if (health.consecutive_failures > 0) {
+      return `警告 | 最近有 ${health.consecutive_failures} 次失败，但当前已恢复 | 响应: ${responseTimeMs}ms`
+    }
+    return `健康 | 响应时间: ${responseTimeMs}ms | 最后检查: ${new Date(health.last_check_time).toLocaleString('zh-CN')}`
+  }
+  
+  return '健康状态未知，等待首次检查完成'
 }
 
 const handleProxyCommand = (cmd: string, row: LocalRepository) => {
@@ -253,30 +260,10 @@ const loadRepos = async () => {
   try {
     const res = await repositoryApi.list()
     repos.value = res || []
-    await loadHealthStatuses()
+    loading.value = false
   } catch (err) {
     ElMessage.error('加载仓库列表失败')
-  } finally {
     loading.value = false
-  }
-}
-
-const loadHealthStatuses = async () => {
-  try {
-    const healthRes = await repositoryApi.getAllHealthStatuses()
-    if (healthRes?.items) {
-      const healthMap = new Map<number, RepoHealthInfo>()
-      healthRes.items.forEach(item => healthMap.set(item.repo_id, item))
-      
-      repos.value.forEach(repo => {
-        const health = healthMap.get(repo.id)
-        if (health) {
-          repo.healthInfo = health
-        }
-      })
-    }
-  } catch (err) {
-    console.warn('加载健康状态失败:', err)
   }
 }
 
@@ -300,13 +287,24 @@ const handleFormSubmit = () => {
   loadRepos()
 }
 
+const confirmDelete = async (row: Repository) => {
+  const ok = await confirm({
+    title: '删除确认',
+    message: `确定要删除仓库 "${row.name}" 吗？`,
+    type: 'warning',
+  })
+  if (ok) {
+    await deleteRepo(row.name)
+  }
+}
+
 const deleteRepo = async (name: string) => {
   try {
     await repositoryApi.delete(name)
-    ElMessage.success('删除成功')
+    success('删除成功')
     loadRepos()
   } catch (err) {
-    ElMessage.error('删除失败')
+    error('删除失败')
   }
 }
 
@@ -594,7 +592,7 @@ onMounted(loadRepos)
   transition: all 0.2s ease;
 }
 
-:deep(.el-table .row-hovered td) {
+:deep(.el-table__body tr:hover td) {
   background: #f8fafc;
 }
 

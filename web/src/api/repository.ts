@@ -70,13 +70,14 @@ export interface SyncTask {
 }
 
 export interface HealthStatus {
-  repo_id: number
-  repo_name: string
   is_healthy: boolean
   last_check_time: string
   last_check_error?: string
+  /** 响应时间，单位：纳秒（Go time.Duration JSON 序列化） */
   response_time: number
+  /** 连续失败次数 */
   consecutive_failures: number
+  /** HTTP 状态码 */
   status_code?: number
 }
 
@@ -87,10 +88,13 @@ export interface CircuitBreakerStats {
   last_failure_time?: string
 }
 
-export interface RepoHealthInfo {
-  repo_id: number
+export interface RepositoryHealthInfo {
   health_status: HealthStatus
   circuit_breaker?: CircuitBreakerStats
+}
+
+export interface RepositoryWithHealth extends Repository {
+  health_info?: RepositoryHealthInfo
 }
 
 export const repositoryApi = {
@@ -149,11 +153,11 @@ export const repositoryApi = {
 
   // 健康检查相关 API
   getAllHealthStatuses() {
-    return request.get<{ total: number; items: RepoHealthInfo[] }>('/health/repos')
+    return request.get<{ total: number; items: RepositoryHealthInfo[] }>('/health/repos')
   },
 
   getHealthStatus(repoId: number) {
-    return request.get<RepoHealthInfo>(`/health/repos/${repoId}`)
+    return request.get<RepositoryHealthInfo>(`/health/repos/${repoId}`)
   },
 
   resetCircuitBreaker(repoId: number) {

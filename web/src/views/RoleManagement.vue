@@ -59,13 +59,9 @@
               <el-button class="btn-clone" size="small" @click="showCloneDialog(row)">
                 <i class="fa-solid fa-clone"></i> 克隆
               </el-button>
-              <el-popconfirm title="确定删除此角色?" @confirm="deleteRole(row)" :disabled="row.is_system_role">
-                <template #reference>
-                  <el-button class="btn-delete" size="small" type="text" :disabled="row.is_system_role">
-                    <i class="fa-solid fa-trash"></i>
-                  </el-button>
-                </template>
-              </el-popconfirm>
+              <el-button class="btn-delete" size="small" link @click="deleteRole(row)" :disabled="row.is_system_role">
+                <i class="fa-solid fa-trash"></i>
+              </el-button>
             </div>
           </template>
         </el-table-column>
@@ -445,10 +441,6 @@ onMounted(() => {
 
 .btn-delete:hover {
   background: #fef2f2;
-}
-
-:deep(.el-popconfirm) {
-  display: inline;
 }
 
 .permission-header {

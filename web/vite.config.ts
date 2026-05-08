@@ -18,19 +18,19 @@ export default defineConfig({
     port: 5000,
     proxy: {
       '/api': {
-        target: 'http://localhost:9082',
+        target: 'http://localhost:9081',
         changeOrigin: true,
       },
       '/npm': {
-        target: 'http://localhost:9082',
+        target: 'http://localhost:9081',
         changeOrigin: true,
       },
       '/maven2': {
-        target: 'http://localhost:9082',
+        target: 'http://localhost:9081',
         changeOrigin: true,
       },
       '/repo': {
-        target: 'http://localhost:9082',
+        target: 'http://localhost:9081',
         changeOrigin: true,
       },
     },

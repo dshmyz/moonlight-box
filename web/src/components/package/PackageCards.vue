@@ -8,7 +8,7 @@
       >
         <div class="card-glass">
           <div class="card-header">
-            <div class="card-icon">📦</div>
+            <div class="card-icon"><i class="fa-solid fa-box"></i></div>
             <div class="card-title">
               <div class="package-name" @click="$emit('view-detail', pkg)">
                 {{ pkg.display_name || formatPackageName(pkg.name, pkg.type) }}
@@ -31,17 +31,17 @@
 
           <div class="card-stats">
             <div class="stat-item">
-              <span class="stat-icon">📊</span>
+              <span class="stat-icon"><i class="fa-solid fa-chart-bar"></i></span>
               <span class="stat-value">{{ pkg.versions_count || 0 }}</span>
               <span class="stat-label">版本</span>
             </div>
             <div class="stat-item">
-              <span class="stat-icon">⬇️</span>
+              <span class="stat-icon"><i class="fa-solid fa-download"></i></span>
               <span class="stat-value">{{ formatNumber(pkg.download_count) }}</span>
               <span class="stat-label">下载</span>
             </div>
             <div class="stat-item">
-              <span class="stat-icon">⏰</span>
+              <span class="stat-icon"><i class="fa-solid fa-clock"></i></span>
               <span class="stat-value">{{ formatDate(pkg.updated_at) }}</span>
               <span class="stat-label">更新</span>
             </div>

@@ -13,7 +13,7 @@
           <template v-for="group in groupedRepos" :key="group.type">
             <div v-show="activeType === group.type" class="repo-group">
               <div class="group-header">
-                <span class="group-icon" :style="{ background: group.color }">{{ group.icon }}</span>
+                <span class="group-icon" :style="{ background: group.color }"><i :class="group.icon"></i></span>
                 <span class="group-name">{{ group.label }} 仓库</span>
                 <span class="group-count">{{ group.repos.length }} 个</span>
               </div>
@@ -56,13 +56,13 @@ interface RepoGroup {
 }
 
 const GROUP_CONFIG: Record<string, { label: string; icon: string; color: string }> = {
-  npm: { label: 'npm', icon: '⬢', color: '#cb3837' },
-  maven: { label: 'Maven', icon: 'M', color: '#e65100' },
-  pypi: { label: 'PyPI', icon: '🐍', color: '#3775a9' },
-  go: { label: 'Go', icon: 'Go', color: '#00add8' },
-  yum: { label: 'Yum', icon: 'Y', color: '#2e6da4' },
-  apt: { label: 'Apt', icon: 'A', color: '#d70a53' },
-  generic: { label: 'Generic', icon: 'G', color: '#606266' },
+  npm: { label: 'npm', icon: 'fa-solid fa-cube', color: '#cb3837' },
+  maven: { label: 'Maven', icon: 'fa-solid fa-cubes', color: '#e65100' },
+  pypi: { label: 'PyPI', icon: 'fa-brands fa-python', color: '#3775a9' },
+  go: { label: 'Go', icon: 'fa-brands fa-golang', color: '#00add8' },
+  yum: { label: 'Yum', icon: 'fa-solid fa-server', color: '#2e6da4' },
+  apt: { label: 'Apt', icon: 'fa-solid fa-box', color: '#d70a53' },
+  generic: { label: 'Generic', icon: 'fa-solid fa-folder', color: '#606266' },
 }
 
 const GROUP_ORDER = ['npm', 'maven', 'pypi', 'go', 'yum', 'apt', 'generic']

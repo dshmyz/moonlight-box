@@ -1,7 +1,7 @@
 <template>
   <div class="quick-start">
     <div class="section-header">
-      <h2>🚀 快速开始</h2>
+      <h2><i class="fa-solid fa-rocket"></i> 快速开始</h2>
       <p class="section-desc">按照以下步骤配置您的客户端，开始使用 Moonlight Registry</p>
     </div>
 
@@ -13,7 +13,7 @@
 
     <div class="step-content-wrapper" v-if="activeStep === 0">
       <div class="step-card">
-        <div class="step-icon">🔐</div>
+        <div class="step-icon"><i class="fa-solid fa-lock"></i></div>
         <h3>配置认证信息</h3>
         <p>根据您使用的包管理器，配置相应的认证方式：</p>
         <el-timeline>
@@ -45,7 +45,7 @@
 
     <div class="step-content-wrapper" v-if="activeStep === 1">
       <div class="step-card">
-        <div class="step-icon">📦</div>
+        <div class="step-icon"><i class="fa-solid fa-box"></i></div>
         <h3>选择您的包管理器</h3>
         <el-radio-group v-model="selectedManager" size="large" class="manager-selector">
           <el-radio-button label="npm">

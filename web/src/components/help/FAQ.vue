@@ -1,7 +1,7 @@
 <template>
   <div class="faq">
     <div class="section-header">
-      <h2>❓ 常见问题</h2>
+      <h2><i class="fa-solid fa-circle-question"></i> 常见问题</h2>
       <p class="section-desc">查找常见问题的解答，快速解决您遇到的问题</p>
     </div>
 

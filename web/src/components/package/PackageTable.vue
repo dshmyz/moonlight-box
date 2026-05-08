@@ -12,7 +12,7 @@
     <el-table-column prop="name" label="包名" min-width="180">
       <template #default="{ row }">
         <div class="package-info">
-          <div class="package-icon">📦</div>
+          <div class="package-icon"><i class="fa-solid fa-box"></i></div>
           <div class="package-content">
             <div class="package-name" @click="$emit('view-detail', row)">
               {{ row.display_name || row.name }}

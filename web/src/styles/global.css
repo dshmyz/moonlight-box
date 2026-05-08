@@ -431,8 +431,3 @@ h6 { font-size: var(--font-size-base); }
 .el-switch.is-checked .el-switch__core {
   background: #3b82f6;
 }
-
-/* ElPopconfirm */
-.el-popconfirm {
-  border-radius: 8px;
-}

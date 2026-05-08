@@ -2,7 +2,9 @@
   <div class="package-list">
     <header class="list-header">
       <div class="header-content">
-        <div class="header-icon">📦</div>
+        <div class="header-icon">
+          <i class="fa-solid fa-box"></i>
+        </div>
         <div class="header-text">
           <h2>包管理</h2>
           <p class="header-subtitle">管理和分发您的软件包</p>

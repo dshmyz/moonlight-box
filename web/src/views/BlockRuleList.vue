@@ -96,11 +96,7 @@
                 <template #default="{ row }">
                   <div class="operation-buttons">
                     <el-button class="btn-edit" size="small" @click="openEditDialog(row)">编辑</el-button>
-                    <el-popconfirm title="确定删除此规则?" @confirm="deleteRule(row.id)">
-                      <template #reference>
-                        <el-button class="btn-delete" size="small" type="text">删除</el-button>
-                      </template>
-                    </el-popconfirm>
+                    <el-button class="btn-delete" size="small" link @click="confirmDeleteRule(row)">删除</el-button>
                   </div>
                 </template>
               </el-table-column>
@@ -245,6 +241,7 @@ import type { UploadFile } from 'element-plus'
 import { blockRuleApi, type BlockRule, type BlockRuleCreateParams } from '@/api/blockRule'
 import BlockRuleForm from '@/components/block-rule/BlockRuleForm.vue'
 import BlockLogTable from '@/components/block-rule/BlockLogTable.vue'
+import { confirm, success, error } from '@/utils/message'
 
 const loading = ref(false)
 const submitting = ref(false)
@@ -381,13 +378,24 @@ const handleSubmit = async () => {
   }
 }
 
+const confirmDeleteRule = async (row: BlockRule) => {
+  const ok = await confirm({
+    title: '删除确认',
+    message: `确定要删除规则 "${row.name}" 吗？`,
+    type: 'warning',
+  })
+  if (ok) {
+    await deleteRule(row.id)
+  }
+}
+
 const deleteRule = async (id: number) => {
   try {
     await blockRuleApi.delete(id)
-    ElMessage.success('删除成功')
+    success('删除成功')
     loadRules()
   } catch {
-    ElMessage.error('删除失败')
+    error('删除失败')
   }
 }
 

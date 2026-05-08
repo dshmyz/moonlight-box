@@ -7,45 +7,118 @@
       </h3>
       <span class="card-badge">{{ tasks.length }}</span>
     </div>
-    <div class="card-body">
-      <div v-if="tasks.length === 0" class="empty-state">
+    <div class="card-body" v-loading="loading">
+      <div v-if="tasks.length === 0 && !loading" class="empty-state">
         <i class="fa-solid fa-inbox"></i>
         <p>暂无迁移记录</p>
       </div>
-      <el-table v-else :data="tasks" class="history-table">
-        <el-table-column prop="id" label="ID" width="60" />
-        <el-table-column prop="source_url" label="来源" show-overflow-tooltip>
+      <el-table v-else :data="paginatedTasks" class="history-table">
+        <el-table-column prop="id" label="ID" width="60" align="center" />
+        <el-table-column prop="source_url" label="来源地址" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">
-            <span class="url-text">{{ truncateUrl(row.source_url) }}</span>
+            <span class="url-text">{{ row.source_url }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="target_repository" label="目标仓库" width="120" show-overflow-tooltip />
-        <el-table-column prop="status" label="状态" width="100">
+        <el-table-column prop="target_repository" label="目标仓库" min-width="120" show-overflow-tooltip />
+        <el-table-column prop="status" label="状态" width="90" align="center">
           <template #default="{ row }">
             <el-tag :type="statusType(row.status)" size="small">{{ statusText(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="processed_items" label="进度" width="100">
+        <el-table-column prop="processed_items" label="进度" min-width="140">
           <template #default="{ row }">
-            <span class="progress-text">{{ row.processed_items }}/{{ row.total_items }}</span>
+            <div class="progress-wrapper">
+              <span class="progress-text">已扫描 {{ row.total_items }}，已处理 {{ row.processed_items }}</span>
+              <div class="progress-bar">
+                <div class="progress-fill" :style="{ width: progressPercent(row) + '%' }"></div>
+              </div>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" label="创建时间" width="150">
+        <el-table-column prop="created_at" label="创建时间" width="160">
           <template #default="{ row }">
             <span class="time-text">{{ formatTime(row.created_at) }}</span>
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="100" fixed="right" align="center">
+          <template #default="{ row }">
+            <div class="action-buttons">
+              <el-tooltip content="查看详情" placement="top">
+                <el-button
+                  size="small"
+                  type="primary"
+                  link
+                  @click="viewDetail(row)"
+                >
+                  <i class="fa-solid fa-eye"></i>
+                </el-button>
+              </el-tooltip>
+              <el-tooltip content="重试失败项目" placement="top" v-if="row.status === 'failed' && row.failed_items > 0">
+                <el-button
+                  size="small"
+                  type="warning"
+                  link
+                  @click="handleRetry(row)"
+                >
+                  <i class="fa-solid fa-rotate-right"></i>
+                </el-button>
+              </el-tooltip>
+            </div>
+          </template>
+        </el-table-column>
       </el-table>
+      <div v-if="tasks.length > pageSize" class="pagination-wrapper">
+        <el-pagination
+          layout="prev, pager, next"
+          :total="tasks.length"
+          :page-size="pageSize"
+          :current-page="currentPage"
+          @current-change="handlePageChange"
+          small
+        />
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import type { MigrationTask } from '@/api/migration'
+import { retryFailedMigration } from '@/api/migration'
+import { success, error } from '@/utils/message'
 
-defineProps<{
+const router = useRouter()
+
+const props = defineProps<{
   tasks: MigrationTask[]
+  loading?: boolean
 }>()
+
+const emit = defineEmits<{
+  refresh: []
+}>()
+
+const currentPage = ref(1)
+const pageSize = 10
+
+const paginatedTasks = ref<MigrationTask[]>([])
+
+watch(() => props.tasks, (newTasks) => {
+  if (newTasks && newTasks.length > 0) {
+    updatePaginatedTasks()
+  }
+}, { immediate: true })
+
+const updatePaginatedTasks = () => {
+  const start = (currentPage.value - 1) * pageSize
+  paginatedTasks.value = props.tasks.slice(start, start + pageSize)
+}
+
+const handlePageChange = (page: number) => {
+  currentPage.value = page
+  updatePaginatedTasks()
+}
 
 function statusType(status: string) {
   const map: Record<string, string> = {
@@ -69,11 +142,6 @@ function statusText(status: string) {
   return map[status] || status
 }
 
-function truncateUrl(url: string) {
-  if (url.length <= 40) return url
-  return url.substring(0, 37) + '...'
-}
-
 function formatTime(timeStr: string) {
   if (!timeStr) return '-'
   const date = new Date(timeStr)
@@ -83,6 +151,28 @@ function formatTime(timeStr: string) {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function progressPercent(task: MigrationTask) {
+  if (task.total_items === 0) return 0
+  return Math.round((task.processed_items / task.total_items) * 100)
+}
+
+function viewDetail(task: MigrationTask) {
+  router.push({ name: 'MigrationDetail', params: { id: String(task.id) } })
+}
+
+async function handleRetry(task: MigrationTask) {
+  if (task.status !== 'failed' || task.failed_items === 0) return
+
+  try {
+    await retryFailedMigration(task.id)
+    emit('refresh')
+    success('已开始重试失败项目')
+  } catch (err) {
+    console.error('Retry failed:', err)
+    error('重试失败项目失败')
+  }
 }
 </script>
 
@@ -161,9 +251,42 @@ function formatTime(timeStr: string) {
 
 .progress-text {
   color: #6b7280;
+  font-size: 12px;
 }
 
 .time-text {
   color: #9ca3af;
+}
+
+.progress-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.progress-bar {
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #8b5cf6 0%, #6366f1 100%);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.action-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+}
+
+.pagination-wrapper {
+  display: flex;
+  justify-content: center;
+  padding: 16px 0 8px;
 }
 </style>

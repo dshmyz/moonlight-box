@@ -73,6 +73,16 @@ export function cancelMigration(id: number) {
   return request.post(`/migration/${id}/cancel`)
 }
 
+export function retryFailedMigration(id: number) {
+  return request.post(`/migration/${id}/retry`)
+}
+
 export function listMigrations() {
   return request.get<MigrationTask[]>('/migration')
+}
+
+export function listMigrationItems(taskId: number, page?: number, pageSize?: number) {
+  return request.get('/migration/' + taskId + '/items', {
+    params: { page, page_size: pageSize }
+  })
 }
