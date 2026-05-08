@@ -430,6 +430,7 @@ func (ctx *RouterContext) setupMigrationRoutes(protected *gin.RouterGroup) {
 		migration.POST("/nexus", ctx.Handlers.Migration.CreateMigration)
 		migration.GET("/:id/status", ctx.Handlers.Migration.GetMigrationStatus)
 		migration.POST("/:id/cancel", ctx.Handlers.Migration.CancelMigration)
+		migration.POST("/:id/retry", ctx.Handlers.Migration.RetryFailedMigration)
 	}
 }
 

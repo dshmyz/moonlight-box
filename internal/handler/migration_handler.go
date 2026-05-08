@@ -154,6 +154,33 @@ func (h *MigrationHandler) CancelMigration(c *gin.Context) {
 	response.Success(c, gin.H{"message": "任务已取消"})
 }
 
+func (h *MigrationHandler) RetryFailedMigration(c *gin.Context) {
+	id := c.Param("id")
+
+	taskID, err := parseUint(id)
+	if err != nil {
+		response.BadRequest(c, "无效的任务 ID", "")
+		return
+	}
+
+	task, err := h.service.GetTask(taskID)
+	if err != nil {
+		response.NotFound(c, "任务不存在")
+		return
+	}
+
+	go func(taskID uint) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		if err := h.worker.RetryFailed(ctx, task); err != nil {
+			h.service.AddLog(taskID, "重试失败项目执行出错: "+err.Error())
+		}
+	}(task.ID)
+
+	response.Success(c, gin.H{"message": "已开始重试失败项目"})
+}
+
 func (h *MigrationHandler) ListMigrations(c *gin.Context) {
 	tasks, err := h.service.ListTasks()
 	if err != nil {

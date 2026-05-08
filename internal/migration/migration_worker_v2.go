@@ -51,19 +51,56 @@ func NewMigrationWorkerV2(
 }
 
 func (w *MigrationWorkerV2) Execute(ctx context.Context, task *model.MigrationTask) error {
+	return w.execute(ctx, task, false)
+}
+
+func (w *MigrationWorkerV2) RetryFailed(ctx context.Context, task *model.MigrationTask) error {
+	return w.execute(ctx, task, true)
+}
+
+func (w *MigrationWorkerV2) loadFailedItems(ctx context.Context, taskID uint, queue *ComponentQueue) error {
+	items, err := w.itemRepo.GetPendingItems(taskID, 10000)
+	if err != nil {
+		return err
+	}
+
+	for _, item := range items {
+		queue.Push(item)
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"module":  "migration",
+		"task_id": taskID,
+		"count":   len(items),
+	}).Info("Loaded failed items for retry")
+
+	w.service.AddLog(taskID, fmt.Sprintf("加载了 %d 个失败项目进行重试", len(items)))
+	return nil
+}
+
+func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTask, retryOnly bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	w.service.RegisterContext(task.ID, ctx, cancel)
 
-	logrus.WithFields(logrus.Fields{
-		"module":      "migration",
-		"task_id":     task.ID,
-		"source_url":  task.SourceURL,
-		"concurrency": w.concurrency,
-		"max_retries": w.maxRetries,
-		"batch_size":  w.batchSize,
-	}).Info("Migration task started (v2)")
+	if retryOnly {
+		logrus.WithFields(logrus.Fields{
+			"module":      "migration",
+			"task_id":     task.ID,
+			"concurrency": w.concurrency,
+			"max_retries": w.maxRetries,
+		}).Info("Retry failed migration items started (v2)")
+	} else {
+		logrus.WithFields(logrus.Fields{
+			"module":      "migration",
+			"task_id":     task.ID,
+			"source_url":  task.SourceURL,
+			"concurrency": w.concurrency,
+			"max_retries": w.maxRetries,
+			"batch_size":  w.batchSize,
+		}).Info("Migration task started (v2)")
+	}
 
 	client := NewNexusClient(task.SourceURL, task.Username, mustGetPasswordV2(task))
 	w.service.RegisterNexusClient(task.ID, client)
@@ -104,39 +141,53 @@ func (w *MigrationWorkerV2) Execute(ctx context.Context, task *model.MigrationTa
 		"started_at": startedAt,
 	})
 
-	var selectedRepos []string
-	if err := json.Unmarshal([]byte(task.SelectedRepos), &selectedRepos); err != nil {
-		logrus.WithFields(logrus.Fields{
-			"module":  "migration",
-			"task_id": task.ID,
-			"error":   err,
-		}).Error("Failed to parse selected repos")
-		return w.failTask(task.ID, fmt.Sprintf("failed to parse selected repos: %v", err))
-	}
-
 	queue := NewComponentQueue(w.batchSize * 10)
 	progressUpdater := NewProgressUpdater(task.ID, w.service.db, 2*time.Second)
 
-	var producerWg sync.WaitGroup
-	producerCtx, producerCancel := context.WithCancel(context.Background())
-	defer producerCancel()
-
-	for _, repoName := range selectedRepos {
-		producerWg.Add(1)
-		go func(repo string) {
-			defer producerWg.Done()
-			w.produceComponents(producerCtx, task.ID, client, repo, queue)
-		}(repoName)
-	}
-
-	go func() {
-		producerWg.Wait()
+	if retryOnly {
+		// 只加载失败的项目
+		if err := w.loadFailedItems(ctx, task.ID, queue); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"module":  "migration",
+				"task_id": task.ID,
+				"error":   err,
+			}).Error("Failed to load failed items")
+			return w.failTask(task.ID, fmt.Sprintf("failed to load failed items: %v", err))
+		}
 		queue.Close()
-		logrus.WithFields(logrus.Fields{
-			"module":  "migration",
-			"task_id": task.ID,
-		}).Info("All producers finished")
-	}()
+	} else {
+		// 正常流程：扫描 Nexus
+		var selectedRepos []string
+		if err := json.Unmarshal([]byte(task.SelectedRepos), &selectedRepos); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"module":  "migration",
+				"task_id": task.ID,
+				"error":   err,
+			}).Error("Failed to parse selected repos")
+			return w.failTask(task.ID, fmt.Sprintf("failed to parse selected repos: %v", err))
+		}
+
+		var producerWg sync.WaitGroup
+		producerCtx, producerCancel := context.WithCancel(context.Background())
+		defer producerCancel()
+
+		for _, repoName := range selectedRepos {
+			producerWg.Add(1)
+			go func(repo string) {
+				defer producerWg.Done()
+				w.produceComponents(producerCtx, task.ID, client, repo, queue)
+			}(repoName)
+		}
+
+		go func() {
+			producerWg.Wait()
+			queue.Close()
+			logrus.WithFields(logrus.Fields{
+				"module":  "migration",
+				"task_id": task.ID,
+			}).Info("All producers finished")
+		}()
+	}
 
 	go progressUpdater.Start(ctx)
 
@@ -153,11 +204,19 @@ func (w *MigrationWorkerV2) Execute(ctx context.Context, task *model.MigrationTa
 	progressUpdater.Stop()
 
 	w.completeTask(task.ID)
-	logrus.WithFields(logrus.Fields{
-		"module":  "migration",
-		"task_id": task.ID,
-	}).Info("Migration task completed (v2)")
-	w.service.AddLog(task.ID, "迁移任务完成")
+	if retryOnly {
+		logrus.WithFields(logrus.Fields{
+			"module":  "migration",
+			"task_id": task.ID,
+		}).Info("Retry failed migration items completed (v2)")
+		w.service.AddLog(task.ID, "重试失败项目完成")
+	} else {
+		logrus.WithFields(logrus.Fields{
+			"module":  "migration",
+			"task_id": task.ID,
+		}).Info("Migration task completed (v2)")
+		w.service.AddLog(task.ID, "迁移任务完成")
+	}
 	return nil
 }
 

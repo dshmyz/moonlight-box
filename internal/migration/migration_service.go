@@ -12,6 +12,7 @@ import (
 
 type MigrationWorkerInterface interface {
 	Execute(ctx context.Context, task *model.MigrationTask) error
+	RetryFailed(ctx context.Context, task *model.MigrationTask) error
 }
 
 type MigrationService struct {
