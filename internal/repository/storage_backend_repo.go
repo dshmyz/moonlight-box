@@ -60,10 +60,10 @@ func (r *StorageBackendRepository) FindDefault() (*model.StorageBackend, error) 
 
 func (r *StorageBackendRepository) SetDefault(id uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&model.StorageBackend{}).Update("is_default", false).Error; err != nil {
+		if err := tx.Model(&model.StorageBackend{}).UpdateColumn("is_default", false).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&model.StorageBackend{}).Where("id = ?", id).Update("is_default", true).Error; err != nil {
+		if err := tx.Model(&model.StorageBackend{}).Where("id = ?", id).UpdateColumn("is_default", true).Error; err != nil {
 			return err
 		}
 		return nil
