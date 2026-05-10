@@ -5,12 +5,13 @@ import (
 
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/stretchr/testify/assert"
-	"gorm.io/driver/sqlite"
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
 	"gorm.io/gorm"
 )
 
 func setupTestDB(t *testing.T) *gorm.DB {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	err = db.AutoMigrate(&model.MigrationItem{})
 	assert.NoError(t, err)
@@ -47,7 +48,7 @@ func TestGetPendingItems(t *testing.T) {
 		db.Create(&item)
 	}
 
-	pending, err := repo.GetPendingItems(1, 10)
+	pending, err := repo.GetPendingItems(1, 10, 10)
 	assert.NoError(t, err)
 	assert.Len(t, pending, 2)
 }

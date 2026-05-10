@@ -7,12 +7,25 @@ import (
 	"gorm.io/gorm"
 )
 
+// RepositoryListView 仓库列表视图，包含运行时健康状态
+type RepositoryListView struct {
+	model.Repository
+	HealthInfo *RepositoryHealthInfo `json:"health_info,omitempty"`
+}
+
+// RepositoryHealthInfo 仓库健康信息视图
+type RepositoryHealthInfo struct {
+	HealthStatus   *proxy.HealthStatus `json:"health_status,omitempty"`
+	CircuitBreaker interface{}         `json:"circuit_breaker,omitempty"`
+}
+
 // RepositoryService 仓库管理服务层
 type RepositoryService struct {
-	repoRepo  *repository.RepositoryRepository
-	groupRepo *repository.GroupRepository
-	repoCache *proxy.RepositoryCache
-	db        *gorm.DB
+	repoRepo       *repository.RepositoryRepository
+	groupRepo      *repository.GroupRepository
+	repoCache      *proxy.RepositoryCache
+	healthCheckSvc *proxy.HealthCheckService
+	db             *gorm.DB
 }
 
 // NewRepositoryService 创建仓库管理服务实例
@@ -27,6 +40,11 @@ func NewRepositoryService(repoRepo *repository.RepositoryRepository, groupRepo *
 // SetRepoCache 设置仓库缓存
 func (s *RepositoryService) SetRepoCache(cache *proxy.RepositoryCache) {
 	s.repoCache = cache
+}
+
+// SetHealthCheckService 设置健康检查服务
+func (s *RepositoryService) SetHealthCheckService(svc *proxy.HealthCheckService) {
+	s.healthCheckSvc = svc
 }
 
 // invalidateCache 失效缓存
@@ -69,6 +87,35 @@ func (s *RepositoryService) Create(repo *model.Repository, members []string) err
 // List 列出仓库，支持按条件过滤
 func (s *RepositoryService) List(filter map[string]interface{}) ([]model.Repository, error) {
 	return s.repoRepo.List(filter)
+}
+
+// ListWithHealth 列出仓库并附加健康状态信息
+func (s *RepositoryService) ListWithHealth(filter map[string]interface{}) ([]RepositoryListView, error) {
+	repos, err := s.repoRepo.List(filter)
+	if err != nil {
+		return nil, err
+	}
+
+	var healthStatuses map[uint]*proxy.HealthStatus
+	if s.healthCheckSvc != nil {
+		healthStatuses = s.healthCheckSvc.GetAllHealthStatuses()
+	}
+
+	result := make([]RepositoryListView, len(repos))
+	for i, repo := range repos {
+		healthStatus := healthStatuses[repo.ID]
+		var healthInfo *RepositoryHealthInfo
+		if healthStatus != nil {
+			healthInfo = &RepositoryHealthInfo{
+				HealthStatus: healthStatus,
+			}
+		}
+		result[i] = RepositoryListView{
+			Repository: repo,
+			HealthInfo: healthInfo,
+		}
+	}
+	return result, nil
 }
 
 // Get 根据名称获取仓库详情

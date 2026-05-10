@@ -66,6 +66,11 @@ func (i *ConfigInitializer) InitializeDefaultConfigs() error {
 
 		{"metrics.enabled", "true", "bool", "general", "启用Prometheus监控", false},
 		{"metrics.path", "/metrics", "string", "general", "Prometheus监控路径", false},
+
+		{"health_check.enabled", "true", "bool", "network", "启用健康检查", false},
+		{"health_check.interval", "30", "int", "network", "健康检查间隔（秒）", false},
+		{"health_check.timeout", "5", "int", "network", "健康检查超时时间（秒）", false},
+		{"health_check.failure_threshold", "3", "int", "network", "健康检查失败阈值", false},
 	}
 
 	for _, config := range defaultConfigs {

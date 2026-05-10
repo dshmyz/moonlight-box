@@ -36,3 +36,7 @@ embed-web:
 	cd web && npm run build
 	rm -rf cmd/registry/dist
 	cp -r web/dist cmd/registry/dist
+
+# 生成 Swagger 文档（从代码注释生成 openapi.json）
+swagger:
+	~/go/bin/swag init -g cmd/registry/main.go -o web/public/docs --outputTypes json

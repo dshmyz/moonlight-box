@@ -150,15 +150,25 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="下载信息" width="130" align="center">
+        <el-table-column label="大小" width="100" align="center">
           <template #default="{ row }">
-            <div class="cell-multi-line cell-multi-line--center">
-              <span class="size-text">{{ formatBytes(row.size_bytes) }}</span>
-              <div class="meta-row">
-                <span v-if="row.duration_ms" class="duration-text">{{ row.duration_ms }}ms</span>
-                <el-tag v-if="row.from_cache" type="info" size="small" class="cache-tag">缓存</el-tag>
-              </div>
-            </div>
+            <span class="size-text">{{ formatBytes(row.size_bytes) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="耗时" width="80" align="center">
+          <template #default="{ row }">
+            <span :class="['duration-text', getDurationClass(row.duration_ms)]">
+              {{ row.duration_ms != null ? row.duration_ms + 'ms' : '-' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="来源" width="80" align="center">
+          <template #default="{ row }">
+            <el-tooltip v-if="!row.from_cache && row.remote_url" :content="row.remote_url" placement="top" :show-after="200">
+              <el-tag type="warning" size="small" class="remote-tag">远程</el-tag>
+            </el-tooltip>
+            <el-tag v-else-if="!row.from_cache" type="warning" size="small" class="remote-tag">远程</el-tag>
+            <el-tag v-else type="info" size="small" class="cache-tag">缓存</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="error_message" label="失败原因" min-width="180" show-overflow-tooltip>
@@ -243,6 +253,13 @@ function formatBytes(bytes: number): string {
 function statusLabel(s: string): string {
   const map: Record<string, string> = { success: '成功', failed: '失败', cached: '缓存' }
   return map[s] || s
+}
+
+function getDurationClass(ms: number): string {
+  if (!ms) return ''
+  if (ms < 100) return 'duration-fast'
+  if (ms < 500) return 'duration-normal'
+  return 'duration-slow'
 }
 
 function formatDateForApi(date: Date): string {
@@ -533,19 +550,53 @@ onMounted(() => {
 .meta-row {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   font-size: 12px;
+  min-height: 20px;
 }
 
 .duration-text {
-  color: #94a3b8;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.duration-fast {
+  color: #10b981;
+}
+
+.duration-normal {
+  color: #64748b;
+}
+
+.duration-slow {
+  color: #f59e0b;
 }
 
 .cache-tag {
-  font-size: 10px;
-  padding: 0 4px;
-  height: 18px;
-  line-height: 18px;
+  font-size: 11px;
+  padding: 0 6px;
+  height: 20px;
+  line-height: 20px;
+}
+
+.remote-tag {
+  font-size: 11px;
+  padding: 0 6px;
+  height: 20px;
+  line-height: 20px;
+}
+
+:deep(.el-tooltip__trigger) {
+  cursor: pointer;
+}
+
+:deep(.el-table) {
+  overflow: visible;
+}
+
+:deep(.el-table__body-wrapper) {
+  overflow: visible !important;
 }
 
 .pkg-type-tag {

@@ -189,6 +189,19 @@ func (c *MemoryCache) Stop() {
 	close(c.stopChan)
 }
 
+// GetAllItems 返回所有缓存项的详细信息（包含过期状态）
+func (c *MemoryCache) GetAllItems() map[string]*Item {
+	result := make(map[string]*Item)
+	for _, shard := range c.shards {
+		shard.mu.RLock()
+		for key, item := range shard.items {
+			result[key] = item
+		}
+		shard.mu.RUnlock()
+	}
+	return result
+}
+
 func matchPattern(key, pattern string) bool {
 	if pattern == "*" {
 		return true

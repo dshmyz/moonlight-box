@@ -14,20 +14,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/moonlight-box/registry/internal/cache"
 	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
+	"github.com/moonlight-box/registry/internal/types"
 
 	"github.com/gin-gonic/gin"
 )
 
 type YumAdapter struct {
 	*BaseAdapter
-	repoRepo         *repository.RepositoryRepository
-	proxyDownloadSvc *service.ProxyDownloadService
-	uploadSvc        *service.UploadService
+	repoRepo  *repository.RepositoryRepository
+	uploadSvc *service.UploadService
 }
 
 type RepoMD struct {
@@ -129,31 +129,23 @@ func NewYumAdapter(
 	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
-	proxyRouter *proxy.ProxyRouter,
-	proxyDownloadSvc *service.ProxyDownloadService,
+	pkgCache *cache.PackageCache,
 ) *YumAdapter {
-	return &YumAdapter{
-		BaseAdapter:      NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc),
-		proxyDownloadSvc: proxyDownloadSvc,
-		uploadSvc:        service.NewUploadService(pkgRepo, storageSvc),
+	adapter := &YumAdapter{
+		BaseAdapter: NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache),
+		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
 	}
+	return adapter
 }
 
 func (a *YumAdapter) Type() PackageType   { return YumType }
 func (a *YumAdapter) RoutePrefix() string { return "/yum" }
 
-func (a *YumAdapter) RegisterRoutes(r *gin.RouterGroup, authMw gin.HandlerFunc, permMw func(resource, action string) gin.HandlerFunc) {
-	{
-		r.GET("/:repo/repodata/*path", a.RepoDataFile)
-		r.GET("/:repo/Packages/*path", a.DownloadRPM)
-
-		upload := r.Group("")
-		upload.Use(authMw, permMw("yum", "write"))
-		{
-			upload.POST("/:repo/upload", a.UploadRPM)
-			upload.POST("/:repo/regenerate", a.RegenerateMetadata)
-		}
+func (a *YumAdapter) BuildRemotePath(name, version, filename string) string {
+	if filename != "" {
+		return fmt.Sprintf("%s/%s", name, filename)
 	}
+	return name
 }
 
 func (a *YumAdapter) ParsePackagePath(path string) (*PackageIdentity, error) {
@@ -202,33 +194,6 @@ func (a *YumAdapter) RepoDataFile(c *gin.Context) {
 		}
 		c.DataFromReader(200, size, contentType, content, nil)
 		return
-	}
-
-	if a.proxyDownloadSvc != nil {
-		urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
-			baseURL := strings.TrimSuffix(r.RemoteURL, "/")
-			return fmt.Sprintf("%s/repodata/%s", baseURL, filePath)
-		}
-
-		req := &service.ProxyDownloadRequest{
-			PkgType:        "yum",
-			Name:           "repodata/" + filePath,
-			Version:        "",
-			Filename:       filepath.Base(filePath),
-			URLBuilder:     urlBuilder,
-			PackageType:    model.PackageTypeYum,
-			ResolutionMode: service.ResolutionModeProxyOnly,
-		}
-
-		result, err := a.proxyDownloadSvc.Download(c.Request.Context(), req)
-		if err == nil && result != nil {
-			contentType := "application/xml"
-			if strings.HasSuffix(filePath, ".gz") {
-				contentType = "application/gzip"
-			}
-			c.Data(200, contentType, result.Content)
-			return
-		}
 	}
 
 	response.NotFound(c, "metadata file not found")
@@ -369,17 +334,12 @@ func (a *YumAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageVe
 	arch := detectRpmArch(name)
 	storageKey := fmt.Sprintf("repos/%s/Packages/%s/%s", repo, arch, name)
 
-	content, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read content: %w", err)
-	}
-
 	uploadCtx := &service.UploadContext{
 		PkgType:        "yum",
 		Name:           name,
 		Version:        "1",
 		Filename:       name,
-		Content:        content,
+		Content:        reader,
 		Size:           req.Size,
 		PackageType:    model.PackageTypeYum,
 		RepositoryType: model.RepoTypeLocal,
@@ -399,19 +359,6 @@ func (a *YumAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageVe
 		Version:    "1",
 		StorageKey: storageKey,
 		Size:       result.Size,
-	}, nil
-}
-
-func (a *YumAdapter) Download(ctx context.Context, identity *PackageIdentity) (*PackageContent, error) {
-	reader, size, err := a.storageSvc.GetPackage(ctx, "yum", identity.Name, identity.Version)
-	if err != nil {
-		return nil, err
-	}
-
-	return &PackageContent{
-		Content:     reader,
-		ContentType: "application/x-rpm",
-		Size:        size,
 	}, nil
 }
 
@@ -448,11 +395,11 @@ func (a *YumAdapter) ListVersions(ctx context.Context, name string) ([]string, e
 	return a.pkgRepo.ListVersions(name, model.PackageTypeYum)
 }
 
-func (a *YumAdapter) HandleRepoRequest(c *gin.Context, repo *model.Repository, path string) {
-	path = strings.TrimPrefix(path, "/")
+func (a *YumAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
+	path := strings.TrimPrefix(ctx.Path, "/")
 	if strings.HasPrefix(path, "repodata/") {
 		filePath := strings.TrimPrefix(path, "repodata/")
-		storageKey := fmt.Sprintf("repos/%s/repodata/%s", repo.Name, filePath)
+		storageKey := fmt.Sprintf("repos/%s/repodata/%s", ctx.Repo.Name, filePath)
 
 		backend := a.storageSvc.GetDefaultBackend()
 		content, err := backend.Get(c.Request.Context(), storageKey)
@@ -467,37 +414,10 @@ func (a *YumAdapter) HandleRepoRequest(c *gin.Context, repo *model.Repository, p
 			return
 		}
 
-		if a.proxyDownloadSvc != nil {
-			urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
-				baseURL := strings.TrimSuffix(r.RemoteURL, "/")
-				return fmt.Sprintf("%s/repodata/%s", baseURL, filePath)
-			}
-
-			req := &service.ProxyDownloadRequest{
-				PkgType:     "yum",
-				Name:        "repodata/" + filePath,
-				Version:     "",
-				Filename:    filepath.Base(filePath),
-				Repo:        repo,
-				URLBuilder:  urlBuilder,
-				PackageType: model.PackageTypeYum,
-			}
-
-			result, err := a.proxyDownloadSvc.Download(c.Request.Context(), req)
-			if err == nil && result != nil {
-				contentType := "application/xml"
-				if strings.HasSuffix(filePath, ".gz") {
-					contentType = "application/gzip"
-				}
-				c.Data(200, contentType, result.Content)
-				return
-			}
-		}
-
 		response.NotFound(c, "metadata file not found")
 	} else if strings.HasPrefix(path, "Packages/") {
 		filePath := strings.TrimPrefix(path, "Packages/")
-		storageKey := fmt.Sprintf("repos/%s/Packages/%s", repo.Name, filePath)
+		storageKey := fmt.Sprintf("repos/%s/Packages/%s", ctx.Repo.Name, filePath)
 
 		backend := a.storageSvc.GetDefaultBackend()
 		content, err := backend.Get(c.Request.Context(), storageKey)
@@ -510,34 +430,9 @@ func (a *YumAdapter) HandleRepoRequest(c *gin.Context, repo *model.Repository, p
 			return
 		}
 
-		if a.proxyDownloadSvc != nil {
-			filename := filepath.Base(filePath)
-			urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
-				baseURL := strings.TrimSuffix(r.RemoteURL, "/")
-				return fmt.Sprintf("%s/Packages/%s", baseURL, filePath)
-			}
-
-			req := &service.ProxyDownloadRequest{
-				PkgType:     "yum",
-				Name:        strings.TrimSuffix(filePath, ".rpm"),
-				Version:     "1",
-				Filename:    filename,
-				Repo:        repo,
-				URLBuilder:  urlBuilder,
-				PackageType: model.PackageTypeYum,
-			}
-
-			result, err := a.proxyDownloadSvc.Download(c.Request.Context(), req)
-			if err == nil && result != nil {
-				c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-				c.Data(200, "application/x-rpm", result.Content)
-				return
-			}
-		}
-
 		response.NotFound(c, "RPM not found")
 	} else {
-		storageKey := fmt.Sprintf("repos/%s/%s", repo.Name, path)
+		storageKey := fmt.Sprintf("repos/%s/%s", ctx.Repo.Name, path)
 		backend := a.storageSvc.GetDefaultBackend()
 
 		content, err := backend.Get(c.Request.Context(), storageKey)
@@ -549,54 +444,30 @@ func (a *YumAdapter) HandleRepoRequest(c *gin.Context, repo *model.Repository, p
 			return
 		}
 
-		if a.proxyDownloadSvc != nil {
-			urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
-				baseURL := strings.TrimSuffix(r.RemoteURL, "/")
-				return fmt.Sprintf("%s/%s", baseURL, path)
-			}
-
-			req := &service.ProxyDownloadRequest{
-				PkgType:     "yum",
-				Name:        path,
-				Version:     "",
-				Filename:    filepath.Base(path),
-				Repo:        repo,
-				URLBuilder:  urlBuilder,
-				PackageType: model.PackageTypeYum,
-			}
-
-			result, err := a.proxyDownloadSvc.Download(c.Request.Context(), req)
-			if err == nil && result != nil {
-				contentType := a.storageSvc.GetContentType(path)
-				c.Data(200, contentType, result.Content)
-				return
-			}
-		}
-
 		response.NotFound(c, "file not found")
 	}
 }
 
-func (a *YumAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) {
+func (a *YumAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) *types.RepoOperationResult {
 	userID := c.GetUint("userID")
 
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
 		response.BadRequest(c, "missing file", err.Error())
-		return
+		return nil
 	}
 	defer file.Close()
 
 	rpmData, err := io.ReadAll(file)
 	if err != nil {
 		response.BadRequest(c, "failed to read file", err.Error())
-		return
+		return nil
 	}
 
 	rpmName := header.Filename
 	if !strings.HasSuffix(rpmName, ".rpm") {
 		response.BadRequest(c, "invalid file type", "file must be .rpm")
-		return
+		return nil
 	}
 
 	packageName, version, release, arch := parseRpmFilename(rpmName)
@@ -607,7 +478,7 @@ func (a *YumAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) {
 	backend := a.storageSvc.GetDefaultBackend()
 	if err := backend.Put(c.Request.Context(), storageKey, bytes.NewReader(rpmData), header.Size); err != nil {
 		response.InternalError(c, err.Error())
-		return
+		return nil
 	}
 
 	pkg, _, err := a.pkgRepo.CreateOrUpdate(c.Request.Context(), &model.Package{
@@ -626,29 +497,48 @@ func (a *YumAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) {
 	if err != nil {
 		backend.Delete(c.Request.Context(), storageKey)
 		response.InternalError(c, err.Error())
-		return
+		return nil
 	}
 
-	c.JSON(200, gin.H{
-		"success":    true,
-		"repo":       repo.Name,
-		"filename":   rpmName,
-		"storageKey": storageKey,
-		"result": &PackageVersionResult{
-			PackageID:  pkg.ID,
-			Version:    version,
-			StorageKey: storageKey,
-			Size:       header.Size,
+	result := &types.RepoOperationResult{
+		PackageName: packageName,
+		Version:     version,
+		Size:        header.Size,
+		Filename:    rpmName,
+		ExtraData: map[string]interface{}{
+			"repo":       repo.Name,
+			"arch":       arch,
+			"release":    release,
+			"storageKey": storageKey,
+			"packageId":  pkg.ID,
 		},
-	})
+	}
+
+	result.Response = &types.YumPublishResponse{
+		PublishResponse: types.PublishResponse{
+			Success:  true,
+			Message:  "Package published successfully",
+			Package:  packageName,
+			Version:  version,
+			Filename: rpmName,
+			Size:     header.Size,
+		},
+		Repo:       repo.Name,
+		Arch:       arch,
+		Release:    release,
+		StorageKey: storageKey,
+		PackageId:  pkg.ID,
+	}
+
+	return result
 }
 
-func (a *YumAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) {
+func (a *YumAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) *types.RepoOperationResult {
 	fullPath := strings.TrimPrefix(c.Param("path"), "/")
 	parts := strings.Split(fullPath, "/")
 	if len(parts) < 2 {
 		response.BadRequest(c, "invalid path", "expected name/version")
-		return
+		return nil
 	}
 
 	name := parts[0]
@@ -662,7 +552,7 @@ func (a *YumAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) {
 
 	if err := a.Delete(c.Request.Context(), identity); err != nil {
 		response.InternalError(c, err.Error())
-		return
+		return nil
 	}
 
 	pkg, _ := a.pkgRepo.FindByNameAndType(name, model.PackageTypeYum)
@@ -673,6 +563,11 @@ func (a *YumAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) {
 	a.LogDeleteAudit(c, repo.Name, name, version, pkgID)
 
 	c.JSON(200, gin.H{"ok": true})
+
+	return &types.RepoOperationResult{
+		PackageName: name,
+		Version:     version,
+	}
 }
 
 func (a *YumAdapter) generateRepomdXML(ctx context.Context, repo string) (string, error) {
@@ -850,4 +745,153 @@ func unmarshalMetadata(data string) map[string]interface{} {
 		return nil
 	}
 	return meta
+}
+
+func (a *YumAdapter) FormatDownloadResponse(c *gin.Context, result *types.RouteResult) {
+	contentType := "application/octet-stream"
+	if strings.HasSuffix(result.Filename, ".xml") {
+		contentType = "application/xml"
+	} else if strings.HasSuffix(result.Filename, ".gz") {
+		contentType = "application/gzip"
+	} else if strings.HasSuffix(result.Filename, ".rpm") {
+		contentType = "application/x-rpm"
+	}
+	c.DataFromReader(200, result.Size, contentType, result.Content, nil)
+}
+
+func (a *YumAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
+	name := ctx.Name
+	version := ctx.Version
+	filename := ctx.Filename
+
+	storageName := name + "/" + filename
+	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "yum", storageName, version)
+	if err == nil {
+		return &types.DownloadResult{
+			Content:   content,
+			Size:      size,
+			FromCache: false,
+			RepoID:    ctx.Repo.ID,
+			Filename:  filename,
+			Name:      name,
+			Version:   version,
+		}, nil
+	}
+
+	if a.fetcher != nil && ctx.Repo.Type == "proxy" {
+		result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), ctx.Repo, "yum", name, version+"/"+filename)
+		if fetchErr == nil && result != nil {
+			return &types.DownloadResult{
+				Content:   result.Content,
+				Size:      result.Size,
+				FromCache: result.FromCache,
+				RepoID:    result.RepoID,
+				Filename:  filename,
+				Name:      name,
+				Version:   version,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("package not found")
+}
+
+func (a *YumAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
+	userID := ctx.UserID
+
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		return nil, fmt.Errorf("missing file: %v", err)
+	}
+	defer file.Close()
+
+	rpmData, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %v", err)
+	}
+
+	rpmName := header.Filename
+	if !strings.HasSuffix(rpmName, ".rpm") {
+		return nil, fmt.Errorf("invalid file type: file must be .rpm")
+	}
+
+	packageName, version, release, arch := parseRpmFilename(rpmName)
+
+	packagesDir := fmt.Sprintf("repos/%s/Packages/%s", ctx.Repo.Name, arch)
+	storageKey := fmt.Sprintf("%s/%s", packagesDir, rpmName)
+
+	backend := a.storageSvc.GetDefaultBackend()
+	if err := backend.Put(c.Request.Context(), storageKey, bytes.NewReader(rpmData), header.Size); err != nil {
+		return nil, err
+	}
+
+	pkg, _, err := a.pkgRepo.CreateOrUpdate(c.Request.Context(), &model.Package{
+		Name:           packageName,
+		Type:           model.PackageTypeYum,
+		RepositoryType: model.RepoTypeLocal,
+		CreatedBy:      userID,
+	}, &model.PackageVersion{
+		Version:     version,
+		Status:      model.StatusPublished,
+		StoragePath: storageKey,
+		SizeBytes:   header.Size,
+		PublishedBy: userID,
+		Metadata:    marshalMetadata(map[string]interface{}{"repo": ctx.Repo.Name, "arch": arch, "release": release}),
+	})
+	if err != nil {
+		backend.Delete(c.Request.Context(), storageKey)
+		return nil, err
+	}
+
+	return &types.PublishResult{
+		PackageName: packageName,
+		Version:     version,
+		Size:        header.Size,
+		Filename:    rpmName,
+		Response: &types.YumPublishResponse{
+			PublishResponse: types.PublishResponse{
+				Success:  true,
+				Message:  "Package published successfully",
+				Package:  packageName,
+				Version:  version,
+				Filename: rpmName,
+				Size:     header.Size,
+			},
+			Repo:       ctx.Repo.Name,
+			Arch:       arch,
+			Release:    release,
+			StorageKey: storageKey,
+			PackageId:  pkg.ID,
+		},
+	}, nil
+}
+
+func (a *YumAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
+	fullPath := strings.TrimPrefix(c.Param("path"), "/")
+	parts := strings.Split(fullPath, "/")
+	if len(parts) < 2 {
+		return fmt.Errorf("invalid path: expected name/version")
+	}
+
+	name := parts[0]
+	version := parts[1]
+
+	identity := &PackageIdentity{
+		Name:    name,
+		Version: version,
+		Type:    YumType,
+	}
+
+	if err := a.Delete(c.Request.Context(), identity); err != nil {
+		return err
+	}
+
+	pkg, _ := a.pkgRepo.FindByNameAndType(name, model.PackageTypeYum)
+	var pkgID *uint
+	if pkg != nil {
+		pkgID = &pkg.ID
+	}
+	a.LogDeleteAudit(c, ctx.Repo.Name, name, version, pkgID)
+
+	return nil
 }

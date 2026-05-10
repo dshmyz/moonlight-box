@@ -1,0 +1,18 @@
+# APT 仓库配置文件模板
+# 将此文件复制到 /etc/apt/sources.list.d/moonlight.list
+
+# 使用 HTTP（信任仓库）
+deb [trusted=yes] http://your-registry:9081/apt stable main
+
+# 或者使用 GPG 签名验证
+# deb http://your-registry:9081/apt stable main
+
+# 可选：指定架构
+# deb [arch=amd64] http://your-registry:9081/apt stable main
+
+# 可选：多个发行版
+# deb http://your-registry:9081/apt buster main
+# deb http://your-registry:9081/apt bullseye main
+
+# 可选：源码仓库
+# deb-src http://your-registry:9081/apt stable main

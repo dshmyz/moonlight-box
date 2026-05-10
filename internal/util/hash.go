@@ -1,6 +1,13 @@
 package util
 
-import "golang.org/x/crypto/bcrypt"
+import (
+	"crypto/md5"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
+
+	"golang.org/x/crypto/bcrypt"
+)
 
 const bcryptCost = 12
 
@@ -18,6 +25,27 @@ func ValidatePasswordStrength(password string) error {
 	if len(password) < 8 {
 		return ErrPasswordTooShort
 	}
-	// 可根据需要添加更多规则
 	return nil
+}
+
+type ChecksumResult struct {
+	MD5    string
+	SHA256 string
+}
+
+func CalculateChecksum(reader io.Reader) (*ChecksumResult, int64, error) {
+	sha256Hash := sha256.New()
+	md5Hash := md5.New()
+
+	multiWriter := io.MultiWriter(sha256Hash, md5Hash)
+
+	n, err := io.Copy(multiWriter, reader)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return &ChecksumResult{
+		MD5:    hex.EncodeToString(md5Hash.Sum(nil)),
+		SHA256: hex.EncodeToString(sha256Hash.Sum(nil)),
+	}, n, nil
 }

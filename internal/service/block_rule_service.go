@@ -135,31 +135,6 @@ func (s *BlockRuleService) matchCachedWildcard(cached *cachedWildcardRule, pkgNa
 	return matched
 }
 
-func (s *BlockRuleService) matchWildcard(rule *model.BlockRule, pkgName, version string) bool {
-	if !s.wildcardMatch(rule.PackageName, pkgName) {
-		return false
-	}
-	if rule.Version == "*" {
-		return true
-	}
-	return s.wildcardMatch(rule.Version, version)
-}
-
-func (s *BlockRuleService) wildcardMatch(pattern, text string) bool {
-	if pattern == "*" {
-		return true
-	}
-	if !strings.Contains(pattern, "*") {
-		return pattern == text
-	}
-	regexPattern := "^" + strings.ReplaceAll(regexp.QuoteMeta(pattern), `\*`, ".*") + "$"
-	matched, err := regexp.MatchString(regexPattern, text)
-	if err != nil {
-		return false
-	}
-	return matched
-}
-
 func (s *BlockRuleService) LogBlock(ctx context.Context, pkgName, version string, rule *model.BlockRule, ipAddress, userAgent string) error {
 	details, _ := json.Marshal(map[string]interface{}{
 		"rule_id":    rule.ID,

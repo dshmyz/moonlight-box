@@ -1,37 +1,34 @@
 package service
 
 import (
-	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"path/filepath"
-	"sync"
+	"strings"
 	"time"
 
+	"github.com/moonlight-box/registry/internal/cache"
+	"github.com/moonlight-box/registry/internal/metrics"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/sirupsen/logrus"
 )
 
-type ResolutionMode int
-
 const (
-	ResolutionModeSmart ResolutionMode = iota
-	ResolutionModeProxyOnly
-	ResolutionModeVirtualRepo
+	maxPkgCacheSize = 10000 // 最大缓存条目数
 )
 
 type ProxyDownloadService struct {
 	pkgRepo      *repository.PackageRepository
 	storageSvc   *StorageService
-	proxyRouter  *proxy.ProxyRouter
+	downloader   *proxy.ProxyDownloader
 	logRepo      *repository.ProxyDownloadLogRepository
 	logBatcher   *LogBatcher
 	countBatcher *DownloadCountBatcher
 
-	pkgCacheMu sync.RWMutex
-	pkgCache   map[string]*pkgCacheEntry
+	pkgCache *cache.LRUCache
 }
 
 type pkgCacheEntry struct {
@@ -47,7 +44,7 @@ type versionCacheEntry struct {
 func NewProxyDownloadService(
 	pkgRepo *repository.PackageRepository,
 	storageSvc *StorageService,
-	proxyRouter *proxy.ProxyRouter,
+	downloader *proxy.ProxyDownloader,
 	logRepo *repository.ProxyDownloadLogRepository,
 	logBatcher *LogBatcher,
 	countBatcher *DownloadCountBatcher,
@@ -55,11 +52,11 @@ func NewProxyDownloadService(
 	return &ProxyDownloadService{
 		pkgRepo:      pkgRepo,
 		storageSvc:   storageSvc,
-		proxyRouter:  proxyRouter,
+		downloader:   downloader,
 		logRepo:      logRepo,
 		logBatcher:   logBatcher,
 		countBatcher: countBatcher,
-		pkgCache:     make(map[string]*pkgCacheEntry),
+		pkgCache:     cache.NewLRUCache(maxPkgCacheSize),
 	}
 }
 
@@ -69,120 +66,170 @@ type ProxyDownloadRequest struct {
 	Version        string
 	Filename       string
 	Repo           *model.Repository
-	URLBuilder     proxy.URLBuilder
 	PackageType    model.PackageType
 	RepositoryType model.RepositoryType
 	FileType       model.PackageFileType
 	Metadata       map[string]interface{}
-	ResolutionMode ResolutionMode
 	IPAddress      string
 	UserAgent      string
 	UserID         *uint
-	RemoteURL      string
 }
 
 type ProxyDownloadResult struct {
-	Content    []byte
+	Content    io.ReadCloser
 	Size       int64
 	StorageKey string
 	FromCache  bool
 	RepoID     uint
 }
 
-func (s *ProxyDownloadService) Download(ctx context.Context, req *ProxyDownloadRequest) (*ProxyDownloadResult, error) {
+type readCloserWrapper struct {
+	io.Reader
+}
+
+func (r *readCloserWrapper) Close() error {
+	return nil
+}
+
+func (s *ProxyDownloadService) Download(ctx context.Context, req *proxy.DownloadRequest) (*proxy.DownloadResult, error) {
+	result, err := s.downloadInternal(ctx, &ProxyDownloadRequest{
+		PkgType:   req.PkgType,
+		Name:      req.Name,
+		Version:   req.Version,
+		Filename:  req.Filename,
+		Repo:      req.Repo,
+		IPAddress: req.IPAddress,
+		UserAgent: req.UserAgent,
+		UserID:    req.UserID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &proxy.DownloadResult{
+		Content:   result.Content,
+		Size:      result.Size,
+		FromCache: result.FromCache,
+		RepoID:    result.RepoID,
+		Filename:  result.StorageKey,
+	}, nil
+}
+
+func (s *ProxyDownloadService) downloadInternal(ctx context.Context, req *ProxyDownloadRequest) (*ProxyDownloadResult, error) {
 	startTime := time.Now()
 
-	content, size, err := s.storageSvc.GetPackage(ctx, req.PkgType, req.Name, req.Version)
-	if err == nil {
-		body, readErr := io.ReadAll(content)
-		content.Close()
-		if readErr == nil {
-			s.incrementDownloadCount(req)
-			s.recordLog(req, model.DownloadStatusCached, 0, size, int(time.Since(startTime).Milliseconds()), true, nil)
-			return &ProxyDownloadResult{
-				Content:   body,
-				Size:      size,
-				FromCache: true,
-			}, nil
-		}
+	cacheVersion := s.storageSvc.NormalizeVersion(req.PkgType, req.Version, req.Filename)
+
+	if result, ok := s.checkLocalCache(ctx, req, cacheVersion, startTime); ok {
+		return result, nil
 	}
 
-	if s.proxyRouter == nil {
+	if s.downloader == nil || req.Repo == nil || req.Repo.Type == model.RepoTypeLocal {
 		s.recordLog(req, model.DownloadStatusFailed, 0, 0, int(time.Since(startTime).Milliseconds()), false, proxy.ErrPackageNotFound)
 		return nil, proxy.ErrPackageNotFound
 	}
 
-	var result *proxy.RouteResult
-	var resolveErr error
+	return s.fetchAndStoreRemote(ctx, req, startTime)
+}
 
-	switch req.ResolutionMode {
-	case ResolutionModeProxyOnly:
-		result, resolveErr = s.proxyRouter.ResolveProxyOnlyForRepo(ctx, req.Repo, req.Name, req.Version, req.URLBuilder)
-	case ResolutionModeVirtualRepo:
-		result, resolveErr = s.proxyRouter.ResolveForVirtualRepo(ctx, req.Repo, req.PkgType, req.Name, req.Version, req.URLBuilder)
-	default:
-		if req.URLBuilder != nil && req.Repo != nil {
-			result, resolveErr = s.proxyRouter.ResolveProxyOnlyForRepo(ctx, req.Repo, req.Name, req.Version, req.URLBuilder)
-		} else {
-			result, resolveErr = s.proxyRouter.ResolveSmart(ctx, req.Repo, req.PkgType, req.Name, req.Version, req.URLBuilder)
-		}
+func (s *ProxyDownloadService) checkLocalCache(ctx context.Context, req *ProxyDownloadRequest, cacheVersion string, startTime time.Time) (*ProxyDownloadResult, bool) {
+	content, size, err := s.storageSvc.GetPackage(ctx, req.PkgType, req.Name, cacheVersion)
+	if err != nil {
+		logrus.Debugf("Cache miss for %s/%s/%s: %v", req.PkgType, req.Name, cacheVersion, err)
+		return nil, false
 	}
 
+	logrus.Debugf("Cache hit for %s/%s/%s, size=%d", req.PkgType, req.Name, cacheVersion, size)
+	metrics.RecordDownload(req.PkgType, req.Name, req.Version)
+	s.incrementDownloadCount(req)
+	s.recordLog(req, model.DownloadStatusCached, 0, size, int(time.Since(startTime).Milliseconds()), true, nil)
+	return &ProxyDownloadResult{
+		Content:   content,
+		Size:      size,
+		FromCache: true,
+	}, true
+}
+
+func (s *ProxyDownloadService) fetchAndStoreRemote(ctx context.Context, req *ProxyDownloadRequest, startTime time.Time) (*ProxyDownloadResult, error) {
+	result, resolveErr := s.downloader.FetchFromRemote(ctx, req.Repo, req.PkgType, req.Name, req.Version)
 	if resolveErr != nil {
 		s.recordLog(req, model.DownloadStatusFailed, 0, 0, int(time.Since(startTime).Milliseconds()), false, resolveErr)
 		return nil, resolveErr
 	}
 	defer result.Content.Close()
 
-	body, readErr := io.ReadAll(result.Content)
-	if readErr != nil {
-		s.recordLog(req, model.DownloadStatusFailed, 0, 0, int(time.Since(startTime).Milliseconds()), false, readErr)
-		return nil, readErr
-	}
-
-	// 对于 Maven 等需要包含文件名的包类型，将文件名添加到版本路径中
-	storageVersion := req.Version
-	if (req.PkgType == "maven" || req.PkgType == "maven2") && req.Filename != "" {
-		storageVersion = req.Version + "/" + req.Filename
+	storageVersion := s.storageSvc.NormalizeVersion(req.PkgType, req.Version, req.Filename)
+	if req.PkgType == "go" && req.Filename != "" {
+		req.Version = strings.TrimSuffix(req.Filename, filepath.Ext(req.Filename))
 	}
 
 	var backendID uint
 	if req.Repo != nil && req.Repo.StorageBackendID != nil {
 		backendID = *req.Repo.StorageBackendID
 	}
-	storageKey, storeErr := s.storageSvc.StorePackageWithBackend(ctx, req.PkgType, req.Name, storageVersion, bytes.NewReader(body), result.Size, backendID)
+	storageKey, storeErr := s.storageSvc.StorePackageWithBackend(ctx, req.PkgType, req.Name, storageVersion, result.Content, result.Size, backendID)
 	if storeErr != nil {
 		logrus.Warnf("failed to store proxy package %s: %v", req.Name, storeErr)
-	} else if storageKey != "" {
-		_, _, _, dbErr := s.pkgRepo.StorePackageFile(ctx, &model.Package{
-			Name:           req.Name,
-			Type:           req.PackageType,
-			RepositoryID:   result.RepoID,
-			RepositoryType: req.RepositoryType,
-		}, &model.PackageVersion{
-			Version:     req.Version,
-			Status:      model.StatusPublished,
-			StoragePath: filepath.Dir(storageKey),
-		}, &model.PackageFile{
-			Filename:    req.Filename,
-			FileType:    req.FileType,
-			StoragePath: storageKey,
-			SizeBytes:   result.Size,
-		})
-		if dbErr != nil {
-			logrus.Warnf("failed to store proxy package file to database %s: %v", req.Name, dbErr)
-		}
+		s.recordLog(req, model.DownloadStatusSuccess, 200, result.Size, int(time.Since(startTime).Milliseconds()), result.FromCache, nil)
+		return &ProxyDownloadResult{
+			Content:    nil,
+			Size:       0,
+			StorageKey: "",
+			FromCache:  false,
+			RepoID:     result.RepoID,
+		}, storeErr
+	}
+
+	if storageKey != "" {
+		s.storePackageFileRecord(ctx, req, result.RepoID, storageKey, result.Size)
 	}
 
 	s.recordLog(req, model.DownloadStatusSuccess, 200, result.Size, int(time.Since(startTime).Milliseconds()), result.FromCache, nil)
 
+	storedContent, storedSize, getErr := s.storageSvc.GetPackage(ctx, req.PkgType, req.Name, storageVersion)
+	if getErr != nil {
+		return nil, fmt.Errorf("failed to get stored package: %w", getErr)
+	}
+
 	return &ProxyDownloadResult{
-		Content:    body,
-		Size:       result.Size,
+		Content:    storedContent,
+		Size:       storedSize,
 		StorageKey: storageKey,
-		FromCache:  result.FromCache,
+		FromCache:  true,
 		RepoID:     result.RepoID,
 	}, nil
+}
+
+func (s *ProxyDownloadService) storePackageFileRecord(ctx context.Context, req *ProxyDownloadRequest, repoID uint, storageKey string, size int64) {
+	pkgType := req.PackageType
+	if pkgType == "" {
+		pkgType = model.PackageType(req.PkgType)
+	}
+	repoType := req.RepositoryType
+	if repoType == "" && req.Repo != nil {
+		repoType = req.Repo.Type
+	}
+	fileType := req.FileType
+	if fileType == "" {
+		fileType = model.FileTypePrimary
+	}
+	_, _, _, dbErr := s.pkgRepo.StorePackageFile(ctx, &model.Package{
+		Name:           req.Name,
+		Type:           pkgType,
+		RepositoryID:   repoID,
+		RepositoryType: repoType,
+	}, &model.PackageVersion{
+		Version:     req.Version,
+		Status:      model.StatusPublished,
+		StoragePath: filepath.Dir(storageKey),
+	}, &model.PackageFile{
+		Filename:    req.Filename,
+		FileType:    fileType,
+		StoragePath: storageKey,
+		SizeBytes:   size,
+	})
+	if dbErr != nil {
+		logrus.Warnf("failed to store proxy package file to database %s: %v", req.Name, dbErr)
+	}
 }
 
 func (s *ProxyDownloadService) recordLog(req *ProxyDownloadRequest, status string, statusCode int, sizeBytes int64, durationMs int, fromCache bool, err error) {
@@ -201,7 +248,6 @@ func (s *ProxyDownloadService) recordLog(req *ProxyDownloadRequest, status strin
 		PackageName:  req.Name,
 		Version:      req.Version,
 		Filename:     req.Filename,
-		RemoteURL:    req.RemoteURL,
 		Status:       status,
 		StatusCode:   statusCode,
 		SizeBytes:    sizeBytes,
@@ -225,33 +271,6 @@ func (s *ProxyDownloadService) recordLog(req *ProxyDownloadRequest, status strin
 	}
 }
 
-func (s *ProxyDownloadService) DownloadAndStore(ctx context.Context, req *ProxyDownloadRequest, postProcess func(ctx context.Context, content []byte, name, version string) error) (*ProxyDownloadResult, error) {
-	result, err := s.Download(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-
-	if postProcess != nil {
-		if processErr := postProcess(ctx, result.Content, req.Name, req.Version); processErr != nil {
-			logrus.Warnf("post-process failed for %s: %v", req.Name, processErr)
-		}
-	}
-
-	return result, nil
-}
-
-func (s *ProxyDownloadService) GetStorageService() *StorageService {
-	return s.storageSvc
-}
-
-func (s *ProxyDownloadService) GetPackageRepository() *repository.PackageRepository {
-	return s.pkgRepo
-}
-
-func (s *ProxyDownloadService) SetProxyRouter(pr *proxy.ProxyRouter) {
-	s.proxyRouter = pr
-}
-
 func (s *ProxyDownloadService) incrementDownloadCount(req *ProxyDownloadRequest) {
 	if req.Name == "" || req.PackageType == "" {
 		return
@@ -259,11 +278,12 @@ func (s *ProxyDownloadService) incrementDownloadCount(req *ProxyDownloadRequest)
 
 	cacheKey := string(req.PackageType) + "/" + req.Name
 
-	s.pkgCacheMu.RLock()
-	entry, exists := s.pkgCache[cacheKey]
-	s.pkgCacheMu.RUnlock()
+	var entry *pkgCacheEntry
+	if cached, ok := s.pkgCache.Get(cacheKey); ok {
+		entry = cached.(*pkgCacheEntry)
+	}
 
-	if !exists {
+	if entry == nil {
 		pkg, err := s.pkgRepo.FindByNameAndType(req.Name, req.PackageType)
 		if err != nil {
 			return
@@ -285,9 +305,7 @@ func (s *ProxyDownloadService) incrementDownloadCount(req *ProxyDownloadRequest)
 			entry.Versions[v.Version] = verEntry
 		}
 
-		s.pkgCacheMu.Lock()
-		s.pkgCache[cacheKey] = entry
-		s.pkgCacheMu.Unlock()
+		s.pkgCache.Set(cacheKey, entry)
 	}
 
 	var versionID uint

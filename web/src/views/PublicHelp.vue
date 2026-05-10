@@ -6,7 +6,7 @@
           <i class="fa-solid fa-book-open"></i>
         </div>
         <h1>帮助中心</h1>
-        <p>快速配置您的客户端，开始使用 Moonlight Registry</p>
+        <p>快速配置您的客户端，开始使用 Moonlight Box</p>
       </div>
     </div>
 

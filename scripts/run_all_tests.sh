@@ -140,82 +140,82 @@ check_prerequisites
 case "$TEST_SUITE" in
     all)
         print_section "第一阶段: 基础 HTTP 接口测试"
-        run_test "基础 HTTP 接口" "$SCRIPT_DIR/test_basic_http.sh" "true"
+        run_test "基础 HTTP 接口" "$SCRIPT_DIR/core/test_basic_http.sh" "true"
         
         print_section "第二阶段: 认证与权限测试"
-        run_test "认证与权限" "$SCRIPT_DIR/test_auth.sh" "true"
+        run_test "认证与权限" "$SCRIPT_DIR/core/test_auth.sh" "true"
         
         print_section "第三阶段: Maven 完整生命周期"
-        run_test "Maven Release 版本" "$SCRIPT_DIR/test_maven_lifecycle.sh" "true"
-        run_test "Maven SNAPSHOT 版本" "$SCRIPT_DIR/test_maven_snapshot.sh" "true"
+        run_test "Maven Release 版本" "$SCRIPT_DIR/lifecycle/test_maven_lifecycle.sh" "true"
+        run_test "Maven SNAPSHOT 版本" "$SCRIPT_DIR/lifecycle/test_maven_snapshot.sh" "true"
         
         print_section "第四阶段: npm 完整生命周期"
-        run_test "npm 生命周期" "$SCRIPT_DIR/test_npm_lifecycle.sh" "true"
+        run_test "npm 生命周期" "$SCRIPT_DIR/lifecycle/test_npm_lifecycle.sh" "true"
         
         print_section "第五阶段: Go 模块完整生命周期"
-        run_test "Go 模块生命周期" "$SCRIPT_DIR/test_go_lifecycle.sh" "true"
+        run_test "Go 模块生命周期" "$SCRIPT_DIR/lifecycle/test_go_lifecycle.sh" "true"
         
         print_section "第六阶段: PyPI 完整生命周期"
-        run_test "PyPI 生命周期" "$SCRIPT_DIR/test_pypi_lifecycle.sh" "true"
+        run_test "PyPI 生命周期" "$SCRIPT_DIR/lifecycle/test_pypi_lifecycle.sh" "true"
         
         print_section "第七阶段: 代理仓库能力"
-        run_test "多协议代理" "$SCRIPT_DIR/test_all_proxy.sh" "true"
+        run_test "多协议代理" "$SCRIPT_DIR/proxy/test_all_proxy.sh" "true"
         
         print_section "第八阶段: 仓库组能力"
-        run_test "仓库组（Group）" "$SCRIPT_DIR/test_group_repository.sh" "true"
+        run_test "仓库组（Group）" "$SCRIPT_DIR/core/test_group_repository.sh" "true"
         
         print_section "第九阶段: 性能与压力测试"
-        run_test "性能与压力" "$SCRIPT_DIR/test_performance.sh" "true"
+        run_test "性能与压力" "$SCRIPT_DIR/performance/test_performance.sh" "true"
         
         print_section "第十阶段: 异常场景测试"
-        run_test "异常场景" "$SCRIPT_DIR/test_exception_scenarios.sh" "true"
+        run_test "异常场景" "$SCRIPT_DIR/exception/test_exception_scenarios.sh" "true"
         ;;
     
     basic)
         print_section "基础测试套件"
-        run_test "基础 HTTP 接口" "$SCRIPT_DIR/test_basic_http.sh" "true"
-        run_test "认证与权限" "$SCRIPT_DIR/test_auth.sh" "true"
+        run_test "基础 HTTP 接口" "$SCRIPT_DIR/core/test_basic_http.sh" "true"
+        run_test "认证与权限" "$SCRIPT_DIR/core/test_auth.sh" "true"
         ;;
     
     maven)
         print_section "Maven 测试套件"
-        run_test "Maven Release 版本" "$SCRIPT_DIR/test_maven_lifecycle.sh" "true"
-        run_test "Maven SNAPSHOT 版本" "$SCRIPT_DIR/test_maven_snapshot.sh" "true"
+        run_test "Maven Release 版本" "$SCRIPT_DIR/lifecycle/test_maven_lifecycle.sh" "true"
+        run_test "Maven SNAPSHOT 版本" "$SCRIPT_DIR/lifecycle/test_maven_snapshot.sh" "true"
         ;;
     
     npm)
         print_section "npm 测试套件"
-        run_test "npm 生命周期" "$SCRIPT_DIR/test_npm_lifecycle.sh" "true"
+        run_test "npm 生命周期" "$SCRIPT_DIR/lifecycle/test_npm_lifecycle.sh" "true"
         ;;
     
     go)
         print_section "Go 测试套件"
-        run_test "Go 模块生命周期" "$SCRIPT_DIR/test_go_lifecycle.sh" "true"
+        run_test "Go 模块生命周期" "$SCRIPT_DIR/lifecycle/test_go_lifecycle.sh" "true"
         ;;
     
     pypi)
         print_section "PyPI 测试套件"
-        run_test "PyPI 生命周期" "$SCRIPT_DIR/test_pypi_lifecycle.sh" "true"
+        run_test "PyPI 生命周期" "$SCRIPT_DIR/lifecycle/test_pypi_lifecycle.sh" "true"
         ;;
     
     proxy)
         print_section "代理仓库测试套件"
-        run_test "多协议代理" "$SCRIPT_DIR/test_all_proxy.sh" "true"
+        run_test "多协议代理" "$SCRIPT_DIR/proxy/test_all_proxy.sh" "true"
         ;;
     
     group)
         print_section "仓库组测试套件"
-        run_test "仓库组（Group）" "$SCRIPT_DIR/test_group_repository.sh" "true"
+        run_test "仓库组（Group）" "$SCRIPT_DIR/core/test_group_repository.sh" "true"
         ;;
     
     performance)
         print_section "性能测试套件"
-        run_test "性能与压力" "$SCRIPT_DIR/test_performance.sh" "true"
+        run_test "性能与压力" "$SCRIPT_DIR/performance/test_performance.sh" "true"
         ;;
     
     exception)
         print_section "异常场景测试套件"
-        run_test "异常场景" "$SCRIPT_DIR/test_exception_scenarios.sh" "true"
+        run_test "异常场景" "$SCRIPT_DIR/exception/test_exception_scenarios.sh" "true"
         ;;
     
     *)

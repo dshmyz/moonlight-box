@@ -31,10 +31,9 @@
             </el-tag>
             <el-tooltip :content="row.files_downloaded ? '文件已下载到本地' : '仅元数据，文件未下载'" placement="top">
               <el-tag 
-                :type="row.files_downloaded ? 'success' : 'info'" 
-                size="small" 
+                :class="['cache-status-tag', row.files_downloaded ? 'cache-status-tag--cached' : 'cache-status-tag--uncached']"
                 effect="plain"
-                class="download-status-tag"
+                size="small"
               >
                 {{ row.files_downloaded ? '已缓存' : '未缓存' }}
               </el-tag>
@@ -279,7 +278,23 @@ function handleFileDownload(row: PackageVersion, file: PackageFile) {
 }
 
 .download-status-tag {
-  font-size: 11px;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.cache-status-tag {
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.cache-status-tag--cached {
+  background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+  color: #059669;
+}
+
+.cache-status-tag--uncached {
+  background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
+  color: #64748b;
 }
 
 .size-text,

@@ -18,6 +18,7 @@ type VulnRuleService struct {
 	ruleRepo   *repository.VulnRuleRepository
 	sourceRepo *repository.VulnDataSourceRepository
 	logger     *logrus.Logger
+	httpClient *http.Client
 }
 
 func NewVulnRuleService(ruleRepo *repository.VulnRuleRepository, sourceRepo *repository.VulnDataSourceRepository) *VulnRuleService {
@@ -25,6 +26,7 @@ func NewVulnRuleService(ruleRepo *repository.VulnRuleRepository, sourceRepo *rep
 		ruleRepo:   ruleRepo,
 		sourceRepo: sourceRepo,
 		logger:     logrus.New(),
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -135,7 +137,7 @@ func (s *VulnRuleService) syncDataSource(ctx context.Context, ds *model.VulnData
 		req.Header.Set("Authorization", "Bearer "+ds.AuthToken)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := s.httpClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to fetch data: %w", err)

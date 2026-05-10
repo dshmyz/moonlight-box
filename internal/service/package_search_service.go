@@ -10,12 +10,15 @@ import (
 
 // SearchRequest 包搜索请求参数
 type SearchRequest struct {
-	Query    string
-	Type     string
-	Scope    string
-	Sort     string
-	Page     int
-	PageSize int
+	Query      string
+	Type       string
+	Name       string
+	Version    string
+	Repository string
+	Scope      string
+	Sort       string
+	Page       int
+	PageSize   int
 }
 
 // SearchResult 包搜索结果
@@ -61,6 +64,27 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 	// 包类型过滤
 	if req.Type != "" {
 		query = query.Where("type = ?", req.Type)
+	}
+
+	// 按仓库名过滤
+	if req.Repository != "" {
+		query = query.Where("repository_id IN (?)",
+			s.db.Model(&model.Repository{}).
+				Select("id").
+				Where("name = ?", req.Repository))
+	}
+
+	// 包名精确匹配
+	if req.Name != "" {
+		query = query.Where("name = ?", req.Name)
+	}
+
+	// 版本号精确查询（通过子查询）
+	if req.Version != "" {
+		query = query.Where("id IN (?)",
+			s.db.Model(&model.PackageVersion{}).
+				Select("package_id").
+				Where("version = ?", req.Version))
 	}
 
 	// 排序

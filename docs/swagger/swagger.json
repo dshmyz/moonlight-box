@@ -1,0 +1,1766 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Moonlight Registry API",
+    "description": "制品仓库管理系统 API 文档，支持 npm、maven、pypi、go、yum、apt 等多种包类型的代理、缓存和管理。",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080",
+      "description": "本地开发服务器"
+    }
+  ],
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "输入格式：Bearer {token}"
+      }
+    },
+    "responses": {
+      "Success": {
+        "description": "成功",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "code": { "type": "integer", "example": 200 },
+                "message": { "type": "string", "example": "success" },
+                "data": { "type": "object" }
+              }
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "请求参数错误",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "code": { "type": "integer", "example": 400 },
+                "message": { "type": "string" }
+              }
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "未授权",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "code": { "type": "integer", "example": 401 },
+                "message": { "type": "string", "example": "认证令牌无效" }
+              }
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "禁止访问",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "code": { "type": "integer", "example": 403 },
+                "message": { "type": "string", "example": "无权限操作" }
+              }
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "资源不存在",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "code": { "type": "integer", "example": 404 },
+                "message": { "type": "string", "example": "资源不存在" }
+              }
+            }
+          }
+        }
+      },
+      "InternalServerError": {
+        "description": "服务器内部错误",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "code": { "type": "integer", "example": 500 },
+                "message": { "type": "string", "example": "服务器内部错误" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    { "name": "health", "description": "健康检查" },
+    { "name": "packages", "description": "包管理" },
+    { "name": "auth", "description": "认证" },
+    { "name": "repository", "description": "仓库管理" },
+    { "name": "cache", "description": "缓存管理" },
+    { "name": "block-rules", "description": "阻止规则" },
+    { "name": "storage", "description": "存储管理" },
+    { "name": "security", "description": "安全管理" },
+    { "name": "users", "description": "用户管理" },
+    { "name": "roles", "description": "角色管理" },
+    { "name": "audit", "description": "审计日志" },
+    { "name": "backup", "description": "备份管理" },
+    { "name": "webhook", "description": "Webhook管理" },
+    { "name": "config", "description": "系统配置" },
+    { "name": "system", "description": "系统管理" },
+    { "name": "migration", "description": "迁移管理" },
+    { "name": "dashboard", "description": "仪表盘" },
+    { "name": "ai", "description": "AI助手" },
+    { "name": "file", "description": "文件浏览" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["health"],
+        "summary": "健康检查",
+        "description": "检查服务是否正常运行",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "服务正常",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "ok" },
+                    "version": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": ["health"],
+        "summary": "Prometheus指标",
+        "description": "获取Prometheus监控指标",
+        "security": [],
+        "responses": {
+          "200": { "description": "Prometheus指标数据" }
+        }
+      }
+    },
+    "/api/v1/ping": {
+      "get": {
+        "tags": ["health"],
+        "summary": "Ping测试",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": { "type": "string", "example": "pong" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/packages/search": {
+      "get": {
+        "tags": ["packages"],
+        "summary": "搜索包",
+        "security": [],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "搜索关键词"
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["npm", "maven", "pypi", "go", "yum", "apt"] },
+            "description": "包类型"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": { "type": "integer", "default": 1 },
+            "description": "页码"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": { "type": "integer", "default": 20 },
+            "description": "每页数量"
+          }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/packages/{type}/versions": {
+      "get": {
+        "tags": ["packages"],
+        "summary": "获取包版本列表",
+        "security": [],
+        "parameters": [
+          {
+            "name": "type",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "包类型"
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "包名"
+          }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/public/repo/{name}": {
+      "get": {
+        "tags": ["repository"],
+        "summary": "获取公开仓库配置",
+        "security": [],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "仓库名称"
+          }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "用户登录",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["username", "password"],
+                "properties": {
+                  "username": { "type": "string" },
+                  "password": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "刷新Token",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "refresh_token": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "用户登出",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/auth/profile": {
+      "get": {
+        "tags": ["auth"],
+        "summary": "获取用户信息",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "put": {
+        "tags": ["auth"],
+        "summary": "更新用户信息",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "nickname": { "type": "string" },
+                  "avatar": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/auth/password": {
+      "put": {
+        "tags": ["auth"],
+        "summary": "修改密码",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["old_password", "new_password"],
+                "properties": {
+                  "old_password": { "type": "string" },
+                  "new_password": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/repositories": {
+      "get": {
+        "tags": ["repository"],
+        "summary": "获取仓库列表",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "post": {
+        "tags": ["repository"],
+        "summary": "创建仓库",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "type"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "type": { "type": "string" },
+                  "description": { "type": "string" },
+                  "is_private": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/repositories/{name}": {
+      "get": {
+        "tags": ["repository"],
+        "summary": "获取仓库详情",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "仓库名称"
+          }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "put": {
+        "tags": ["repository"],
+        "summary": "更新仓库",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "description": { "type": "string" },
+                  "is_private": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "delete": {
+        "tags": ["repository"],
+        "summary": "删除仓库",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "204": { "description": "删除成功" }
+        }
+      }
+    },
+    "/api/v1/repositories/{name}/members": {
+      "get": {
+        "tags": ["repository"],
+        "summary": "获取仓库成员",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "post": {
+        "tags": ["repository"],
+        "summary": "添加仓库成员",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["username", "role"],
+                "properties": {
+                  "username": { "type": "string" },
+                  "role": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/repositories/{name}/members/{memberName}": {
+      "delete": {
+        "tags": ["repository"],
+        "summary": "移除仓库成员",
+        "parameters": [
+          { "name": "name", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "memberName", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "204": { "description": "移除成功" }
+        }
+      }
+    },
+    "/api/v1/repositories/{name}/metadata-sync": {
+      "post": {
+        "tags": ["repository"],
+        "summary": "触发元数据同步",
+        "parameters": [
+          { "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/repositories/{name}/metadata-sync-config": {
+      "put": {
+        "tags": ["repository"],
+        "summary": "更新元数据同步配置",
+        "parameters": [
+          { "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": { "type": "boolean" },
+                  "cron": { "type": "string" },
+                  "upstream_url": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/cache/stats": {
+      "get": {
+        "tags": ["cache"],
+        "summary": "获取缓存统计",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/cache/items": {
+      "get": {
+        "tags": ["cache"],
+        "summary": "获取缓存列表",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/cache": {
+      "delete": {
+        "tags": ["cache"],
+        "summary": "清空缓存",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/cache/items/{key}": {
+      "delete": {
+        "tags": ["cache"],
+        "summary": "删除缓存项",
+        "parameters": [
+          { "name": "key", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/cache/expired": {
+      "delete": {
+        "tags": ["cache"],
+        "summary": "清理过期缓存",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/cache/invalidate": {
+      "post": {
+        "tags": ["cache"],
+        "summary": "使缓存失效",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "pattern": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/block-rules": {
+      "get": {
+        "tags": ["block-rules"],
+        "summary": "获取阻止规则列表",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "post": {
+        "tags": ["block-rules"],
+        "summary": "创建阻止规则",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["package_name", "version", "reason"],
+                "properties": {
+                  "package_name": { "type": "string" },
+                  "version": { "type": "string" },
+                  "reason": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/block-rules/logs": {
+      "get": {
+        "tags": ["block-rules"],
+        "summary": "获取阻止日志",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/block-rules/template": {
+      "get": {
+        "tags": ["block-rules"],
+        "summary": "下载模板文件",
+        "responses": {
+          "200": { "description": "模板文件" }
+        }
+      }
+    },
+    "/api/v1/block-rules/stats": {
+      "get": {
+        "tags": ["block-rules"],
+        "summary": "获取阻止统计",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/block-rules/batch-import": {
+      "post": {
+        "tags": ["block-rules"],
+        "summary": "批量导入规则",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": { "type": "string", "format": "binary" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/block-rules/{id}": {
+      "put": {
+        "tags": ["block-rules"],
+        "summary": "更新阻止规则",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "package_name": { "type": "string" },
+                  "version": { "type": "string" },
+                  "reason": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "delete": {
+        "tags": ["block-rules"],
+        "summary": "删除阻止规则",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "204": { "description": "删除成功" }
+        }
+      }
+    },
+    "/api/v1/storage-backends": {
+      "get": {
+        "tags": ["storage"],
+        "summary": "获取存储后端列表",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "post": {
+        "tags": ["storage"],
+        "summary": "创建存储后端",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "type"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "type": { "type": "string", "enum": ["local", "s3"] },
+                  "config": { "type": "object" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/storage-backends/{id}": {
+      "get": {
+        "tags": ["storage"],
+        "summary": "获取存储后端详情",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "put": {
+        "tags": ["storage"],
+        "summary": "更新存储后端",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "config": { "type": "object" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "delete": {
+        "tags": ["storage"],
+        "summary": "删除存储后端",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "204": { "description": "删除成功" }
+        }
+      }
+    },
+    "/api/v1/storage-backends/{id}/default": {
+      "post": {
+        "tags": ["storage"],
+        "summary": "设置默认存储",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/storage-backends/test": {
+      "post": {
+        "tags": ["storage"],
+        "summary": "测试连接",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "type": { "type": "string" },
+                  "config": { "type": "object" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/security/vulnerabilities": {
+      "get": {
+        "tags": ["security"],
+        "summary": "获取漏洞列表",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/security/scan-results": {
+      "get": {
+        "tags": ["security"],
+        "summary": "获取扫描结果",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/security/statistics": {
+      "get": {
+        "tags": ["security"],
+        "summary": "获取安全统计",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/security/dashboard": {
+      "get": {
+        "tags": ["security"],
+        "summary": "获取安全面板数据",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/security/packages/{id}/scan": {
+      "get": {
+        "tags": ["security"],
+        "summary": "获取包扫描结果",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/security/scan/full": {
+      "post": {
+        "tags": ["security"],
+        "summary": "触发完整扫描",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/security/block/{cve}": {
+      "post": {
+        "tags": ["security"],
+        "summary": "根据CVE阻止包",
+        "parameters": [
+          { "name": "cve", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/security/packages/{id}/scan/trigger": {
+      "post": {
+        "tags": ["security"],
+        "summary": "触发包扫描",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/users": {
+      "get": {
+        "tags": ["users"],
+        "summary": "获取用户列表",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "post": {
+        "tags": ["users"],
+        "summary": "创建用户",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["username", "password"],
+                "properties": {
+                  "username": { "type": "string" },
+                  "password": { "type": "string" },
+                  "nickname": { "type": "string" },
+                  "email": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/users/{id}/status": {
+      "put": {
+        "tags": ["users"],
+        "summary": "更新用户状态",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": { "type": "string", "enum": ["active", "disabled"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/users/{id}/roles": {
+      "put": {
+        "tags": ["users"],
+        "summary": "分配用户角色",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role_ids": { "type": "array", "items": { "type": "integer" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/roles": {
+      "get": {
+        "tags": ["roles"],
+        "summary": "获取角色列表",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "post": {
+        "tags": ["roles"],
+        "summary": "创建角色",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "description": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/roles/permissions": {
+      "get": {
+        "tags": ["roles"],
+        "summary": "获取权限列表",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/roles/{id}": {
+      "get": {
+        "tags": ["roles"],
+        "summary": "获取角色详情",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "put": {
+        "tags": ["roles"],
+        "summary": "更新角色",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "description": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "delete": {
+        "tags": ["roles"],
+        "summary": "删除角色",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "204": { "description": "删除成功" }
+        }
+      }
+    },
+    "/api/v1/roles/{id}/permissions": {
+      "put": {
+        "tags": ["roles"],
+        "summary": "更新角色权限",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "permissions": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/audit/logs": {
+      "get": {
+        "tags": ["audit"],
+        "summary": "获取审计日志列表",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/audit/logs/{id}": {
+      "get": {
+        "tags": ["audit"],
+        "summary": "获取审计日志详情",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/proxy-downloads/logs": {
+      "get": {
+        "tags": ["audit"],
+        "summary": "获取代理下载日志",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/proxy-downloads/stats": {
+      "get": {
+        "tags": ["audit"],
+        "summary": "获取代理下载统计",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/packages/versions/{id}/deprecate": {
+      "post": {
+        "tags": ["packages"],
+        "summary": "废弃包版本",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/packages/versions/{id}/restore": {
+      "post": {
+        "tags": ["packages"],
+        "summary": "恢复包版本",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/packages/versions/{id}/yank": {
+      "post": {
+        "tags": ["packages"],
+        "summary": "撤回包版本",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/packages/versions/{id}": {
+      "delete": {
+        "tags": ["packages"],
+        "summary": "删除包版本",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "204": { "description": "删除成功" }
+        }
+      }
+    },
+    "/api/v1/backups": {
+      "get": {
+        "tags": ["backup"],
+        "summary": "获取备份列表",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "post": {
+        "tags": ["backup"],
+        "summary": "创建备份",
+        "responses": {
+          "201": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/backups/{id}": {
+      "get": {
+        "tags": ["backup"],
+        "summary": "获取备份详情",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "delete": {
+        "tags": ["backup"],
+        "summary": "删除备份",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "204": { "description": "删除成功" }
+        }
+      }
+    },
+    "/api/v1/backups/{id}/restore": {
+      "post": {
+        "tags": ["backup"],
+        "summary": "恢复备份",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/webhooks": {
+      "get": {
+        "tags": ["webhook"],
+        "summary": "获取Webhook列表",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "post": {
+        "tags": ["webhook"],
+        "summary": "创建Webhook",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "url"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "url": { "type": "string" },
+                  "events": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/webhooks/{id}": {
+      "get": {
+        "tags": ["webhook"],
+        "summary": "获取Webhook详情",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "put": {
+        "tags": ["webhook"],
+        "summary": "更新Webhook",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "url": { "type": "string" },
+                  "events": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "delete": {
+        "tags": ["webhook"],
+        "summary": "删除Webhook",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "204": { "description": "删除成功" }
+        }
+      }
+    },
+    "/api/v1/webhooks/{id}/deliveries": {
+      "get": {
+        "tags": ["webhook"],
+        "summary": "获取投递记录",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/webhooks/{id}/test": {
+      "post": {
+        "tags": ["webhook"],
+        "summary": "测试Webhook",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/configs": {
+      "get": {
+        "tags": ["config"],
+        "summary": "获取配置列表",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "post": {
+        "tags": ["config"],
+        "summary": "批量更新配置",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/configs/{key}": {
+      "get": {
+        "tags": ["config"],
+        "summary": "获取配置详情",
+        "parameters": [
+          { "name": "key", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      },
+      "delete": {
+        "tags": ["config"],
+        "summary": "删除配置",
+        "parameters": [
+          { "name": "key", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "204": { "description": "删除成功" }
+        }
+      }
+    },
+    "/api/v1/system/info": {
+      "get": {
+        "tags": ["system"],
+        "summary": "获取系统信息",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/files/browse": {
+      "get": {
+        "tags": ["file"],
+        "summary": "浏览目录",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "目录路径"
+          }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/files/stats": {
+      "get": {
+        "tags": ["file"],
+        "summary": "获取文件统计",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/files/download": {
+      "get": {
+        "tags": ["file"],
+        "summary": "下载文件",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "文件路径"
+          }
+        ],
+        "responses": {
+          "200": { "description": "文件内容" }
+        }
+      }
+    },
+    "/api/v1/migration": {
+      "get": {
+        "tags": ["migration"],
+        "summary": "获取迁移任务列表",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/migration/nexus/test": {
+      "post": {
+        "tags": ["migration"],
+        "summary": "测试Nexus连接",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["url", "username", "password"],
+                "properties": {
+                  "url": { "type": "string" },
+                  "username": { "type": "string" },
+                  "password": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/migration/nexus/repositories": {
+      "post": {
+        "tags": ["migration"],
+        "summary": "获取Nexus仓库列表",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "url": { "type": "string" },
+                  "username": { "type": "string" },
+                  "password": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/migration/nexus": {
+      "post": {
+        "tags": ["migration"],
+        "summary": "创建迁移任务",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["nexus_url", "repositories"],
+                "properties": {
+                  "nexus_url": { "type": "string" },
+                  "username": { "type": "string" },
+                  "password": { "type": "string" },
+                  "repositories": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/migration/{id}/status": {
+      "get": {
+        "tags": ["migration"],
+        "summary": "获取迁移状态",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/migration/{id}/cancel": {
+      "post": {
+        "tags": ["migration"],
+        "summary": "取消迁移任务",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/dashboard/stats": {
+      "get": {
+        "tags": ["dashboard"],
+        "summary": "获取仪表盘统计",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/ai/chat": {
+      "post": {
+        "tags": ["ai"],
+        "summary": "发送聊天消息",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["message"],
+                "properties": {
+                  "message": { "type": "string" },
+                  "session_id": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/ai/chat/stream": {
+      "post": {
+        "tags": ["ai"],
+        "summary": "流式聊天",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "message": { "type": "string" },
+                  "session_id": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "流式响应" }
+        }
+      }
+    },
+    "/api/v1/ai/tools": {
+      "get": {
+        "tags": ["ai"],
+        "summary": "获取AI工具列表",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/ai/sessions/{id}": {
+      "delete": {
+        "tags": ["ai"],
+        "summary": "删除AI会话",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "204": { "description": "删除成功" }
+        }
+      }
+    },
+    "/api/v1/ai/rate-limit": {
+      "get": {
+        "tags": ["ai"],
+        "summary": "获取速率限制状态",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/ai/health": {
+      "get": {
+        "tags": ["ai"],
+        "summary": "AI健康检查",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/ai/stats": {
+      "get": {
+        "tags": ["ai"],
+        "summary": "获取AI统计",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/ai/cache/stats": {
+      "get": {
+        "tags": ["ai"],
+        "summary": "获取AI缓存统计",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/ai/audit-logs": {
+      "get": {
+        "tags": ["ai"],
+        "summary": "获取AI审计日志",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/health/repos": {
+      "get": {
+        "tags": ["health"],
+        "summary": "获取所有仓库健康状态",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/health/repos/{id}": {
+      "get": {
+        "tags": ["health"],
+        "summary": "获取仓库健康状态",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    },
+    "/api/v1/health/repos/{id}/reset": {
+      "post": {
+        "tags": ["health"],
+        "summary": "重置熔断器",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" }
+        }
+      }
+    }
+  }
+}

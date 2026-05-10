@@ -121,7 +121,7 @@
         </el-table>
         <div class="pagination-wrapper" v-if="itemTotal > 0">
           <el-pagination
-            small
+            size="small"
             layout="total, prev, pager, next"
             :total="itemTotal"
             :page-size="itemPageSize"
@@ -134,7 +134,7 @@
       <!-- 操作按钮 -->
       <div class="action-buttons">
         <el-button
-          v-if="task.status === 'failed' && task.failed_items > 0"
+          v-if="task.failed_items > 0"
           type="warning"
           size="large"
           @click="handleRetry"
@@ -237,9 +237,25 @@ function itemStatusText(status: string) {
 async function loadTask() {
   loading.value = true
   try {
-    const taskId = Number(route.params.id)
+    console.log('route.params:', route.params)
+    console.log('route.params.id:', route.params.id)
+    let rawId = route.params.id
+    if (Array.isArray(rawId)) {
+      rawId = rawId[0]
+    }
+    console.log('rawId after array check:', rawId)
+    if (!rawId) {
+      console.error('Task ID is missing in route params')
+      return
+    }
+    const taskId = Number(rawId)
+    console.log('taskId:', taskId)
+    if (isNaN(taskId) || taskId === 0) {
+      console.error('Invalid task ID:', rawId)
+      return
+    }
     const res = (await getMigrationStatus(taskId)) as any
-    const data = res?.data?.task || res?.data || res
+    const data = res?.task || res
     task.value = data
   } catch (e) {
     console.error('Load task failed:', e)

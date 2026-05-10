@@ -13,12 +13,12 @@
 ## 文件结构
 
 ### 新增文件
-- `internal/adapter/context.go` - Context 结构体定义
+- `internal/types/context.go` - Context 结构体定义
 - `internal/service/download_service.go` - 下载服务
 - `internal/service/publish_service.go` - 发布服务
 
 ### 修改文件
-- `internal/adapter/types.go` - 更新 Adapter 接口定义
+- `internal/types/types.go` - 更新 Adapter 接口定义
 - `internal/adapter/base_adapter.go` - 更新 BaseAdapter 实现
 - `internal/adapter/maven_adapter.go` - 更新方法签名
 - `internal/adapter/npm_adapter.go` - 更新方法签名
@@ -40,12 +40,12 @@
 ### 任务 1：创建 Context 结构体定义
 
 **文件：**
-- 创建：`internal/adapter/context.go`
+- 创建：`internal/types/context.go`
 
 - [ ] **步骤 1：创建 context.go 文件**
 
 ```go
-package adapter
+package types
 
 import (
 	"io"
@@ -114,27 +114,27 @@ type PublishResult struct {
 
 - [ ] **步骤 2：验证编译**
 
-运行：`go build ./internal/adapter`
+运行：`go build ./internal/types`
 预期：编译成功，无错误
 
 - [ ] **步骤 3：Commit**
 
 ```bash
-git add internal/adapter/context.go
+git add internal/types/context.go
 git commit -m "feat: add context types for explicit parameter passing"
 ```
 
 ### 任务 2：更新 Adapter 接口定义
 
 **文件：**
-- 修改：`internal/adapter/types.go`
+- 修改：`internal/types/types.go`
 
 - [ ] **步骤 1：更新 Adapter 接口**
 
-在 `internal/adapter/types.go` 中更新 Adapter 接口：
+在 `internal/types/types.go` 中更新 Adapter 接口：
 
 ```go
-package adapter
+package types
 
 import (
 	"github.com/gin-gonic/gin"
@@ -173,13 +173,13 @@ type RepoAwareAdapter interface {
 
 - [ ] **步骤 2：验证编译**
 
-运行：`go build ./internal/adapter`
+运行：`go build ./internal/types`
 预期：编译错误，因为现有实现未更新
 
 - [ ] **步骤 3：Commit**
 
 ```bash
-git add internal/adapter/types.go
+git add internal/types/types.go
 git commit -m "refactor: update Adapter interface with explicit context parameters"
 ```
 
@@ -209,7 +209,7 @@ func (a *BaseAdapter) CheckDownloadPermission(
 	}
 
 	userID := c.GetUint("userID")
-	downloadCtx := &DownloadContext{
+	downloadCtx := &types.DownloadContext{
 		Repo:     repo,
 		PkgType:  pkgType,
 		Name:     name,
@@ -245,7 +245,7 @@ git commit -m "refactor: add CheckDownloadPermission helper method"
 找到 `HandleRepoRequest` 方法，修改签名：
 
 ```go
-func (a *MavenAdapter) HandleRepoRequest(c *gin.Context, ctx *RepoRequestContext) {
+func (a *MavenAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
 	repo := ctx.Repo
 	path := ctx.Path
 	
@@ -273,7 +273,7 @@ func (a *MavenAdapter) HandleRepoRequest(c *gin.Context, ctx *RepoRequestContext
 3. 返回 `*DownloadResult` 而不是直接写入响应
 
 ```go
-func (a *MavenAdapter) HandleDownload(c *gin.Context, ctx *DownloadContext) (*DownloadResult, error) {
+func (a *MavenAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
 	// 从现有 handleDownloadArtifact 方法迁移逻辑
 	// 使用 ctx.Repo, ctx.Name, ctx.Version, ctx.Filename
 	// 返回 DownloadResult{Content, Size, Filename, Name, Version}
@@ -288,7 +288,7 @@ func (a *MavenAdapter) HandleDownload(c *gin.Context, ctx *DownloadContext) (*Do
 2. 返回 `*PublishResult` 包含响应数据
 
 ```go
-func (a *MavenAdapter) HandlePublish(c *gin.Context, ctx *PublishContext) (*PublishResult, error) {
+func (a *MavenAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	// 从现有 HandleRepoPublish 方法迁移逻辑
 	// 使用 ctx.Repo, ctx.UserID
 	// 返回 PublishResult{PackageName, Version, Size, Filename, Response}
@@ -299,7 +299,7 @@ func (a *MavenAdapter) HandlePublish(c *gin.Context, ctx *PublishContext) (*Publ
 - [ ] **步骤 4：添加 HandleDelete 方法**
 
 ```go
-func (a *MavenAdapter) HandleDelete(c *gin.Context, ctx *DeleteContext) error {
+func (a *MavenAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
 	// 从现有 HandleRepoDelete 方法迁移逻辑
 	// 使用 ctx.Repo, ctx.Name, ctx.Version
 	return fmt.Errorf("not implemented")
@@ -326,7 +326,7 @@ git commit -m "refactor: update MavenAdapter with explicit context parameters"
 - [ ] **步骤 1：更新 HandleRepoRequest 方法签名**
 
 ```go
-func (a *NpmAdapter) HandleRepoRequest(c *gin.Context, ctx *RepoRequestContext) {
+func (a *NpmAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
 	repo := ctx.Repo
 	path := ctx.Path
 	
@@ -340,7 +340,7 @@ func (a *NpmAdapter) HandleRepoRequest(c *gin.Context, ctx *RepoRequestContext) 
 注意：此方法需要从现有的 tarball 下载逻辑中迁移
 
 ```go
-func (a *NpmAdapter) HandleDownload(c *gin.Context, ctx *DownloadContext) (*DownloadResult, error) {
+func (a *NpmAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
 	// 从现有 tarball 下载逻辑迁移
 	// 使用 ctx.Repo, ctx.Name, ctx.Version, ctx.Filename
 	return nil, fmt.Errorf("not implemented")
@@ -350,12 +350,12 @@ func (a *NpmAdapter) HandleDownload(c *gin.Context, ctx *DownloadContext) (*Down
 - [ ] **步骤 3：添加 HandlePublish 和 HandleDelete 方法**
 
 ```go
-func (a *NpmAdapter) HandlePublish(c *gin.Context, ctx *PublishContext) (*PublishResult, error) {
+func (a *NpmAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	// 从现有 HandleRepoPublish 方法迁移
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (a *NpmAdapter) HandleDelete(c *gin.Context, ctx *DeleteContext) error {
+func (a *NpmAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
 	// 从现有 HandleRepoDelete 方法迁移
 	return fmt.Errorf("not implemented")
 }
@@ -381,7 +381,7 @@ git commit -m "refactor: update NpmAdapter with explicit context parameters"
 - [ ] **步骤 1：更新 HandleRepoRequest 方法签名**
 
 ```go
-func (a *PyPIAdapter) HandleRepoRequest(c *gin.Context, ctx *RepoRequestContext) {
+func (a *PyPIAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
 	repo := ctx.Repo
 	path := ctx.Path
 	
@@ -427,17 +427,17 @@ func (a *PyPIAdapter) HandleRepoRequest(c *gin.Context, ctx *RepoRequestContext)
 - [ ] **步骤 2：添加 HandleDownload, HandlePublish, HandleDelete 方法**
 
 ```go
-func (a *PyPIAdapter) HandleDownload(c *gin.Context, ctx *DownloadContext) (*DownloadResult, error) {
+func (a *PyPIAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
 	// 从现有下载逻辑迁移
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (a *PyPIAdapter) HandlePublish(c *gin.Context, ctx *PublishContext) (*PublishResult, error) {
+func (a *PyPIAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	// 从现有 HandleRepoPublish 方法迁移
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (a *PyPIAdapter) HandleDelete(c *gin.Context, ctx *DeleteContext) error {
+func (a *PyPIAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
 	// 从现有 HandleRepoDelete 方法迁移
 	return fmt.Errorf("not implemented")
 }
@@ -468,23 +468,23 @@ git commit -m "refactor: update PyPIAdapter with explicit context parameters"
 在 `internal/adapter/go_adapter.go` 中：
 
 ```go
-func (a *GoAdapter) HandleRepoRequest(c *gin.Context, ctx *RepoRequestContext) {
+func (a *GoAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
 	c.Set("repo", ctx.Repo)
 	c.Params = append(c.Params, gin.Param{Key: "path", Value: "/" + ctx.Path})
 	a.goProxyHandler(c)
 }
 
-func (a *GoAdapter) HandleDownload(c *gin.Context, ctx *DownloadContext) (*DownloadResult, error) {
+func (a *GoAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
 	// 从现有逻辑迁移
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (a *GoAdapter) HandlePublish(c *gin.Context, ctx *PublishContext) (*PublishResult, error) {
+func (a *GoAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	// 从现有逻辑迁移
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (a *GoAdapter) HandleDelete(c *gin.Context, ctx *DeleteContext) error {
+func (a *GoAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
 	// 从现有逻辑迁移
 	return fmt.Errorf("not implemented")
 }
@@ -495,22 +495,22 @@ func (a *GoAdapter) HandleDelete(c *gin.Context, ctx *DeleteContext) error {
 在 `internal/adapter/apt_adapter.go` 中：
 
 ```go
-func (a *AptAdapter) HandleRepoRequest(c *gin.Context, ctx *RepoRequestContext) {
+func (a *AptAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
 	c.Set("repo", ctx.Repo)
 	// 从现有逻辑迁移
 }
 
-func (a *AptAdapter) HandleDownload(c *gin.Context, ctx *DownloadContext) (*DownloadResult, error) {
+func (a *AptAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
 	// 从现有逻辑迁移
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (a *AptAdapter) HandlePublish(c *gin.Context, ctx *PublishContext) (*PublishResult, error) {
+func (a *AptAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	// 从现有逻辑迁移
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (a *AptAdapter) HandleDelete(c *gin.Context, ctx *DeleteContext) error {
+func (a *AptAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
 	// 从现有逻辑迁移
 	return fmt.Errorf("not implemented")
 }
@@ -521,21 +521,21 @@ func (a *AptAdapter) HandleDelete(c *gin.Context, ctx *DeleteContext) error {
 在 `internal/adapter/yum_adapter.go` 中：
 
 ```go
-func (a *YumAdapter) HandleRepoRequest(c *gin.Context, ctx *RepoRequestContext) {
+func (a *YumAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
 	// 从现有逻辑迁移
 }
 
-func (a *YumAdapter) HandleDownload(c *gin.Context, ctx *DownloadContext) (*DownloadResult, error) {
-	// 从现有逻辑迁移
-	return nil, fmt.Errorf("not implemented")
-}
-
-func (a *YumAdapter) HandlePublish(c *gin.Context, ctx *PublishContext) (*PublishResult, error) {
+func (a *YumAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
 	// 从现有逻辑迁移
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (a *YumAdapter) HandleDelete(c *gin.Context, ctx *DeleteContext) error {
+func (a *YumAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
+	// 从现有逻辑迁移
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (a *YumAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
 	// 从现有逻辑迁移
 	return fmt.Errorf("not implemented")
 }
@@ -546,22 +546,22 @@ func (a *YumAdapter) HandleDelete(c *gin.Context, ctx *DeleteContext) error {
 在 `internal/adapter/generic_adapter.go` 中：
 
 ```go
-func (a *GenericAdapter) HandleRepoRequest(c *gin.Context, ctx *RepoRequestContext) {
+func (a *GenericAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
 	c.Set("repo", ctx.Repo)
 	a.DownloadOrBrowse(c)
 }
 
-func (a *GenericAdapter) HandleDownload(c *gin.Context, ctx *DownloadContext) (*DownloadResult, error) {
+func (a *GenericAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
 	// 从现有逻辑迁移
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (a *GenericAdapter) HandlePublish(c *gin.Context, ctx *PublishContext) (*PublishResult, error) {
+func (a *GenericAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	// 从现有逻辑迁移
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (a *GenericAdapter) HandleDelete(c *gin.Context, ctx *DeleteContext) error {
+func (a *GenericAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
 	// 从现有逻辑迁移
 	return fmt.Errorf("not implemented")
 }
@@ -597,21 +597,21 @@ import (
 	"context"
 	"fmt"
 	
-	"github.com/moonlight-box/registry/internal/adapter"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/moonlight-box/registry/internal/types"
 )
 
 type DownloadService struct {
 	repoRepo  *repository.RepositoryRepository
 	groupRepo *repository.GroupRepository
-	adapters  map[string]adapter.Adapter
+	adapters  map[string]types.Adapter
 }
 
 func NewDownloadService(
 	repoRepo *repository.RepositoryRepository,
 	groupRepo *repository.GroupRepository,
-	adapters map[string]adapter.Adapter,
+	adapters map[string]types.Adapter,
 ) *DownloadService {
 	return &DownloadService{
 		repoRepo:  repoRepo,
@@ -621,7 +621,7 @@ func NewDownloadService(
 }
 
 // Download 下载包，根据仓库类型路由到不同的解析策略
-func (s *DownloadService) Download(ctx context.Context, downloadCtx *adapter.DownloadContext) (*adapter.DownloadResult, error) {
+func (s *DownloadService) Download(ctx context.Context, downloadCtx *types.DownloadContext) (*types.DownloadResult, error) {
 	switch downloadCtx.Repo.Type {
 	case model.RepoTypeLocal:
 		return s.downloadFromLocal(ctx, downloadCtx)
@@ -634,7 +634,7 @@ func (s *DownloadService) Download(ctx context.Context, downloadCtx *adapter.Dow
 	}
 }
 
-func (s *DownloadService) downloadFromLocal(ctx context.Context, downloadCtx *adapter.DownloadContext) (*adapter.DownloadResult, error) {
+func (s *DownloadService) downloadFromLocal(ctx context.Context, downloadCtx *types.DownloadContext) (*types.DownloadResult, error) {
 	adp := s.adapters[string(downloadCtx.PkgType)]
 	if adp == nil {
 		return nil, fmt.Errorf("unsupported package type: %s", downloadCtx.PkgType)
@@ -643,7 +643,7 @@ func (s *DownloadService) downloadFromLocal(ctx context.Context, downloadCtx *ad
 	return adp.HandleDownload(nil, downloadCtx)
 }
 
-func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *adapter.DownloadContext) (*adapter.DownloadResult, error) {
+func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *types.DownloadContext) (*types.DownloadResult, error) {
 	adp := s.adapters[string(downloadCtx.PkgType)]
 	if adp == nil {
 		return nil, fmt.Errorf("unsupported package type: %s", downloadCtx.PkgType)
@@ -652,7 +652,7 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ad
 	return adp.HandleDownload(nil, downloadCtx)
 }
 
-func (s *DownloadService) downloadFromVirtual(ctx context.Context, downloadCtx *adapter.DownloadContext) (*adapter.DownloadResult, error) {
+func (s *DownloadService) downloadFromVirtual(ctx context.Context, downloadCtx *types.DownloadContext) (*types.DownloadResult, error) {
 	members, err := s.groupRepo.GetMembersByVirtualRepo(downloadCtx.Repo.ID)
 	if err != nil {
 		return nil, err
@@ -703,19 +703,19 @@ import (
 	"context"
 	"fmt"
 	
-	"github.com/moonlight-box/registry/internal/adapter"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/moonlight-box/registry/internal/types"
 )
 
 type PublishService struct {
 	repoRepo  *repository.RepositoryRepository
-	adapters  map[string]adapter.Adapter
+	adapters  map[string]types.Adapter
 }
 
 func NewPublishService(
 	repoRepo *repository.RepositoryRepository,
-	adapters map[string]adapter.Adapter,
+	adapters map[string]types.Adapter,
 ) *PublishService {
 	return &PublishService{
 		repoRepo: repoRepo,
@@ -724,7 +724,7 @@ func NewPublishService(
 }
 
 // Publish 发布包
-func (s *PublishService) Publish(ctx context.Context, publishCtx *adapter.PublishContext) (*adapter.PublishResult, error) {
+func (s *PublishService) Publish(ctx context.Context, publishCtx *types.PublishContext) (*types.PublishResult, error) {
 	if publishCtx.Repo.Type != model.RepoTypeLocal {
 		return nil, fmt.Errorf("only local repository supports publishing")
 	}
@@ -768,7 +768,6 @@ import (
 	"strings"
 	
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/adapter"
 	"github.com/moonlight-box/registry/internal/metrics"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
@@ -785,11 +784,11 @@ type RepoRouter struct {
 	permSvc     *service.PermissionCacheService
 	
 	// Adapter 管理
-	adapters map[string]adapter.Adapter
+	adapters map[string]types.Adapter
 	
 	// 其他依赖
 	repoCache       *proxy.RepositoryCache
-	downloadPlugin  *adapter.DownloadPluginChain
+	downloadPlugin  *types.DownloadPluginChain
 	webhookSvc      *service.WebhookService
 }
 
@@ -799,7 +798,7 @@ func NewRepoRouter(
 	publishSvc *service.PublishService,
 	blockSvc *service.BlockRuleService,
 	permSvc *service.PermissionCacheService,
-	adapters map[string]adapter.Adapter,
+	adapters map[string]types.Adapter,
 	repoCache *proxy.RepositoryCache,
 ) *RepoRouter {
 	return &RepoRouter{
@@ -874,7 +873,7 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 	}
 	
 	// 4. 非下载请求，调用 HandleRepoRequest
-	repoReqCtx := &adapter.RepoRequestContext{
+	repoReqCtx := &types.RepoRequestContext{
 		Repo:     repo,
 		PkgType:  repo.PackageType,
 		Path:     strings.TrimPrefix(path, "/"),
@@ -888,11 +887,11 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 func (r *RepoRouter) handleDownloadRequest(
 	c *gin.Context,
 	repo *model.Repository,
-	adp adapter.Adapter,
-	pkgIdentity *adapter.PackageIdentity,
+	adp types.Adapter,
+	pkgIdentity *types.PackageIdentity,
 ) {
 	// 构建下载上下文
-	downloadCtx := &adapter.DownloadContext{
+	downloadCtx := &types.DownloadContext{
 		Repo:     repo,
 		PkgType:  repo.PackageType,
 		Name:     pkgIdentity.Name,
@@ -965,7 +964,7 @@ func (r *RepoRouter) HandlePublish(c *gin.Context) {
 	}
 	
 	// 4. 构建发布上下文
-	publishCtx := &adapter.PublishContext{
+	publishCtx := &types.PublishContext{
 		Repo:     repo,
 		PkgType:  repo.PackageType,
 		UserID:   c.GetUint("userID"),

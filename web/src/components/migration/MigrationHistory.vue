@@ -158,8 +158,18 @@ function progressPercent(task: MigrationTask) {
   return Math.round((task.processed_items / task.total_items) * 100)
 }
 
-function viewDetail(task: MigrationTask) {
-  router.push({ name: 'MigrationDetail', params: { id: String(task.id) } })
+function viewDetail(task: any) {
+  console.log('viewDetail called with task:', task)
+  console.log('task.id:', task.id)
+  console.log('task keys:', Object.keys(task))
+  
+  if (!task.id && task.id !== 0) {
+    console.error('Task ID is missing:', task)
+    return
+  }
+  const idStr = String(task.id)
+  console.log('Navigating to MigrationDetail with id:', idStr)
+  router.push({ name: 'MigrationDetail', params: { id: idStr } })
 }
 
 async function handleRetry(task: MigrationTask) {
@@ -261,21 +271,55 @@ async function handleRetry(task: MigrationTask) {
 .progress-wrapper {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+}
+
+.progress-text {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .progress-bar {
-  height: 6px;
-  background: #e5e7eb;
-  border-radius: 3px;
+  height: 8px;
+  background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
+  border-radius: 4px;
   overflow: hidden;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #8b5cf6 0%, #6366f1 100%);
-  border-radius: 3px;
-  transition: width 0.3s ease;
+  background: linear-gradient(90deg, #8b5cf6 0%, #7c3aed 50%, #6366f1 100%);
+  border-radius: 4px;
+  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 4px rgba(139, 92, 246, 0.25);
+  position: relative;
+}
+
+.progress-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.3) 50%,
+    transparent 100%
+  );
+  animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
 }
 
 .action-buttons {

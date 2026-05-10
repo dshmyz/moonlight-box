@@ -8,12 +8,13 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/stretchr/testify/assert"
-	"gorm.io/driver/sqlite"
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
 	"gorm.io/gorm"
 )
 
 func setupIntegrationTestDB(t *testing.T) *gorm.DB {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	err = db.AutoMigrate(&model.MigrationTask{}, &model.MigrationItem{})
 	assert.NoError(t, err)
@@ -55,7 +56,8 @@ func TestProgressUpdater_Integration(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	updater := NewProgressUpdater(task.ID, db, 100*time.Millisecond)
+	itemRepo := repository.NewMigrationItemRepository(db)
+	updater := NewProgressUpdater(task.ID, db, itemRepo, 100*time.Millisecond)
 	go updater.Start(ctx)
 
 	for i := 0; i < 10; i++ {
@@ -84,7 +86,7 @@ func TestMigrationItemRepository_Integration(t *testing.T) {
 	err := repo.BatchCreate(items)
 	assert.NoError(t, err)
 
-	pending, err := repo.GetPendingItems(1, 10)
+	pending, err := repo.GetPendingItems(1, 10, 10)
 	assert.NoError(t, err)
 	assert.Len(t, pending, 3)
 
@@ -116,19 +118,24 @@ func TestProducerConsumer_Integration(t *testing.T) {
 	db.Create(task)
 
 	queue := NewComponentQueue(20)
-	defer queue.Close()
 
+	produceDone := make(chan struct{})
 	go func() {
+		defer close(produceDone)
 		items := []model.MigrationItem{
 			{TaskID: task.ID, ComponentID: "comp1", ComponentName: "test1", Status: model.MigrationItemPending},
 			{TaskID: task.ID, ComponentID: "comp2", ComponentName: "test2", Status: model.MigrationItemPending},
 			{TaskID: task.ID, ComponentID: "comp3", ComponentName: "test3", Status: model.MigrationItemPending},
 		}
 		repo.BatchCreate(items)
-		for _, item := range items {
+
+		pendingItems, _ := repo.GetPendingItems(task.ID, 10, 100)
+		for _, item := range pendingItems {
 			queue.Push(item)
 		}
 	}()
+
+	<-produceDone
 
 	processedCount := 0
 	for i := 0; i < 3; i++ {
@@ -138,6 +145,8 @@ func TestProducerConsumer_Integration(t *testing.T) {
 			processedCount++
 		}
 	}
+
+	queue.Close()
 
 	assert.Equal(t, 3, processedCount)
 
@@ -169,9 +178,13 @@ func TestRetryMechanism_Integration(t *testing.T) {
 		assert.Equal(t, i+1, updated.RetryCount)
 	}
 
-	pending, err := repo.GetPendingItems(1, 10)
+	pending, err := repo.GetPendingItems(1, 3, 10)
 	assert.NoError(t, err)
 	assert.Len(t, pending, 0)
+
+	pendingWithHighLimit, err := repo.GetPendingItems(1, 10, 10)
+	assert.NoError(t, err)
+	assert.Len(t, pendingWithHighLimit, 1)
 }
 
 func TestProgressBuffer_Integration(t *testing.T) {
@@ -179,7 +192,8 @@ func TestProgressBuffer_Integration(t *testing.T) {
 	task := &model.MigrationTask{Status: model.MigrationRunning}
 	db.Create(task)
 
-	updater := NewProgressUpdater(task.ID, db, 1*time.Second)
+	itemRepo := repository.NewMigrationItemRepository(db)
+	updater := NewProgressUpdater(task.ID, db, itemRepo, 1*time.Second)
 
 	for i := 0; i < 100; i++ {
 		updater.IncrementProcessed()

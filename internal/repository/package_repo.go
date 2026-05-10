@@ -25,84 +25,49 @@ func (r *PackageRepository) DB() *gorm.DB {
 
 // StorePackageFile 存储包文件，自动处理 Package、PackageVersion、PackageFile 的创建
 func (r *PackageRepository) StorePackageFile(ctx context.Context, pkg *model.Package, ver *model.PackageVersion, file *model.PackageFile) (*model.Package, *model.PackageVersion, *model.PackageFile, error) {
-	if pkg.DisplayName == "" {
-		pkg.DisplayName = util.GenerateDisplayName(pkg.Name, string(pkg.Type))
+	if err := validatePackageForStore(pkg); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := validateVersionForStore(ver); err != nil {
+		return nil, nil, nil, fmt.Errorf("version validation failed: %w", err)
+	}
+	if err := validateFileForStore(file); err != nil {
+		return nil, nil, nil, fmt.Errorf("file validation failed: %w", err)
 	}
 
+	preparePackage(pkg)
 	if ver != nil && file != nil {
 		ver.FilesDownloaded = true
 	}
 
-	err := r.db.Transaction(func(tx *gorm.DB) error {
-		var existingPkg model.Package
-		result := tx.Where("name = ? AND type = ?", pkg.Name, pkg.Type).First(&existingPkg)
-		if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return result.Error
-		}
+	var savedPkg *model.Package
+	var savedVer *model.PackageVersion
+	var savedFile *model.PackageFile
 
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			if err := tx.Create(pkg).Error; err != nil {
-				return err
-			}
-		} else {
-			pkg.ID = existingPkg.ID
-			if pkg.RepositoryID > 0 && pkg.RepositoryID != existingPkg.RepositoryID {
-				if err := tx.Model(&existingPkg).Updates(map[string]interface{}{
-					"repository_id":   pkg.RepositoryID,
-					"repository_type": pkg.RepositoryType,
-				}).Error; err != nil {
-					return err
-				}
-			}
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		savedPkg, err = r.findOrCreatePackage(tx, pkg)
+		if err != nil {
+			return err
 		}
 
 		if ver != nil {
-			ver.PackageID = pkg.ID
-
-			var existingVer model.PackageVersion
-			verResult := tx.Where("package_id = ? AND version = ?", pkg.ID, ver.Version).First(&existingVer)
-			if verResult.Error != nil && !errors.Is(verResult.Error, gorm.ErrRecordNotFound) {
-				return verResult.Error
-			}
-
-			if errors.Is(verResult.Error, gorm.ErrRecordNotFound) {
-				if err := tx.Create(ver).Error; err != nil {
-					return err
-				}
-			} else {
-				ver.ID = existingVer.ID
+			savedVer, err = r.findOrCreateVersion(tx, ver, savedPkg.ID)
+			if err != nil {
+				return err
 			}
 
 			if file != nil {
-				file.VersionID = ver.ID
-
-				var existingFile model.PackageFile
-				fileResult := tx.Where("version_id = ? AND filename = ?", ver.ID, file.Filename).First(&existingFile)
-				if fileResult.Error != nil && !errors.Is(fileResult.Error, gorm.ErrRecordNotFound) {
-					return fileResult.Error
+				savedFile, err = r.findOrCreateFile(tx, file, savedVer.ID)
+				if err != nil {
+					return err
 				}
 
-				if errors.Is(fileResult.Error, gorm.ErrRecordNotFound) {
-					if err := tx.Create(file).Error; err != nil {
-						return err
-					}
-				} else {
-					file.ID = existingFile.ID
-					if err := tx.Model(file).Updates(map[string]interface{}{
-						"storage_path":    file.StoragePath,
-						"size_bytes":      file.SizeBytes,
-						"checksum_sha256": file.ChecksumSHA256,
-						"checksum_md5":    file.ChecksumMD5,
-					}).Error; err != nil {
-						return err
-					}
+				totalSize, err := r.recalculateVersionSize(tx, savedVer.ID)
+				if err != nil {
+					return err
 				}
-
-				// 更新版本总大小：计算该版本所有文件的大小之和
-				var totalSize int64
-				tx.Model(&model.PackageFile{}).Where("version_id = ?", ver.ID).Select("SUM(size_bytes)").Scan(&totalSize)
-				tx.Model(&model.PackageVersion{}).Where("id = ?", ver.ID).Update("size_bytes", totalSize)
-				ver.SizeBytes = totalSize
+				savedVer.SizeBytes = totalSize
 			}
 		}
 
@@ -113,11 +78,10 @@ func (r *PackageRepository) StorePackageFile(ctx context.Context, pkg *model.Pac
 		return nil, nil, nil, err
 	}
 
-	return pkg, ver, file, nil
+	return savedPkg, savedVer, savedFile, nil
 }
 
 // CreateOrUpdate 兼容旧 API，内部调用 StorePackageFile
-// 注意：此方法假设文件已存储，会自动设置 FilesDownloaded = true
 func (r *PackageRepository) CreateOrUpdate(ctx context.Context, pkg *model.Package, ver *model.PackageVersion) (*model.Package, *model.PackageVersion, error) {
 	if pkg.Name == "" {
 		return nil, nil, fmt.Errorf("package name cannot be empty")
@@ -131,57 +95,40 @@ func (r *PackageRepository) CreateOrUpdate(ctx context.Context, pkg *model.Packa
 
 // CreateOrUpdateMetadata 创建或更新包版本的元数据（不涉及文件存储）
 func (r *PackageRepository) CreateOrUpdateMetadata(ctx context.Context, pkg *model.Package, ver *model.PackageVersion) (*model.Package, *model.PackageVersion, error) {
-	if pkg.DisplayName == "" {
-		pkg.DisplayName = util.GenerateDisplayName(pkg.Name, string(pkg.Type))
+	if err := validatePackageForStore(pkg); err != nil {
+		return nil, nil, err
+	}
+	if err := validateVersionForStore(ver); err != nil {
+		return nil, nil, fmt.Errorf("version validation failed: %w", err)
 	}
 
+	preparePackage(pkg)
+
+	var savedPkg *model.Package
+	var savedVer *model.PackageVersion
+
 	err := r.db.Transaction(func(tx *gorm.DB) error {
-		var existingPkg model.Package
-		result := tx.Where("name = ? AND type = ?", pkg.Name, pkg.Type).First(&existingPkg)
-		if result.Error != nil {
-			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-				if err := tx.Create(pkg).Error; err != nil {
-					return err
-				}
-				existingPkg = *pkg
-			} else {
-				return result.Error
-			}
-		}
-		pkg.ID = existingPkg.ID
-
-		var existingVer model.PackageVersion
-		verResult := tx.Where("package_id = ? AND version = ?", existingPkg.ID, ver.Version).First(&existingVer)
-		if verResult.Error != nil {
-			if errors.Is(verResult.Error, gorm.ErrRecordNotFound) {
-				ver.PackageID = existingPkg.ID
-				if err := tx.Create(ver).Error; err != nil {
-					return err
-				}
-			} else {
-				return verResult.Error
-			}
-		} else {
-			ver.ID = existingVer.ID
-			ver.PackageID = existingPkg.ID
-			if err := tx.Model(&existingVer).Updates(ver).Error; err != nil {
-				return err
-			}
+		var err error
+		savedPkg, err = r.findOrCreatePackage(tx, pkg)
+		if err != nil {
+			return err
 		}
 
-		return nil
+		savedVer, err = r.findOrCreateVersionForMetadata(tx, ver, savedPkg.ID)
+		return err
 	})
 
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return pkg, ver, nil
+	return savedPkg, savedVer, nil
 }
 
 func (r *PackageRepository) FindByNameAndType(name string, pkgType model.PackageType) (*model.Package, error) {
 	var pkg model.Package
-	result := r.db.Where("name = ? AND type = ?", name, pkgType).First(&pkg)
+	result := r.db.Preload("Versions").Preload("Versions.Files").
+		Where("name = ? AND type = ?", name, pkgType).First(&pkg)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, util.ErrPackageNotFound
@@ -189,33 +136,6 @@ func (r *PackageRepository) FindByNameAndType(name string, pkgType model.Package
 		return nil, result.Error
 	}
 
-	var versions []model.PackageVersion
-	if err := r.db.Where("package_id = ?", pkg.ID).Find(&versions).Error; err != nil {
-		return nil, err
-	}
-
-	if len(versions) > 0 {
-		versionIDs := make([]uint, len(versions))
-		for i, v := range versions {
-			versionIDs[i] = v.ID
-		}
-
-		var files []model.PackageFile
-		if err := r.db.Where("version_id IN ?", versionIDs).Find(&files).Error; err != nil {
-			return nil, err
-		}
-
-		fileMap := make(map[uint][]model.PackageFile)
-		for _, f := range files {
-			fileMap[f.VersionID] = append(fileMap[f.VersionID], f)
-		}
-
-		for i := range versions {
-			versions[i].Files = fileMap[versions[i].ID]
-		}
-	}
-
-	pkg.Versions = versions
 	return &pkg, nil
 }
 
@@ -404,4 +324,156 @@ func (r *PackageRepository) FindFilesByFilename(filename string) ([]model.Packag
 		return nil, err
 	}
 	return files, nil
+}
+
+// 验证方法
+
+func validatePackageForStore(pkg *model.Package) error {
+	if pkg == nil {
+		return fmt.Errorf("package cannot be nil")
+	}
+	if pkg.Name == "" {
+		return fmt.Errorf("package name cannot be empty")
+	}
+	if pkg.Type == "" {
+		return fmt.Errorf("package type cannot be empty for package %q", pkg.Name)
+	}
+	return nil
+}
+
+func validateVersionForStore(ver *model.PackageVersion) error {
+	if ver == nil {
+		return nil
+	}
+	if ver.Version == "" {
+		return fmt.Errorf("package version cannot be empty")
+	}
+	return nil
+}
+
+func validateFileForStore(file *model.PackageFile) error {
+	if file == nil {
+		return nil
+	}
+	if file.Filename == "" {
+		return fmt.Errorf("package filename cannot be empty")
+	}
+	return nil
+}
+
+// 准备方法
+
+func preparePackage(pkg *model.Package) {
+	if pkg.DisplayName == "" {
+		pkg.DisplayName = util.GenerateDisplayName(pkg.Name, string(pkg.Type))
+	}
+}
+
+// findOrCreate 模式
+
+func (r *PackageRepository) findOrCreatePackage(tx *gorm.DB, pkg *model.Package) (*model.Package, error) {
+	var existingPkg model.Package
+	result := tx.Where("name = ? AND type = ?", pkg.Name, pkg.Type).First(&existingPkg)
+	if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil, result.Error
+	}
+
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		if err := tx.Create(pkg).Error; err != nil {
+			return nil, err
+		}
+		return pkg, nil
+	}
+
+	pkg.ID = existingPkg.ID
+	if pkg.RepositoryID > 0 && pkg.RepositoryID != existingPkg.RepositoryID {
+		if err := tx.Model(&existingPkg).Updates(map[string]interface{}{
+			"repository_id":   pkg.RepositoryID,
+			"repository_type": pkg.RepositoryType,
+		}).Error; err != nil {
+			return nil, err
+		}
+	}
+	return pkg, nil
+}
+
+func (r *PackageRepository) findOrCreateVersion(tx *gorm.DB, ver *model.PackageVersion, packageID uint) (*model.PackageVersion, error) {
+	ver.PackageID = packageID
+
+	var existingVer model.PackageVersion
+	result := tx.Where("package_id = ? AND version = ?", packageID, ver.Version).First(&existingVer)
+	if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil, result.Error
+	}
+
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		if err := tx.Create(ver).Error; err != nil {
+			return nil, err
+		}
+		return ver, nil
+	}
+
+	ver.ID = existingVer.ID
+	return ver, nil
+}
+
+func (r *PackageRepository) findOrCreateVersionForMetadata(tx *gorm.DB, ver *model.PackageVersion, packageID uint) (*model.PackageVersion, error) {
+	var existingVer model.PackageVersion
+	result := tx.Where("package_id = ? AND version = ?", packageID, ver.Version).First(&existingVer)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			ver.PackageID = packageID
+			if err := tx.Create(ver).Error; err != nil {
+				return nil, err
+			}
+			return ver, nil
+		}
+		return nil, result.Error
+	}
+
+	ver.ID = existingVer.ID
+	ver.PackageID = packageID
+	if err := tx.Model(&existingVer).Updates(ver).Error; err != nil {
+		return nil, err
+	}
+	return ver, nil
+}
+
+func (r *PackageRepository) findOrCreateFile(tx *gorm.DB, file *model.PackageFile, versionID uint) (*model.PackageFile, error) {
+	file.VersionID = versionID
+
+	var existingFile model.PackageFile
+	result := tx.Where("version_id = ? AND filename = ?", versionID, file.Filename).First(&existingFile)
+	if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil, result.Error
+	}
+
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		if err := tx.Create(file).Error; err != nil {
+			return nil, err
+		}
+		return file, nil
+	}
+
+	file.ID = existingFile.ID
+	if err := tx.Model(file).Updates(map[string]interface{}{
+		"storage_path":    file.StoragePath,
+		"size_bytes":      file.SizeBytes,
+		"checksum_sha256": file.ChecksumSHA256,
+		"checksum_md5":    file.ChecksumMD5,
+	}).Error; err != nil {
+		return nil, err
+	}
+	return file, nil
+}
+
+func (r *PackageRepository) recalculateVersionSize(tx *gorm.DB, versionID uint) (int64, error) {
+	var totalSize int64
+	if err := tx.Model(&model.PackageFile{}).Where("version_id = ?", versionID).Select("SUM(size_bytes)").Scan(&totalSize).Error; err != nil {
+		return 0, err
+	}
+	if err := tx.Model(&model.PackageVersion{}).Where("id = ?", versionID).Update("size_bytes", totalSize).Error; err != nil {
+		return 0, err
+	}
+	return totalSize, nil
 }

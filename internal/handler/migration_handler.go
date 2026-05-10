@@ -1,23 +1,28 @@
 package handler
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/migration"
+	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/response"
 )
 
 type MigrationHandler struct {
-	service *migration.MigrationService
-	worker  migration.MigrationWorkerInterface
+	service          *migration.MigrationService
+	worker           migration.MigrationWorkerInterface
+	repoRepo         *repository.RepositoryRepository
+	storageBackendRepo *repository.StorageBackendRepository
 }
 
-func NewMigrationHandler(service *migration.MigrationService, worker migration.MigrationWorkerInterface) *MigrationHandler {
+func NewMigrationHandler(service *migration.MigrationService, worker migration.MigrationWorkerInterface, repoRepo *repository.RepositoryRepository, storageBackendRepo *repository.StorageBackendRepository) *MigrationHandler {
 	return &MigrationHandler{
-		service: service,
-		worker:  worker,
+		service:            service,
+		worker:             worker,
+		repoRepo:           repoRepo,
+		storageBackendRepo: storageBackendRepo,
 	}
 }
 
@@ -76,6 +81,7 @@ type CreateMigrationRequest struct {
 	WorkerCount        int      `json:"worker_count"`
 	MaxRetries         int      `json:"max_retries"`
 	BatchSize          int      `json:"batch_size"`
+	SyncRepos          bool     `json:"sync_repos"`
 }
 
 func (h *MigrationHandler) CreateMigration(c *gin.Context) {
@@ -91,16 +97,154 @@ func (h *MigrationHandler) CreateMigration(c *gin.Context) {
 		return
 	}
 
-	go func(taskID uint) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		
-		if err := h.worker.Execute(ctx, task); err != nil {
-			h.service.AddLog(taskID, "迁移执行出错: "+err.Error())
+	// 同步 Nexus 仓库配置
+	if req.SyncRepos && h.repoRepo != nil {
+		client := migration.NewNexusClient(req.URL, req.Username, req.Password)
+		synced, err := h.syncNexusRepos(c, client, req.SelectedRepos)
+		if err != nil {
+			h.service.AddLog(task.ID, "同步仓库配置失败: "+err.Error())
+		} else {
+			h.service.AddLog(task.ID, fmt.Sprintf("成功同步 %d 个仓库配置", synced))
 		}
-	}(task.ID)
+	}
+
+	// 移除立即执行的 goroutine
+	// 任务已经在 CreateTask 中自动入队
+	
+	response.Success(c, task)
+}
+
+func (h *MigrationHandler) SyncNexusRepos(c *gin.Context) {
+	var req struct {
+		URL      string   `json:"url" binding:"required"`
+		Username string   `json:"username"`
+		Password string   `json:"password"`
+		Repos    []string `json:"repos"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "请求参数错误", err.Error())
+		return
+	}
+
+	if h.repoRepo == nil {
+		response.InternalError(c, "仓库服务不可用")
+		return
+	}
+
+	client := migration.NewNexusClient(req.URL, req.Username, req.Password)
+	synced, err := h.syncNexusRepos(c, client, req.Repos)
+	if err != nil {
+		response.InternalError(c, "同步仓库配置失败: "+err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{"synced": synced, "message": fmt.Sprintf("成功同步 %d 个仓库配置", synced)})
+}
+
+type SyncConfigOnlyRequest struct {
+	URL           string   `json:"url" binding:"required"`
+	Username      string   `json:"username"`
+	Password      string   `json:"password"`
+	SelectedRepos []string `json:"selected_repos"`
+}
+
+func (h *MigrationHandler) SyncConfigOnly(c *gin.Context) {
+	var req SyncConfigOnlyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "请求参数错误", err.Error())
+		return
+	}
+
+	task, err := h.service.CreateSyncConfigTask(req.URL, req.Username, req.Password, req.SelectedRepos)
+	if err != nil {
+		response.InternalError(c, "创建同步配置任务失败: "+err.Error())
+		return
+	}
 
 	response.Success(c, task)
+}
+
+func (h *MigrationHandler) syncNexusRepos(c *gin.Context, client *migration.NexusClient, repoNames []string) (int, error) {
+	nexusRepos, err := client.ListRepositories(c.Request.Context())
+	if err != nil {
+		return 0, err
+	}
+
+	// 查找默认存储后端
+	var defaultBackendID *uint
+	if h.storageBackendRepo != nil {
+		if defaultBackend, err := h.storageBackendRepo.FindDefault(); err == nil {
+			defaultBackendID = &defaultBackend.ID
+		}
+	}
+
+	synced := 0
+	for _, nr := range nexusRepos {
+		if len(repoNames) > 0 {
+			found := false
+			for _, name := range repoNames {
+				if nr.Name == name {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+
+		if nr.Format == "" || nr.Type == "" {
+			continue
+		}
+
+		repoType := h.mapRepoType(nr.Type)
+		if !h.repoExists(nr.Name) {
+			repo := &model.Repository{
+				Name:             nr.Name,
+				Type:             model.RepositoryType(repoType),
+				PackageType:      nr.Format,
+				Enabled:          true,
+				StorageBackendID: defaultBackendID,
+			}
+
+			// 代理仓库需要设置远程地址
+			if nr.Type == "proxy" && nr.URL != "" {
+				repo.RemoteURL = nr.URL
+				repo.CacheEnabled = true
+				repo.CacheTTLSeconds = 86400
+			}
+
+			// 虚拟仓不需要存储后端
+			if nr.Type == "group" {
+				repo.CacheEnabled = false
+				repo.StorageBackendID = nil
+			}
+
+			if err := h.repoRepo.Create(repo); err != nil {
+				continue
+			}
+			synced++
+		}
+	}
+	return synced, nil
+}
+
+func (h *MigrationHandler) mapRepoType(nexusType string) string {
+	switch nexusType {
+	case "proxy":
+		return "proxy"
+	case "hosted":
+		return "local"
+	case "group":
+		return "virtual"
+	default:
+		return "local"
+	}
+}
+
+func (h *MigrationHandler) repoExists(name string) bool {
+	_, err := h.repoRepo.FindByName(name)
+	return err == nil
 }
 
 func (h *MigrationHandler) GetMigrationStatus(c *gin.Context) {
@@ -169,16 +313,14 @@ func (h *MigrationHandler) RetryFailedMigration(c *gin.Context) {
 		return
 	}
 
-	go func(taskID uint) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+	if task.Status == model.MigrationRunning {
+		response.BadRequest(c, "任务正在运行中，无法重试", "")
+		return
+	}
 
-		if err := h.worker.RetryFailed(ctx, task); err != nil {
-			h.service.AddLog(taskID, "重试失败项目执行出错: "+err.Error())
-		}
-	}(task.ID)
+	h.service.RetryFailedTask(task)
 
-	response.Success(c, gin.H{"message": "已开始重试失败项目"})
+	response.Success(c, gin.H{"message": "重试任务已加入队列"})
 }
 
 func (h *MigrationHandler) ListMigrations(c *gin.Context) {
@@ -189,6 +331,47 @@ func (h *MigrationHandler) ListMigrations(c *gin.Context) {
 	}
 
 	response.Success(c, tasks)
+}
+
+func (h *MigrationHandler) ListMigrationItems(c *gin.Context) {
+	id := c.Param("id")
+
+	taskID, err := parseUint(id)
+	if err != nil {
+		response.BadRequest(c, "无效的任务 ID", "")
+		return
+	}
+
+	page := 1
+	pageSize := 50
+	
+	if p := c.Query("page"); p != "" {
+		fmt.Sscanf(p, "%d", &page)
+	}
+	if ps := c.Query("page_size"); ps != "" {
+		fmt.Sscanf(ps, "%d", &pageSize)
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	items, total, err := h.service.ListItems(taskID, page, pageSize)
+	if err != nil {
+		response.InternalError(c, "获取迁移项列表失败: "+err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{
+		"list": items,
+		"total": total,
+		"page": page,
+		"page_size": pageSize,
+	})
+}
+
+func (h *MigrationHandler) GetQueueStatus(c *gin.Context) {
+	status := h.service.GetQueueStatus()
+	response.Success(c, status)
 }
 
 func parseUint(s string) (uint, error) {

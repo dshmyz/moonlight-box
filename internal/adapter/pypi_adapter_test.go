@@ -10,14 +10,15 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
 	"github.com/stretchr/testify/assert"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 func setupPyPIAdapter(t *testing.T) (*PyPIAdapter, *gorm.DB) {
 	gin.SetMode(gin.TestMode)
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("failed to connect database: %v", err)
 	}
@@ -56,11 +57,9 @@ func setupPyPIAdapter(t *testing.T) (*PyPIAdapter, *gorm.DB) {
 	storageSvc.RefreshBackends()
 
 	auditSvc := service.NewAuditService()
-	logRepo := repository.NewProxyDownloadLogRepository(db)
 	repoRepo := repository.NewRepositoryRepository(db)
-	proxyDownloadSvc := service.NewProxyDownloadService(pkgRepo, storageSvc, nil, logRepo, nil)
 
-	adapter := NewPyPIAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, nil, logRepo, proxyDownloadSvc)
+	adapter := NewPyPIAdapter(pkgRepo, repoRepo, storageSvc, auditSvc)
 	return adapter, db
 }
 

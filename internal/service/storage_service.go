@@ -12,6 +12,7 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/storage"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 )
 
 type StorageService struct {
@@ -21,6 +22,7 @@ type StorageService struct {
 	mutex              sync.RWMutex
 	localBasePath      string
 	localMaxSizeGB     int64
+	backendLoader      singleflight.Group
 }
 
 func NewStorageService(storageBackendRepo *repository.StorageBackendRepository, localBasePath string, localMaxSizeGB int64) (*StorageService, error) {
@@ -84,8 +86,8 @@ func (s *StorageService) initStorageBackends() error {
 		storageBackend, err := CreateStorageBackend(&backend)
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
-				"module":      "storage",
-				"backend_id":  backend.ID,
+				"module":       "storage",
+				"backend_id":   backend.ID,
 				"backend_name": backend.Name,
 				"backend_type": backend.Type,
 			}).Warn("Failed to initialize storage backend, skipping")
@@ -107,8 +109,20 @@ func (s *StorageService) GetBackend(backendID uint) (storage.Backend, error) {
 	backend, exists := s.backendMap[backendID]
 	s.mutex.RUnlock()
 
-	if !exists {
-		// 如果后端不存在，尝试从数据库加载
+	if exists {
+		return backend, nil
+	}
+
+	key := fmt.Sprintf("backend:%d", backendID)
+	result, err, _ := s.backendLoader.Do(key, func() (interface{}, error) {
+		s.mutex.RLock()
+		backend, exists := s.backendMap[backendID]
+		s.mutex.RUnlock()
+
+		if exists {
+			return backend, nil
+		}
+
 		modelBackend, err := s.storageBackendRepo.FindByID(backendID)
 		if err != nil {
 			return nil, fmt.Errorf("storage backend not found: %d", backendID)
@@ -119,15 +133,18 @@ func (s *StorageService) GetBackend(backendID uint) (storage.Backend, error) {
 			return nil, fmt.Errorf("failed to create storage backend: %w", err)
 		}
 
-		// 添加到缓存
 		s.mutex.Lock()
 		s.backendMap[backendID] = storageBackend
 		s.mutex.Unlock()
 
 		return storageBackend, nil
+	})
+
+	if err != nil {
+		return nil, err
 	}
 
-	return backend, nil
+	return result.(storage.Backend), nil
 }
 
 func (s *StorageService) GetDefaultBackend() storage.Backend {
@@ -158,6 +175,28 @@ func (s *StorageService) StorePackageWithBackend(ctx context.Context, pkgType, n
 	}
 
 	return key, nil
+}
+
+// NormalizeVersion 根据不同包类型规范化版本号
+// 返回规范化后的版本字符串，调用方可直接用其构建存储键
+func (s *StorageService) NormalizeVersion(pkgType, version, filename string) string {
+	version = strings.TrimPrefix(version, "/")
+
+	switch pkgType {
+	case "maven", "maven2":
+		// Maven: 版本路径包含文件名，每个文件独立路径
+		if filename != "" {
+			return version + "/" + filename
+		}
+
+	case "go":
+		// Go: 符合 Go module proxy 规范
+		if filename != "" {
+			return "@v/" + filename
+		}
+	}
+
+	return version
 }
 
 func (s *StorageService) GetPackage(ctx context.Context, pkgType, name, version string) (io.ReadCloser, int64, error) {
@@ -245,7 +284,7 @@ func (s *StorageService) GetContentType(filename string) string {
 
 func (s *StorageService) buildKey(pkgType, name, version string) string {
 	name = strings.TrimPrefix(name, "/")
-	version = strings.TrimPrefix(version, "/")
+	version = s.normalizeVersion(pkgType, version)
 
 	switch pkgType {
 	case "npm":
@@ -276,6 +315,28 @@ func (s *StorageService) buildKey(pkgType, name, version string) string {
 	default:
 		return filepath.Join(pkgType, name, version)
 	}
+}
+
+// normalizeVersion 根据不同包类型规范化版本号
+// 这是存储层的核心逻辑，确保同一包在不同场景下使用一致的存储路径
+func (s *StorageService) normalizeVersion(pkgType, version string) string {
+	version = strings.TrimPrefix(version, "/")
+
+	// Maven: 版本格式 "version/filename"
+	// 例如: "32.1.3-jre/guava-32.1.3-jre.jar"
+	// 这样每个文件有独立的存储路径
+	if (pkgType == "maven" || pkgType == "maven2") && strings.Contains(version, "/") {
+		return version
+	}
+
+	// Go: 版本格式 "@v/filename"
+	// 例如: "@v/v1.8.4.zip"
+	// 符合 Go module proxy 规范
+	if pkgType == "go" && !strings.HasPrefix(version, "@v/") {
+		return "@v/" + version
+	}
+
+	return version
 }
 
 // RefreshBackends 从数据库刷新存储后端配置

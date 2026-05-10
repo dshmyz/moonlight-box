@@ -22,7 +22,8 @@ import (
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
 	"github.com/stretchr/testify/assert"
-	"gorm.io/driver/sqlite"
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
 	"gorm.io/gorm"
 )
 
@@ -33,13 +34,14 @@ var (
 	pypiRepoSvc    *service.RepositoryService
 	pypiPkgRepo    *repository.PackageRepository
 	pypiStorageSvc *service.StorageService
+	pypiRepoHandler *proxy.RepoHandler
 )
 
 func setupPyPITestEnv() {
 	gin.SetMode(gin.TestMode)
 
 	var err error
-	pypiTestDB, err = gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	pypiTestDB, err = gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		panic(err)
 	}
@@ -73,17 +75,25 @@ func setupPyPITestEnv() {
 	repoRepo := repository.NewRepositoryRepository(pypiTestDB)
 	groupRepo := repository.NewGroupRepository(pypiTestDB)
 
-	auditSvc := service.NewAuditService()
 	pypiRepoSvc = service.NewRepositoryService(repoRepo, groupRepo, pypiTestDB)
 
 	cacheSvc := proxy.NewCacheService()
 	dnsResolver := proxy.NewDNSResolver(nil)
 	tm := proxy.NewTransportManager(30*time.Second, dnsResolver)
 	remoteClient := proxy.NewRemoteClient(tm, 5)
-	proxyRouter := proxy.NewProxyRouter(pypiTestDB, cacheSvc, remoteClient, repoRepo, groupRepo, nil)
+	proxyDownloader := proxy.NewProxyDownloader(cacheSvc, remoteClient, nil)
+
+	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
+	pypiRepoHandler = proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
+
+	auditSvc := service.NewAuditService()
+	pypiAdapter = adapter.NewPyPIAdapter(pypiPkgRepo, repoRepo, pypiStorageSvc, auditSvc)
+	pypiRepoHandler.RegisterAdapter("pypi", pypiAdapter)
 
 	logRepo := repository.NewProxyDownloadLogRepository(pypiTestDB)
-	pypiAdapter = adapter.NewPyPIAdapter(pypiPkgRepo, repoRepo, pypiStorageSvc, auditSvc, proxyRouter, logRepo, nil)
+	countBatcher := service.NewDownloadCountBatcher(pypiTestDB, 5*time.Second)
+	proxyDownloadSvc := service.NewProxyDownloadService(pypiPkgRepo, pypiStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	pypiRepoHandler.SetDownloadService(proxyDownloadSvc)
 
 	router := setupPyPIRouter()
 	pypiTestServer = httptest.NewServer(router)
@@ -110,8 +120,8 @@ func setupPyPIRouter() *gin.Engine {
 		}
 	}
 
-	repoRouter := handler.NewRepoRouter(pypiRepoSvc, nil)
-	repoRouter.RegisterAdapter("pypi", pypiAdapter)
+	repoRouter := handler.NewRepoRouter(pypiRepoSvc)
+	repoRouter.SetResolver(pypiRepoHandler)
 
 	repoGroup := router.Group("/repo/:repoName")
 	{
@@ -120,7 +130,7 @@ func setupPyPIRouter() *gin.Engine {
 		repoGroup.DELETE("/*path", authMw, permMw("pypi", "delete"), repoRouter.HandleDelete)
 	}
 
-	repoHandler := handler.NewRepositoryHandler(pypiRepoSvc, nil, nil)
+	repoHandler := handler.NewRepositoryHandler(pypiRepoSvc)
 	repoAPI := router.Group("/api/repositories")
 	{
 		repoAPI.GET("", repoHandler.List)

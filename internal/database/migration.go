@@ -36,7 +36,6 @@ func AutoMigrate() error {
 		&model.MigrationTask{},
 		&model.MigrationItem{},
 		&model.ProxyDownloadLog{},
-		&model.MetadataSyncTask{},
 	)
 }
 
@@ -583,6 +582,16 @@ func seedDefaultRepositories() error {
 			AllowDelete: true,
 		},
 		{
+			Name:           "maven-snapshots",
+			DisplayName:    "Maven SNAPSHOT 仓库",
+			Description:    "存储内部发布的 Maven SNAPSHOT 版本",
+			Type:           model.RepoTypeLocal,
+			PackageType:    string(model.PackageTypeMaven),
+			Enabled:        true,
+			AllowDelete:    true,
+			AllowOverwrite: true,
+		},
+		{
 			Name:              "maven-proxy-aliyun",
 			DisplayName:       "Maven 阿里云代理",
 			Description:       "阿里云 Maven 镜像代理",
@@ -626,8 +635,120 @@ func seedDefaultRepositories() error {
 		},
 	}
 
+	// pypi 仓库
+	pypiRepos := []model.Repository{
+		{
+			Name:        "pypi-local",
+			DisplayName: "PyPI 本地仓库",
+			Description: "存储内部发布的 Python 包",
+			Type:        model.RepoTypeLocal,
+			PackageType: string(model.PackageTypePyPI),
+			Enabled:     true,
+			AllowDelete: true,
+		},
+		{
+			Name:              "pypi-proxy-tuna",
+			DisplayName:       "PyPI 清华源代理",
+			Description:       "PyPI 清华镜像源代理",
+			Type:              model.RepoTypeProxy,
+			PackageType:       string(model.PackageTypePyPI),
+			Enabled:           true,
+			RemoteURL:         "https://mirrors.aliyun.com/pypi/simple",
+			AuthType:          "none",
+			ProxyPriority:     1,
+			CacheEnabled:      true,
+			CacheTTLSeconds:   86400,
+			TimeoutSeconds:    30,
+			MaxRedirects:      5,
+			FailureCacheRules: `[{"status_code": 404, "ttl_seconds": 300}, {"status_code_range": [500, 599], "ttl_seconds": 60}]`,
+		},
+		{
+			Name:              "pypi-proxy-official",
+			DisplayName:       "PyPI 官方代理",
+			Description:       "PyPI 官方仓库代理",
+			Type:              model.RepoTypeProxy,
+			PackageType:       string(model.PackageTypePyPI),
+			Enabled:           true,
+			RemoteURL:         "https://pypi.org/simple",
+			AuthType:          "none",
+			ProxyPriority:     2,
+			CacheEnabled:      true,
+			CacheTTLSeconds:   86400,
+			TimeoutSeconds:    30,
+			MaxRedirects:      5,
+			FailureCacheRules: `[{"status_code": 404, "ttl_seconds": 300}, {"status_code_range": [500, 599], "ttl_seconds": 60}]`,
+		},
+		{
+			Name:           "pypi-virtual",
+			DisplayName:    "PyPI 虚拟仓库",
+			Description:    "聚合本地仓和代理仓的虚拟仓库",
+			Type:           model.RepoTypeVirtual,
+			PackageType:    string(model.PackageTypePyPI),
+			Enabled:        true,
+			AllowOverwrite: false,
+			AllowDelete:    false,
+		},
+	}
+
+	// go 仓库
+	goRepos := []model.Repository{
+		{
+			Name:        "go-local",
+			DisplayName: "Go 本地仓库",
+			Description: "存储内部发布的 Go 模块",
+			Type:        model.RepoTypeLocal,
+			PackageType: string(model.PackageTypeGo),
+			Enabled:     true,
+			AllowDelete: true,
+		},
+		{
+			Name:              "go-proxy-goproxy-cn",
+			DisplayName:       "Go goproxy.cn 代理",
+			Description:       "goproxy.cn Go 模块代理",
+			Type:              model.RepoTypeProxy,
+			PackageType:       string(model.PackageTypeGo),
+			Enabled:           true,
+			RemoteURL:         "https://goproxy.cn",
+			AuthType:          "none",
+			ProxyPriority:     1,
+			CacheEnabled:      true,
+			CacheTTLSeconds:   86400,
+			TimeoutSeconds:    30,
+			MaxRedirects:      5,
+			FailureCacheRules: `[{"status_code": 404, "ttl_seconds": 300}, {"status_code_range": [500, 599], "ttl_seconds": 60}]`,
+		},
+		{
+			Name:              "go-proxy-official",
+			DisplayName:       "Go 官方代理",
+			Description:       "Go 官方模块代理 proxy.golang.org",
+			Type:              model.RepoTypeProxy,
+			PackageType:       string(model.PackageTypeGo),
+			Enabled:           true,
+			RemoteURL:         "https://proxy.golang.org",
+			AuthType:          "none",
+			ProxyPriority:     2,
+			CacheEnabled:      true,
+			CacheTTLSeconds:   86400,
+			TimeoutSeconds:    30,
+			MaxRedirects:      5,
+			FailureCacheRules: `[{"status_code": 404, "ttl_seconds": 300}, {"status_code_range": [500, 599], "ttl_seconds": 60}]`,
+		},
+		{
+			Name:           "go-virtual",
+			DisplayName:    "Go 虚拟仓库",
+			Description:    "聚合本地仓和代理仓的虚拟仓库",
+			Type:           model.RepoTypeVirtual,
+			PackageType:    string(model.PackageTypeGo),
+			Enabled:        true,
+			AllowOverwrite: false,
+			AllowDelete:    false,
+		},
+	}
+
 	// 合并所有仓库
 	allRepos := append(npmRepos, mavenRepos...)
+	allRepos = append(allRepos, pypiRepos...)
+	allRepos = append(allRepos, goRepos...)
 
 	// 创建所有仓库并记录ID映射
 	repoIDMap := make(map[string]uint)

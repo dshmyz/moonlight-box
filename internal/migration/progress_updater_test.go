@@ -6,13 +6,15 @@ import (
 	"time"
 
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/stretchr/testify/assert"
-	"gorm.io/driver/sqlite"
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
 	"gorm.io/gorm"
 )
 
 func setupProgressTestDB(t *testing.T) *gorm.DB {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	err = db.AutoMigrate(&model.MigrationTask{})
 	assert.NoError(t, err)
@@ -24,7 +26,8 @@ func TestProgressUpdater_Increment(t *testing.T) {
 	task := &model.MigrationTask{Status: model.MigrationRunning}
 	db.Create(task)
 
-	updater := NewProgressUpdater(task.ID, db, 100*time.Millisecond)
+	itemRepo := repository.NewMigrationItemRepository(db)
+	updater := NewProgressUpdater(task.ID, db, itemRepo, 100*time.Millisecond)
 	defer updater.Stop()
 
 	updater.IncrementProcessed()
@@ -47,7 +50,8 @@ func TestProgressUpdater_Start(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	updater := NewProgressUpdater(task.ID, db, 50*time.Millisecond)
+	itemRepo := repository.NewMigrationItemRepository(db)
+	updater := NewProgressUpdater(task.ID, db, itemRepo, 50*time.Millisecond)
 	go updater.Start(ctx)
 
 	updater.IncrementProcessed()
@@ -63,7 +67,8 @@ func TestProgressUpdater_Stop(t *testing.T) {
 	task := &model.MigrationTask{Status: model.MigrationRunning}
 	db.Create(task)
 
-	updater := NewProgressUpdater(task.ID, db, 1*time.Second)
+	itemRepo := repository.NewMigrationItemRepository(db)
+	updater := NewProgressUpdater(task.ID, db, itemRepo, 1*time.Second)
 
 	updater.IncrementProcessed()
 	updater.IncrementFailed()

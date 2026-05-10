@@ -24,7 +24,10 @@ func (r *RepositoryRepository) Create(repo *model.Repository) error {
 // FindByName 根据名称查找仓库
 func (r *RepositoryRepository) FindByName(name string) (*model.Repository, error) {
 	var repo model.Repository
-	err := r.db.Where("name = ?", name).First(&repo).Error
+	err := r.db.Where("name = ?", name).
+		Preload("Members").
+		Preload("Members.MemberRepo").
+		First(&repo).Error
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +37,9 @@ func (r *RepositoryRepository) FindByName(name string) (*model.Repository, error
 // FindByID 根据ID查找仓库
 func (r *RepositoryRepository) FindByID(id uint) (*model.Repository, error) {
 	var repo model.Repository
-	err := r.db.First(&repo, id).Error
+	err := r.db.Preload("Members").
+		Preload("Members.MemberRepo").
+		First(&repo, id).Error
 	if err != nil {
 		return nil, err
 	}
@@ -91,13 +96,4 @@ func (r *RepositoryRepository) FindVirtualByPackageType(pkgType string) (*model.
 		return nil, fmt.Errorf("virtual repository not found for package type: %s", pkgType)
 	}
 	return &repo, nil
-}
-
-// FindMetadataSyncEnabled 查找所有启用元数据同步的代理仓库
-func (r *RepositoryRepository) FindMetadataSyncEnabled() ([]model.Repository, error) {
-	var repos []model.Repository
-	err := r.db.Where("type = ? AND enabled = ? AND metadata_sync_enabled = ?",
-		model.RepoTypeProxy, true, true).
-		Find(&repos).Error
-	return repos, err
 }

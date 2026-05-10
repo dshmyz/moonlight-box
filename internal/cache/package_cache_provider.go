@@ -71,5 +71,56 @@ func (p *PackageCacheProvider) Stats(ctx context.Context) *CacheStats {
 }
 
 func (p *PackageCacheProvider) ListItems(offset, limit int, search string) ([]CacheItem, int) {
-	return nil, 0
+	now := time.Now()
+	var allItems []CacheItem
+	
+	for _, shard := range p.cache.cache.shards {
+		shard.mu.RLock()
+		for key, item := range shard.items {
+			if search != "" && !containsIgnoreCase(key, search) {
+				continue
+			}
+			
+			isExpired := item.IsExpired()
+			var remainingTTL int64
+			var expiry time.Time
+			
+			if !item.ExpiresAt.IsZero() {
+				expiry = item.ExpiresAt
+				if !isExpired {
+					remainingTTL = int64(item.ExpiresAt.Sub(now).Seconds())
+				}
+			}
+			
+			allItems = append(allItems, CacheItem{
+				Key:         key,
+				Size:        0,
+				ContentType: "",
+				IsNegative:  false,
+				Expiry:      expiry,
+				RemainingTTL: remainingTTL,
+				IsExpired:   isExpired,
+			})
+		}
+		shard.mu.RUnlock()
+	}
+	
+	total := len(allItems)
+	
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset >= len(allItems) {
+		return []CacheItem{}, total
+	}
+	
+	end := offset + limit
+	if end > len(allItems) {
+		end = len(allItems)
+	}
+	
+	return allItems[offset:end], total
 }

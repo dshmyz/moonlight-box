@@ -11,14 +11,15 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
 	"github.com/stretchr/testify/assert"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 func setupMavenAdapter(t *testing.T) (*MavenAdapter, *gorm.DB) {
 	gin.SetMode(gin.TestMode)
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("failed to connect database: %v", err)
 	}
@@ -58,10 +59,8 @@ func setupMavenAdapter(t *testing.T) (*MavenAdapter, *gorm.DB) {
 	storageSvc.RefreshBackends()
 
 	auditSvc := service.NewAuditService()
-	logRepo := repository.NewProxyDownloadLogRepository(db)
-	proxyDownloadSvc := service.NewProxyDownloadService(pkgRepo, storageSvc, nil, logRepo, nil)
 
-	adapter := NewMavenAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, nil, logRepo, proxyDownloadSvc)
+	adapter := NewMavenAdapter(pkgRepo, repoRepo, storageSvc, auditSvc)
 	return adapter, db
 }
 
@@ -87,17 +86,22 @@ func TestMavenAdapter_ParsePackagePath(t *testing.T) {
 	}{
 		{
 			name:            "valid path with version",
-			path:            "com/test/lib/1.0.0",
-			expectedName:    "com/test/lib",
+			path:            "com/test/lib/1.0.0/lib-1.0.0.jar",
+			expectedName:    "com.test:lib",
 			expectedVersion: "1.0.0",
 			expectError:     false,
 		},
 		{
-			name:            "valid path with group and artifact only",
-			path:            "com/test/my-lib",
-			expectedName:    "com/test",
-			expectedVersion: "my-lib",
+			name:            "valid path with pom",
+			path:            "org/springframework/core/5.3.0/core-5.3.0.pom",
+			expectedName:    "org.springframework:core",
+			expectedVersion: "5.3.0",
 			expectError:     false,
+		},
+		{
+			name:        "invalid path too short",
+			path:        "com/test/my-lib",
+			expectError: true,
 		},
 		{
 			name:        "invalid path",
@@ -146,7 +150,7 @@ func TestMavenAdapter_Upload_ReleaseVersion(t *testing.T) {
 	assert.NotEmpty(t, result.StorageKey)
 
 	var pkg model.Package
-	err = db.Where("name = ?", "com/test/my-lib").First(&pkg).Error
+	err = db.Where("name = ? AND type = ?", "com.test:my-lib", "maven").First(&pkg).Error
 	assert.Nil(t, err)
 	assert.Equal(t, model.PackageTypeMaven, pkg.Type)
 
@@ -180,7 +184,7 @@ func TestMavenAdapter_Upload_SnapshotVersion(t *testing.T) {
 	assert.Equal(t, "1.0-SNAPSHOT", result.Version)
 
 	var pkg model.Package
-	err = db.Where("name = ?", "com/test/my-lib").First(&pkg).Error
+	err = db.Where("name = ? AND type = ?", "com.test:my-lib", "maven").First(&pkg).Error
 	assert.Nil(t, err)
 
 	var version model.PackageVersion
@@ -317,7 +321,7 @@ func TestMavenAdapter_HandleMetadataXML(t *testing.T) {
 	adapter, db := setupMavenAdapter(t)
 
 	pkg := &model.Package{
-		Name:        "com.test.metadata/metadata-lib",
+		Name:        "com.test.metadata:metadata-lib",
 		Type:        model.PackageTypeMaven,
 		Description: "Metadata test library",
 	}
@@ -393,24 +397,6 @@ func TestMavenAdapter_HandleChecksumRequest(t *testing.T) {
 			assert.Equal(t, tt.expected, w.Code)
 		})
 	}
-}
-
-func TestMavenAdapter_UploadArtifact(t *testing.T) {
-	adapter, _ := setupMavenAdapter(t)
-
-	jarContent := []byte("fake jar content for upload artifact test")
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("PUT", "/maven2/com/test/upload-lib/1.0.0/upload-lib-1.0.0.jar", bytes.NewReader(jarContent))
-	c.Request.ContentLength = int64(len(jarContent))
-	c.Params = gin.Params{
-		{Key: "path", Value: "/com/test/upload-lib/1.0.0/upload-lib-1.0.0.jar"},
-	}
-	c.Set("userID", uint(1))
-
-	adapter.UploadArtifact(c)
-
-	assert.Equal(t, 200, w.Code)
 }
 
 func TestIsRelease(t *testing.T) {

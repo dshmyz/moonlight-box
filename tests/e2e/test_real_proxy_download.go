@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/moonlight-box/registry/internal/config"
@@ -58,14 +57,13 @@ func main() {
 
 	pkgRepo := repository.NewPackageRepository(db)
 	repoRepo := repository.NewRepositoryRepository(db)
-	groupRepo := repository.NewGroupRepository(db)
 	logRepo := repository.NewProxyDownloadLogRepository(db)
 
 	cacheSvc := proxy.NewCacheService()
 	dnsResolver := proxy.NewDNSResolver(nil)
 	tm := proxy.NewTransportManager(30*time.Second, dnsResolver)
 	remoteClient := proxy.NewRemoteClient(tm, 5)
-	proxyRouter := proxy.NewProxyRouter(db, cacheSvc, remoteClient, repoRepo, groupRepo, nil)
+	proxyDownloader := proxy.NewProxyDownloader(cacheSvc, remoteClient, nil)
 
 	countBatcher := service.NewDownloadCountBatcher(db, 10*time.Second)
 	defer countBatcher.Stop()
@@ -76,7 +74,7 @@ func main() {
 	proxyDownloadSvc := service.NewProxyDownloadService(
 		pkgRepo,
 		storageSvc,
-		proxyRouter,
+		proxyDownloader,
 		logRepo,
 		logBatcher,
 		countBatcher,
@@ -116,21 +114,14 @@ func testNPMPackage(svc *service.ProxyDownloadService, repoRepo *repository.Repo
 		fmt.Printf("创建 NPM 代理仓库成功: %s (ID: %d)\n", repo.Name, repo.ID)
 	}
 
-	req := &service.ProxyDownloadRequest{
-		PkgType:        "npm",
-		Name:           "lodash",
-		Version:        "4.17.21",
-		Filename:       "lodash-4.17.21.tgz",
-		Repo:           repo,
-		PackageType:    model.PackageTypeNPM,
-		RepositoryType: model.RepoTypeProxy,
-		FileType:       model.FileTypePrimary,
-		ResolutionMode: service.ResolutionModeProxyOnly,
-		IPAddress:      "127.0.0.1",
-		UserAgent:      "test-script",
-		URLBuilder: func(repo *model.Repository, name, version string) string {
-			return fmt.Sprintf("%s/%s/-/%s-%s.tgz", repo.RemoteURL, name, name, version)
-		},
+	req := &proxy.DownloadRequest{
+		PkgType:   "npm",
+		Name:      "lodash",
+		Version:   "4.17.21",
+		Filename:  "lodash-4.17.21.tgz",
+		Repo:      repo,
+		IPAddress: "127.0.0.1",
+		UserAgent: "test-script",
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -144,7 +135,7 @@ func testNPMPackage(svc *service.ProxyDownloadService, repoRepo *repository.Repo
 
 	fmt.Printf("✓ 下载 lodash 成功!\n")
 	fmt.Printf("  - 大小: %d bytes\n", result.Size)
-	fmt.Printf("  - 存储路径: %s\n", result.StorageKey)
+	fmt.Printf("  - 存储路径: %s\n", result.Filename)
 	fmt.Printf("  - 来自缓存: %v\n", result.FromCache)
 }
 
@@ -170,25 +161,14 @@ func testPyPIPackage(svc *service.ProxyDownloadService, repoRepo *repository.Rep
 		fmt.Printf("创建 PyPI 代理仓库成功: %s (ID: %d)\n", repo.Name, repo.ID)
 	}
 
-	req := &service.ProxyDownloadRequest{
-		PkgType:        "pypi",
-		Name:           "requests",
-		Version:        "2.31.0",
-		Filename:       "requests-2.31.0-py3-none-any.whl",
-		Repo:           repo,
-		PackageType:    model.PackageTypePyPI,
-		RepositoryType: model.RepoTypeProxy,
-		FileType:       model.FileTypePrimary,
-		ResolutionMode: service.ResolutionModeProxyOnly,
-		IPAddress:      "127.0.0.1",
-		UserAgent:      "test-script",
-		URLBuilder: func(repo *model.Repository, name, _ string) string {
-			base := strings.TrimSuffix(repo.RemoteURL, "/")
-			if !strings.HasSuffix(base, "/simple") {
-				base = base + "/simple"
-			}
-			return fmt.Sprintf("%s/%s/", base, name)
-		},
+	req := &proxy.DownloadRequest{
+		PkgType:   "pypi",
+		Name:      "requests",
+		Version:   "2.31.0",
+		Filename:  "requests-2.31.0-py3-none-any.whl",
+		Repo:      repo,
+		IPAddress: "127.0.0.1",
+		UserAgent: "test-script",
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -202,7 +182,7 @@ func testPyPIPackage(svc *service.ProxyDownloadService, repoRepo *repository.Rep
 
 	fmt.Printf("✓ 下载 requests 成功!\n")
 	fmt.Printf("  - 大小: %d bytes\n", result.Size)
-	fmt.Printf("  - 存储路径: %s\n", result.StorageKey)
+	fmt.Printf("  - 存储路径: %s\n", result.Filename)
 	fmt.Printf("  - 来自缓存: %v\n", result.FromCache)
 }
 

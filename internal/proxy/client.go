@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -43,11 +44,11 @@ func NewTransportManager(connectTimeout time.Duration, dnsResolver *DNSResolver)
 			}
 			return dialer.DialContext(ctx, network, net.JoinHostPort(resolvedHost, resolvedPort))
 		},
-		MaxIdleConns:        200,
-		MaxIdleConnsPerHost: 50,
-		IdleConnTimeout:     90 * time.Second,
-		MaxConnsPerHost:     100,
-		TLSHandshakeTimeout: 10 * time.Second,
+		MaxIdleConns:          200,
+		MaxIdleConnsPerHost:   50,
+		IdleConnTimeout:       90 * time.Second,
+		MaxConnsPerHost:       100,
+		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
@@ -83,6 +84,8 @@ type RemoteClient struct {
 	defaultMaxRedirects int
 	defaultMaxRetries   int
 	defaultRetryDelay   time.Duration
+
+	clientCache sync.Map // 缓存 http.Client，key 为配置参数
 }
 
 func NewRemoteClient(tm *TransportManager, defaultMaxRedirects int) *RemoteClient {
@@ -103,15 +106,32 @@ func NewRemoteClientWithRetry(tm *TransportManager, defaultMaxRedirects, default
 	}
 }
 
+type clientCacheKey struct {
+	maxRedirects int
+	insecure     bool
+	timeout      time.Duration
+}
+
 func (c *RemoteClient) buildClient(opts RequestOptions) *http.Client {
 	maxRedirects := opts.MaxRedirects
 	if maxRedirects == 0 {
 		maxRedirects = c.defaultMaxRedirects
 	}
 
+	timeout := opts.ReadTimeout
+	key := clientCacheKey{
+		maxRedirects: maxRedirects,
+		insecure:     opts.InsecureSkipVerify,
+		timeout:      timeout,
+	}
+
+	if cached, ok := c.clientCache.Load(key); ok {
+		return cached.(*http.Client)
+	}
+
 	transport := c.transportManager.GetTransport(opts.InsecureSkipVerify)
 
-	return &http.Client{
+	client := &http.Client{
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if maxRedirects == -1 {
@@ -122,8 +142,11 @@ func (c *RemoteClient) buildClient(opts RequestOptions) *http.Client {
 			}
 			return nil
 		},
-		Timeout: opts.ReadTimeout,
+		Timeout: timeout,
 	}
+
+	c.clientCache.Store(key, client)
+	return client
 }
 
 func (c *RemoteClient) Get(ctx context.Context, url string, opts RequestOptions, auth *ProxyAuthConfig) (*http.Response, error) {
@@ -173,7 +196,7 @@ func (c *RemoteClient) GetBytes(ctx context.Context, url string, opts RequestOpt
 		resp, err := c.Get(ctx, url, opts, auth)
 		if err != nil {
 			lastErr = err
-			
+
 			if c.shouldRetry(err, i, maxRetries) {
 				delay := time.Duration(math.Pow(2, float64(i))) * retryDelay
 				select {
@@ -186,9 +209,9 @@ func (c *RemoteClient) GetBytes(ctx context.Context, url string, opts RequestOpt
 			return nil, "", err
 		}
 
-		defer resp.Body.Close()
 		contentType := resp.Header.Get("Content-Type")
 		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("读取响应体失败: %w", err)
 			if c.shouldRetry(lastErr, i, maxRetries) {

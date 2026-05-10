@@ -2,6 +2,7 @@ package migration
 
 import (
 	"context"
+	"sync"
 
 	"github.com/moonlight-box/registry/internal/model"
 )
@@ -10,6 +11,7 @@ type ComponentQueue struct {
 	queue  chan model.MigrationItem
 	ctx    context.Context
 	cancel context.CancelFunc
+	closed sync.Once
 }
 
 func NewComponentQueue(size int) *ComponentQueue {
@@ -49,8 +51,10 @@ func (q *ComponentQueue) Pop() (model.MigrationItem, bool) {
 }
 
 func (q *ComponentQueue) Close() {
-	q.cancel()
-	close(q.queue)
+	q.closed.Do(func() {
+		q.cancel()
+		close(q.queue)
+	})
 }
 
 func (q *ComponentQueue) Len() int {

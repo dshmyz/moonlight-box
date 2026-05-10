@@ -53,6 +53,12 @@ type HealthStatus struct {
 	StatusCode          int           `json:"status_code,omitempty"`
 }
 
+// ConfigReader 配置读取接口，避免循环依赖
+type ConfigReader interface {
+	GetConfigAsBool(key string, defaultValue bool) bool
+	GetConfigAsInt(key string, defaultValue int) int
+}
+
 // HealthCheckService 健康检查服务
 type HealthCheckService struct {
 	mu             sync.RWMutex
@@ -61,6 +67,7 @@ type HealthCheckService struct {
 	storageChecker StorageChecker
 	remoteClient   *RemoteClient
 	config         HealthCheckConfig
+	configReader   ConfigReader
 	breakers       map[uint]*CircuitBreaker // repoID -> CircuitBreaker
 	statuses       map[uint]*HealthStatus   // repoID -> HealthStatus
 	stopCh         chan struct{}
@@ -74,6 +81,7 @@ func NewHealthCheckService(
 	storageChecker StorageChecker,
 	remoteClient *RemoteClient,
 	config HealthCheckConfig,
+	configReader ConfigReader,
 ) *HealthCheckService {
 	return &HealthCheckService{
 		db:             db,
@@ -81,6 +89,7 @@ func NewHealthCheckService(
 		storageChecker: storageChecker,
 		remoteClient:   remoteClient,
 		config:         config,
+		configReader:   configReader,
 		breakers:       make(map[uint]*CircuitBreaker),
 		statuses:       make(map[uint]*HealthStatus),
 		stopCh:         make(chan struct{}),
@@ -177,19 +186,75 @@ func (h *HealthCheckService) ResetCircuitBreaker(repoID uint) {
 	}
 }
 
-// runHealthChecks 定期执行健康检查
+// runHealthChecks 定期执行健康检查，支持动态配置重载
 func (h *HealthCheckService) runHealthChecks() {
-	ticker := time.NewTicker(h.config.Interval)
+	currentInterval := h.config.Interval
+	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
+
+	configCheckCounter := 0
+	const configCheckInterval = 10 // 每10次检查重新读取配置
 
 	for {
 		select {
 		case <-ticker.C:
+			// 定期从系统配置读取最新值
+			configCheckCounter++
+			if configCheckCounter >= configCheckInterval && h.configReader != nil {
+				configCheckCounter = 0
+				newInterval := h.reloadConfig()
+				if newInterval > 0 && newInterval != currentInterval {
+					currentInterval = newInterval
+					ticker.Stop()
+					ticker = time.NewTicker(currentInterval)
+				}
+			}
 			h.checkAllRepos()
 		case <-h.stopCh:
 			return
 		}
 	}
+}
+
+// reloadConfig 从系统配置重新加载配置，返回新的间隔（如果有变化）
+func (h *HealthCheckService) reloadConfig() time.Duration {
+	if h.configReader == nil {
+		return 0
+	}
+
+	newInterval := time.Duration(h.configReader.GetConfigAsInt("health_check.interval", 0)) * time.Second
+	newTimeout := time.Duration(h.configReader.GetConfigAsInt("health_check.timeout", 0)) * time.Second
+	newThreshold := h.configReader.GetConfigAsInt("health_check.failure_threshold", 0)
+	newEnabled := h.configReader.GetConfigAsBool("health_check.enabled", true)
+
+	var oldInterval time.Duration
+
+	h.mu.Lock()
+
+	if newInterval > 0 && newInterval != h.config.Interval {
+		slog.Info("health check interval changed", "old", h.config.Interval, "new", newInterval)
+		oldInterval = h.config.Interval
+		h.config.Interval = newInterval
+	}
+
+	if newTimeout > 0 && newTimeout != h.config.Timeout {
+		slog.Info("health check timeout changed", "old", h.config.Timeout, "new", newTimeout)
+		h.config.Timeout = newTimeout
+	}
+
+	if newThreshold > 0 && newThreshold != h.config.FailureThreshold {
+		slog.Info("health check failure threshold changed", "old", h.config.FailureThreshold, "new", newThreshold)
+		h.config.FailureThreshold = newThreshold
+	}
+
+	if newEnabled != h.config.Enabled {
+		slog.Info("health check enabled changed", "old", h.config.Enabled, "new", newEnabled)
+		h.config.Enabled = newEnabled
+	}
+
+	h.mu.Unlock()
+
+	return oldInterval
 }
 
 // checkAllRepos 检查所有仓库的健康状态
@@ -267,6 +332,9 @@ func (h *HealthCheckService) checkRepoHealth(repo *model.Repository) {
 
 // checkProxyRepo 检查代理仓库的健康状态
 func (h *HealthCheckService) checkProxyRepo(ctx context.Context, repo *model.Repository) (int, error) {
+	if repo.RemoteURL == "" {
+		return 0, fmt.Errorf("proxy repository %s (ID: %d) has empty remote_url", repo.Name, repo.ID)
+	}
 	healthURL := repo.RemoteURL
 	return h.doHealthCheck(ctx, healthURL)
 }

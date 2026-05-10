@@ -33,12 +33,15 @@ func (h *PackageSearchHandler) Search(c *gin.Context) {
 	}
 
 	req := &service.SearchRequest{
-		Query:    query,
-		Type:     c.Query("type"),
-		Scope:    c.DefaultQuery("scope", "name"),
-		Sort:     c.DefaultQuery("sort", "downloads"),
-		Page:     page,
-		PageSize: pageSize,
+		Query:      query,
+		Type:       c.Query("type"),
+		Name:       c.Query("name"),
+		Version:    c.Query("version"),
+		Repository: c.Query("repository"),
+		Scope:      c.DefaultQuery("scope", "name"),
+		Sort:       c.DefaultQuery("sort", "downloads"),
+		Page:       page,
+		PageSize:   pageSize,
 	}
 
 	result, err := h.svc.Search(c.Request.Context(), req)

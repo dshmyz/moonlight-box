@@ -1,0 +1,32 @@
+# Yum 仓库配置文件模板
+# 将此文件复制到 /etc/yum.repos.d/moonlight.repo
+
+[moonlight-local]
+name=Moonlight Local Repository
+baseurl=http://your-registry:9081/repo/yum-local/
+enabled=1
+gpgcheck=0
+# gpgkey=http://your-registry:9081/yum/gpg.key
+
+[moonlight-proxy]
+name=Moonlight Proxy Repository
+baseurl=http://your-registry:9081/repo/yum-proxy/
+enabled=1
+gpgcheck=0
+
+[moonlight-virtual]
+name=Moonlight Virtual Repository
+baseurl=http://your-registry:9081/repo/yum-virtual/
+enabled=1
+gpgcheck=0
+
+# 可选：优先级设置
+# priority=1
+
+# 可选：带宽限制
+# throttle=50k
+
+# 可选：代理设置
+# proxy=http://proxy.company.com:8080
+# proxy_username=proxy_user
+# proxy_password=proxy_pass

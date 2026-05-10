@@ -6,10 +6,11 @@ import (
 	"time"
 
 	"github.com/moonlight-box/registry/internal/config"
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/driver/postgres"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -36,16 +37,18 @@ func Initialize(cfg *config.Config) error {
 		// - _journal_mode=WAL: 启用 Write-Ahead Logging 提高并发性能
 		// - _busy_timeout: 设置锁等待超时时间（毫秒）
 		// - _synchronous=NORMAL: 平衡性能和安全性
+		// - _cache_size: 页面缓存大小（KB），负数表示 KB，正数表示页数
+		// - _txlock=immediate: 事务开始时立即获取写锁，减少死锁
 		if !strings.Contains(dsn, "?") {
-			dsn += "?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL"
+			dsn += "?_journal_mode=WAL&_busy_timeout=10000&_synchronous=NORMAL&_cache_size=-64000&_txlock=immediate"
 		} else if !strings.Contains(dsn, "_journal_mode") {
-			dsn += "&_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL"
+			dsn += "&_journal_mode=WAL&_busy_timeout=10000&_synchronous=NORMAL&_cache_size=-64000&_txlock=immediate"
 		}
-		dialector = sqlite.Open(dsn)
+		dialector = gormlite.Open(dsn)
 	}
 
 	gormConfig := &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
+		Logger: buildGormLogger(cfg.Database.LogLevel),
 		NowFunc: func() time.Time {
 			return time.Now().UTC()
 		},
@@ -71,9 +74,30 @@ func Initialize(cfg *config.Config) error {
 	}
 
 	if cfg.Database.Driver == "sqlite" {
-		// SQLite 不支持多个并发写入，限制最大打开连接数为 1
-		sqlDB.SetMaxOpenConns(1)
-		sqlDB.SetMaxIdleConns(1)
+		// SQLite WAL 模式下支持并发读，写入仍然串行
+		// 使用配置文件中的连接池设置，如果未配置则使用默认值
+		maxOpenConns := cfg.Database.MaxOpenConns
+		if maxOpenConns == 0 {
+			maxOpenConns = 20 // 提升默认值以支持更高并发
+		}
+		maxIdleConns := cfg.Database.MaxIdleConns
+		if maxIdleConns == 0 {
+			maxIdleConns = 10 // 提升默认值以支持更高并发
+		}
+
+		sqlDB.SetMaxOpenConns(maxOpenConns)
+		sqlDB.SetMaxIdleConns(maxIdleConns)
+		sqlDB.SetConnMaxLifetime(time.Hour)
+		sqlDB.SetConnMaxIdleTime(30 * time.Minute)
+
+		// 运行时 PRAGMA 优化
+		sqlDB.Exec("PRAGMA journal_mode=WAL")
+		sqlDB.Exec("PRAGMA synchronous=NORMAL")
+		sqlDB.Exec("PRAGMA cache_size=-64000")
+		sqlDB.Exec("PRAGMA temp_store=MEMORY")
+		sqlDB.Exec("PRAGMA mmap_size=268435456")
+		sqlDB.Exec("PRAGMA wal_autocheckpoint=1000")
+		sqlDB.Exec("PRAGMA busy_timeout=10000")
 	} else {
 		sqlDB.SetMaxOpenConns(cfg.Database.MaxOpenConns)
 		sqlDB.SetMaxIdleConns(cfg.Database.MaxIdleConns)
@@ -93,6 +117,23 @@ func Initialize(cfg *config.Config) error {
 	}).Info("Database connection established")
 
 	return nil
+}
+
+func buildGormLogger(level string) logger.Interface {
+	var logLevel logger.LogLevel
+	switch strings.ToLower(level) {
+	case "silent":
+		logLevel = logger.Silent
+	case "error":
+		logLevel = logger.Error
+	case "warn":
+		logLevel = logger.Warn
+	case "info":
+		logLevel = logger.Info
+	default:
+		logLevel = logger.Warn
+	}
+	return logger.Default.LogMode(logLevel)
 }
 
 func GetDB() *gorm.DB {
@@ -122,6 +163,8 @@ type PoolStats struct {
 	MaxLifetimeClosed  int64         `json:"max_lifetime_closed"`
 }
 
+var lastWaitCount int64
+
 func GetPoolStats() *PoolStats {
 	if DB == nil {
 		return nil
@@ -131,6 +174,21 @@ func GetPoolStats() *PoolStats {
 		return nil
 	}
 	s := sqlDB.Stats()
+
+	if s.WaitCount > lastWaitCount {
+		newWaits := s.WaitCount - lastWaitCount
+		lastWaitCount = s.WaitCount
+
+		logrus.WithFields(logrus.Fields{
+			"module":        "database",
+			"wait_count":    newWaits,
+			"wait_duration": s.WaitDuration.String(),
+			"open_conns":    s.OpenConnections,
+			"in_use":        s.InUse,
+			"idle":          s.Idle,
+		}).Warn("Database connection pool wait detected, consider increasing max_open_conns or migrating to PostgreSQL")
+	}
+
 	return &PoolStats{
 		MaxOpenConnections: s.MaxOpenConnections,
 		OpenConnections:    s.OpenConnections,

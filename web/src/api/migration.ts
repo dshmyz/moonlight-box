@@ -86,3 +86,12 @@ export function listMigrationItems(taskId: number, page?: number, pageSize?: num
     params: { page, page_size: pageSize }
   })
 }
+
+export function syncNexusReposConfig(data: {
+  url: string
+  username: string
+  password: string
+  repos: string[]
+}) {
+  return request.post('/migration/nexus/sync-config-only', data)
+}

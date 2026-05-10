@@ -6,6 +6,8 @@
       <span class="footer-desc">企业级组件仓库管理平台</span>
     </div>
     <div class="footer-right">
+      <router-link to="/about" class="footer-link">关于</router-link>
+      <span class="footer-divider">|</span>
       <span class="footer-copyright"> 2026 Moonlight Registry. All rights reserved.</span>
     </div>
   </div>
@@ -46,7 +48,20 @@
 }
 
 .footer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: #c0c4cc;
   font-size: 12px;
+}
+
+.footer-link {
+  color: #909399;
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.footer-link:hover {
+  color: #8b5cf6;
 }
 </style>

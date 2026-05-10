@@ -53,13 +53,9 @@ type Package struct {
 	RepositoryName string           `gorm:"-" json:"repository_name"`
 	Homepage       string           `gorm:"size:500" json:"homepage,omitempty"`
 	License        string           `gorm:"size:100" json:"license,omitempty"`
-	DownloadCount  int64            `json:"download_count" gorm:"default:0"`
+	DownloadCount  int64            `json:"download_count" gorm:"default:0;index:idx_pkg_download_count"`
 	CreatedBy      uint             `json:"created_by"`
 	Versions       []PackageVersion `gorm:"foreignKey:PackageID" json:"versions,omitempty"`
-
-	// 元数据同步标记
-	MetadataSynced bool       `json:"metadata_synced" gorm:"default:false"`
-	MetadataSyncAt *time.Time `json:"metadata_sync_at"`
 }
 
 type PackageVersion struct {

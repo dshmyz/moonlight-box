@@ -10,9 +10,9 @@ import (
 )
 
 type PermissionCacheService struct {
-	cache     *cache.MemoryCache
-	roleRepo  *repository.RoleRepository
-	ttl       time.Duration
+	cache    *cache.MemoryCache
+	roleRepo *repository.RoleRepository
+	ttl      time.Duration
 }
 
 func NewPermissionCacheService(roleRepo *repository.RoleRepository, ttl time.Duration) *PermissionCacheService {
@@ -57,4 +57,12 @@ func (s *PermissionCacheService) InvalidateAll() {
 
 func (s *PermissionCacheService) GetStats() map[string]interface{} {
 	return s.cache.Stats()
+}
+
+func (s *PermissionCacheService) GetTTL() time.Duration {
+	return s.ttl
+}
+
+func (s *PermissionCacheService) GetAllItems() map[string]*cache.Item {
+	return s.cache.GetAllItems()
 }

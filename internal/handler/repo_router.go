@@ -6,27 +6,27 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/adapter"
+	"github.com/moonlight-box/registry/internal/metrics"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
+	"github.com/moonlight-box/registry/internal/types"
 )
 
 type RepoRouter struct {
 	repoSvc        *service.RepositoryService
 	repoCache      *proxy.RepositoryCache
-	auditSvc       *service.AuditService
-	adapters       map[string]adapter.RepoAwareAdapter
-	typeDetector   *proxy.TypeDetector
+	resolver       *proxy.RepoHandler
 	downloadPlugin *adapter.DownloadPluginChain
+	webhookSvc     *service.WebhookService
+	permCache      *service.PermissionCacheService
+	blockSvc       *service.BlockRuleService
 }
 
-func NewRepoRouter(repoSvc *service.RepositoryService, auditSvc *service.AuditService) *RepoRouter {
+func NewRepoRouter(repoSvc *service.RepositoryService) *RepoRouter {
 	return &RepoRouter{
-		repoSvc:      repoSvc,
-		auditSvc:     auditSvc,
-		adapters:     make(map[string]adapter.RepoAwareAdapter),
-		typeDetector: proxy.NewTypeDetector(),
+		repoSvc: repoSvc,
 	}
 }
 
@@ -34,8 +34,47 @@ func (r *RepoRouter) SetRepoCache(cache *proxy.RepositoryCache) {
 	r.repoCache = cache
 }
 
-func (r *RepoRouter) SetDownloadPlugin(plugin *adapter.DownloadPluginChain) {
-	r.downloadPlugin = plugin
+func (r *RepoRouter) SetResolver(resolver *proxy.RepoHandler) {
+	r.resolver = resolver
+}
+
+func (r *RepoRouter) SetWebhookService(webhookSvc *service.WebhookService) {
+	r.webhookSvc = webhookSvc
+}
+
+func (r *RepoRouter) SetPermCache(permCache *service.PermissionCacheService) {
+	r.permCache = permCache
+}
+
+func (r *RepoRouter) SetBlockService(blockSvc *service.BlockRuleService) {
+	r.blockSvc = blockSvc
+}
+
+func (r *RepoRouter) checkBlock(c *gin.Context, pkgType, pkgName, version string) bool {
+	if r.blockSvc == nil || pkgName == "" {
+		return false
+	}
+
+	result, err := r.blockSvc.IsBlocked(pkgType, pkgName, version)
+	if err != nil {
+		return false
+	}
+
+	if result.Blocked {
+		ipAddress := c.ClientIP()
+		userAgent := c.Request.UserAgent()
+		_ = r.blockSvc.LogBlock(c.Request.Context(), pkgName, version, result.Rule, ipAddress, userAgent)
+
+		reason := result.Rule.Reason
+		if reason == "" {
+			reason = "该版本已被管理员阻断"
+		}
+		msg := fmt.Sprintf("包 %s@%s 已被阻断: %s", pkgName, version, reason)
+		response.Forbidden(c, msg)
+		return true
+	}
+
+	return false
 }
 
 func (r *RepoRouter) CheckDownloadPermission(c *gin.Context, repo *model.Repository, pkgType model.PackageType, name, version, filename string) *adapter.DownloadDecision {
@@ -56,10 +95,6 @@ func (r *RepoRouter) CheckDownloadPermission(c *gin.Context, repo *model.Reposit
 	}
 
 	return r.downloadPlugin.Execute(downloadCtx)
-}
-
-func (r *RepoRouter) RegisterAdapter(pkgType string, adp adapter.RepoAwareAdapter) {
-	r.adapters[pkgType] = adp
 }
 
 func (r *RepoRouter) getRepo(name string) (*model.Repository, error) {
@@ -84,37 +119,47 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 		return
 	}
 
-	var pkgType string
-
-	if repo.Type == model.RepoTypeVirtual {
-		trimmedPath := strings.TrimPrefix(path, "/")
-		pkgType = r.typeDetector.Detect(trimmedPath)
-
-		if pkgType == "" {
-			response.BadRequest(c, "无法从请求路径识别包类型",
-				"请确保 URL 包含包类型前缀，如 /npm/ 或 /maven/")
-			return
-		}
-
-		if pkgType != repo.PackageType {
-			response.NotFound(c, fmt.Sprintf("此虚拟仓库不支持 %s 类型的包", pkgType))
-			return
-		}
-	} else {
-		pkgType = repo.PackageType
-	}
-
-	adp, ok := r.adapters[pkgType]
-	if !ok {
-		response.NotFound(c, fmt.Sprintf("不支持的包类型: %s", pkgType))
-		return
-	}
+	pkgType := repo.PackageType
 
 	if r.downloadPlugin != nil {
 		c.Set("downloadPlugin", r.downloadPlugin)
 	}
 
-	adp.HandleRepoRequest(c, repo, strings.TrimPrefix(path, "/"))
+	c.Set("repo", repo)
+
+	if r.resolver == nil {
+		response.NotFound(c, "resolver 未初始化")
+		return
+	}
+
+	// 先尝试解析为下载请求
+	result, err := r.resolver.TryResolveDownload(c.Request.Context(), repo, pkgType, strings.TrimPrefix(path, "/"))
+	if err == nil && result != nil {
+		// 阻断检查
+		if r.checkBlock(c, pkgType, result.Name, result.Version) {
+			result.Content.Close()
+			return
+		}
+
+		// 下载路径，检查权限后返回内容
+		filename := result.Filename
+		decision := r.CheckDownloadPermission(c, repo, model.PackageType(pkgType), result.Name, result.Version, filename)
+		if !decision.Allow {
+			c.JSON(decision.Code, gin.H{"error": decision.Message})
+			result.Content.Close()
+			return
+		}
+
+		defer result.Content.Close()
+		r.resolver.FormatDownloadResponse(c, pkgType, result)
+		return
+	}
+
+	// 非下载路径，交给 adapter 处理
+	if err := r.resolver.HandleRepoRequest(c, repo, strings.TrimPrefix(path, "/")); err != nil {
+		response.NotFound(c, err.Error())
+		return
+	}
 }
 
 func (r *RepoRouter) HandlePublish(c *gin.Context) {
@@ -145,15 +190,82 @@ func (r *RepoRouter) HandlePublish(c *gin.Context) {
 		return
 	}
 
-	adp, ok := r.adapters[repo.PackageType]
-	if !ok {
-		response.NotFound(c, fmt.Sprintf("不支持的包类型: %s", repo.PackageType))
+	if r.permCache != nil {
+		userID := c.GetUint("userID")
+		if userID == 0 {
+			response.Unauthorized(c, "missing user information")
+			return
+		}
+
+		permissions, err := r.permCache.GetUserPermissions(userID)
+		if err != nil {
+			response.InternalError(c, "failed to load user permissions")
+			return
+		}
+
+		hasPermission := false
+		packageType := strings.ToLower(string(repo.PackageType))
+		for _, p := range permissions {
+			if p.Resource == packageType && p.Action == "write" {
+				hasPermission = true
+				break
+			}
+			if p.Resource == "system" && p.Action == "admin" {
+				hasPermission = true
+				break
+			}
+		}
+
+		if !hasPermission {
+			response.Forbidden(c, "insufficient permissions for "+packageType+" repository")
+			return
+		}
+	}
+
+	if r.resolver == nil {
+		response.NotFound(c, "resolver 未初始化")
 		return
 	}
 
 	c.Set("repo", repo)
 	c.Set("allowOverwrite", repo.AllowOverwrite)
-	adp.HandleRepoPublish(c, repo)
+	result, err := r.resolver.HandleRepoPublish(c, repo)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	if result != nil {
+		metrics.RecordUpload(string(repo.PackageType), result.PackageName, result.Version)
+
+		if result.Response != nil {
+			response.Success(c, result.Response)
+		} else {
+			response.Success(c, &types.PublishResponse{
+				Success:  true,
+				Message:  "Package published successfully",
+				Package:  result.PackageName,
+				Version:  result.Version,
+				Filename: result.Filename,
+				Size:     result.Size,
+			})
+		}
+
+		if r.webhookSvc != nil {
+			r.webhookSvc.TriggerEvent(model.WebhookEventPackageUploaded, &service.WebhookPayload{
+				Event:       string(model.WebhookEventPackageUploaded),
+				PackageName: result.PackageName,
+				Version:     result.Version,
+				Repository:  repo.Name,
+				Data:        result.ExtraData,
+			})
+		}
+	} else {
+		c.JSON(200, &types.PublishResponse{
+			Success: true,
+			Message: "Package published successfully",
+		})
+	}
 }
 
 func (r *RepoRouter) HandleDelete(c *gin.Context) {
@@ -188,11 +300,24 @@ func (r *RepoRouter) HandleDelete(c *gin.Context) {
 		return
 	}
 
-	adp, ok := r.adapters[repo.PackageType]
-	if !ok {
-		response.NotFound(c, fmt.Sprintf("不支持的包类型: %s", repo.PackageType))
+	if r.resolver == nil {
+		response.NotFound(c, "resolver 未初始化")
 		return
 	}
 
-	adp.HandleRepoDelete(c, repo)
+	result, err := r.resolver.HandleRepoDelete(c, repo)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	if result != nil && r.webhookSvc != nil {
+		r.webhookSvc.TriggerEvent(model.WebhookEventPackageDeleted, &service.WebhookPayload{
+			Event:       string(model.WebhookEventPackageDeleted),
+			PackageName: result.PackageName,
+			Version:     result.Version,
+			Repository:  repo.Name,
+			Data:        result.ExtraData,
+		})
+	}
 }

@@ -169,8 +169,8 @@ const handleRowLeave = () => {
 }
 
 .type-tag {
-  font-size: 11px;
-  padding: 3px 10px;
+  font-size: 12px;
+  padding: 4px 12px;
   border-radius: 6px;
   font-weight: 500;
 }
@@ -200,8 +200,8 @@ const handleRowLeave = () => {
 }
 
 .source-tag {
-  font-size: 11px;
-  padding: 3px 10px;
+  font-size: 12px;
+  padding: 4px 12px;
   border-radius: 6px;
   font-weight: 500;
   border: none;

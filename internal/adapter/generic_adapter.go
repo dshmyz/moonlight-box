@@ -15,6 +15,7 @@ import (
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
+	"github.com/moonlight-box/registry/internal/types"
 
 	"github.com/gin-gonic/gin"
 )
@@ -410,6 +411,140 @@ func (a *GenericAdapter) listDirectory(c *gin.Context, backend storage.Backend, 
 	}
 
 	return nil, fileEntries
+}
+
+func (a *GenericAdapter) FormatDownloadResponse(c *gin.Context, result *types.RouteResult) {
+	contentType := a.storageSvc.GetContentType(result.Filename)
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, result.Filename))
+	c.DataFromReader(200, result.Size, contentType, result.Content, nil)
+}
+
+func (a *GenericAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
+	name := ctx.Name
+	version := ctx.Version
+	filename := ctx.Filename
+
+	storageName := name + "/" + filename
+	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "generic", storageName, version)
+	if err == nil {
+		return &types.DownloadResult{
+			Content:   content,
+			Size:      size,
+			FromCache: false,
+			RepoID:    ctx.Repo.ID,
+			Filename:  filename,
+			Name:      name,
+			Version:   version,
+		}, nil
+	}
+
+	if a.fetcher != nil && ctx.Repo.Type == "proxy" {
+		result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), ctx.Repo, "generic", name, version+"/"+filename)
+		if fetchErr == nil && result != nil {
+			return &types.DownloadResult{
+				Content:   result.Content,
+				Size:      result.Size,
+				FromCache: result.FromCache,
+				RepoID:    result.RepoID,
+				Filename:  filename,
+				Name:      name,
+				Version:   version,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("file not found")
+}
+
+func (a *GenericAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
+	userID := ctx.UserID
+
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		return nil, fmt.Errorf("missing file: %v", err)
+	}
+	defer file.Close()
+
+	targetPath := c.PostForm("path")
+	if targetPath != "" {
+		targetPath = filepath.Join(targetPath, header.Filename)
+	} else {
+		targetPath = header.Filename
+	}
+
+	storageKey := "generic/" + filepath.Clean(targetPath)
+
+	backend := a.storageSvc.GetDefaultBackend()
+	if err := backend.Put(c.Request.Context(), storageKey, file, header.Size); err != nil {
+		return nil, err
+	}
+
+	pkg, _, err := a.pkgRepo.CreateOrUpdate(c.Request.Context(), &model.Package{
+		Name:           targetPath,
+		Type:           model.PackageTypeGeneric,
+		RepositoryID:   ctx.Repo.ID,
+		RepositoryType: ctx.Repo.Type,
+		CreatedBy:      userID,
+	}, &model.PackageVersion{
+		Version:     "1.0.0",
+		Status:      model.StatusPublished,
+		StoragePath: storageKey,
+		SizeBytes:   header.Size,
+		PublishedBy: userID,
+	})
+	if err != nil {
+		backend.Delete(c.Request.Context(), storageKey)
+		return nil, err
+	}
+
+	return &types.PublishResult{
+		PackageName: targetPath,
+		Version:     "1.0.0",
+		Size:        header.Size,
+		Filename:    header.Filename,
+		Response: &types.GenericPublishResponse{
+			PublishResponse: types.PublishResponse{
+				Success:  true,
+				Message:  "Package published successfully",
+				Package:  targetPath,
+				Version:  "1.0.0",
+				Filename: header.Filename,
+				Size:     header.Size,
+			},
+			StorageKey: storageKey,
+			PackageId:  pkg.ID,
+		},
+	}, nil
+}
+
+func (a *GenericAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
+	filePath := strings.TrimPrefix(c.Param("path"), "/")
+
+	storageKey := "generic/" + filePath
+
+	backend := a.storageSvc.GetDefaultBackend()
+	if err := backend.Delete(c.Request.Context(), storageKey); err != nil {
+		return fmt.Errorf("file not found")
+	}
+
+	identity := &PackageIdentity{
+		Name:    filePath,
+		Version: "",
+		Type:    GenericType,
+	}
+
+	if err := a.Delete(c.Request.Context(), identity); err != nil {
+		return err
+	}
+
+	pkg, _ := a.pkgRepo.FindByNameAndType(identity.Name, model.PackageTypeGeneric)
+	var pkgID *uint
+	if pkg != nil {
+		pkgID = &pkg.ID
+	}
+	a.LogDeleteAudit(c, ctx.Repo.Name, identity.Name, identity.Version, pkgID)
+
+	return nil
 }
 
 var browseHTML = template.Must(template.New("browse").Parse(`<!DOCTYPE html>

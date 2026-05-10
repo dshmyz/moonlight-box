@@ -50,6 +50,10 @@ func NewMigrationWorkerV2(
 	}
 }
 
+func (w *MigrationWorkerV2) SetService(service *MigrationService) {
+	w.service = service
+}
+
 func (w *MigrationWorkerV2) Execute(ctx context.Context, task *model.MigrationTask) error {
 	return w.execute(ctx, task, false)
 }
@@ -58,8 +62,8 @@ func (w *MigrationWorkerV2) RetryFailed(ctx context.Context, task *model.Migrati
 	return w.execute(ctx, task, true)
 }
 
-func (w *MigrationWorkerV2) loadFailedItems(ctx context.Context, taskID uint, queue *ComponentQueue) error {
-	items, err := w.itemRepo.GetPendingItems(taskID, 10000)
+func (w *MigrationWorkerV2) loadFailedItems(ctx context.Context, taskID uint, maxRetries int, queue *ComponentQueue) error {
+	items, err := w.itemRepo.GetPendingItems(taskID, maxRetries, 10000)
 	if err != nil {
 		return err
 	}
@@ -142,11 +146,11 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 	})
 
 	queue := NewComponentQueue(w.batchSize * 10)
-	progressUpdater := NewProgressUpdater(task.ID, w.service.db, 2*time.Second)
+	progressUpdater := NewProgressUpdater(task.ID, w.service.db, w.itemRepo, 2*time.Second)
 
 	if retryOnly {
 		// 只加载失败的项目
-		if err := w.loadFailedItems(ctx, task.ID, queue); err != nil {
+		if err := w.loadFailedItems(ctx, task.ID, task.MaxRetries, queue); err != nil {
 			logrus.WithFields(logrus.Fields{
 				"module":  "migration",
 				"task_id": task.ID,
@@ -156,7 +160,7 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 		}
 		queue.Close()
 	} else {
-		// 正常流程：扫描 Nexus
+		// 正常流程：先扫描获取总数并创建记录，再开始迁移
 		var selectedRepos []string
 		if err := json.Unmarshal([]byte(task.SelectedRepos), &selectedRepos); err != nil {
 			logrus.WithFields(logrus.Fields{
@@ -167,26 +171,31 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 			return w.failTask(task.ID, fmt.Sprintf("failed to parse selected repos: %v", err))
 		}
 
-		var producerWg sync.WaitGroup
-		producerCtx, producerCancel := context.WithCancel(context.Background())
-		defer producerCancel()
-
+		// 步骤1：先扫描所有仓库，获取组件总数并创建数据库记录
+		w.service.AddLog(task.ID, "正在扫描组件...")
+		totalScanned := 0
 		for _, repoName := range selectedRepos {
-			producerWg.Add(1)
-			go func(repo string) {
-				defer producerWg.Done()
-				w.produceComponents(producerCtx, task.ID, client, repo, queue)
-			}(repoName)
+			count, err := w.scanRepository(ctx, task.ID, client, repoName)
+			if err != nil {
+				w.service.AddLog(task.ID, fmt.Sprintf("扫描 %s 失败: %v", repoName, err))
+				return w.failTask(task.ID, fmt.Sprintf("扫描仓库 %s 失败: %v", repoName, err))
+			}
+			totalScanned += count
 		}
 
-		go func() {
-			producerWg.Wait()
-			queue.Close()
-			logrus.WithFields(logrus.Fields{
-				"module":  "migration",
-				"task_id": task.ID,
-			}).Info("All producers finished")
-		}()
+		w.service.AddLog(task.ID, fmt.Sprintf("扫描完成，共发现 %d 个组件", totalScanned))
+		w.service.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Update("total_items", totalScanned)
+
+		// 步骤2：将所有 pending 项目加入队列开始迁移
+		items, err := w.itemRepo.GetPendingItems(task.ID, task.MaxRetries, 1000000)
+		if err != nil {
+			return w.failTask(task.ID, fmt.Sprintf("获取待处理项目失败: %v", err))
+		}
+
+		for _, item := range items {
+			queue.Push(item)
+		}
+		queue.Close()
 	}
 
 	go progressUpdater.Start(ctx)
@@ -218,6 +227,74 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 		w.service.AddLog(task.ID, "迁移任务完成")
 	}
 	return nil
+}
+
+func (w *MigrationWorkerV2) scanRepository(ctx context.Context, taskID uint, client *NexusClient, repoName string) (int, error) {
+	w.service.AddLog(taskID, fmt.Sprintf("正在扫描: %s", repoName))
+	logrus.WithFields(logrus.Fields{
+		"module":    "migration",
+		"task_id":   taskID,
+		"repo_name": repoName,
+	}).Info("Scanning repository")
+
+	var continuationToken string
+	totalComponents := 0
+	var allItems []model.MigrationItem
+
+	for {
+		select {
+		case <-ctx.Done():
+			return totalComponents, fmt.Errorf("扫描被取消")
+		default:
+		}
+
+		components, nextToken, err := client.ListComponentsPage(ctx, repoName, continuationToken)
+		if err != nil {
+			return totalComponents, err
+		}
+
+		for _, comp := range components {
+			item := model.MigrationItem{
+				TaskID:         taskID,
+				Repository:     repoName,
+				ComponentID:    comp.ID,
+				ComponentName:  comp.Name,
+				ComponentGroup: comp.Group,
+				Version:        comp.Version,
+				Format:         comp.Format,
+				Status:         model.MigrationItemPending,
+			}
+			allItems = append(allItems, item)
+			totalComponents++
+
+			if len(allItems) >= w.batchSize {
+				if err := w.itemRepo.BatchCreate(allItems); err != nil {
+					logrus.WithError(err).Error("Failed to batch create migration items")
+				}
+				allItems = allItems[:0]
+			}
+		}
+
+		if nextToken == "" {
+			break
+		}
+		continuationToken = nextToken
+	}
+
+	if len(allItems) > 0 {
+		if err := w.itemRepo.BatchCreate(allItems); err != nil {
+			logrus.WithError(err).Error("Failed to batch create remaining migration items")
+		}
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"module":    "migration",
+		"task_id":   taskID,
+		"repo_name": repoName,
+		"total":     totalComponents,
+	}).Info("Repository scan completed")
+
+	return totalComponents, nil
 }
 
 func (w *MigrationWorkerV2) produceComponents(ctx context.Context, taskID uint, client *NexusClient, repoName string, queue *ComponentQueue) {
@@ -369,7 +446,7 @@ func (w *MigrationWorkerV2) consumeComponents(
 			continue
 		}
 
-		w.itemRepo.UpdateStatus(item.ID, model.MigrationItemProcessing, "")
+		progressUpdater.UpdateItemStatus(item.ID, model.MigrationItemProcessing, "")
 
 		comp := NexusComponent{
 			ID:         item.ComponentID,
@@ -390,7 +467,7 @@ func (w *MigrationWorkerV2) consumeComponents(
 				"error":     err,
 			}).Warn("Failed to migrate component")
 			w.service.AddLog(taskID, fmt.Sprintf("迁移 %s (v%s) 失败: %v", item.ComponentName, item.Version, err))
-			w.itemRepo.UpdateStatus(item.ID, model.MigrationItemFailed, err.Error())
+			progressUpdater.UpdateItemStatus(item.ID, model.MigrationItemFailed, err.Error())
 			progressUpdater.IncrementFailed()
 		} else {
 			logrus.WithFields(logrus.Fields{
@@ -400,7 +477,7 @@ func (w *MigrationWorkerV2) consumeComponents(
 				"version":   item.Version,
 				"worker_id": workerID,
 			}).Info("Component migrated successfully")
-			w.itemRepo.UpdateStatus(item.ID, model.MigrationItemCompleted, "")
+			progressUpdater.UpdateItemStatus(item.ID, model.MigrationItemCompleted, "")
 			progressUpdater.IncrementProcessed()
 		}
 	}

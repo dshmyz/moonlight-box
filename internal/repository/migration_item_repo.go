@@ -11,6 +11,13 @@ type MigrationItemRepository struct {
 	db *gorm.DB
 }
 
+// ItemStatusUpdate holds the status update for a single migration item
+type ItemStatusUpdate struct {
+	ItemID   uint
+	Status   model.MigrationItemStatus
+	ErrorMsg string
+}
+
 func NewMigrationItemRepository(db *gorm.DB) *MigrationItemRepository {
 	return &MigrationItemRepository{db: db}
 }
@@ -19,7 +26,7 @@ func (r *MigrationItemRepository) BatchCreate(items []model.MigrationItem) error
 	if len(items) == 0 {
 		return nil
 	}
-	
+
 	// 去重：按 ComponentID 去重，保留第一个
 	seen := make(map[string]bool)
 	uniqueItems := make([]model.MigrationItem, 0, len(items))
@@ -39,43 +46,56 @@ func (r *MigrationItemRepository) BatchCreate(items []model.MigrationItem) error
 			uniqueItems = append(uniqueItems, item)
 		}
 	}
-	
+
 	if len(uniqueItems) == 0 {
 		return nil
 	}
-	
+
 	return r.db.CreateInBatches(uniqueItems, 100).Error
 }
 
-func (r *MigrationItemRepository) GetPendingItems(taskID uint, limit int) ([]model.MigrationItem, error) {
+func (r *MigrationItemRepository) GetPendingItems(taskID uint, maxRetries int, limit int) ([]model.MigrationItem, error) {
 	var items []model.MigrationItem
 	err := r.db.Where("task_id = ? AND status IN ?", taskID, []model.MigrationItemStatus{
 		model.MigrationItemPending,
 		model.MigrationItemFailed,
 	}).
-		Where("retry_count < ?", 3).
+		Where("retry_count < ?", maxRetries).
 		Order("created_at ASC").
 		Limit(limit).
 		Find(&items).Error
 	return items, err
 }
 
-func (r *MigrationItemRepository) BatchUpdateStatus(ids []uint, status model.MigrationItemStatus, errMsg string) error {
-	if len(ids) == 0 {
+func (r *MigrationItemRepository) BatchUpdateStatus(updates []ItemStatusUpdate) error {
+	if len(updates) == 0 {
 		return nil
 	}
-	updates := map[string]interface{}{
-		"status":     status,
-		"updated_at": time.Now(),
-	}
-	if errMsg != "" {
-		updates["error_message"] = errMsg
-	}
-	if status == model.MigrationItemCompleted {
-		now := time.Now()
-		updates["completed_at"] = &now
-	}
-	return r.db.Model(&model.MigrationItem{}).Where("id IN ?", ids).Updates(updates).Error
+
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		for _, update := range updates {
+			fields := map[string]interface{}{
+				"status":     update.Status,
+				"updated_at": time.Now(),
+			}
+			if update.ErrorMsg != "" {
+				fields["error_message"] = update.ErrorMsg
+			}
+			if update.Status == model.MigrationItemFailed {
+				fields["retry_count"] = gorm.Expr("retry_count + 1")
+			}
+			if update.Status == model.MigrationItemCompleted {
+				now := time.Now()
+				fields["completed_at"] = &now
+			}
+			if err := tx.Model(&model.MigrationItem{}).
+				Where("id = ?", update.ItemID).
+				Updates(fields).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (r *MigrationItemRepository) UpdateStatus(id uint, status model.MigrationItemStatus, errMsg string) error {
@@ -135,4 +155,23 @@ func (r *MigrationItemRepository) GetByID(id uint) (*model.MigrationItem, error)
 		return nil, err
 	}
 	return &item, nil
+}
+
+func (r *MigrationItemRepository) ListByTask(taskID uint, page, pageSize int) ([]model.MigrationItem, int64, error) {
+	var items []model.MigrationItem
+	var total int64
+
+	query := r.db.Model(&model.MigrationItem{}).Where("task_id = ?", taskID)
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	if page > 0 && pageSize > 0 {
+		offset := (page - 1) * pageSize
+		query = query.Offset(offset).Limit(pageSize)
+	}
+
+	err := query.Order("created_at ASC").Find(&items).Error
+	return items, total, err
 }

@@ -206,6 +206,8 @@ func (s *DashboardService) computeStats(ctx context.Context) (*DashboardStats, e
 		todayDownloadMap[td.RepositoryID] = td.Count
 	}
 
+	backendMap := s.getBackendMap(repos)
+
 	healthStatuses := s.getHealthStatuses()
 
 	repoStatuses := make([]RepoStatus, 0, len(repos))
@@ -219,7 +221,7 @@ func (s *DashboardService) computeStats(ctx context.Context) (*DashboardStats, e
 			Status:             s.getRepoHealthStatus(healthStatus),
 			PackageCount:       pkgCountMap[repo.ID],
 			DownloadCountToday: todayDownloadMap[repo.ID],
-			StorageBytes:       s.getRepoStorageBytes(repo),
+			StorageBytes:       s.getRepoStorageBytes(repo, backendMap),
 		}
 		repoStatuses = append(repoStatuses, status)
 	}
@@ -238,6 +240,30 @@ func (s *DashboardService) computeStats(ctx context.Context) (*DashboardStats, e
 	}
 
 	return stats, nil
+}
+
+func (s *DashboardService) getBackendMap(repos []model.Repository) map[uint]*model.StorageBackend {
+	backendMap := make(map[uint]*model.StorageBackend)
+
+	var backendIDs []uint
+	for _, repo := range repos {
+		if repo.StorageBackendID != nil && *repo.StorageBackendID > 0 {
+			backendIDs = append(backendIDs, *repo.StorageBackendID)
+		}
+	}
+
+	if len(backendIDs) == 0 {
+		return backendMap
+	}
+
+	var backends []model.StorageBackend
+	if err := s.db.Where("id IN ?", backendIDs).Find(&backends).Error; err == nil {
+		for i := range backends {
+			backendMap[backends[i].ID] = &backends[i]
+		}
+	}
+
+	return backendMap
 }
 
 func (s *DashboardService) getHealthStatuses() map[uint]*proxy.HealthStatus {
@@ -263,7 +289,7 @@ func (s *DashboardService) getRepoHealthStatus(healthStatus *proxy.HealthStatus)
 	return "error"
 }
 
-func (s *DashboardService) getRepoStorageBytes(repo model.Repository) int64 {
+func (s *DashboardService) getRepoStorageBytes(repo model.Repository, backendMap map[uint]*model.StorageBackend) int64 {
 	if repo.Type != model.RepoTypeLocal {
 		return 0
 	}
@@ -272,13 +298,10 @@ func (s *DashboardService) getRepoStorageBytes(repo model.Repository) int64 {
 		return s.getDirStorageBytes(s.storagePath)
 	}
 
-	var backend model.StorageBackend
-	if err := s.db.First(&backend, *repo.StorageBackendID).Error; err != nil {
-		return 0
-	}
-
-	if backend.Type == model.StorageTypeLocal && backend.Config.Local != nil {
-		return s.getDirStorageBytes(backend.Config.Local.BasePath)
+	if backend, ok := backendMap[*repo.StorageBackendID]; ok {
+		if backend.Type == model.StorageTypeLocal && backend.Config.Local != nil {
+			return s.getDirStorageBytes(backend.Config.Local.BasePath)
+		}
 	}
 
 	return 0

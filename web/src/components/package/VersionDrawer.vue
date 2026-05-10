@@ -143,10 +143,6 @@ async function copyChecksum(checksum: string) {
   gap: 4px;
 }
 
-.download-status-tag {
-  font-size: 11px;
-}
-
 .checksum-text {
   font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   font-size: 12px;

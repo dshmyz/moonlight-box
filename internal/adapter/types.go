@@ -8,7 +8,6 @@ import (
 type PackageType = types.PackageType
 type PackageIdentity = types.PackageIdentity
 type UploadRequest = types.UploadRequest
-type PackageContent = types.PackageContent
 type PackageMeta = types.PackageMeta
 type VersionInfo = types.VersionInfo
 type PackageVersionResult = types.PackageVersionResult

@@ -8,17 +8,20 @@ import (
 	"github.com/moonlight-box/registry/internal/middleware"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/service"
+	"github.com/moonlight-box/registry/internal/types"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type RouterContext struct {
-	Config    *config.Config
-	AuthSvc   *service.AuthService
-	AuditSvc  *service.AuditService
-	PermCache *service.PermissionCacheService
-	BlockRule *service.BlockRuleService
-	RepoSvc   *service.RepositoryService
-	RepoCache *proxy.RepositoryCache
+	Config       *config.Config
+	AuthSvc      *service.AuthService
+	AuditSvc     *service.AuditService
+	PermCache    *service.PermissionCacheService
+	BlockRule    *service.BlockRuleService
+	RepoSvc      *service.RepositoryService
+	RepoCache    *proxy.RepositoryCache
+	RepoResolver *proxy.RepoHandler
+	WebhookSvc   *service.WebhookService
 
 	Handlers struct {
 		Auth             *handler.AuthHandler
@@ -48,7 +51,7 @@ type RouterContext struct {
 		VulnRule         *handler.VulnRuleHandler
 	}
 
-	Adapters []adapter.RouterAdapter
+	Adapters []types.Adapter
 }
 
 func NewRouterContext(
@@ -58,16 +61,20 @@ func NewRouterContext(
 	permCache *service.PermissionCacheService,
 	blockRule *service.BlockRuleService,
 	repoSvc *service.RepositoryService,
-	adapters []adapter.RouterAdapter,
+	repoResolver *proxy.RepoHandler,
+	adapters []types.Adapter,
+	webhookSvc *service.WebhookService,
 ) *RouterContext {
 	ctx := &RouterContext{
-		Config:    cfg,
-		AuthSvc:   authSvc,
-		AuditSvc:  auditSvc,
-		PermCache: permCache,
-		BlockRule: blockRule,
-		RepoSvc:   repoSvc,
-		Adapters:  adapters,
+		Config:       cfg,
+		AuthSvc:      authSvc,
+		AuditSvc:     auditSvc,
+		PermCache:    permCache,
+		BlockRule:    blockRule,
+		RepoSvc:      repoSvc,
+		RepoResolver: repoResolver,
+		Adapters:     adapters,
+		WebhookSvc:   webhookSvc,
 	}
 
 	ctx.Handlers.Auth = handler.NewAuthHandler(authSvc, auditSvc)
@@ -181,8 +188,6 @@ func (ctx *RouterContext) setupRepositoryRoutes(protected *gin.RouterGroup) {
 		reposWrite.POST("", ctx.Handlers.Repo.Create)
 		reposWrite.PUT("/:name", ctx.Handlers.Repo.Update)
 		reposWrite.POST("/:name/members", ctx.Handlers.Repo.AddMember)
-		reposWrite.POST("/:name/metadata-sync", ctx.Handlers.Repo.TriggerMetadataSync)
-		reposWrite.PUT("/:name/metadata-sync-config", ctx.Handlers.Repo.UpdateMetadataSyncConfig)
 	}
 
 	reposDelete := protected.Group("/repositories")
@@ -424,10 +429,12 @@ func (ctx *RouterContext) setupMigrationRoutes(protected *gin.RouterGroup) {
 	migration := protected.Group("/migration")
 	migration.Use(ctx.requirePermission("system", "admin"))
 	{
+		migration.GET("/queue/status", ctx.Handlers.Migration.GetQueueStatus)
 		migration.GET("", ctx.Handlers.Migration.ListMigrations)
 		migration.POST("/nexus/test", ctx.Handlers.Migration.TestNexusConnection)
 		migration.POST("/nexus/repositories", ctx.Handlers.Migration.ListNexusRepositories)
 		migration.POST("/nexus/sync-repos", ctx.Handlers.Migration.SyncNexusRepos)
+		migration.POST("/nexus/sync-config-only", ctx.Handlers.Migration.SyncConfigOnly)
 		migration.POST("/nexus", ctx.Handlers.Migration.CreateMigration)
 		migration.GET("/:id/status", ctx.Handlers.Migration.GetMigrationStatus)
 		migration.POST("/:id/cancel", ctx.Handlers.Migration.CancelMigration)
@@ -467,25 +474,27 @@ func (ctx *RouterContext) setupHealthRoutes(protected *gin.RouterGroup) {
 }
 
 func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.RepositoryCache) {
-	repoRouter := handler.NewRepoRouter(ctx.RepoSvc, ctx.AuditSvc)
+	repoRouter := handler.NewRepoRouter(ctx.RepoSvc)
 	repoRouter.SetRepoCache(repoCache)
+	repoRouter.SetResolver(ctx.RepoResolver)
+	repoRouter.SetWebhookService(ctx.WebhookSvc)
+	repoRouter.SetPermCache(ctx.PermCache)
+	repoRouter.SetBlockService(ctx.BlockRule)
 	for _, adap := range ctx.Adapters {
 		if repoAware, ok := adap.(adapter.RepoAwareAdapter); ok {
-			repoRouter.RegisterAdapter(string(adap.Type()), repoAware)
+			ctx.RepoResolver.RegisterAdapter(string(adap.Type()), repoAware)
 		}
 	}
 
 	authMw := middleware.Auth(ctx.AuthSvc)
-	blockMw := middleware.BlockCheck(ctx.BlockRule, ctx.RepoSvc)
 	permMw := ctx.requirePermission
 
 	repoGroup := r.Group("/repo/:repoName")
-	repoGroup.Use(blockMw)
 	{
 		repoGroup.GET("/*path", repoRouter.HandleRequest)
 
 		publishGroup := repoGroup.Group("")
-		publishGroup.Use(authMw, permMw("npm", "write"))
+		publishGroup.Use(authMw)
 		{
 			publishGroup.PUT("/*path", repoRouter.HandlePublish)
 		}

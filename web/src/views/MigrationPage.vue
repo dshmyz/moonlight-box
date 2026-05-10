@@ -31,7 +31,7 @@
               :repositories="nexusRepos"
               @selected="onSelected"
             />
-            <div class="target-repo-section">
+            <div v-if="!syncConfigOnly" class="target-repo-section">
               <label class="section-label">目标仓库</label>
               <el-select
                 v-model="targetRepoId"
@@ -82,9 +82,32 @@
                 </el-collapse-item>
               </el-collapse>
             </div>
+            <div class="sync-mode-section">
+              <el-switch
+                v-model="syncConfigOnly"
+                active-text="仅同步仓库配置"
+                inactive-text="迁移包数据"
+              />
+              <p class="sync-mode-tip" v-if="syncConfigOnly">
+                只会同步仓库配置信息，不会迁移实际的包数据
+              </p>
+            </div>
             <div class="actions">
-              <el-button type="primary" @click="startMigration" :disabled="selectedRepos.length === 0 || !targetRepoId">
+              <el-button 
+                v-if="!syncConfigOnly" 
+                type="primary" 
+                @click="startMigration" 
+                :disabled="selectedRepos.length === 0 || !targetRepoId"
+              >
                 开始迁移
+              </el-button>
+              <el-button 
+                v-else
+                type="primary" 
+                @click="startSyncConfig" 
+                :disabled="selectedRepos.length === 0"
+              >
+                同步仓库配置
               </el-button>
             </div>
           </template>
@@ -121,6 +144,7 @@ import {
   getMigrationStatus,
   cancelMigration,
   listMigrations,
+  syncNexusReposConfig,
   type NexusRepo,
   type MigrationTask,
 } from '@/api/migration'
@@ -143,6 +167,7 @@ const targetRepoId = ref<number | undefined>(undefined)
 const workerCount = ref(10)
 const maxRetries = ref(3)
 const batchSize = ref(50)
+const syncConfigOnly = ref(false)
 
 const nexusCredentials = ref({ url: '', username: '', password: '' })
 
@@ -188,6 +213,23 @@ async function startMigration() {
     startPolling()
   } catch (e: any) {
     ElMessage.error('创建迁移任务失败: ' + e.message)
+  }
+}
+
+async function startSyncConfig() {
+  try {
+    const res = (await syncNexusReposConfig({
+      url: nexusCredentials.value.url,
+      username: nexusCredentials.value.username,
+      password: nexusCredentials.value.password,
+      repos: selectedRepos.value,
+    })) as any
+    currentTaskId.value = res?.id || res?.task?.id
+    currentStep.value = 2
+    migrationStatus.value = 'running'
+    startPolling()
+  } catch (e: any) {
+    ElMessage.error('创建同步任务失败: ' + e.message)
   }
 }
 
@@ -352,6 +394,19 @@ onUnmounted(() => {
 
 .actions {
   margin-top: 24px;
+}
+
+.sync-mode-section {
+  margin: 24px 0;
+  padding: 16px;
+  background: #f9fafb;
+  border-radius: 8px;
+}
+
+.sync-mode-tip {
+  font-size: 12px;
+  color: #6b7280;
+  margin: 8px 0 0;
 }
 
 .history-section {

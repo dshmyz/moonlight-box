@@ -67,7 +67,7 @@
                   </div>
                 </template>
               </el-table-column>
-              <el-table-column prop="type" label="类型" width="80" align="center">
+              <el-table-column prop="type" label="类型" width="120" align="center">
                 <template #default="{ row }">
                   <el-tag :class="['type-tag', `type-tag--${row.type}`]" size="small">{{ row.type }}</el-tag>
                 </template>
@@ -85,7 +85,7 @@
                   <span v-else class="no-value">-</span>
                 </template>
               </el-table-column>
-              <el-table-column label="同步状态" width="140">
+              <!-- <el-table-column label="同步状态" width="140">
                 <template #default="{ row }">
                   <div v-if="row.type === 'proxy' && row.metadata_sync_enabled" class="sync-status">
                     <el-tag :class="['sync-tag', getSyncStatusClass(row.last_sync_status)]" size="small">
@@ -94,7 +94,7 @@
                   </div>
                   <span v-else class="no-sync">-</span>
                 </template>
-              </el-table-column>
+              </el-table-column> -->
               <el-table-column label="健康" width="80" align="center">
                 <template #default="{ row }">
                   <el-tooltip :content="getHealthTooltip(row)" placement="top" :show-after="300">
@@ -150,22 +150,15 @@
       :edit-data="editingRepo"
       @submit="handleFormSubmit"
     />
-
-    <SyncHistoryDrawer
-      v-model="showSyncHistory"
-      :repo-id="selectedRepoId"
-      :repo-name="selectedRepoName"
-    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { Plus, ArrowDown, Refresh, Clock } from '@element-plus/icons-vue'
+import { Plus } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { repositoryApi, type Repository, type RepositoryWithHealth } from '@/api/repository'
 import RepositoryFormDialog from '@/components/repository/RepositoryFormDialog.vue'
-import SyncHistoryDrawer from '@/components/repository/SyncHistoryDrawer.vue'
 import { confirm, success, error } from '@/utils/message'
 
 interface LocalRepository extends RepositoryWithHealth {
@@ -177,9 +170,6 @@ const activeTab = ref('all')
 const showDialog = ref(false)
 const editingRepo = ref<Repository | null>(null)
 const repos = ref<LocalRepository[]>([])
-const showSyncHistory = ref(false)
-const selectedRepoId = ref<number | null>(null)
-const selectedRepoName = ref('')
 
 const tabOptions = [
   { name: 'all', label: '全部' },
@@ -203,15 +193,6 @@ const getRepoIcon = (type: string) => {
     case 'proxy': return 'fa-solid fa-rotate'
     case 'virtual': return 'fa-solid fa-wand-magic-sparkles'
     default: return 'fa-solid fa-box'
-  }
-}
-
-const getSyncStatusClass = (status: string) => {
-  switch (status) {
-    case 'success': return 'sync-tag--success'
-    case 'failed': return 'sync-tag--failed'
-    case 'partial': return 'sync-tag--partial'
-    default: return 'sync-tag--pending'
   }
 }
 
@@ -247,14 +228,6 @@ const getHealthTooltip = (row: LocalRepository) => {
   return '健康状态未知，等待首次检查完成'
 }
 
-const handleProxyCommand = (cmd: string, row: LocalRepository) => {
-  if (cmd === 'sync') {
-    handleSyncMetadata(row)
-  } else if (cmd === 'history') {
-    openSyncHistory(row)
-  }
-}
-
 const loadRepos = async () => {
   loading.value = true
   try {
@@ -275,12 +248,6 @@ const openCreateDialog = () => {
 const openEditDialog = (repo: Repository) => {
   editingRepo.value = { ...repo }
   showDialog.value = true
-}
-
-const openSyncHistory = (repo: Repository) => {
-  selectedRepoId.value = repo.id
-  selectedRepoName.value = repo.display_name || repo.name
-  showSyncHistory.value = true
 }
 
 const handleFormSubmit = () => {
@@ -315,60 +282,6 @@ const toggleEnabled = async (repo: Repository, enabled: boolean) => {
     loadRepos()
   } catch (err) {
     ElMessage.error('状态更新失败')
-  }
-}
-
-const handleSyncMetadata = async (repo: LocalRepository) => {
-  try {
-    repo.syncing = true
-    const task = await repositoryApi.triggerSync(repo.name)
-
-    ElMessage.success('同步任务已启动')
-
-    // 轮询任务状态
-    pollSyncTaskStatus(task.id)
-  } catch (error: any) {
-    ElMessage.error(error.response?.data?.message || '启动同步失败')
-  } finally {
-    repo.syncing = false
-  }
-}
-
-const pollSyncTaskStatus = async (taskId: number) => {
-  const poll = async () => {
-    try {
-      const task = await repositoryApi.getSyncTaskStatus(String(taskId))
-
-      if (task.status === 'running') {
-        setTimeout(poll, 2000)
-      } else {
-        // 刷新仓库列表
-        await loadRepos()
-
-        if (task.status === 'completed') {
-          ElMessage.success(`同步完成：${task.synced_packages}/${task.total_packages} 个包`)
-        } else if (task.status === 'failed') {
-          ElMessage.error(`同步失败：${task.error_message}`)
-        }
-      }
-    } catch (error) {
-      console.error('Failed to poll task status:', error)
-    }
-  }
-
-  poll()
-}
-
-const getSyncStatusText = (status: string) => {
-  switch (status) {
-    case 'success':
-      return '成功'
-    case 'failed':
-      return '失败'
-    case 'partial':
-      return '部分成功'
-    default:
-      return '未同步'
   }
 }
 
@@ -657,8 +570,8 @@ onMounted(loadRepos)
 }
 
 .type-tag {
-  font-size: 11px;
-  padding: 4px 10px;
+  font-size: 12px;
+  padding: 4px 12px;
   border-radius: 6px;
   font-weight: 500;
   border: none;

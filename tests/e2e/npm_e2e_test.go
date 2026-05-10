@@ -23,25 +23,27 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
 	"github.com/stretchr/testify/assert"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 var (
-	testServer *httptest.Server
-	testDB     *gorm.DB
-	npmAdapter adapter.RepoAwareAdapter
-	repoSvc    *service.RepositoryService
-	pkgRepo    *repository.PackageRepository
-	storageSvc *service.StorageService
+	testServer     *httptest.Server
+	testDB         *gorm.DB
+	npmAdapter     adapter.RepoAwareAdapter
+	repoSvc        *service.RepositoryService
+	pkgRepo        *repository.PackageRepository
+	storageSvc     *service.StorageService
+	npmRepoHandler *proxy.RepoHandler
 )
 
 func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
 
 	var err error
-	testDB, err = gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	testDB, err = gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		panic(err)
 	}
@@ -75,16 +77,25 @@ func TestMain(m *testing.M) {
 	repoRepo := repository.NewRepositoryRepository(testDB)
 	groupRepo := repository.NewGroupRepository(testDB)
 
-	auditSvc := service.NewAuditService()
 	repoSvc = service.NewRepositoryService(repoRepo, groupRepo, testDB)
 
 	cacheSvc := proxy.NewCacheService()
 	dnsResolver := proxy.NewDNSResolver(nil)
 	tm := proxy.NewTransportManager(30*time.Second, dnsResolver)
 	remoteClient := proxy.NewRemoteClient(tm, 5)
-	proxyRouter := proxy.NewProxyRouter(testDB, cacheSvc, remoteClient, repoRepo, groupRepo, nil)
+	proxyDownloader := proxy.NewProxyDownloader(cacheSvc, remoteClient, nil)
 
-	npmAdapter = adapter.NewNpmAdapter(pkgRepo, storageSvc, auditSvc, proxyRouter, nil, nil)
+	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
+	npmRepoHandler = proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
+
+	auditSvc := service.NewAuditService()
+	npmAdapter = adapter.NewNpmAdapter(pkgRepo, repoRepo, storageSvc, auditSvc)
+	npmRepoHandler.RegisterAdapter("npm", npmAdapter)
+
+	logRepo := repository.NewProxyDownloadLogRepository(testDB)
+	countBatcher := service.NewDownloadCountBatcher(testDB, 5*time.Second)
+	proxyDownloadSvc := service.NewProxyDownloadService(pkgRepo, storageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	npmRepoHandler.SetDownloadService(proxyDownloadSvc)
 
 	router := setupRouter()
 	testServer = httptest.NewServer(router)
@@ -110,8 +121,8 @@ func setupRouter() *gin.Engine {
 		}
 	}
 
-	repoRouter := handler.NewRepoRouter(repoSvc, nil)
-	repoRouter.RegisterAdapter("npm", npmAdapter)
+	repoRouter := handler.NewRepoRouter(repoSvc)
+	repoRouter.SetResolver(npmRepoHandler)
 
 	repoGroup := router.Group("/repo/:repoName")
 	{
@@ -120,7 +131,7 @@ func setupRouter() *gin.Engine {
 		repoGroup.DELETE("/*path", authMw, permMw("npm", "delete"), repoRouter.HandleDelete)
 	}
 
-	repoHandler := handler.NewRepositoryHandler(repoSvc, nil, nil)
+	repoHandler := handler.NewRepositoryHandler(repoSvc)
 	repoAPI := router.Group("/api/repositories")
 	{
 		repoAPI.GET("", repoHandler.List)
@@ -408,9 +419,11 @@ func TestE2E_GetVirtualMembers(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 
-	var result []map[string]interface{}
+	var result map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&result)
-	assert.GreaterOrEqual(t, len(result), 1)
+
+	data := result["data"].([]interface{})
+	assert.GreaterOrEqual(t, len(data), 1)
 }
 
 func TestE2E_RemoveVirtualMember(t *testing.T) {

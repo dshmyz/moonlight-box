@@ -8,14 +8,14 @@ import (
 )
 
 type CacheRegistryInfo struct {
-	Name        string      `json:"name"`
-	Type        string      `json:"type"`
-	Description string      `json:"description"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Description string `json:"description"`
 }
 
 type CacheManager struct {
-	mu      sync.RWMutex
-	caches  map[string]CacheProvider
+	mu     sync.RWMutex
+	caches map[string]CacheProvider
 }
 
 func NewCacheManager() *CacheManager {
@@ -104,6 +104,16 @@ func (m *CacheManager) StatsAll(ctx context.Context) map[string]*CacheStats {
 		result[name] = p.Stats(ctx)
 	}
 	return result
+}
+
+func (m *CacheManager) DeleteKeyFromAll(ctx context.Context, key string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, p := range m.caches {
+		p.Delete(ctx, key)
+	}
+	return nil
 }
 
 func (m *CacheManager) ListAllItems(offset, limit int, search string, cacheType string) ([]CacheItemWithSource, int) {
@@ -220,7 +230,88 @@ func (w *MemoryCacheWrapper) Stats(ctx context.Context) *CacheStats {
 }
 
 func (w *MemoryCacheWrapper) ListItems(offset, limit int, search string) ([]CacheItem, int) {
-	return nil, 0
+	now := time.Now()
+	type itemSnapshot struct {
+		key       string
+		expiresAt time.Time
+		value     interface{}
+	}
+
+	var snapshots []itemSnapshot
+
+	for _, shard := range w.cache.shards {
+		shard.mu.RLock()
+		for key, item := range shard.items {
+			snapshots = append(snapshots, itemSnapshot{
+				key:       key,
+				expiresAt: item.ExpiresAt,
+				value:     item.Value,
+			})
+		}
+		shard.mu.RUnlock()
+	}
+
+	var allItems []CacheItem
+	for _, snap := range snapshots {
+		if search != "" && !containsIgnoreCase(snap.key, search) {
+			continue
+		}
+
+		isExpired := false
+		var remainingTTL int64
+		var expiry time.Time
+
+		if !snap.expiresAt.IsZero() {
+			expiry = snap.expiresAt
+			isExpired = now.After(snap.expiresAt)
+			if !isExpired {
+				remainingTTL = int64(snap.expiresAt.Sub(now).Seconds())
+			}
+		}
+
+		size := int64(0)
+		if snap.value != nil {
+			if s, ok := snap.value.(interface{ Size() int64 }); ok {
+				size = s.Size()
+			}
+		}
+
+		contentType := ""
+		if snap.value != nil {
+			if ct, ok := snap.value.(interface{ ContentType() string }); ok {
+				contentType = ct.ContentType()
+			}
+		}
+
+		allItems = append(allItems, CacheItem{
+			Key:          snap.key,
+			Size:         size,
+			ContentType:  contentType,
+			IsNegative:   false,
+			Expiry:       expiry,
+			RemainingTTL: remainingTTL,
+			IsExpired:    isExpired,
+		})
+	}
+
+	total := len(allItems)
+
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset >= len(allItems) {
+		return []CacheItem{}, total
+	}
+
+	end := offset + limit
+	if end > len(allItems) {
+		end = len(allItems)
+	}
+
+	return allItems[offset:end], total
 }
 
 func containsIgnoreCase(s, substr string) bool {

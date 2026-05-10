@@ -31,11 +31,6 @@ export interface Repository {
   created_at: string
   updated_at: string
   members?: RepositoryGroup[] | string[]
-  metadata_sync_enabled?: boolean
-  metadata_sync_interval?: number
-  sync_mode?: 'metadata_only' | 'full'
-  last_metadata_sync_at?: string
-  last_sync_status?: string
   url?: string
   storage_backend_id?: number
 }
@@ -46,27 +41,6 @@ export interface RepositoryGroup {
   member_repo_id: number
   priority: number
   member_repo: Repository
-}
-
-export interface SyncConfig {
-  metadata_sync_enabled: boolean
-  metadata_sync_interval: number
-  sync_mode: 'metadata_only' | 'full'
-}
-
-export interface SyncTask {
-  id: number
-  repository_id: number
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-  started_at: string
-  completed_at?: string
-  total_packages: number
-  synced_packages: number
-  failed_packages: number
-  skipped_packages: number
-  error_message: string
-  trigger_type: 'manual' | 'scheduled'
-  triggered_by?: number
 }
 
 export interface HealthStatus {
@@ -128,27 +102,6 @@ export const repositoryApi = {
 
   removeMember(name: string, memberName: string) {
     return request.delete(`/repositories/${name}/members/${memberName}`)
-  },
-
-  // 元数据同步相关 API
-  triggerSync(name: string) {
-    return request.post<SyncTask>(`/repositories/${name}/sync`)
-  },
-
-  getSyncHistory(name: string) {
-    return request.get<SyncTask[]>(`/repositories/${name}/sync/history`)
-  },
-
-  getSyncTaskStatus(taskId: string) {
-    return request.get<SyncTask>(`/sync-tasks/${taskId}`)
-  },
-
-  updateSyncConfig(name: string, config: SyncConfig) {
-    return request.put(`/repositories/${name}/sync-config`, config)
-  },
-
-  cancelSyncTask(taskId: string) {
-    return request.post(`/sync-tasks/${taskId}/cancel`)
   },
 
   // 健康检查相关 API

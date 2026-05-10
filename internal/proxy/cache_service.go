@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -34,6 +35,8 @@ type CacheShard struct {
 	maxItems  int
 	maxBytes  int64
 	usedBytes int64
+	hits      int64
+	misses    int64
 }
 
 type CacheService struct {
@@ -161,6 +164,8 @@ func (c *CacheService) GetStats(ctx context.Context) (map[string]interface{}, er
 	negativeItems := 0
 	totalSize := int64(0)
 	usedBytes := int64(0)
+	totalHits := int64(0)
+	totalMisses := int64(0)
 
 	for _, shard := range c.shards {
 		shard.mu.RLock()
@@ -174,7 +179,15 @@ func (c *CacheService) GetStats(ctx context.Context) (map[string]interface{}, er
 		}
 		usedBytes += shard.usedBytes
 		totalItems += shard.lruList.Len()
+		totalHits += shard.hits
+		totalMisses += shard.misses
 		shard.mu.RUnlock()
+	}
+
+	hitRate := 0.0
+	totalRequests := totalHits + totalMisses
+	if totalRequests > 0 {
+		hitRate = float64(totalHits) / float64(totalRequests) * 100
 	}
 
 	return map[string]interface{}{
@@ -186,6 +199,9 @@ func (c *CacheService) GetStats(ctx context.Context) (map[string]interface{}, er
 		"max_bytes":      c.maxBytes,
 		"max_items":      c.maxItems,
 		"num_shards":     c.numShards,
+		"hits":           totalHits,
+		"misses":         totalMisses,
+		"hit_rate":       hitRate,
 	}, nil
 }
 
@@ -276,26 +292,7 @@ func containsIgnoreCase(s, substr string) bool {
 	if substr == "" {
 		return true
 	}
-	sLower := make([]byte, len(s))
-	copy(sLower, s)
-	for i := range sLower {
-		if sLower[i] >= 'A' && sLower[i] <= 'Z' {
-			sLower[i] = sLower[i] + 32
-		}
-	}
-	substrLower := make([]byte, len(substr))
-	copy(substrLower, substr)
-	for i := range substrLower {
-		if substrLower[i] >= 'A' && substrLower[i] <= 'Z' {
-			substrLower[i] = substrLower[i] + 32
-		}
-	}
-	for i := 0; i <= len(sLower)-len(substrLower); i++ {
-		if string(sLower[i:i+len(substrLower)]) == string(substrLower) {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
 
 func (s *CacheShard) get(key string) (*CacheItem, error) {
@@ -303,40 +300,48 @@ func (s *CacheShard) get(key string) (*CacheItem, error) {
 	entry, ok := s.store[key]
 	if !ok {
 		s.mu.RUnlock()
+		s.mu.Lock()
+		s.misses++
+		s.mu.Unlock()
 		return nil, fmt.Errorf("cache miss: %s", key)
 	}
 
 	if time.Now().After(entry.expiry) {
 		s.mu.RUnlock()
 		s.mu.Lock()
-		s.removeEntry(key, entry)
+		s.misses++
+		if entry, exists := s.store[key]; exists && time.Now().After(entry.expiry) {
+			s.removeEntry(key, entry)
+		}
 		s.mu.Unlock()
 		return nil, fmt.Errorf("cache expired: %s", key)
 	}
 
-	if elem, ok := s.lruIndex[key]; ok {
-		s.mu.RUnlock()
-		s.mu.Lock()
-		s.lruList.MoveToFront(elem)
-		s.mu.Unlock()
-	} else {
-		s.mu.RUnlock()
-	}
-
+	var result *CacheItem
 	if entry.isNegative {
-		return &CacheItem{
+		result = &CacheItem{
 			Key:        key,
 			IsNegative: true,
-		}, nil
+		}
+	} else {
+		result = &CacheItem{
+			Key:         key,
+			Content:     entry.content,
+			ContentType: entry.contentType,
+			Size:        entry.size,
+			IsNegative:  false,
+		}
 	}
+	s.mu.RUnlock()
 
-	return &CacheItem{
-		Key:         key,
-		Content:     entry.content,
-		ContentType: entry.contentType,
-		Size:        entry.size,
-		IsNegative:  false,
-	}, nil
+	s.mu.Lock()
+	s.hits++
+	if elem, ok := s.lruIndex[key]; ok {
+		s.lruList.MoveToFront(elem)
+	}
+	s.mu.Unlock()
+
+	return result, nil
 }
 
 func (s *CacheShard) set(item *CacheItem, ttl time.Duration) error {

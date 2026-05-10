@@ -1,30 +1,24 @@
 package handler
 
 import (
-	"github.com/moonlight-box/registry/internal/response"
 	"fmt"
-	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	apperr "github.com/moonlight-box/registry/internal/errors"
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 )
 
 // RepositoryHandler 仓库管理处理器
 type RepositoryHandler struct {
-	svc             *service.RepositoryService
-	metadataSyncSvc *service.MetadataSyncService
-	schedulerSvc    *service.SchedulerService
+	svc *service.RepositoryService
 }
 
 // NewRepositoryHandler 创建仓库管理处理器实例
-func NewRepositoryHandler(svc *service.RepositoryService, metadataSyncSvc *service.MetadataSyncService, schedulerSvc *service.SchedulerService) *RepositoryHandler {
+func NewRepositoryHandler(svc *service.RepositoryService) *RepositoryHandler {
 	return &RepositoryHandler{
-		svc:             svc,
-		metadataSyncSvc: metadataSyncSvc,
-		schedulerSvc:    schedulerSvc,
+		svc: svc,
 	}
 }
 
@@ -48,6 +42,12 @@ func fillRepositoryURLs(repos []model.Repository, scheme string, host string) {
 	}
 }
 
+func fillRepositoryListURLs(repos []service.RepositoryListView, scheme string, host string) {
+	for i := range repos {
+		fillRepositoryURL(&repos[i].Repository, scheme, host)
+	}
+}
+
 // getSchemeAndHost 从请求中获取协议和主机
 func getSchemeAndHost(c *gin.Context) (string, string) {
 	scheme := "http"
@@ -67,14 +67,14 @@ func (h *RepositoryHandler) List(c *gin.Context) {
 		filter["type"] = repoType
 	}
 
-	repos, err := h.svc.List(filter)
+	repos, err := h.svc.ListWithHealth(filter)
 	if err != nil {
 		response.InternalError(c, "Failed to list repositories")
 		return
 	}
 
 	scheme, host := getSchemeAndHost(c)
-	fillRepositoryURLs(repos, scheme, host)
+	fillRepositoryListURLs(repos, scheme, host)
 
 	for i := range repos {
 		repos[i].AuthConfig = repos[i].MaskAuthConfig()
@@ -229,158 +229,6 @@ func (h *RepositoryHandler) RemoveMember(c *gin.Context) {
 	response.Success(c, gin.H{"message": "Member removed"})
 }
 
-// TriggerMetadataSync 手动触发元数据同步
-func (h *RepositoryHandler) TriggerMetadataSync(c *gin.Context) {
-	name := c.Param("name")
-
-	repo, err := h.svc.Get(name)
-	if err != nil {
-		response.NotFound(c, "Repository not found")
-		return
-	}
-
-	if repo.Type != model.RepoTypeProxy {
-		response.BadRequest(c, "Only proxy repository supports metadata sync", "")
-		return
-	}
-
-	userID, exists := c.Get("userID")
-	if !exists {
-		response.Unauthorized(c, "User not authenticated")
-		return
-	}
-
-	uid, ok := userID.(uint)
-	if !ok {
-		response.InternalError(c, "Invalid user ID type")
-		return
-	}
-
-	task, err := h.metadataSyncSvc.TriggerManualSync(repo.ID, uid)
-	if err != nil {
-		if apperr.IsDuplicate(err) {
-			response.Conflict(c, "A sync task is already running")
-			return
-		}
-		response.InternalError(c, "Failed to trigger metadata sync")
-		return
-	}
-
-	response.Success(c, task)
-}
-
-// GetSyncHistory 获取同步历史
-func (h *RepositoryHandler) GetSyncHistory(c *gin.Context) {
-	repoIDStr := c.Param("id")
-	repoID, err := strconv.ParseUint(repoIDStr, 10, 32)
-	if err != nil {
-		response.BadRequest(c, "Invalid repository ID", "")
-		return
-	}
-
-	limitStr := c.DefaultQuery("limit", "20")
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil {
-		limit = 20
-	}
-
-	tasks, err := h.metadataSyncSvc.GetRepositorySyncHistory(uint(repoID), limit)
-	if err != nil {
-		response.InternalError(c, "Failed to get sync history")
-		return
-	}
-
-	response.Success(c, tasks)
-}
-
-// GetSyncTaskStatus 获取同步任务状态
-func (h *RepositoryHandler) GetSyncTaskStatus(c *gin.Context) {
-	taskIDStr := c.Param("taskId")
-	taskID, err := strconv.ParseUint(taskIDStr, 10, 32)
-	if err != nil {
-		response.BadRequest(c, "Invalid task ID", "")
-		return
-	}
-
-	task, err := h.metadataSyncSvc.GetTaskStatus(uint(taskID))
-	if err != nil {
-		response.NotFound(c, "Task not found")
-		return
-	}
-
-	response.Success(c, task)
-}
-
-// CancelSyncTask 取消同步任务
-func (h *RepositoryHandler) CancelSyncTask(c *gin.Context) {
-	taskIDStr := c.Param("taskId")
-	taskID, err := strconv.ParseUint(taskIDStr, 10, 32)
-	if err != nil {
-		response.BadRequest(c, "Invalid task ID", "")
-		return
-	}
-
-	if err := h.metadataSyncSvc.CancelTask(uint(taskID)); err != nil {
-		response.InternalError(c, "Failed to cancel task")
-		return
-	}
-
-	response.Success(c, gin.H{"message": "Task cancelled"})
-}
-
-// UpdateMetadataSyncConfig 更新元数据同步配置
-func (h *RepositoryHandler) UpdateMetadataSyncConfig(c *gin.Context) {
-	name := c.Param("name")
-
-	var req struct {
-		Enabled  bool `json:"enabled"`
-		Interval int  `json:"interval"` // 秒
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request", "")
-		return
-	}
-
-	// 获取仓库信息
-	repo, err := h.svc.Get(name)
-	if err != nil {
-		response.NotFound(c, "Repository not found")
-		return
-	}
-
-	// 更新仓库配置
-	updates := map[string]interface{}{
-		"metadata_sync_enabled":  req.Enabled,
-		"metadata_sync_interval": req.Interval,
-	}
-
-	if err := h.svc.Update(repo.Name, updates); err != nil {
-		response.InternalError(c, "Failed to update metadata sync config")
-		return
-	}
-
-	// 更新调度任务
-	if h.schedulerSvc != nil {
-		if req.Enabled {
-			interval := time.Duration(req.Interval) * time.Second
-			if interval <= 0 {
-				interval = time.Hour
-			}
-			if err := h.schedulerSvc.ScheduleMetadataSync(repo.ID, interval); err != nil {
-				response.InternalError(c, "Failed to schedule metadata sync")
-				return
-			}
-		} else {
-			if err := h.schedulerSvc.RemoveMetadataSync(repo.ID); err != nil {
-				// 任务可能不存在，忽略错误
-			}
-		}
-	}
-
-	response.Success(c, gin.H{"message": "Metadata sync config updated"})
-}
-
 // RegisterRoutes 注册路由
 func (h *RepositoryHandler) RegisterRoutes(protected *gin.RouterGroup, roleRepo interface{}, permMw func(resource, action string) gin.HandlerFunc) {
 	// 仓库管理
@@ -398,10 +246,6 @@ func (h *RepositoryHandler) RegisterRoutes(protected *gin.RouterGroup, roleRepo 
 		reposWrite.POST("", h.Create)
 		reposWrite.PUT("/:name", h.Update)
 		reposWrite.POST("/:name/members", h.AddMember)
-
-		// 元数据同步相关路由
-		reposWrite.POST("/:id/metadata-sync", h.TriggerMetadataSync)
-		reposWrite.PUT("/:id/metadata-sync-config", h.UpdateMetadataSyncConfig)
 	}
 
 	reposDelete := protected.Group("/repositories")
@@ -409,20 +253,5 @@ func (h *RepositoryHandler) RegisterRoutes(protected *gin.RouterGroup, roleRepo 
 	{
 		reposDelete.DELETE("/:name", h.Delete)
 		reposDelete.DELETE("/:name/members/:memberName", h.RemoveMember)
-	}
-
-	// 同步历史和任务状态（读取权限）
-	syncRead := protected.Group("/repositories")
-	syncRead.Use(permMw("repositories", "read"))
-	{
-		syncRead.GET("/:id/sync-history", h.GetSyncHistory)
-		syncRead.GET("/sync-tasks/:taskId", h.GetSyncTaskStatus)
-	}
-
-	// 取消任务（写入权限）
-	syncWrite := protected.Group("/repositories")
-	syncWrite.Use(permMw("repositories", "write"))
-	{
-		syncWrite.POST("/sync-tasks/:taskId/cancel", h.CancelSyncTask)
 	}
 }

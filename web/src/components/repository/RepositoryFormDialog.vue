@@ -52,16 +52,6 @@
           <TimeoutConfigForm :form="formData" />
         </el-tab-pane>
 
-        <el-tab-pane v-if="formData.type === 'proxy'" name="sync">
-          <template #label>
-            <span class="tab-label">
-              <el-icon><Refresh /></el-icon>
-              元数据同步
-            </span>
-          </template>
-          <MetadataSyncConfigForm :form="formData" />
-        </el-tab-pane>
-
         <el-tab-pane name="cache">
           <template #label>
             <span class="tab-label">
@@ -119,7 +109,7 @@
 import { ref, computed, watch } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage } from 'element-plus'
-import { Document, Link, Setting, Coin, Lock, Connection, Refresh } from '@element-plus/icons-vue'
+import { Document, Link, Setting, Coin, Lock, Connection } from '@element-plus/icons-vue'
 import { repositoryApi, type Repository, type FailureCacheRule } from '@/api/repository'
 import BasicInfoForm from './BasicInfoForm.vue'
 import AuthConfigForm from './AuthConfigForm.vue'
@@ -127,7 +117,6 @@ import TimeoutConfigForm from './TimeoutConfigForm.vue'
 import CacheConfigForm from './CacheConfigForm.vue'
 import PermissionsConfigForm from './PermissionsConfigForm.vue'
 import VirtualMembersForm from './VirtualMembersForm.vue'
-import MetadataSyncConfigForm from './MetadataSyncConfigForm.vue'
 
 interface Props {
   modelValue: boolean
@@ -173,9 +162,6 @@ interface RepoFormData {
   failure_cache_rules: string
   allow_overwrite: boolean
   allow_delete: boolean
-  metadata_sync_enabled: boolean
-  metadata_sync_interval: number
-  sync_mode: 'metadata_only' | 'full'
 }
 
 const defaultFormData = (): RepoFormData => ({
@@ -198,9 +184,6 @@ const defaultFormData = (): RepoFormData => ({
   failure_cache_rules: '',
   allow_overwrite: false,
   allow_delete: false,
-  metadata_sync_enabled: false,
-  metadata_sync_interval: 3600,
-  sync_mode: 'metadata_only',
 })
 
 const formData = ref<RepoFormData>(defaultFormData())
@@ -270,9 +253,6 @@ watch(
           : '',
         allow_overwrite: repo.allow_overwrite ?? false,
         allow_delete: repo.allow_delete ?? false,
-        metadata_sync_enabled: repo.metadata_sync_enabled ?? false,
-        metadata_sync_interval: repo.metadata_sync_interval ?? 3600,
-        sync_mode: repo.sync_mode ?? 'metadata_only',
       }
 
       storageBackendId.value = repo.storage_backend_id || null
@@ -363,9 +343,6 @@ const buildSubmitData = (): Partial<Repository> => {
     data.max_redirects = formData.value.max_redirects
     data.insecure_skip_verify = formData.value.insecure_skip_verify
     data.failure_cache_rules = failureCacheRules
-    data.metadata_sync_enabled = formData.value.metadata_sync_enabled
-    data.metadata_sync_interval = formData.value.metadata_sync_interval
-    data.sync_mode = formData.value.sync_mode
   }
 
   if (formData.value.type === 'local' || formData.value.type === 'proxy') {

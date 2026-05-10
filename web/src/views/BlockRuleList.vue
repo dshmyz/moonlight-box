@@ -381,7 +381,7 @@ const handleSubmit = async () => {
 const confirmDeleteRule = async (row: BlockRule) => {
   const ok = await confirm({
     title: '删除确认',
-    message: `确定要删除规则 "${row.name}" 吗？`,
+    message: `确定要删除规则 "${row.package_name}" 吗？`,
     type: 'warning',
   })
   if (ok) {

@@ -82,23 +82,28 @@ func (h *CacheHandler) DeleteItem(c *gin.Context) {
 	}
 
 	name := c.Param("name")
-	if name == "" {
-		response.BadRequest(c, "cache name is required", nil)
+	if name != "" {
+		p, ok := h.cacheMgr.Get(name)
+		if !ok {
+			response.NotFound(c, "cache not found")
+			return
+		}
+
+		if err := p.Delete(c.Request.Context(), key); err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+
+		response.Success(c, gin.H{"message": "Cache item deleted"})
 		return
 	}
 
-	p, ok := h.cacheMgr.Get(name)
-	if !ok {
-		response.NotFound(c, "cache not found")
-		return
-	}
-
-	if err := p.Delete(c.Request.Context(), key); err != nil {
+	if err := h.cacheMgr.DeleteKeyFromAll(c.Request.Context(), key); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
 
-	response.Success(c, gin.H{"message": "Cache item deleted"})
+	response.Success(c, gin.H{"message": "Cache item deleted from all caches"})
 }
 
 func (h *CacheHandler) CleanupExpired(c *gin.Context) {

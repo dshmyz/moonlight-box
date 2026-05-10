@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/moonlight-box/registry/internal/cache"
@@ -66,5 +67,79 @@ func (p *RepositoryCacheProvider) Stats(ctx context.Context) *cache.CacheStats {
 }
 
 func (p *RepositoryCacheProvider) ListItems(offset, limit int, search string) ([]cache.CacheItem, int) {
-	return nil, 0
+	now := time.Now()
+
+	p.cache.mu.RLock()
+	defer p.cache.mu.RUnlock()
+
+	var items []cache.CacheItem
+
+	for name, entry := range p.cache.repos {
+		if search != "" && !containsIgnoreCaseRepo(name, search) {
+			continue
+		}
+
+		isExpired := now.After(entry.expiresAt)
+		var remainingTTL int64
+		if !isExpired {
+			remainingTTL = int64(entry.expiresAt.Sub(now).Seconds())
+		}
+
+		items = append(items, cache.CacheItem{
+			Key:          fmt.Sprintf("repo:name:%s", name),
+			Size:         0,
+			ContentType:  "repository",
+			IsNegative:   false,
+			Expiry:       entry.expiresAt,
+			RemainingTTL: remainingTTL,
+			IsExpired:    isExpired,
+			Metadata: map[string]interface{}{
+				"repo_id":   entry.repo.ID,
+				"repo_type": entry.repo.Type,
+			},
+		})
+	}
+
+	for repoID, entries := range p.cache.members {
+		key := fmt.Sprintf("repo:members:%d", repoID)
+		if search != "" && !containsIgnoreCaseRepo(key, search) {
+			continue
+		}
+
+		var expiry time.Time
+		isExpired := true
+		if len(entries) > 0 {
+			expiry = entries[0].expiresAt
+			isExpired = now.After(expiry)
+		}
+
+		var remainingTTL int64
+		if !isExpired {
+			remainingTTL = int64(expiry.Sub(now).Seconds())
+		}
+
+		items = append(items, cache.CacheItem{
+			Key:          key,
+			Size:         0,
+			ContentType:  "repository",
+			IsNegative:   false,
+			Expiry:       expiry,
+			RemainingTTL: remainingTTL,
+			IsExpired:    isExpired,
+			Metadata: map[string]interface{}{
+				"member_count": len(entries),
+			},
+		})
+	}
+
+	return cache.ListItemsPaginator(items, offset, limit)
+}
+
+func containsIgnoreCaseRepo(s, substr string) bool {
+	if substr == "" {
+		return true
+	}
+	sLower := strings.ToLower(s)
+	substrLower := strings.ToLower(substr)
+	return strings.Contains(sLower, substrLower)
 }

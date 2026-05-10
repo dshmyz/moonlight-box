@@ -269,6 +269,20 @@ func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
 		return
 	}
 
+	if a.fetcher != nil && repo != nil && repo.Type == "proxy" {
+		slog.Info("PyPI proxy: fetching from remote", "filename", actualFilename, "name", name)
+		result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, "pypi", name, actualFilename)
+		if fetchErr == nil && result != nil {
+			defer result.Content.Close()
+			slog.Info("PyPI proxy: successfully fetched from remote", "filename", actualFilename, "size", result.Size)
+			contentType := a.storageSvc.GetContentType(actualFilename)
+			c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, actualFilename))
+			c.DataFromReader(200, result.Size, contentType, result.Content, nil)
+			return
+		}
+		slog.Warn("PyPI proxy: failed to fetch from remote", "filename", actualFilename, "error", fetchErr)
+	}
+
 	response.NotFound(c, "package not found")
 }
 

@@ -18,6 +18,7 @@ type RepositoryCache struct {
 	repoRepo  *repository.RepositoryRepository
 	groupRepo *repository.GroupRepository
 	ttl       time.Duration
+	stopCh    chan struct{}
 }
 
 type repositoryCacheEntry struct {
@@ -42,6 +43,7 @@ func NewRepositoryCache(repoRepo *repository.RepositoryRepository, groupRepo *re
 		repoRepo:  repoRepo,
 		groupRepo: groupRepo,
 		ttl:       ttl,
+		stopCh:    make(chan struct{}),
 	}
 }
 
@@ -238,10 +240,20 @@ func (c *RepositoryCache) StartCleanup(interval time.Duration) {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
-		for range ticker.C {
-			c.cleanup()
+		for {
+			select {
+			case <-ticker.C:
+				c.cleanup()
+			case <-c.stopCh:
+				c.cleanup()
+				return
+			}
 		}
 	}()
+}
+
+func (c *RepositoryCache) Stop() {
+	close(c.stopCh)
 }
 
 func (c *RepositoryCache) cleanup() {

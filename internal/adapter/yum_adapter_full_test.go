@@ -11,13 +11,14 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/stretchr/testify/assert"
-	"gorm.io/driver/sqlite"
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
 	"gorm.io/gorm"
 )
 
 func setupYumAdapter(t *testing.T) (*YumAdapter, *gorm.DB) {
 	gin.SetMode(gin.TestMode)
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("failed to connect database: %v", err)
 	}
@@ -58,7 +59,7 @@ func setupYumAdapter(t *testing.T) (*YumAdapter, *gorm.DB) {
 
 	auditSvc := service.NewAuditService()
 
-	adapter := NewYumAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, nil, nil)
+	adapter := NewYumAdapter(pkgRepo, repoRepo, storageSvc, auditSvc)
 	return adapter, db
 }
 

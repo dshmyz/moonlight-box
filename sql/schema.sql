@@ -31,12 +31,6 @@ CREATE TABLE `repositories` (
   `allow_overwrite` TINYINT(1) NOT NULL DEFAULT 0,
   `allow_delete` TINYINT(1) NOT NULL DEFAULT 0,
   `download_count` BIGINT NOT NULL DEFAULT 0,
-  `metadata_sync_enabled` TINYINT(1) NOT NULL DEFAULT 0,
-  `metadata_sync_interval` INT NOT NULL DEFAULT 3600,
-  `sync_mode` VARCHAR(20) NOT NULL DEFAULT 'metadata_only',
-  `last_metadata_sync_at` TIMESTAMP NULL DEFAULT NULL,
-  `last_sync_status` VARCHAR(20) NOT NULL DEFAULT '',
-  `last_sync_error` TEXT,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_name` (`name`),
@@ -73,8 +67,6 @@ CREATE TABLE `packages` (
   `license` VARCHAR(100) NOT NULL DEFAULT '',
   `download_count` BIGINT NOT NULL DEFAULT 0,
   `created_by` INT UNSIGNED DEFAULT NULL,
-  `metadata_synced` TINYINT(1) NOT NULL DEFAULT 0,
-  `metadata_sync_at` TIMESTAMP NULL DEFAULT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY `idx_pkg_name_type` (`name`, `type`),
@@ -398,27 +390,6 @@ CREATE TABLE `proxy_download_logs` (
   INDEX `idx_status` (`status`),
   INDEX `idx_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='代理下载日志表';
-
--- 元数据同步任务表
-CREATE TABLE `metadata_sync_tasks` (
-  `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  `repository_id` INT UNSIGNED NOT NULL,
-  `status` VARCHAR(20) NOT NULL DEFAULT 'pending',
-  `started_at` TIMESTAMP NULL DEFAULT NULL,
-  `completed_at` TIMESTAMP NULL DEFAULT NULL,
-  `total_packages` INT NOT NULL DEFAULT 0,
-  `synced_packages` INT NOT NULL DEFAULT 0,
-  `failed_packages` INT NOT NULL DEFAULT 0,
-  `skipped_packages` INT NOT NULL DEFAULT 0,
-  `error_message` TEXT,
-  `sync_log` TEXT,
-  `trigger_type` VARCHAR(20) NOT NULL DEFAULT '',
-  `triggered_by` INT UNSIGNED DEFAULT NULL,
-  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX `idx_repository_id` (`repository_id`),
-  INDEX `idx_status` (`status`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='元数据同步任务表';
 
 -- 备份表
 CREATE TABLE `backups` (

@@ -42,14 +42,6 @@ type Repository struct {
 
 	// URL 计算字段，不存储到数据库
 	URL string `json:"url" gorm:"-"`
-
-	// 元数据同步配置
-	MetadataSyncEnabled  bool       `json:"metadata_sync_enabled" gorm:"default:false"`
-	MetadataSyncInterval int        `json:"metadata_sync_interval" gorm:"default:3600"`
-	SyncMode             string     `json:"sync_mode" gorm:"size:20;default:'metadata_only'"`
-	LastMetadataSyncAt   *time.Time `json:"last_metadata_sync_at"`
-	LastSyncStatus       string     `json:"last_sync_status" gorm:"size:20;default:''"`
-	LastSyncError        string     `json:"last_sync_error" gorm:"type:text"`
 }
 
 func (Repository) TableName() string {

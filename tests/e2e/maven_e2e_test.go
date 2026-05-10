@@ -21,25 +21,27 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
 	"github.com/stretchr/testify/assert"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 var (
-	mavenTestServer *httptest.Server
-	mavenTestDB     *gorm.DB
-	mavenAdapter    adapter.RepoAwareAdapter
-	mavenRepoSvc    *service.RepositoryService
-	mavenPkgRepo    *repository.PackageRepository
-	mavenStorageSvc *service.StorageService
+	mavenTestServer  *httptest.Server
+	mavenTestDB      *gorm.DB
+	mavenAdapter     adapter.RepoAwareAdapter
+	mavenRepoSvc     *service.RepositoryService
+	mavenPkgRepo     *repository.PackageRepository
+	mavenStorageSvc  *service.StorageService
+	mavenRepoHandler *proxy.RepoHandler
 )
 
 func setupMavenTestEnv() {
 	gin.SetMode(gin.TestMode)
 
 	var err error
-	mavenTestDB, err = gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	mavenTestDB, err = gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		panic(err)
 	}
@@ -73,16 +75,25 @@ func setupMavenTestEnv() {
 	repoRepo := repository.NewRepositoryRepository(mavenTestDB)
 	groupRepo := repository.NewGroupRepository(mavenTestDB)
 
-	auditSvc := service.NewAuditService()
 	mavenRepoSvc = service.NewRepositoryService(repoRepo, groupRepo, mavenTestDB)
 
 	cacheSvc := proxy.NewCacheService()
 	dnsResolver := proxy.NewDNSResolver(nil)
 	tm := proxy.NewTransportManager(30*time.Second, dnsResolver)
 	remoteClient := proxy.NewRemoteClient(tm, 5)
-	proxyRouter := proxy.NewProxyRouter(mavenTestDB, cacheSvc, remoteClient, repoRepo, groupRepo, nil)
+	proxyDownloader := proxy.NewProxyDownloader(cacheSvc, remoteClient, nil)
 
-	mavenAdapter = adapter.NewMavenAdapter(mavenPkgRepo, repoRepo, mavenStorageSvc, auditSvc, proxyRouter, nil, nil)
+	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
+	mavenRepoHandler = proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
+
+	auditSvc := service.NewAuditService()
+	mavenAdapter = adapter.NewMavenAdapter(mavenPkgRepo, repoRepo, mavenStorageSvc, auditSvc)
+	mavenRepoHandler.RegisterAdapter("maven", mavenAdapter)
+
+	logRepo := repository.NewProxyDownloadLogRepository(mavenTestDB)
+	countBatcher := service.NewDownloadCountBatcher(mavenTestDB, 5*time.Second)
+	proxyDownloadSvc := service.NewProxyDownloadService(mavenPkgRepo, mavenStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	mavenRepoHandler.SetDownloadService(proxyDownloadSvc)
 
 	router := setupMavenRouter()
 	mavenTestServer = httptest.NewServer(router)
@@ -109,8 +120,8 @@ func setupMavenRouter() *gin.Engine {
 		}
 	}
 
-	repoRouter := handler.NewRepoRouter(mavenRepoSvc, nil)
-	repoRouter.RegisterAdapter("maven", mavenAdapter)
+	repoRouter := handler.NewRepoRouter(mavenRepoSvc)
+	repoRouter.SetResolver(mavenRepoHandler)
 
 	repoGroup := router.Group("/repo/:repoName")
 	{
@@ -119,7 +130,7 @@ func setupMavenRouter() *gin.Engine {
 		repoGroup.DELETE("/*path", authMw, permMw("maven", "delete"), repoRouter.HandleDelete)
 	}
 
-	repoHandler := handler.NewRepositoryHandler(mavenRepoSvc, nil, nil)
+	repoHandler := handler.NewRepositoryHandler(mavenRepoSvc)
 	repoAPI := router.Group("/api/repositories")
 	{
 		repoAPI.GET("", repoHandler.List)
@@ -289,6 +300,11 @@ func TestE2E_Maven_ChecksumFiles(t *testing.T) {
 	defer teardownMavenTestEnv()
 
 	jarContent := []byte("test jar for checksum")
+
+	storageKey := "maven2/com.test:checksum-lib/1.0.0/checksum-lib-1.0.0.jar"
+	err := mavenStorageSvc.GetDefaultBackend().Put(context.Background(), storageKey, bytes.NewReader(jarContent), int64(len(jarContent)))
+	assert.Nil(t, err)
+
 	mavenPkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:        "com.test/checksum-lib",
 		Type:        model.PackageTypeMaven,
@@ -296,11 +312,11 @@ func TestE2E_Maven_ChecksumFiles(t *testing.T) {
 	}, &model.PackageVersion{
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: "maven/com.test/checksum-lib/1.0.0",
+		StoragePath: "maven2/com.test:checksum-lib/1.0.0",
 	}, &model.PackageFile{
 		Filename:    "checksum-lib-1.0.0.jar",
 		FileType:    model.FileTypePrimary,
-		StoragePath: "maven/com.test/checksum-lib/1.0.0/checksum-lib-1.0.0.jar",
+		StoragePath: storageKey,
 		SizeBytes:   int64(len(jarContent)),
 	})
 
@@ -483,9 +499,10 @@ func TestE2E_Maven_VirtualRepository(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, 200, membersResp.StatusCode)
 
-	var members []map[string]interface{}
-	parseJSONResponse(membersResp, &members)
-	assert.GreaterOrEqual(t, len(members), 1)
+	var result map[string]interface{}
+	parseJSONResponse(membersResp, &result)
+	data := result["data"].([]interface{})
+	assert.GreaterOrEqual(t, len(data), 1)
 }
 
 func TestE2E_Maven_CompleteWorkflow(t *testing.T) {

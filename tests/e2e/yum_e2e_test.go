@@ -22,7 +22,8 @@ import (
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
 	"github.com/stretchr/testify/assert"
-	"gorm.io/driver/sqlite"
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
 	"gorm.io/gorm"
 )
 
@@ -33,13 +34,14 @@ var (
 	yumRepoSvc    *service.RepositoryService
 	yumPkgRepo    *repository.PackageRepository
 	yumStorageSvc *service.StorageService
+	yumRepoHandler *proxy.RepoHandler
 )
 
 func setupYumTestEnv() {
 	gin.SetMode(gin.TestMode)
 
 	var err error
-	yumTestDB, err = gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	yumTestDB, err = gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		panic(err)
 	}
@@ -73,16 +75,25 @@ func setupYumTestEnv() {
 	repoRepo := repository.NewRepositoryRepository(yumTestDB)
 	groupRepo := repository.NewGroupRepository(yumTestDB)
 
-	auditSvc := service.NewAuditService()
 	yumRepoSvc = service.NewRepositoryService(repoRepo, groupRepo, yumTestDB)
 
 	cacheSvc := proxy.NewCacheService()
 	dnsResolver := proxy.NewDNSResolver(nil)
 	tm := proxy.NewTransportManager(30*time.Second, dnsResolver)
 	remoteClient := proxy.NewRemoteClient(tm, 5)
-	proxyRouter := proxy.NewProxyRouter(yumTestDB, cacheSvc, remoteClient, repoRepo, groupRepo, nil)
+	proxyDownloader := proxy.NewProxyDownloader(cacheSvc, remoteClient, nil)
 
-	yumAdapter = adapter.NewYumAdapter(yumPkgRepo, repoRepo, yumStorageSvc, auditSvc, proxyRouter, nil)
+	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
+	yumRepoHandler = proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
+
+	auditSvc := service.NewAuditService()
+	yumAdapter = adapter.NewYumAdapter(yumPkgRepo, repoRepo, yumStorageSvc, auditSvc)
+	yumRepoHandler.RegisterAdapter("yum", yumAdapter)
+
+	logRepo := repository.NewProxyDownloadLogRepository(yumTestDB)
+	countBatcher := service.NewDownloadCountBatcher(yumTestDB, 5*time.Second)
+	proxyDownloadSvc := service.NewProxyDownloadService(yumPkgRepo, yumStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	yumRepoHandler.SetDownloadService(proxyDownloadSvc)
 
 	router := setupYumRouter()
 	yumTestServer = httptest.NewServer(router)
@@ -109,8 +120,8 @@ func setupYumRouter() *gin.Engine {
 		}
 	}
 
-	repoRouter := handler.NewRepoRouter(yumRepoSvc, nil)
-	repoRouter.RegisterAdapter("yum", yumAdapter)
+	repoRouter := handler.NewRepoRouter(yumRepoSvc)
+	repoRouter.SetResolver(yumRepoHandler)
 
 	repoGroup := router.Group("/repo/:repoName")
 	{
@@ -119,7 +130,7 @@ func setupYumRouter() *gin.Engine {
 		repoGroup.DELETE("/*path", authMw, permMw("yum", "delete"), repoRouter.HandleDelete)
 	}
 
-	repoHandler := handler.NewRepositoryHandler(yumRepoSvc, nil, nil)
+	repoHandler := handler.NewRepositoryHandler(yumRepoSvc)
 	repoAPI := router.Group("/api/repositories")
 	{
 		repoAPI.GET("", repoHandler.List)

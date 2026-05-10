@@ -149,6 +149,24 @@ func main() {
 		Timeout:          cfg.Proxy.HealthCheck.Timeout,
 		FailureThreshold: cfg.Proxy.HealthCheck.FailureThreshold,
 	}
+
+	// 从系统配置中读取健康检查配置（覆盖配置文件中的值）
+	if enabled := configInitializer.GetConfigAsBool("health_check.enabled", true); enabled {
+		healthCheckCfg.Enabled = true
+	} else {
+		healthCheckCfg.Enabled = false
+	}
+	if interval := configInitializer.GetConfigAsInt("health_check.interval", 0); interval > 0 {
+		healthCheckCfg.Interval = time.Duration(interval) * time.Second
+	}
+	if timeout := configInitializer.GetConfigAsInt("health_check.timeout", 0); timeout > 0 {
+		healthCheckCfg.Timeout = time.Duration(timeout) * time.Second
+	}
+	if threshold := configInitializer.GetConfigAsInt("health_check.failure_threshold", 0); threshold > 0 {
+		healthCheckCfg.FailureThreshold = threshold
+	}
+
+	// 使用默认值填充未配置的值
 	if healthCheckCfg.Interval == 0 {
 		healthCheckCfg.Interval = proxy.DefaultHealthCheckConfig().Interval
 	}
@@ -166,8 +184,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 初始化系统配置服务
+	systemConfigSvc := service.NewSystemConfigService(systemConfigRepo)
+
 	// 初始化健康检查服务
-	healthCheckSvc := proxy.NewHealthCheckService(db, repoRepo, storageSvc, remoteClient, healthCheckCfg)
+	healthCheckSvc := proxy.NewHealthCheckService(db, repoRepo, storageSvc, remoteClient, healthCheckCfg, nil)
 
 	// 初始化下载计数批量处理器
 	countBatcher := service.NewDownloadCountBatcher(db, 10*time.Second)
@@ -189,16 +210,25 @@ func main() {
 	// 创建共享的代理下载服务
 	proxyDownloadSvc := service.NewProxyDownloadService(packageRepo, storageSvc, nil, proxyDownloadLogRepo, logBatcher, countBatcher)
 
-	// 初始化适配器（先创建，用于构建 adapter map）
-	npmAdapter := adapter.NewNpmAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
-	mavenAdapter := adapter.NewMavenAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
-	pypiAdapter := adapter.NewPyPIAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadLogRepo, proxyDownloadSvc)
-	goAdapter := adapter.NewGoAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
-	genericAdapter := adapter.NewGenericAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
-	yumAdapter := adapter.NewYumAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
-	aptAdapter := adapter.NewAptAdapter(packageRepo, repoRepo, storageSvc, auditSvc, nil, proxyDownloadSvc)
+	// 初始化缓存管理器
+	cacheMgr := cache.NewCacheManager()
 
-	// 构建 adapter map 用于 ProxyRouter
+	// 初始化权限缓存服务（5分钟TTL）
+	permCacheSvc := service.NewPermissionCacheService(roleRepo, 5*time.Minute)
+
+	// 创建 PackageCache（5分钟TTL）
+	pkgCache := cache.NewPackageCache(packageRepo, 5*time.Minute)
+
+	// 初始化适配器（传入 pkgCache）
+	npmAdapter := adapter.NewNpmAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+	mavenAdapter := adapter.NewMavenAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+	pypiAdapter := adapter.NewPyPIAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+	goAdapter := adapter.NewGoAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+	genericAdapter := adapter.NewGenericAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+	yumAdapter := adapter.NewYumAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+	aptAdapter := adapter.NewAptAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+
+	// 构建 adapter map 用于 ProxyDownloader
 	adapterMap := map[string]types.Adapter{
 		string(types.NpmType):     npmAdapter,
 		string(types.MavenType):   mavenAdapter,
@@ -209,39 +239,25 @@ func main() {
 		string(types.AptType):     aptAdapter,
 	}
 
-	// 初始化缓存管理器
-	cacheMgr := cache.NewCacheManager()
+	// 创建 ProxyDownloader 实例（纯代理下载组件）
+	proxyDownloader := proxy.NewProxyDownloader(cacheSvc, remoteClient, adapterMap)
 
-	// 创建 ProxyRouter 实例
-	proxyRouter := proxy.NewProxyRouter(db, cacheSvc, remoteClient, repoRepo, groupRepo, adapterMap)
+	// 注入健康检查服务到 ProxyDownloader
+	proxyDownloader.SetHealthCheckService(healthCheckSvc)
+
+	// 注入 downloader 到代理下载服务
+	proxyDownloadSvc = service.NewProxyDownloadService(packageRepo, storageSvc, proxyDownloader, proxyDownloadLogRepo, logBatcher, countBatcher)
 
 	// 初始化仓库缓存（5分钟TTL）
 	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
 	repoCache.StartCleanup(1 * time.Minute)
+	defer repoCache.Stop()
 
-	// 注入仓库缓存到 ProxyRouter
-	proxyRouter.SetRepoCache(repoCache)
+	// 创建 RepoHandler（负责仓库请求的统一处理）
+	proxyRepoHandler := proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
+	proxyRepoHandler.SetDownloadService(proxyDownloadSvc)
 
-	// 注入健康检查服务到 ProxyRouter
-	proxyRouter.SetHealthCheckService(healthCheckSvc)
-
-	// 注入 ProxyRouter 到代理下载服务
-	proxyDownloadSvc.SetProxyRouter(proxyRouter)
-
-	// 注入 ProxyRouter 到需要代理的适配器
-	npmAdapter.SetProxyRouter(proxyRouter)
-	mavenAdapter.SetProxyRouter(proxyRouter)
-	pypiAdapter.SetProxyRouter(proxyRouter)
-	goAdapter.SetProxyRouter(proxyRouter)
-	yumAdapter.SetProxyRouter(proxyRouter)
-
-	// 注入日志仓库到需要记录代理下载日志的适配器
-	npmAdapter.SetLogRepo(proxyDownloadLogRepo)
-	mavenAdapter.SetLogRepo(proxyDownloadLogRepo)
-	pypiAdapter.SetLogRepo(proxyDownloadLogRepo)
-	goAdapter.SetLogRepo(proxyDownloadLogRepo)
-
-	adapters := []adapter.RouterAdapter{
+	adapters := []types.Adapter{
 		npmAdapter,
 		mavenAdapter,
 		pypiAdapter,
@@ -255,9 +271,6 @@ func main() {
 	repoSvc.SetRepoCache(repoCache)
 	blockRuleSvc := service.NewBlockRuleService(blockRuleRepo, auditSvc)
 
-	// 初始化权限缓存服务（5分钟TTL）
-	permCacheSvc := service.NewPermissionCacheService(roleRepo, 5*time.Minute)
-
 	// 注册所有缓存到缓存管理器
 	cacheSvcProvider := proxy.NewCacheServiceProvider(cacheSvc, "proxy-content", "代理下载内容缓存")
 	cacheMgr.Register(cacheSvcProvider)
@@ -268,25 +281,13 @@ func main() {
 	permCacheProvider := service.NewPermissionCacheProvider(permCacheSvc, "permission", "权限缓存")
 	cacheMgr.Register(permCacheProvider)
 
-	pkgCache := cache.NewPackageCache(packageRepo, 5*time.Minute)
 	pkgCacheProvider := cache.NewPackageCacheProvider(pkgCache, "package-metadata", "包元数据缓存")
 	cacheMgr.Register(pkgCacheProvider)
 
-	// 注入 PackageCache 到所有适配器
+	// 注入 Fetcher 到所有适配器
 	for _, adap := range adapters {
 		if repoAdap, ok := adap.(adapter.RepoAwareAdapter); ok {
-			repoAdap.SetPackageCache(pkgCache)
-		}
-	}
-
-	// 初始化元数据同步服务
-	metadataSyncTaskRepo := repository.NewMetadataSyncTaskRepository(db)
-	metadataSyncSvc := service.NewMetadataSyncService(db, metadataSyncTaskRepo, repoRepo, packageRepo)
-
-	// 注册适配器到元数据同步服务
-	for _, adap := range adapters {
-		if syncer, ok := adap.(types.MetadataSyncer); ok {
-			metadataSyncSvc.RegisterAdapter(string(adap.Type()), syncer)
+			repoAdap.SetFetcher(proxyDownloader)
 		}
 	}
 
@@ -298,13 +299,14 @@ func main() {
 	webhookRepo := repository.NewWebhookRepository(db)
 	webhookSvc := service.NewWebhookService(webhookRepo)
 
-	// 初始化系统配置服务
-	systemConfigSvc := service.NewSystemConfigService(systemConfigRepo)
+	// 重新初始化系统配置服务（供调度器使用）
+	systemConfigSvc = service.NewSystemConfigService(systemConfigRepo)
 
 	// 初始化调度器服务（需要在 repoHandler 之前创建）
-	schedulerSvc := service.NewSchedulerService(backupSvc, systemConfigSvc, webhookSvc, metadataSyncSvc, repoRepo)
+	schedulerSvc := service.NewSchedulerService(backupSvc, systemConfigSvc, webhookSvc)
 
-	repoHandler := handler.NewRepositoryHandler(repoSvc, metadataSyncSvc, schedulerSvc)
+	repoHandler := handler.NewRepositoryHandler(repoSvc)
+	repoSvc.SetHealthCheckService(healthCheckSvc)
 	cacheHandler := handler.NewCacheHandler(cacheMgr)
 	publicRepoHandler := handler.NewPublicRepoHandler(repoSvc)
 
@@ -358,10 +360,20 @@ func main() {
 	// 初始化文件浏览服务
 	fileBrowseHandler := handler.NewFileBrowseHandler(cfg.Storage.Local.BasePath)
 
-	// 初始化迁移服务
-	migrationSvc := migration.NewMigrationService(db)
-	migrationWorker := migration.NewMigrationWorkerV2(migrationSvc, storageSvc, packageRepo, repoRepo, migrationItemRepo, 5, 3, 50)
-	migrationHandler := handler.NewMigrationHandler(migrationSvc, migrationWorker)
+	// 初始化迁移 worker（先传 nil 作为 service）
+	migrationWorker := migration.NewMigrationWorkerV2(nil, storageSvc, packageRepo, repoRepo, migrationItemRepo, 5, 3, 50)
+
+	// 创建仓库创建器适配器
+	repoCreator := migration.NewRepositoryCreatorAdapter(repoRepo, storageBackendRepo)
+
+	// 初始化迁移 service（注入 worker 和 repoCreator，最大并发 1 个任务）
+	migrationSvc := migration.NewMigrationService(db, migrationWorker, repoCreator, 1)
+	migrationSvc.StartQueue() // 启动队列处理器
+
+	// 设置 worker 的 service 引用
+	migrationWorker.SetService(migrationSvc)
+
+	migrationHandler := handler.NewMigrationHandler(migrationSvc, migrationWorker, repoRepo, storageBackendRepo)
 
 	// 初始化代理下载日志 handler
 	proxyDownloadLogHandler := handler.NewProxyDownloadLogHandler(proxyDownloadLogRepo)
@@ -420,7 +432,7 @@ func main() {
 	}
 
 	// 创建路由器上下文
-	routerCtx := NewRouterContext(cfg, authService, auditSvc, permCacheSvc, blockRuleSvc, repoSvc, adapters)
+	routerCtx := NewRouterContext(cfg, authService, auditSvc, permCacheSvc, blockRuleSvc, repoSvc, proxyRepoHandler, adapters, webhookSvc)
 	routerCtx.RepoCache = repoCache
 	routerCtx.Handlers.Repo = repoHandler
 	routerCtx.Handlers.PublicRepo = publicRepoHandler

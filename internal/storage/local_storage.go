@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -76,6 +77,18 @@ func (s *LocalStorage) Put(ctx context.Context, key string, reader io.Reader, si
 func (s *LocalStorage) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	fullPath := s.resolvePath(key)
 
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, util.ErrPackageNotFound
+		}
+		return nil, err
+	}
+
+	if info.IsDir() {
+		return nil, fmt.Errorf("cannot read directory as file: %s", key)
+	}
+
 	file, err := os.Open(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -138,6 +151,9 @@ func (s *LocalStorage) Size(ctx context.Context, key string) (int64, error) {
 			return 0, util.ErrPackageNotFound
 		}
 		return 0, err
+	}
+	if info.IsDir() {
+		return 0, fmt.Errorf("cannot get size of directory: %s", key)
 	}
 	return info.Size(), nil
 }

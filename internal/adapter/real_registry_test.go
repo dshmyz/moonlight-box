@@ -8,13 +8,14 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
-	"gorm.io/driver/sqlite"
+	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3/gormlite"
 	"gorm.io/gorm"
 )
 
 func setupGoAdapter(t *testing.T) *GoAdapter {
 	gin.SetMode(gin.TestMode)
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("failed to connect database: %v", err)
 	}
@@ -54,7 +55,7 @@ func setupGoAdapter(t *testing.T) *GoAdapter {
 
 	auditSvc := service.NewAuditService()
 
-	adapter := NewGoAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, nil, nil)
+	adapter := NewGoAdapter(pkgRepo, repoRepo, storageSvc, auditSvc)
 	return adapter
 }
 
