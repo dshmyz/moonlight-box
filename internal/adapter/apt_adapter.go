@@ -402,7 +402,7 @@ func parseDebPackageVersion(filename string) string {
 	return "1.0.0"
 }
 
-func (a *AptAdapter) FormatDownloadResponse(c *gin.Context, result *types.RouteResult) {
+func (a *AptAdapter) FormatDownloadResponse(c *gin.Context, result *types.DownloadResult) {
 	contentType := a.storageSvc.GetContentType(result.Filename)
 	c.DataFromReader(200, result.Size, contentType, result.Content, nil)
 }

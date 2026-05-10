@@ -739,7 +739,7 @@ func (a *NpmAdapter) HandleSearch(c *gin.Context) {
 	c.JSON(200, resp)
 }
 
-func (a *NpmAdapter) FormatDownloadResponse(c *gin.Context, result *types.RouteResult) {
+func (a *NpmAdapter) FormatDownloadResponse(c *gin.Context, result *types.DownloadResult) {
 	contentType := a.storageSvc.GetContentType(result.Filename)
 	c.DataFromReader(200, result.Size, contentType, result.Content, nil)
 }

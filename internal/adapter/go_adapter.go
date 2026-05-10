@@ -406,7 +406,7 @@ func decodeGoModulePath(path string) string {
 	return decoded
 }
 
-func (a *GoAdapter) FormatDownloadResponse(c *gin.Context, result *types.RouteResult) {
+func (a *GoAdapter) FormatDownloadResponse(c *gin.Context, result *types.DownloadResult) {
 	contentType := "application/octet-stream"
 	if strings.HasSuffix(result.Filename, ".mod") {
 		contentType = "text/plain"

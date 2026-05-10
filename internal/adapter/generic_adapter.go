@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/moonlight-box/registry/internal/cache"
 	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
@@ -22,8 +22,7 @@ import (
 
 type GenericAdapter struct {
 	*BaseAdapter
-	repoRepo         *repository.RepositoryRepository
-	proxyDownloadSvc *service.ProxyDownloadService
+	repoRepo *repository.RepositoryRepository
 }
 
 type FileEntry struct {
@@ -39,15 +38,12 @@ func NewGenericAdapter(
 	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
-	proxyRouter *proxy.ProxyRouter,
-	proxyDownloadSvc *service.ProxyDownloadService,
+	pkgCache *cache.PackageCache,
 ) *GenericAdapter {
 	adapter := &GenericAdapter{
-		BaseAdapter:      NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc),
-		repoRepo:         repoRepo,
-		proxyDownloadSvc: proxyDownloadSvc,
+		BaseAdapter: NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache),
+		repoRepo:    repoRepo,
 	}
-	adapter.SetProxyRouter(proxyRouter)
 	return adapter
 }
 
@@ -127,13 +123,13 @@ func (a *GenericAdapter) DownloadOrBrowse(c *gin.Context) {
 		return
 	}
 
-	if a.proxyDownloadSvc != nil {
+	if a.fetcher != nil {
 		var repo *model.Repository
 		if r, ok := c.Get("repo"); ok {
 			repo = r.(*model.Repository)
 		}
 
-		if repo != nil {
+		if repo != nil && repo.Type == "proxy" {
 			filename := filepath.Base(filePath)
 			decision := a.CheckDownloadPermission(c, repo, model.PackageTypeGeneric, filePath, "", filename)
 			if !decision.Allow {
@@ -141,26 +137,12 @@ func (a *GenericAdapter) DownloadOrBrowse(c *gin.Context) {
 				return
 			}
 
-			urlBuilder := func(r *model.Repository, pkgName, pkgVersion string) string {
-				baseURL := strings.TrimSuffix(r.RemoteURL, "/")
-				return fmt.Sprintf("%s/%s", baseURL, filePath)
-			}
-
-			req := &service.ProxyDownloadRequest{
-				PkgType:     "generic",
-				Name:        filePath,
-				Version:     "",
-				Filename:    filename,
-				Repo:        repo,
-				URLBuilder:  urlBuilder,
-				PackageType: model.PackageTypeGeneric,
-			}
-
-			result, err := a.proxyDownloadSvc.Download(c.Request.Context(), req)
+			result, err := a.fetcher.FetchFromRemote(c.Request.Context(), repo, "generic", filePath, "")
 			if err == nil && result != nil {
+				defer result.Content.Close()
 				contentType := a.storageSvc.GetContentType(filename)
 				c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, url.PathEscape(filename)))
-				c.Data(200, contentType, result.Content)
+				c.DataFromReader(200, result.Size, contentType, result.Content, nil)
 				return
 			}
 		}
@@ -323,19 +305,6 @@ func (a *GenericAdapter) Upload(ctx context.Context, req *UploadRequest) (*Packa
 	}, nil
 }
 
-func (a *GenericAdapter) Download(ctx context.Context, identity *PackageIdentity) (*PackageContent, error) {
-	reader, size, err := a.storageSvc.GetPackage(ctx, "generic", identity.Name, "1.0.0")
-	if err != nil {
-		return nil, err
-	}
-
-	return &PackageContent{
-		Content:     reader,
-		ContentType: a.storageSvc.GetContentType(identity.Name),
-		Size:        size,
-	}, nil
-}
-
 func (a *GenericAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
 	return a.BaseAdapter.GetPackageMetadata(ctx, name, model.PackageTypeGeneric, GenericType)
 }
@@ -413,7 +382,19 @@ func (a *GenericAdapter) listDirectory(c *gin.Context, backend storage.Backend, 
 	return nil, fileEntries
 }
 
-func (a *GenericAdapter) FormatDownloadResponse(c *gin.Context, result *types.RouteResult) {
+func (a *GenericAdapter) BuildRemotePath(name, version, filename string) string {
+	if filename != "" {
+		return name + "/" + filename
+	}
+	return name
+}
+
+func (a *GenericAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
+	c.Set("repo", ctx.Repo)
+	a.DownloadOrBrowse(c)
+}
+
+func (a *GenericAdapter) FormatDownloadResponse(c *gin.Context, result *types.DownloadResult) {
 	contentType := a.storageSvc.GetContentType(result.Filename)
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, result.Filename))
 	c.DataFromReader(200, result.Size, contentType, result.Content, nil)

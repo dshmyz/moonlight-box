@@ -685,7 +685,7 @@ func normalizePackageName(name string) string {
 	return strings.ToLower(strings.ReplaceAll(name, "_", "-"))
 }
 
-func (a *PyPIAdapter) FormatDownloadResponse(c *gin.Context, result *types.RouteResult) {
+func (a *PyPIAdapter) FormatDownloadResponse(c *gin.Context, result *types.DownloadResult) {
 	contentType := a.storageSvc.GetContentType(result.Filename)
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, result.Filename))
 	c.DataFromReader(200, result.Size, contentType, result.Content, nil)

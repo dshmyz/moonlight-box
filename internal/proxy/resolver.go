@@ -15,11 +15,7 @@ import (
 // RepoRequestHandler 定义仓库请求处理接口
 // 由 adapter 包实现，避免 proxy 包直接依赖 adapter 包
 type RepoRequestHandler interface {
-	HandleRepoRequest(c *gin.Context, repo *model.Repository, path string)
-	HandleRepoPublish(c *gin.Context, repo *model.Repository) *types.RepoOperationResult
-	HandleRepoDelete(c *gin.Context, repo *model.Repository) *types.RepoOperationResult
-	ParsePackagePath(path string) (*types.PackageIdentity, error)
-	FormatDownloadResponse(c *gin.Context, result *RouteResult)
+	types.Adapter
 }
 
 // ProxyFetcher 定义代理获取能力接口
@@ -132,7 +128,16 @@ func (r *RepoHandler) FormatDownloadResponse(c *gin.Context, pkgType string, res
 	if !ok {
 		return fmt.Errorf("unsupported package type: %s", pkgType)
 	}
-	adp.FormatDownloadResponse(c, result)
+	downloadResult := &types.DownloadResult{
+		Content:   result.Content,
+		Size:      result.Size,
+		FromCache: result.FromCache,
+		RepoID:    result.RepoID,
+		Filename:  result.Filename,
+		Name:      result.Name,
+		Version:   result.Version,
+	}
+	adp.FormatDownloadResponse(c, downloadResult)
 	return nil
 }
 
@@ -142,26 +147,48 @@ func (r *RepoHandler) HandleRepoRequest(c *gin.Context, repo *model.Repository, 
 	if !ok {
 		return fmt.Errorf("unsupported package type: %s", repo.PackageType)
 	}
-	adp.HandleRepoRequest(c, repo, path)
+	ctx := &types.RepoRequestContext{
+		Repo: repo,
+		Path: path,
+	}
+	adp.HandleRepoRequest(c, ctx)
 	return nil
 }
 
-// HandleRepoPublish 处理仓库发布请求，内部调用对应 adapter
 func (r *RepoHandler) HandleRepoPublish(c *gin.Context, repo *model.Repository) (*types.RepoOperationResult, error) {
 	adp, ok := r.adapters[repo.PackageType]
 	if !ok {
 		return nil, fmt.Errorf("unsupported package type: %s", repo.PackageType)
 	}
-	return adp.HandleRepoPublish(c, repo), nil
+	ctx := &types.PublishContext{
+		Repo: repo,
+	}
+	result, err := adp.HandlePublish(c, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &types.RepoOperationResult{
+		PackageName: result.PackageName,
+		Version:     result.Version,
+		Size:        result.Size,
+		Filename:    result.Filename,
+		Response:    result.Response,
+	}, nil
 }
 
-// HandleRepoDelete 处理仓库删除请求，内部调用对应 adapter
 func (r *RepoHandler) HandleRepoDelete(c *gin.Context, repo *model.Repository) (*types.RepoOperationResult, error) {
 	adp, ok := r.adapters[repo.PackageType]
 	if !ok {
 		return nil, fmt.Errorf("unsupported package type: %s", repo.PackageType)
 	}
-	return adp.HandleRepoDelete(c, repo), nil
+	ctx := &types.DeleteContext{
+		Repo: repo,
+	}
+	err := adp.HandleDelete(c, ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &types.RepoOperationResult{}, nil
 }
 
 func (r *RepoHandler) resolveLocal(ctx context.Context, repo *model.Repository, pkgType, name, version string) (*RouteResult, error) {

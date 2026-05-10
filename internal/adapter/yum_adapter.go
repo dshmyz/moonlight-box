@@ -747,7 +747,7 @@ func unmarshalMetadata(data string) map[string]interface{} {
 	return meta
 }
 
-func (a *YumAdapter) FormatDownloadResponse(c *gin.Context, result *types.RouteResult) {
+func (a *YumAdapter) FormatDownloadResponse(c *gin.Context, result *types.DownloadResult) {
 	contentType := "application/octet-stream"
 	if strings.HasSuffix(result.Filename, ".xml") {
 		contentType = "application/xml"
