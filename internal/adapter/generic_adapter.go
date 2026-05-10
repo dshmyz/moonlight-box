@@ -50,14 +50,6 @@ func NewGenericAdapter(
 func (a *GenericAdapter) Type() PackageType   { return GenericType }
 func (a *GenericAdapter) RoutePrefix() string { return "/files" }
 
-func (a *GenericAdapter) RegisterRoutes(r *gin.RouterGroup, authMw gin.HandlerFunc, permMw func(resource, action string) gin.HandlerFunc) {
-	{
-		r.POST("/upload", authMw, permMw("generic", "write"), a.UploadFile)
-		r.GET("/*path", a.DownloadOrBrowse)
-		r.DELETE("/*path", authMw, permMw("generic", "delete"), a.DeleteFile)
-	}
-}
-
 func (a *GenericAdapter) ParsePackagePath(path string) (*PackageIdentity, error) {
 	name := strings.TrimPrefix(path, "/")
 	if name == "" {
