@@ -207,9 +207,6 @@ func main() {
 	logCleanupSvc.Start()
 	defer logCleanupSvc.Stop()
 
-	// 创建共享的代理下载服务
-	proxyDownloadSvc := service.NewProxyDownloadService(packageRepo, storageSvc, nil, proxyDownloadLogRepo, logBatcher, countBatcher)
-
 	// 初始化缓存管理器
 	cacheMgr := cache.NewCacheManager()
 
@@ -228,7 +225,7 @@ func main() {
 	yumAdapter := adapter.NewYumAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
 	aptAdapter := adapter.NewAptAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
 
-	// 构建 adapter map 用于 ProxyDownloader
+	// 构建 adapter map 用于 DownloadService
 	adapterMap := map[string]types.Adapter{
 		string(types.NpmType):     npmAdapter,
 		string(types.MavenType):   mavenAdapter,
@@ -239,14 +236,14 @@ func main() {
 		string(types.AptType):     aptAdapter,
 	}
 
+	// 创建 DownloadService
+	downloadSvc := service.NewDownloadService(repoRepo, groupRepo, adapterMap)
+
 	// 创建 ProxyDownloader 实例（纯代理下载组件）
 	proxyDownloader := proxy.NewProxyDownloader(cacheSvc, remoteClient, adapterMap)
 
 	// 注入健康检查服务到 ProxyDownloader
 	proxyDownloader.SetHealthCheckService(healthCheckSvc)
-
-	// 注入 downloader 到代理下载服务
-	proxyDownloadSvc = service.NewProxyDownloadService(packageRepo, storageSvc, proxyDownloader, proxyDownloadLogRepo, logBatcher, countBatcher)
 
 	// 初始化仓库缓存（5分钟TTL）
 	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
@@ -255,7 +252,7 @@ func main() {
 
 	// 创建 RepoHandler（负责仓库请求的统一处理）
 	proxyRepoHandler := proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
-	proxyRepoHandler.SetDownloadService(proxyDownloadSvc)
+	proxyRepoHandler.SetDownloadService(downloadSvc)
 
 	adapters := []types.Adapter{
 		npmAdapter,

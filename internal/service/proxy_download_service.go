@@ -13,6 +13,7 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/moonlight-box/registry/internal/types"
 	"github.com/sirupsen/logrus"
 )
 
@@ -91,26 +92,27 @@ func (r *readCloserWrapper) Close() error {
 	return nil
 }
 
-func (s *ProxyDownloadService) Download(ctx context.Context, req *proxy.DownloadRequest) (*proxy.DownloadResult, error) {
+func (s *ProxyDownloadService) Download(ctx context.Context, downloadCtx *types.DownloadContext) (*types.DownloadResult, error) {
 	result, err := s.downloadInternal(ctx, &ProxyDownloadRequest{
-		PkgType:   req.PkgType,
-		Name:      req.Name,
-		Version:   req.Version,
-		Filename:  req.Filename,
-		Repo:      req.Repo,
-		IPAddress: req.IPAddress,
-		UserAgent: req.UserAgent,
-		UserID:    req.UserID,
+		PkgType:   string(downloadCtx.PkgType),
+		Name:      downloadCtx.Name,
+		Version:   downloadCtx.Version,
+		Filename:  downloadCtx.Filename,
+		Repo:      downloadCtx.Repo,
+		IPAddress: downloadCtx.ClientIP,
+		UserID:    &downloadCtx.UserID,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &proxy.DownloadResult{
+	return &types.DownloadResult{
 		Content:   result.Content,
 		Size:      result.Size,
 		FromCache: result.FromCache,
 		RepoID:    result.RepoID,
 		Filename:  result.StorageKey,
+		Name:      downloadCtx.Name,
+		Version:   downloadCtx.Version,
 	}, nil
 }
 

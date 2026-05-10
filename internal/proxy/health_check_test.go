@@ -34,16 +34,18 @@ type mockDownloadService struct {
 	downloader *ProxyDownloader
 }
 
-func (m *mockDownloadService) Download(ctx context.Context, req *DownloadRequest) (*DownloadResult, error) {
-	result, err := m.downloader.FetchFromRemote(ctx, req.Repo, req.PkgType, req.Name, req.Version)
+func (m *mockDownloadService) Download(ctx context.Context, downloadCtx *types.DownloadContext) (*types.DownloadResult, error) {
+	result, err := m.downloader.FetchFromRemote(ctx, downloadCtx.Repo, string(downloadCtx.PkgType), downloadCtx.Name, downloadCtx.Version)
 	if err != nil {
 		return nil, err
 	}
-	return &DownloadResult{
+	return &types.DownloadResult{
 		Content:  result.Content,
 		Size:     result.Size,
 		RepoID:   result.RepoID,
 		Filename: result.Name,
+		Name:     downloadCtx.Name,
+		Version:  downloadCtx.Version,
 	}, nil
 }
 

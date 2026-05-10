@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"fmt"
-	"io"
 	"path/filepath"
 
 	"github.com/gin-gonic/gin"
@@ -25,26 +24,7 @@ type ProxyFetcher interface {
 }
 
 type DownloadService interface {
-	Download(ctx context.Context, req *DownloadRequest) (*DownloadResult, error)
-}
-
-type DownloadRequest struct {
-	PkgType   string
-	Name      string
-	Version   string
-	Filename  string
-	Repo      *model.Repository
-	IPAddress string
-	UserAgent string
-	UserID    *uint
-}
-
-type DownloadResult struct {
-	Content   io.ReadCloser
-	Size      int64
-	FromCache bool
-	RepoID    uint
-	Filename  string
+	Download(ctx context.Context, downloadCtx *types.DownloadContext) (*types.DownloadResult, error)
 }
 
 // RepoHandler 负责仓库请求的统一处理
@@ -196,12 +176,15 @@ func (r *RepoHandler) resolveLocal(ctx context.Context, repo *model.Repository, 
 		return nil, fmt.Errorf("download service not initialized")
 	}
 
-	result, err := r.downloadSvc.Download(ctx, &DownloadRequest{
-		PkgType: pkgType,
-		Name:    name,
-		Version: version,
-		Repo:    repo,
-	})
+	downloadCtx := &types.DownloadContext{
+		Repo:     repo,
+		PkgType:  model.PackageType(pkgType),
+		Name:     name,
+		Version:  version,
+		Filename: "",
+	}
+
+	result, err := r.downloadSvc.Download(ctx, downloadCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -210,8 +193,9 @@ func (r *RepoHandler) resolveLocal(ctx context.Context, repo *model.Repository, 
 		Content:    result.Content,
 		Size:       result.Size,
 		FromCache:  result.FromCache,
-		Name:       result.Filename,
-		Version:    version,
+		Name:       result.Name,
+		Version:    result.Version,
+		Filename:   result.Filename,
 	}, nil
 }
 
@@ -220,12 +204,15 @@ func (r *RepoHandler) resolveProxy(ctx context.Context, repo *model.Repository, 
 		return nil, fmt.Errorf("download service not initialized")
 	}
 
-	result, err := r.downloadSvc.Download(ctx, &DownloadRequest{
-		PkgType: pkgType,
-		Name:    name,
-		Version: version,
-		Repo:    repo,
-	})
+	downloadCtx := &types.DownloadContext{
+		Repo:     repo,
+		PkgType:  model.PackageType(pkgType),
+		Name:     name,
+		Version:  version,
+		Filename: "",
+	}
+
+	result, err := r.downloadSvc.Download(ctx, downloadCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -236,8 +223,9 @@ func (r *RepoHandler) resolveProxy(ctx context.Context, repo *model.Repository, 
 		Content:    result.Content,
 		Size:       result.Size,
 		FromCache:  result.FromCache,
-		Name:       result.Filename,
-		Version:    version,
+		Name:       result.Name,
+		Version:    result.Version,
+		Filename:   result.Filename,
 	}, nil
 }
 
