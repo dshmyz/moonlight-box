@@ -61,14 +61,17 @@ func (m *testMockAdapter) ParsePackagePath(path string) (*types.PackageIdentity,
 func (m *testMockAdapter) BuildRemotePath(name, version, filename string) string {
 	return fmt.Sprintf("%s/%s/%s", name, version, filename)
 }
-func (m *testMockAdapter) HandleRepoRequest(c *gin.Context, repo *model.Repository, path string) {}
-func (m *testMockAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) *types.RepoOperationResult {
-	return nil
+func (m *testMockAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {}
+func (m *testMockAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
+	return nil, fmt.Errorf("not implemented")
 }
-func (m *testMockAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) *types.RepoOperationResult {
-	return nil
+func (m *testMockAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
+	return nil, fmt.Errorf("not implemented")
 }
-func (m *testMockAdapter) FormatDownloadResponse(c *gin.Context, result *RouteResult) {}
+func (m *testMockAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
+	return fmt.Errorf("not implemented")
+}
+func (m *testMockAdapter) FormatDownloadResponse(c *gin.Context, result *types.DownloadResult) {}
 
 func (m *mockConfigReader) GetConfigAsInt(key string, defaultValue int) int {
 	return defaultValue

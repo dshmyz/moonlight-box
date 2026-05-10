@@ -87,7 +87,7 @@ func setupYumTestEnv() {
 	yumRepoHandler = proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
 
 	auditSvc := service.NewAuditService()
-	yumAdapter = adapter.NewYumAdapter(yumPkgRepo, repoRepo, yumStorageSvc, auditSvc)
+	yumAdapter = adapter.NewYumAdapter(yumPkgRepo, repoRepo, yumStorageSvc, auditSvc, nil)
 	yumRepoHandler.RegisterAdapter("yum", yumAdapter)
 
 	logRepo := repository.NewProxyDownloadLogRepository(yumTestDB)

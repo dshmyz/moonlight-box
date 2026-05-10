@@ -89,7 +89,7 @@ func TestMain(m *testing.M) {
 	npmRepoHandler = proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
 
 	auditSvc := service.NewAuditService()
-	npmAdapter = adapter.NewNpmAdapter(pkgRepo, repoRepo, storageSvc, auditSvc)
+	npmAdapter = adapter.NewNpmAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, nil)
 	npmRepoHandler.RegisterAdapter("npm", npmAdapter)
 
 	logRepo := repository.NewProxyDownloadLogRepository(testDB)

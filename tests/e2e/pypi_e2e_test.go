@@ -87,7 +87,7 @@ func setupPyPITestEnv() {
 	pypiRepoHandler = proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
 
 	auditSvc := service.NewAuditService()
-	pypiAdapter = adapter.NewPyPIAdapter(pypiPkgRepo, repoRepo, pypiStorageSvc, auditSvc)
+	pypiAdapter = adapter.NewPyPIAdapter(pypiPkgRepo, repoRepo, pypiStorageSvc, auditSvc, nil)
 	pypiRepoHandler.RegisterAdapter("pypi", pypiAdapter)
 
 	logRepo := repository.NewProxyDownloadLogRepository(pypiTestDB)

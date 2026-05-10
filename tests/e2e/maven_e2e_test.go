@@ -87,7 +87,7 @@ func setupMavenTestEnv() {
 	mavenRepoHandler = proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
 
 	auditSvc := service.NewAuditService()
-	mavenAdapter = adapter.NewMavenAdapter(mavenPkgRepo, repoRepo, mavenStorageSvc, auditSvc)
+	mavenAdapter = adapter.NewMavenAdapter(mavenPkgRepo, repoRepo, mavenStorageSvc, auditSvc, nil)
 	mavenRepoHandler.RegisterAdapter("maven", mavenAdapter)
 
 	logRepo := repository.NewProxyDownloadLogRepository(mavenTestDB)
