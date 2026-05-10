@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -14,83 +13,35 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
-	"github.com/sirupsen/logrus"
 )
 
 type BaseAdapter struct {
-	pkgRepo        *repository.PackageRepository
-	pkgCache       *cache.PackageCache
-	repoRepo       *repository.RepositoryRepository
-	repoCache      *proxy.RepositoryCache
-	storageSvc     *service.StorageService
-	webhookSvc     *service.WebhookService
-	auditSvc       *service.AuditService
-	proxyRouter    *proxy.ProxyRouter
-	downloadPlugin *DownloadPluginChain
-	logRepo        *repository.ProxyDownloadLogRepository
+	pkgRepo    *repository.PackageRepository
+	repoRepo   *repository.RepositoryRepository
+	storageSvc *service.StorageService
+	webhookSvc *service.WebhookService
+	auditSvc   *service.AuditService
+	fetcher    proxy.ProxyFetcher
+	pkgCache   *cache.PackageCache
 }
 
-func NewBaseAdapter(pkgRepo *repository.PackageRepository, repoRepo *repository.RepositoryRepository, storageSvc *service.StorageService, auditSvc *service.AuditService) *BaseAdapter {
+func NewBaseAdapter(pkgRepo *repository.PackageRepository, repoRepo *repository.RepositoryRepository, storageSvc *service.StorageService, auditSvc *service.AuditService, pkgCache *cache.PackageCache) *BaseAdapter {
 	return &BaseAdapter{
 		pkgRepo:    pkgRepo,
 		repoRepo:   repoRepo,
 		storageSvc: storageSvc,
 		auditSvc:   auditSvc,
+		pkgCache:   pkgCache,
 	}
 }
 
-func (b *BaseAdapter) SetRepoCache(repoCache *proxy.RepositoryCache) {
-	b.repoCache = repoCache
-}
-
-func (b *BaseAdapter) SetProxyRouter(pr *proxy.ProxyRouter) {
-	b.proxyRouter = pr
-}
-
-func (b *BaseAdapter) SetDownloadPlugin(plugin *DownloadPluginChain) {
-	b.downloadPlugin = plugin
-}
-
-func (b *BaseAdapter) SetLogRepo(logRepo *repository.ProxyDownloadLogRepository) {
-	b.logRepo = logRepo
-}
-
-func (b *BaseAdapter) SetPackageCache(pkgCache *cache.PackageCache) {
-	b.pkgCache = pkgCache
-}
-
-func (b *BaseAdapter) getBackendID(repoID uint) uint {
-	if repoID == 0 {
-		return 0
-	}
-
-	if b.repoCache != nil {
-		if repo, err := b.repoCache.GetByID(repoID); err == nil && repo.StorageBackendID != nil {
-			return *repo.StorageBackendID
-		}
-	}
-
-	if b.repoRepo != nil {
-		if repo, err := b.repoRepo.FindByID(repoID); err == nil && repo.StorageBackendID != nil {
-			return *repo.StorageBackendID
-		}
-	}
-
-	return 0
-}
-
-func (b *BaseAdapter) getPackage(name string, pkgType model.PackageType) (*model.Package, error) {
-	if b.pkgCache != nil {
-		return b.pkgCache.GetByNameAndType(name, pkgType)
-	}
-	return b.pkgRepo.FindByNameAndType(name, pkgType)
+func (b *BaseAdapter) SetFetcher(fetcher proxy.ProxyFetcher) {
+	b.fetcher = fetcher
 }
 
 func (b *BaseAdapter) CheckDownloadPermission(c *gin.Context, repo *model.Repository, pkgType model.PackageType, name, version, filename string) *DownloadDecision {
 	var pluginChain *DownloadPluginChain
-	if b.downloadPlugin != nil {
-		pluginChain = b.downloadPlugin
-	} else if chain, ok := c.Get("downloadPlugin"); ok {
+	if chain, ok := c.Get("downloadPlugin"); ok {
 		pluginChain = chain.(*DownloadPluginChain)
 	}
 
@@ -108,6 +59,30 @@ func (b *BaseAdapter) CheckDownloadPermission(c *gin.Context, repo *model.Reposi
 		Filename: filename,
 		UserID:   userID,
 		ClientIP: c.ClientIP(),
+	}
+
+	return pluginChain.Execute(downloadCtx)
+}
+
+func (b *BaseAdapter) CheckDownloadPermissionFromContext(ctx *types.DownloadContext, c *gin.Context) *DownloadDecision {
+	var pluginChain *DownloadPluginChain
+	if chain, ok := c.Get("downloadPlugin"); ok {
+		pluginChain = chain.(*DownloadPluginChain)
+	}
+
+	if pluginChain == nil {
+		return AllowDownload()
+	}
+
+	downloadCtx := &DownloadContext{
+		Ctx:      c,
+		Repo:     ctx.Repo,
+		PkgType:  ctx.PkgType,
+		Name:     ctx.Name,
+		Version:  ctx.Version,
+		Filename: ctx.Filename,
+		UserID:   ctx.UserID,
+		ClientIP: ctx.ClientIP,
 	}
 
 	return pluginChain.Execute(downloadCtx)
@@ -133,156 +108,16 @@ func (b *BaseAdapter) TriggerWebhook(event model.WebhookEvent, pkgName, version,
 	b.webhookSvc.TriggerEvent(event, payload)
 }
 
-type ProxyPackageInfo struct {
-	PackageType model.PackageType
-	Name        string
-	Version     string
-	RepoID      uint
-	Content     []byte
-	Size        int64
-	Metadata    map[string]interface{}
-}
-
-type LocalPackageResult struct {
-	Content   io.ReadCloser
-	Size      int64
-	Found     bool
-	PkgID     uint
-	VersionID uint
-	FileID    uint
-}
-
-func (b *BaseAdapter) GetLocalPackage(ctx context.Context, pkgType, name, version string) (*LocalPackageResult, error) {
-	content, size, err := b.storageSvc.GetPackage(ctx, pkgType, name, version)
-	if err != nil {
-		return &LocalPackageResult{Found: false}, nil
-	}
-
-	return &LocalPackageResult{
-		Content: content,
-		Size:    size,
-		Found:   true,
-	}, nil
-}
-
-func (b *BaseAdapter) GetLocalPackageWithIDs(ctx context.Context, pkgType model.PackageType, name, version, filename string) (*LocalPackageResult, error) {
-	content, size, err := b.storageSvc.GetPackage(ctx, string(pkgType), name, version)
-	if err != nil {
-		return &LocalPackageResult{Found: false}, nil
-	}
-
-	pkg, err := b.pkgRepo.FindByNameAndType(name, pkgType)
-	if err != nil {
-		// 数据库中不存在，尝试补写元数据
-		logrus.Warnf("package %s/%s exists in storage but not in database, repairing metadata", name, version)
-		_, _, _, repairErr := b.pkgRepo.StorePackageFile(ctx, &model.Package{
-			Name:           name,
-			Type:           pkgType,
-			RepositoryType: model.RepoTypeProxy,
-		}, &model.PackageVersion{
-			Version: version,
-			Status:  model.StatusPublished,
-		}, &model.PackageFile{
-			Filename:  filename,
-			FileType:  model.FileTypePrimary,
-			SizeBytes: size,
-		})
-		if repairErr != nil {
-			logrus.Warnf("failed to repair package metadata %s/%s: %v", name, version, repairErr)
-		}
-		return &LocalPackageResult{
-			Content: content,
-			Size:    size,
-			Found:   true,
-		}, nil
-	}
-
-	var versionID uint
-	var fileID uint
-	for _, v := range pkg.Versions {
-		if v.Version == version {
-			versionID = v.ID
-			for _, f := range v.Files {
-				if f.Filename == filename {
-					fileID = f.ID
-					break
-				}
-			}
-			break
-		}
-	}
-
-	return &LocalPackageResult{
-		Content:   content,
-		Size:      size,
-		Found:     true,
-		PkgID:     pkg.ID,
-		VersionID: versionID,
-		FileID:    fileID,
-	}, nil
-}
-
-func (b *BaseAdapter) StoreProxyPackage(ctx context.Context, info *ProxyPackageInfo) (string, error) {
-	backendID := b.getBackendID(info.RepoID)
-	storageKey, err := b.storageSvc.StorePackageWithBackend(ctx, string(info.PackageType), info.Name, info.Version, bytes.NewReader(info.Content), info.Size, backendID)
-	if err != nil {
-		return "", err
-	}
-
-	_, _, dbErr := b.pkgRepo.CreateOrUpdate(ctx, &model.Package{
-		Name:           info.Name,
-		Type:           info.PackageType,
-		RepositoryID:   info.RepoID,
-		RepositoryType: model.RepoTypeProxy,
-	}, &model.PackageVersion{
-		Version:     info.Version,
-		Status:      model.StatusPublished,
-		StoragePath: storageKey,
-		SizeBytes:   info.Size,
-		Metadata:    marshalMetadata(info.Metadata),
-	})
-
-	if dbErr != nil {
-		return storageKey, dbErr
-	}
-
-	return storageKey, nil
-}
-
-func (b *BaseAdapter) StoreProxyPackageFromReader(ctx context.Context, pkgType model.PackageType, name, version string, content io.Reader, size int64, repoID uint, metadata map[string]interface{}) (string, error) {
-	backendID := b.getBackendID(repoID)
-	storageKey, err := b.storageSvc.StorePackageWithBackend(ctx, string(pkgType), name, version, content, size, backendID)
-	if err != nil {
-		return "", err
-	}
-
-	_, _, dbErr := b.pkgRepo.CreateOrUpdate(ctx, &model.Package{
-		Name:           name,
-		Type:           pkgType,
-		RepositoryID:   repoID,
-		RepositoryType: model.RepoTypeProxy,
-	}, &model.PackageVersion{
-		Version:     version,
-		Status:      model.StatusPublished,
-		StoragePath: storageKey,
-		SizeBytes:   size,
-		Metadata:    marshalMetadata(metadata),
-	})
-
-	if dbErr != nil {
-		return storageKey, dbErr
-	}
-
-	return storageKey, nil
-}
-
-func (b *BaseAdapter) StoreProxyPackageFromResult(ctx context.Context, pkgType model.PackageType, name, version string, result *proxy.RouteResult, metadata map[string]interface{}) (string, error) {
-	defer result.Content.Close()
-	return b.StoreProxyPackageFromReader(ctx, pkgType, name, version, result.Content, result.Size, result.RepoID, metadata)
-}
-
 func (b *BaseAdapter) GetPackageMetadata(ctx context.Context, name string, pkgType model.PackageType, typeStr types.PackageType) (*types.PackageMeta, error) {
-	pkg, err := b.pkgRepo.FindByNameAndType(name, pkgType)
+	var pkg *model.Package
+	var err error
+
+	if b.pkgCache != nil {
+		pkg, err = b.pkgCache.GetByNameAndType(name, pkgType)
+	} else {
+		pkg, err = b.pkgRepo.FindByNameAndType(name, pkgType)
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -333,11 +168,6 @@ type UploadHelperOpts struct {
 }
 
 func (b *BaseAdapter) ExecuteUpload(ctx context.Context, opts *UploadHelperOpts, reader io.Reader, size int64, uploadSvc *service.UploadService) (*PackageVersionResult, error) {
-	content, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read content: %w", err)
-	}
-
 	storageVersion := opts.StorageVersion
 	if storageVersion == "" {
 		storageVersion = opts.Version
@@ -349,7 +179,7 @@ func (b *BaseAdapter) ExecuteUpload(ctx context.Context, opts *UploadHelperOpts,
 		Version:        opts.Version,
 		StorageVersion: storageVersion,
 		Filename:       opts.Filename,
-		Content:        content,
+		Content:        reader,
 		Size:           size,
 		PackageType:    opts.PackageType,
 		RepositoryType: opts.RepositoryType,
@@ -388,21 +218,6 @@ func (b *BaseAdapter) ExecuteUpload(ctx context.Context, opts *UploadHelperOpts,
 	}, nil
 }
 
-func (b *BaseAdapter) GetMetadataFromProxy(c *gin.Context, repo *model.Repository, name string, urlBuilder proxy.URLBuilder) bool {
-	if b.proxyRouter == nil {
-		return false
-	}
-
-	result, err := b.proxyRouter.ResolveProxyOnlyForRepo(c.Request.Context(), repo, name, "", urlBuilder)
-	if err != nil {
-		return false
-	}
-	defer result.Content.Close()
-
-	c.DataFromReader(200, result.Size, "application/json", result.Content, nil)
-	return true
-}
-
 func (b *BaseAdapter) LogDeleteAudit(c *gin.Context, repoName, pkgName, version string, pkgID *uint) {
 	if b.auditSvc == nil {
 		return
@@ -429,11 +244,4 @@ func (b *BaseAdapter) LogDeleteAudit(c *gin.Context, repoName, pkgName, version 
 		200,
 		0,
 	)
-}
-
-func getUintPtr(val uint) *uint {
-	if val == 0 {
-		return nil
-	}
-	return &val
 }
