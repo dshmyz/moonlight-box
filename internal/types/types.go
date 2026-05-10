@@ -1,6 +1,10 @@
 package types
 
-import "context"
+import (
+	"io"
+
+	"github.com/gin-gonic/gin"
+)
 
 type PackageType string
 
@@ -30,13 +34,6 @@ type UploadRequest struct {
 	RepositoryID uint
 }
 
-type PackageContent struct {
-	Content     interface{}
-	ContentType string
-	Size        int64
-	Checksum    string
-}
-
 type PackageMeta struct {
 	ID          uint
 	Name        string
@@ -62,27 +59,83 @@ type PackageVersionResult struct {
 	Checksum   string
 }
 
+type RepoOperationResult struct {
+	PackageName string
+	Version     string
+	Size        int64
+	Filename    string
+	ExtraData   map[string]interface{}
+	Response    interface{}
+}
+
+type PublishResponse struct {
+	Success  bool   `json:"success"`
+	Message  string `json:"message,omitempty"`
+	Package  string `json:"package,omitempty"`
+	Version  string `json:"version,omitempty"`
+	Filename string `json:"filename,omitempty"`
+	Size     int64  `json:"size,omitempty"`
+}
+
+type MavenPublishResponse struct {
+	PublishResponse
+	Packaging string `json:"packaging,omitempty"`
+}
+
+type NpmPublishResponse struct {
+	PublishResponse
+	Description string `json:"description,omitempty"`
+}
+
+type PypiPublishResponse struct {
+	PublishResponse
+}
+
+type YumPublishResponse struct {
+	PublishResponse
+	Repo       string `json:"repo,omitempty"`
+	Arch       string `json:"arch,omitempty"`
+	Release    string `json:"release,omitempty"`
+	StorageKey string `json:"storageKey,omitempty"`
+	PackageId  uint   `json:"packageId,omitempty"`
+}
+
+type AptPublishResponse struct {
+	PublishResponse
+	StorageKey string `json:"storageKey,omitempty"`
+	PackageId  uint   `json:"packageId,omitempty"`
+}
+
+type GenericPublishResponse struct {
+	PublishResponse
+	StorageKey string `json:"storageKey,omitempty"`
+	PackageId  uint   `json:"packageId,omitempty"`
+}
+
 // Adapter defines the interface that all package adapters must implement
 type Adapter interface {
 	Type() PackageType
 	RoutePrefix() string
 	ParsePackagePath(path string) (*PackageIdentity, error)
-	Upload(ctx context.Context, req *UploadRequest) (*PackageVersionResult, error)
-	Download(ctx context.Context, identity *PackageIdentity) (*PackageContent, error)
-	GetMetadata(ctx context.Context, name string) (*PackageMeta, error)
-	Delete(ctx context.Context, identity *PackageIdentity) error
-	ListVersions(ctx context.Context, name string) ([]string, error)
+	HandleDownload(c *gin.Context, ctx *DownloadContext) (*DownloadResult, error)
+	FormatDownloadResponse(c *gin.Context, result *DownloadResult)
+	HandlePublish(c *gin.Context, ctx *PublishContext) (*PublishResult, error)
+	HandleDelete(c *gin.Context, ctx *DeleteContext) error
+	HandleRepoRequest(c *gin.Context, ctx *RepoRequestContext)
+	BuildRemotePath(name, version, filename string) string
 }
 
-// SyncResult 同步结果
-type SyncResult struct {
-	Total   int
-	Synced  int
-	Failed  int
-	Skipped int
-}
-
-// MetadataSyncer 元数据同步器接口
-type MetadataSyncer interface {
-	SyncMetadata(ctx context.Context, repo interface{}) (*SyncResult, error)
+// RouteResult 包解析结果
+type RouteResult struct {
+	Source     string        // 来源仓库名称
+	SourceType string        // 来源类型：local 或 proxy
+	RepoID     uint          // 来源仓库 ID
+	Content    io.ReadCloser // 包内容流
+	Size       int64         // 内容大小
+	FromCache  bool          // 是否来自缓存
+	CacheTTL   int           // 缓存 TTL（秒）
+	IsLarge    bool          // 是否大文件（流式处理）
+	Name       string        // 包名称
+	Version    string        // 包版本
+	Filename   string        // 文件名
 }
