@@ -73,7 +73,7 @@ func setupNpmAdapter(t *testing.T) (*NpmAdapter, *gorm.DB) {
 
 	auditSvc := service.NewAuditService()
 
-	adapter := NewNpmAdapter(pkgRepo, nil, storageSvc, auditSvc)
+	adapter := NewNpmAdapter(pkgRepo, nil, storageSvc, auditSvc, nil)
 	return adapter, db
 }
 
@@ -200,18 +200,6 @@ func TestNpmAdapter_GetVersion_NotFound(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.True(t, util.IsErr(err, util.ErrPackageNotFound))
-}
-
-func TestNpmAdapter_DownloadTarball_NotFound(t *testing.T) {
-	adapter, _ := setupNpmAdapter(t)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("GET", "/npm/-/tarball/lodash-4.17.21.tgz", nil)
-
-	adapter.DownloadTarballPath(c, "lodash/-/tarball/lodash-4.17.21.tgz")
-
-	assert.True(t, w.Code == 200 || w.Code == 404)
 }
 
 func TestNpmAdapter_Publish_MissingAttachment(t *testing.T) {

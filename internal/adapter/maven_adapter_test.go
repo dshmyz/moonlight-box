@@ -60,7 +60,7 @@ func setupMavenAdapter(t *testing.T) (*MavenAdapter, *gorm.DB) {
 
 	auditSvc := service.NewAuditService()
 
-	adapter := NewMavenAdapter(pkgRepo, repoRepo, storageSvc, auditSvc)
+	adapter := NewMavenAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, nil)
 	return adapter, db
 }
 
