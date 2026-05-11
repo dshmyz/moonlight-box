@@ -10,6 +10,15 @@ bin/
 /registry
 /moonlight-registry
 /main
+/registry-test
+
+# Build output directories
+cmd/registry/registry
+e2e
+internal/adapter/npm/lodash/4.17.21/package.tgz
+internal/adapter/pypi/test-package/test-package-1.0.0.tar.gz
+internal/adapter/pypi/test-package/test_package-1.0.0-py3-none-any.whl
+internal/adapter/yum/1
 
 # Test binary
 *.test
