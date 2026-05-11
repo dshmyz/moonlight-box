@@ -8,10 +8,12 @@ import (
 )
 
 type ComponentQueue struct {
-	queue  chan model.MigrationItem
-	ctx    context.Context
-	cancel context.CancelFunc
-	closed sync.Once
+	queue    chan model.MigrationItem
+	ctx      context.Context
+	cancel   context.CancelFunc
+	closed   sync.Once
+	isClosed bool
+	closedMu sync.RWMutex
 }
 
 func NewComponentQueue(size int) *ComponentQueue {
@@ -24,6 +26,14 @@ func NewComponentQueue(size int) *ComponentQueue {
 }
 
 func (q *ComponentQueue) TryPush(item model.MigrationItem) bool {
+	q.closedMu.RLock()
+	closed := q.isClosed
+	q.closedMu.RUnlock()
+
+	if closed {
+		return false
+	}
+
 	select {
 	case q.queue <- item:
 		return true
@@ -33,6 +43,14 @@ func (q *ComponentQueue) TryPush(item model.MigrationItem) bool {
 }
 
 func (q *ComponentQueue) Push(item model.MigrationItem) bool {
+	q.closedMu.RLock()
+	closed := q.isClosed
+	q.closedMu.RUnlock()
+
+	if closed {
+		return false
+	}
+
 	select {
 	case q.queue <- item:
 		return true
@@ -52,9 +70,17 @@ func (q *ComponentQueue) Pop() (model.MigrationItem, bool) {
 
 func (q *ComponentQueue) Close() {
 	q.closed.Do(func() {
-		q.cancel()
+		q.closedMu.Lock()
+		q.isClosed = true
+		q.closedMu.Unlock()
+		// 只关闭channel，不取消context
+		// 这样消费者可以继续读取队列中已有的数据
 		close(q.queue)
 	})
+}
+
+func (q *ComponentQueue) Cancel() {
+	q.cancel()
 }
 
 func (q *ComponentQueue) Len() int {

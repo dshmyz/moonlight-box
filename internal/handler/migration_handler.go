@@ -208,8 +208,15 @@ func (h *MigrationHandler) syncNexusRepos(c *gin.Context, client *migration.Nexu
 			}
 
 			// 代理仓库需要设置远程地址
-			if nr.Type == "proxy" && nr.URL != "" {
-				repo.RemoteURL = nr.URL
+			if nr.Type == "proxy" {
+				// 获取仓库详细配置以获取正确的远程URL
+				detail, err := client.GetRepositoryDetail(c.Request.Context(), nr.Name)
+				if err == nil && detail != nil && detail.Proxy != nil && detail.Proxy.RemoteURL != "" {
+					repo.RemoteURL = detail.Proxy.RemoteURL
+				} else if nr.URL != "" {
+					// 如果获取详情失败，使用列表API返回的URL作为备用
+					repo.RemoteURL = nr.URL
+				}
 				repo.CacheEnabled = true
 				repo.CacheTTLSeconds = 86400
 			}

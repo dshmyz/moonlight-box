@@ -26,6 +26,23 @@ type NexusRepository struct {
 	URL    string `json:"url"`
 }
 
+type NexusRepositoryDetail struct {
+	Name    string              `json:"name"`
+	Format  string              `json:"format"`
+	Type    string              `json:"type"`
+	URL     string              `json:"url"`
+	Proxy   *NexusProxyConfig   `json:"proxy"`
+	Storage *NexusStorageConfig `json:"storage"`
+}
+
+type NexusProxyConfig struct {
+	RemoteURL string `json:"remoteUrl"`
+}
+
+type NexusStorageConfig struct {
+	BlobStoreName string `json:"blobStoreName"`
+}
+
 type NexusComponent struct {
 	ID         string       `json:"id"`
 	Repository string       `json:"repository"`
@@ -106,6 +123,33 @@ func (c *NexusClient) ListRepositories(ctx context.Context) ([]NexusRepository, 
 		return nil, err
 	}
 	return repos, nil
+}
+
+func (c *NexusClient) GetRepositoryDetail(ctx context.Context, repoName string) (*NexusRepositoryDetail, error) {
+	url := fmt.Sprintf("%s/service/rest/v1/repositories/%s", c.baseURL, repoName)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(c.username, c.password)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to get repository detail: %d - %s", resp.StatusCode, string(body))
+	}
+
+	var detail NexusRepositoryDetail
+	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+		return nil, err
+	}
+	return &detail, nil
 }
 
 func (c *NexusClient) ListComponents(ctx context.Context, repoName string) ([]NexusComponent, error) {

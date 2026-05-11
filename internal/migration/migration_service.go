@@ -57,9 +57,18 @@ type MigrationProgress struct {
 	mu        sync.Mutex
 }
 
+const (
+	// MaxConcurrentTasks 最大并发迁移任务数限制
+	MaxConcurrentTasks = 5
+)
+
 func NewMigrationService(db *gorm.DB, worker MigrationWorkerInterface, repoCreator RepositoryCreator, maxConcurrent int) *MigrationService {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1
+	}
+	// 限制最大并发数，防止资源耗尽
+	if maxConcurrent > MaxConcurrentTasks {
+		maxConcurrent = MaxConcurrentTasks
 	}
 	s := &MigrationService{
 		db:              db,

@@ -140,7 +140,8 @@ async function handleDownload(version: PackageVersion & { selectedFile?: any }) 
   } else if (pkg.value.type === 'maven' || pkg.value.type === 'maven2') {
     const parts = pkg.value.name.split(':')
     if (parts.length >= 2) {
-      downloadUrl = `/repo/${pkg.value.repository}/${parts[0]}/${parts[1]}/${version.version}/${file.filename}`
+      const groupPath = parts[0].replace(/\./g, '/')
+      downloadUrl = `/repo/${pkg.value.repository}/${groupPath}/${parts[1]}/${version.version}/${file.filename}`
       downloadFilename = file.filename
     } else {
       downloadUrl = `/repo/${pkg.value.repository}/${pkg.value.name}/${version.version}/${file.filename}`

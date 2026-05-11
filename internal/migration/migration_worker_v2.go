@@ -489,16 +489,16 @@ func (w *MigrationWorkerV2) migrateComponentWithRetry(ctx context.Context, taskI
 		return fmt.Errorf("failed to get component details: %w", err)
 	}
 
-	return w.migrateComponent(taskID, client, *targetComp)
+	return w.migrateComponent(ctx, taskID, client, *targetComp)
 }
 
-func (w *MigrationWorkerV2) migrateComponent(taskID uint, client *NexusClient, comp NexusComponent) error {
+func (w *MigrationWorkerV2) migrateComponent(ctx context.Context, taskID uint, client *NexusClient, comp NexusComponent) error {
 	for _, asset := range comp.Assets {
 		if asset.DownloadURL == "" {
 			continue
 		}
 
-		reader, contentType, _, err := client.DownloadAsset(context.Background(), asset.DownloadURL)
+		reader, contentType, _, err := client.DownloadAsset(ctx, asset.DownloadURL)
 		if err != nil {
 			return fmt.Errorf("download asset failed: %w", err)
 		}
