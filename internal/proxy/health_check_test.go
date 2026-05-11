@@ -12,8 +12,8 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/types"
-	_ "github.com/ncruces/go-sqlite3/embed"
-	"github.com/ncruces/go-sqlite3/gormlite"
+	_ "github.com/mattn/go-sqlite3"
+	"gorm.io/driver/sqlite"
 	"github.com/stretchr/testify/assert"
 	"gorm.io/gorm"
 )
@@ -95,7 +95,7 @@ func TestHealthCheckService_BasicCheck(t *testing.T) {
 	defer server.Close()
 
 	// 初始化测试数据库
-	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	db.AutoMigrate(&model.Repository{})
 
@@ -146,7 +146,7 @@ func TestHealthCheckService_FailedCheck(t *testing.T) {
 	defer server.Close()
 
 	// 初始化测试数据库
-	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	db.AutoMigrate(&model.Repository{})
 
@@ -188,7 +188,7 @@ func TestHealthCheckService_FailedCheck(t *testing.T) {
 
 func TestHealthCheckService_CircuitBreakerIntegration(t *testing.T) {
 	// 初始化测试数据库
-	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	db.AutoMigrate(&model.Repository{})
 
@@ -254,7 +254,7 @@ func TestHealthCheckService_Recovery(t *testing.T) {
 	defer server.Close()
 
 	// 初始化测试数据库
-	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	db.AutoMigrate(&model.Repository{})
 
@@ -314,7 +314,7 @@ func TestHealthCheckService_Recovery(t *testing.T) {
 
 func TestHealthCheckService_StartStop(t *testing.T) {
 	// 初始化测试数据库
-	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	db.AutoMigrate(&model.Repository{})
 
@@ -349,7 +349,7 @@ func TestHealthCheckService_StartStop(t *testing.T) {
 
 func TestProxyDownloader_CircuitBreakerIntegration(t *testing.T) {
 	// 初始化测试数据库
-	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	db.AutoMigrate(&model.Repository{})
 

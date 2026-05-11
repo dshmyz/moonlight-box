@@ -2,12 +2,13 @@ package database
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/moonlight-box/registry/internal/config"
-	_ "github.com/ncruces/go-sqlite3/embed"
-	"github.com/ncruces/go-sqlite3/gormlite"
+	_ "github.com/mattn/go-sqlite3"
+	"gorm.io/driver/sqlite"
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/driver/postgres"
@@ -33,18 +34,10 @@ func Initialize(cfg *config.Config) error {
 		fallthrough
 	default:
 		dsn := cfg.Database.DSN
-		// SQLite 配置优化
-		// - _journal_mode=WAL: 启用 Write-Ahead Logging 提高并发性能
-		// - _busy_timeout: 设置锁等待超时时间（毫秒），增加到 30 秒以应对高并发写入
-		// - _synchronous=NORMAL: 平衡性能和安全性
-		// - _cache_size: 页面缓存大小（KB），负数表示 KB，正数表示页数
-		// - _txlock=immediate: 事务开始时立即获取写锁，减少死锁
-		if !strings.Contains(dsn, "?") {
-			dsn += "?_journal_mode=WAL&_busy_timeout=30000&_synchronous=NORMAL&_cache_size=-64000&_txlock=immediate"
-		} else if !strings.Contains(dsn, "_journal_mode") {
-			dsn += "&_journal_mode=WAL&_busy_timeout=30000&_synchronous=NORMAL&_cache_size=-64000&_txlock=immediate"
+		if err := ensureDataDirectory(dsn); err != nil {
+			return fmt.Errorf("failed to create data directory: %w", err)
 		}
-		dialector = gormlite.Open(dsn)
+		dialector = sqlite.Open(dsn)
 	}
 
 	gormConfig := &gorm.Config{
@@ -74,14 +67,11 @@ func Initialize(cfg *config.Config) error {
 	}
 
 	if cfg.Database.Driver == "sqlite" {
-		// SQLite WAL 模式下支持并发读，写入仍然串行
-		// 100 人使用场景：提升连接数以支持并发读操作
 		sqlDB.SetMaxOpenConns(8)
 		sqlDB.SetMaxIdleConns(4)
 		sqlDB.SetConnMaxLifetime(time.Hour)
 		sqlDB.SetConnMaxIdleTime(30 * time.Minute)
 
-		// 运行时 PRAGMA 优化
 		sqlDB.Exec("PRAGMA journal_mode=WAL")
 		sqlDB.Exec("PRAGMA synchronous=NORMAL")
 		sqlDB.Exec("PRAGMA cache_size=-64000")
@@ -108,6 +98,24 @@ func Initialize(cfg *config.Config) error {
 	}).Info("Database connection established")
 
 	return nil
+}
+
+func ensureDataDirectory(dsn string) error {
+	if strings.HasPrefix(dsn, "file:") {
+		dsn = strings.TrimPrefix(dsn, "file:")
+	}
+	idx := strings.Index(dsn, "?")
+	if idx != -1 {
+		dsn = dsn[:idx]
+	}
+	dir := dsn
+	if strings.HasSuffix(dir, ".db") {
+		dir = strings.TrimSuffix(dir, "/registry.db")
+	}
+	if dir == "." || dir == "./" || dir == "" {
+		return nil
+	}
+	return os.MkdirAll(dir, 0755)
 }
 
 func buildGormLogger(level string) logger.Interface {

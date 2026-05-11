@@ -23,8 +23,8 @@ import (
 	"github.com/moonlight-box/registry/internal/storage"
 	"github.com/moonlight-box/registry/internal/types"
 	"github.com/stretchr/testify/assert"
-	_ "github.com/ncruces/go-sqlite3/embed"
-	"github.com/ncruces/go-sqlite3/gormlite"
+	_ "github.com/mattn/go-sqlite3"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -42,7 +42,7 @@ func setupYumTestEnv() {
 	gin.SetMode(gin.TestMode)
 
 	var err error
-	yumTestDB, err = gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	yumTestDB, err = gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		panic(err)
 	}

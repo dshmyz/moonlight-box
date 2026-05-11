@@ -58,7 +58,7 @@ logging:
 proxy:
   default_timeout: 30s
   connect_timeout: 10s
-  large_file_threshold: 50MB  # 大文件阈值
+  large_file_threshold: 52428800  # 大文件阈值 (50MB)
   max_redirects: 10
   insecure_skip_verify: false  # 是否跳过 SSL 证书校验
   
