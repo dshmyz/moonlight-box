@@ -141,21 +141,52 @@ func NewYumAdapter(
 func (a *YumAdapter) Type() PackageType   { return YumType }
 
 func (a *YumAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return nil, fmt.Errorf("invalid yum path: empty path")
+	}
+
+	if strings.Contains(path, ".rpm") {
+		return a.resolveRpmPath(path)
+	}
+
+	parts := strings.Split(path, "/")
+
+	name := parts[0]
+	version := ""
+	if len(parts) >= 2 {
+		version = parts[1]
+	}
+
+	remotePath := name
+	if version != "" {
+		remotePath = name + "/" + version
+	}
+
+	return &types.PackagePathInfo{
+		Name:           name,
+		Version:        version,
+		Filename:       "",
+		StorageName:    name,
+		StorageVersion: version,
+		RemotePath:     remotePath,
+	}, nil
+}
+
+func (a *YumAdapter) resolveRpmPath(path string) (*types.PackagePathInfo, error) {
 	parts := strings.Split(path, "/")
 	if len(parts) < 2 {
-		return nil, fmt.Errorf("invalid yum path: %s", path)
+		return nil, fmt.Errorf("invalid yum rpm path: %s", path)
 	}
 
 	filename := parts[len(parts)-1]
 	name := strings.Join(parts[:len(parts)-1], "/")
 	version := ""
 
-	if strings.Contains(filename, ".rpm") {
-		base := strings.TrimSuffix(filename, ".rpm")
-		pkgParts := strings.Split(base, "-")
-		if len(pkgParts) >= 2 {
-			version = pkgParts[1]
-		}
+	base := strings.TrimSuffix(filename, ".rpm")
+	pkgParts := strings.Split(base, "-")
+	if len(pkgParts) >= 2 {
+		version = pkgParts[1]
 	}
 
 	storageName := name

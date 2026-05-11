@@ -91,9 +91,11 @@ func TestPyPIAdapter_ResolvePackagePath(t *testing.T) {
 			expectError:     false,
 		},
 		{
-			name:        "invalid path - only package name",
-			path:        "numpy",
-			expectError: true,
+			name:            "valid path - only package name",
+			path:            "numpy",
+			expectedName:    "numpy",
+			expectedVersion: "",
+			expectError:     false,
 		},
 		{
 			name:        "invalid path - empty",

@@ -21,19 +21,20 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
-	"github.com/stretchr/testify/assert"
+	"github.com/moonlight-box/registry/internal/types"
 	_ "github.com/ncruces/go-sqlite3/embed"
 	"github.com/ncruces/go-sqlite3/gormlite"
+	"github.com/stretchr/testify/assert"
 	"gorm.io/gorm"
 )
 
 var (
-	pypiTestServer *httptest.Server
-	pypiTestDB     *gorm.DB
-	pypiAdapter    adapter.RepoAwareAdapter
-	pypiRepoSvc    *service.RepositoryService
-	pypiPkgRepo    *repository.PackageRepository
-	pypiStorageSvc *service.StorageService
+	pypiTestServer  *httptest.Server
+	pypiTestDB      *gorm.DB
+	pypiAdapter     adapter.RepoAwareAdapter
+	pypiRepoSvc     *service.RepositoryService
+	pypiPkgRepo     *repository.PackageRepository
+	pypiStorageSvc  *service.StorageService
 	pypiRepoHandler *proxy.RepoHandler
 )
 
@@ -92,8 +93,9 @@ func setupPyPITestEnv() {
 
 	logRepo := repository.NewProxyDownloadLogRepository(pypiTestDB)
 	countBatcher := service.NewDownloadCountBatcher(pypiTestDB, 5*time.Second)
-	proxyDownloadSvc := service.NewProxyDownloadService(pypiPkgRepo, pypiStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
-	pypiRepoHandler.SetDownloadService(proxyDownloadSvc)
+	adapters := map[string]types.Adapter{"pypi": pypiAdapter}
+	downloadSvc := service.NewDownloadService(repoRepo, groupRepo, adapters, pypiPkgRepo, pypiStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	pypiRepoHandler.SetDownloadService(downloadSvc)
 
 	router := setupPyPIRouter()
 	pypiTestServer = httptest.NewServer(router)

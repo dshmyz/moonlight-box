@@ -21,6 +21,7 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
+	"github.com/moonlight-box/registry/internal/types"
 	"github.com/stretchr/testify/assert"
 	_ "github.com/ncruces/go-sqlite3/embed"
 	"github.com/ncruces/go-sqlite3/gormlite"
@@ -92,8 +93,9 @@ func setupYumTestEnv() {
 
 	logRepo := repository.NewProxyDownloadLogRepository(yumTestDB)
 	countBatcher := service.NewDownloadCountBatcher(yumTestDB, 5*time.Second)
-	proxyDownloadSvc := service.NewProxyDownloadService(yumPkgRepo, yumStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
-	yumRepoHandler.SetDownloadService(proxyDownloadSvc)
+	adapters := map[string]types.Adapter{"yum": yumAdapter}
+	downloadSvc := service.NewDownloadService(repoRepo, groupRepo, adapters, yumPkgRepo, yumStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	yumRepoHandler.SetDownloadService(downloadSvc)
 
 	router := setupYumRouter()
 	yumTestServer = httptest.NewServer(router)

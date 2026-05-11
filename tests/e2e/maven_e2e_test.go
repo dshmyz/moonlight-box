@@ -21,6 +21,7 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
+	"github.com/moonlight-box/registry/internal/types"
 	_ "github.com/ncruces/go-sqlite3/embed"
 	"github.com/ncruces/go-sqlite3/gormlite"
 	"github.com/stretchr/testify/assert"
@@ -92,8 +93,9 @@ func setupMavenTestEnv() {
 
 	logRepo := repository.NewProxyDownloadLogRepository(mavenTestDB)
 	countBatcher := service.NewDownloadCountBatcher(mavenTestDB, 5*time.Second)
-	proxyDownloadSvc := service.NewProxyDownloadService(mavenPkgRepo, mavenStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
-	mavenRepoHandler.SetDownloadService(proxyDownloadSvc)
+	adapters := map[string]types.Adapter{"maven": mavenAdapter}
+	downloadSvc := service.NewDownloadService(repoRepo, groupRepo, adapters, mavenPkgRepo, mavenStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	mavenRepoHandler.SetDownloadService(downloadSvc)
 
 	router := setupMavenRouter()
 	mavenTestServer = httptest.NewServer(router)

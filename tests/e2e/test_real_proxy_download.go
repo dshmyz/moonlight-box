@@ -12,6 +12,7 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
+	"github.com/moonlight-box/registry/internal/types"
 	"gorm.io/gorm"
 )
 
@@ -71,7 +72,10 @@ func main() {
 	logBatcher := service.NewLogBatcher(logRepo, 100, 5*time.Second)
 	defer logBatcher.Stop()
 
-	proxyDownloadSvc := service.NewProxyDownloadService(
+	downloadSvc := service.NewDownloadService(
+		repoRepo,
+		nil,
+		nil,
 		pkgRepo,
 		storageSvc,
 		proxyDownloader,
@@ -81,10 +85,10 @@ func main() {
 	)
 
 	fmt.Println("\n=== 测试 1: NPM 包下载 ===")
-	testNPMPackage(proxyDownloadSvc, repoRepo, db)
+	testNPMPackage(downloadSvc, repoRepo, db)
 
 	fmt.Println("\n=== 测试 2: PyPI 包下载 ===")
-	testPyPIPackage(proxyDownloadSvc, repoRepo, db)
+	testPyPIPackage(downloadSvc, repoRepo, db)
 
 	fmt.Println("\n=== 验证数据库存储 ===")
 	verifyDatabaseStorage(db)
@@ -92,7 +96,7 @@ func main() {
 	fmt.Println("\n=== 测试完成 ===")
 }
 
-func testNPMPackage(svc *service.ProxyDownloadService, repoRepo *repository.RepositoryRepository, db *gorm.DB) {
+func testNPMPackage(svc *service.DownloadService, repoRepo *repository.RepositoryRepository, db *gorm.DB) {
 	repo := &model.Repository{
 		Name:        "npm-proxy-test",
 		DisplayName: "NPM Proxy Test",
@@ -114,20 +118,18 @@ func testNPMPackage(svc *service.ProxyDownloadService, repoRepo *repository.Repo
 		fmt.Printf("创建 NPM 代理仓库成功: %s (ID: %d)\n", repo.Name, repo.ID)
 	}
 
-	req := &proxy.DownloadRequest{
-		PkgType:   "npm",
-		Name:      "lodash",
-		Version:   "4.17.21",
-		Filename:  "lodash-4.17.21.tgz",
-		Repo:      repo,
-		IPAddress: "127.0.0.1",
-		UserAgent: "test-script",
+	downloadCtx := &types.DownloadContext{
+		Repo:     repo,
+		PkgType:  model.PackageTypeNPM,
+		Name:     "lodash",
+		Version:  "4.17.21",
+		Filename: "lodash-4.17.21.tgz",
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	result, err := svc.Download(ctx, req)
+	result, err := svc.Download(ctx, downloadCtx)
 	if err != nil {
 		fmt.Printf("下载 lodash 失败: %v\n", err)
 		return
@@ -139,7 +141,7 @@ func testNPMPackage(svc *service.ProxyDownloadService, repoRepo *repository.Repo
 	fmt.Printf("  - 来自缓存: %v\n", result.FromCache)
 }
 
-func testPyPIPackage(svc *service.ProxyDownloadService, repoRepo *repository.RepositoryRepository, db *gorm.DB) {
+func testPyPIPackage(svc *service.DownloadService, repoRepo *repository.RepositoryRepository, db *gorm.DB) {
 	repo := &model.Repository{
 		Name:        "pypi-proxy-test",
 		DisplayName: "PyPI Proxy Test",
@@ -161,20 +163,18 @@ func testPyPIPackage(svc *service.ProxyDownloadService, repoRepo *repository.Rep
 		fmt.Printf("创建 PyPI 代理仓库成功: %s (ID: %d)\n", repo.Name, repo.ID)
 	}
 
-	req := &proxy.DownloadRequest{
-		PkgType:   "pypi",
-		Name:      "requests",
-		Version:   "2.31.0",
-		Filename:  "requests-2.31.0-py3-none-any.whl",
-		Repo:      repo,
-		IPAddress: "127.0.0.1",
-		UserAgent: "test-script",
+	downloadCtx := &types.DownloadContext{
+		Repo:     repo,
+		PkgType:  model.PackageTypePyPI,
+		Name:     "requests",
+		Version:  "2.31.0",
+		Filename: "requests-2.31.0-py3-none-any.whl",
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	result, err := svc.Download(ctx, req)
+	result, err := svc.Download(ctx, downloadCtx)
 	if err != nil {
 		fmt.Printf("下载 requests 失败: %v\n", err)
 		return

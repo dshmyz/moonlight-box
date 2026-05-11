@@ -138,20 +138,76 @@ func NewNpmAdapter(pkgRepo *repository.PackageRepository, repoRepo *repository.R
 func (a *NpmAdapter) Type() PackageType { return NpmType }
 
 func (a *NpmAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+	if path == "" {
+		return nil, fmt.Errorf("invalid npm package path: %s", path)
+	}
+
+	if strings.Contains(path, ".tgz") {
+		return a.resolveTarballPath(path)
+	}
+
+	parts := strings.Split(path, "/")
+
+	if strings.HasPrefix(path, "@") {
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("invalid scoped npm package path: %s", path)
+		}
+
+		name := parts[0] + "/" + parts[1]
+		version := ""
+		if len(parts) >= 3 {
+			version = parts[2]
+		}
+
+		remotePath := name
+		if version != "" {
+			remotePath = name + "/" + version
+		}
+
+		return &types.PackagePathInfo{
+			Name:           name,
+			Version:        version,
+			Filename:       "",
+			StorageName:    name,
+			StorageVersion: version,
+			RemotePath:     remotePath,
+		}, nil
+	}
+
+	name := parts[0]
+	version := ""
+	if len(parts) >= 2 {
+		version = parts[1]
+	}
+
+	remotePath := name
+	if version != "" {
+		remotePath = name + "/" + version
+	}
+
+	return &types.PackagePathInfo{
+		Name:           name,
+		Version:        version,
+		Filename:       "",
+		StorageName:    name,
+		StorageVersion: version,
+		RemotePath:     remotePath,
+	}, nil
+}
+
+func (a *NpmAdapter) resolveTarballPath(path string) (*types.PackagePathInfo, error) {
 	parts := strings.Split(path, "/")
 	if len(parts) < 2 {
-		return nil, fmt.Errorf("invalid npm package path: %s", path)
+		return nil, fmt.Errorf("invalid npm tarball path: %s", path)
 	}
 
 	filename := parts[len(parts)-1]
 	name := strings.Join(parts[:len(parts)-1], "/")
 
 	version := ""
-	if strings.Contains(filename, ".tgz") {
-		base := strings.TrimSuffix(filename, ".tgz")
-		if idx := strings.LastIndex(base, "-"); idx != -1 {
-			version = base[idx+1:]
-		}
+	base := strings.TrimSuffix(filename, ".tgz")
+	if idx := strings.LastIndex(base, "-"); idx != -1 {
+		version = base[idx+1:]
 	}
 
 	storageName := name + "/" + filename

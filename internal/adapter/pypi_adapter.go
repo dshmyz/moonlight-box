@@ -47,19 +47,29 @@ func (a *PyPIAdapter) Type() PackageType { return PyPIType }
 
 func (a *PyPIAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
 	path = strings.Trim(path, "/")
-	parts := strings.Split(path, "/")
-
-	if len(parts) < 2 {
-		return nil, fmt.Errorf("invalid pypi path: %s", path)
+	if path == "" {
+		return nil, fmt.Errorf("invalid pypi path: empty path")
 	}
 
+	parts := strings.Split(path, "/")
+
 	if parts[0] == "simple" {
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("invalid pypi simple path: %s", path)
+		}
+
+		version := ""
+		if len(parts) >= 3 {
+			version = parts[2]
+		}
+
 		return &types.PackagePathInfo{
-			Name:        parts[1],
-			Version:     "",
-			Filename:    "",
-			StorageName: parts[1],
-			RemotePath:  fmt.Sprintf("simple/%s/", parts[1]),
+			Name:           parts[1],
+			Version:        version,
+			Filename:       "",
+			StorageName:    parts[1],
+			StorageVersion: version,
+			RemotePath:     fmt.Sprintf("simple/%s/", parts[1]),
 		}, nil
 	}
 
@@ -75,6 +85,28 @@ func (a *PyPIAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, e
 			Filename:    filename,
 			StorageName: name,
 			RemotePath:  path,
+		}, nil
+	}
+
+	if len(parts) == 1 {
+		return &types.PackagePathInfo{
+			Name:           parts[0],
+			Version:        "",
+			Filename:       "",
+			StorageName:    parts[0],
+			StorageVersion: "",
+			RemotePath:     fmt.Sprintf("simple/%s/", parts[0]),
+		}, nil
+	}
+
+	if len(parts) == 2 {
+		return &types.PackagePathInfo{
+			Name:           parts[0],
+			Version:        parts[1],
+			Filename:       "",
+			StorageName:    parts[0],
+			StorageVersion: parts[1],
+			RemotePath:     fmt.Sprintf("simple/%s/", parts[0]),
 		}, nil
 	}
 
