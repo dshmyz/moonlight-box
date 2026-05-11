@@ -5,6 +5,9 @@ import (
 	"context"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/moonlight-box/registry/internal/cache"
 
 	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/model"
@@ -57,9 +60,11 @@ func setupPyPIAdapter(t *testing.T) (*PyPIAdapter, *gorm.DB) {
 	storageSvc.RefreshBackends()
 
 	auditSvc := service.NewAuditService()
+
+	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
 	repoRepo := repository.NewRepositoryRepository(db)
 
-	adapter := NewPyPIAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, nil)
+	adapter := NewPyPIAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache)
 	return adapter, db
 }
 
@@ -68,12 +73,7 @@ func TestPyPIAdapter_Type(t *testing.T) {
 	assert.Equal(t, PyPIType, adapter.Type())
 }
 
-func TestPyPIAdapter_RoutePrefix(t *testing.T) {
-	adapter, _ := setupPyPIAdapter(t)
-	assert.Equal(t, "/pypi", adapter.RoutePrefix())
-}
-
-func TestPyPIAdapter_ParsePackagePath(t *testing.T) {
+func TestPyPIAdapter_ResolvePackagePath(t *testing.T) {
 	adapter, _ := setupPyPIAdapter(t)
 
 	tests := []struct {
@@ -104,14 +104,13 @@ func TestPyPIAdapter_ParsePackagePath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			identity, err := adapter.ParsePackagePath(tt.path)
+			pathInfo, err := adapter.ResolvePackagePath(tt.path)
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
 				assert.Nil(t, err)
-				assert.Equal(t, tt.expectedName, identity.Name)
-				assert.Equal(t, tt.expectedVersion, identity.Version)
-				assert.Equal(t, PyPIType, identity.Type)
+				assert.Equal(t, tt.expectedName, pathInfo.Name)
+				assert.Equal(t, tt.expectedVersion, pathInfo.Version)
 			}
 		})
 	}

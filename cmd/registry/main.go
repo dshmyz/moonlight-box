@@ -236,14 +236,24 @@ func main() {
 		string(types.AptType):     aptAdapter,
 	}
 
-	// 创建 DownloadService
-	downloadSvc := service.NewDownloadService(repoRepo, groupRepo, adapterMap)
-
 	// 创建 ProxyDownloader 实例（纯代理下载组件）
 	proxyDownloader := proxy.NewProxyDownloader(cacheSvc, remoteClient, adapterMap)
 
 	// 注入健康检查服务到 ProxyDownloader
 	proxyDownloader.SetHealthCheckService(healthCheckSvc)
+
+	// 创建 DownloadService
+	downloadSvc := service.NewDownloadService(
+		repoRepo,
+		groupRepo,
+		adapterMap,
+		packageRepo,
+		storageSvc,
+		proxyDownloader,
+		proxyDownloadLogRepo,
+		logBatcher,
+		countBatcher,
+	)
 
 	// 初始化仓库缓存（5分钟TTL）
 	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
@@ -457,13 +467,6 @@ func main() {
 	routerCtx.Handlers.VulnRule = vulnRuleHandler
 
 	router := routerCtx.SetupRouter(version)
-
-	// 设置 Webhook 服务到适配器
-	for _, adap := range adapters {
-		if webhookAware, ok := adap.(interface{ SetWebhookService(*service.WebhookService) }); ok {
-			webhookAware.SetWebhookService(webhookSvc)
-		}
-	}
 
 	// 启动健康检查服务
 	healthCheckSvc.Start()

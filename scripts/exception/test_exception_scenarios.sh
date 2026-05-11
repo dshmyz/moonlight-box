@@ -2,6 +2,8 @@
 
 set -e
 
+export PATH="/usr/bin:/usr/local/bin:$PATH"
+
 BASE_URL="${1:-http://localhost:9081}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASS="${ADMIN_PASS:-admin123}"
@@ -178,8 +180,8 @@ INVALID_PATHS=(
     "$BASE_URL/repo/maven-local/..%2F..%2Fetc%2Fpasswd"
 )
 
-for PATH in "${INVALID_PATHS[@]}"; do
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$PATH")
+for TEST_PATH in "${INVALID_PATHS[@]}"; do
+    HTTP_CODE=$(curl --path-as-is -s -o /dev/null -w "%{http_code}" "$TEST_PATH")
     
     if [ "$HTTP_CODE" = "400" ] || [ "$HTTP_CODE" = "403" ] || [ "$HTTP_CODE" = "404" ]; then
         pass "路径遍历攻击被阻止 (HTTP $HTTP_CODE)"

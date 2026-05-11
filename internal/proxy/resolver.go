@@ -20,7 +20,7 @@ type RepoRequestHandler interface {
 // ProxyFetcher 定义代理获取能力接口
 // ProxyDownloader 实现此接口，供 adapter 做元数据刷新等场景使用
 type ProxyFetcher interface {
-	FetchFromRemote(ctx context.Context, repo *model.Repository, pkgType, name, version string) (*RouteResult, error)
+	FetchFromRemote(ctx context.Context, repo *model.Repository, remoteURL string) (*RouteResult, error)
 }
 
 type DownloadService interface {
@@ -85,7 +85,7 @@ func (r *RepoHandler) TryResolveDownload(ctx context.Context, repo *model.Reposi
 		return nil, fmt.Errorf("unsupported package type: %s", pkgType)
 	}
 
-	pkgIdentity, err := adp.ParsePackagePath(path)
+	pkgIdentity, err := adp.ResolvePackagePath(path)
 	if err != nil {
 		return nil, err
 	}

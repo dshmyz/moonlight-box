@@ -24,6 +24,15 @@ type PackageIdentity struct {
 	Type    PackageType
 }
 
+type PackagePathInfo struct {
+	Name           string
+	Version        string
+	Filename       string
+	StorageName    string
+	StorageVersion string
+	RemotePath     string
+}
+
 type UploadRequest struct {
 	Package      interface{}
 	Filename     string
@@ -115,14 +124,11 @@ type GenericPublishResponse struct {
 // Adapter defines the interface that all package adapters must implement
 type Adapter interface {
 	Type() PackageType
-	RoutePrefix() string
-	ParsePackagePath(path string) (*PackageIdentity, error)
-	HandleDownload(c *gin.Context, ctx *DownloadContext) (*DownloadResult, error)
+	ResolvePackagePath(path string) (*PackagePathInfo, error)
 	FormatDownloadResponse(c *gin.Context, result *DownloadResult)
 	HandlePublish(c *gin.Context, ctx *PublishContext) (*PublishResult, error)
 	HandleDelete(c *gin.Context, ctx *DeleteContext) error
 	HandleRepoRequest(c *gin.Context, ctx *RepoRequestContext)
-	BuildRemotePath(name, version, filename string) string
 }
 
 // RouteResult 包解析结果

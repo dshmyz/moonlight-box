@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/util"
@@ -21,6 +23,22 @@ func NewPackageRepository(db *gorm.DB) *PackageRepository {
 
 func (r *PackageRepository) DB() *gorm.DB {
 	return r.db
+}
+
+func retryOnLocked(fn func() error, maxRetries int) error {
+	var err error
+	for i := 0; i < maxRetries; i++ {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+		if strings.Contains(err.Error(), "database is locked") {
+			time.Sleep(time.Duration(50*(i+1)) * time.Millisecond)
+			continue
+		}
+		return err
+	}
+	return err
 }
 
 // StorePackageFile 存储包文件，自动处理 Package、PackageVersion、PackageFile 的创建
@@ -44,38 +62,42 @@ func (r *PackageRepository) StorePackageFile(ctx context.Context, pkg *model.Pac
 	var savedVer *model.PackageVersion
 	var savedFile *model.PackageFile
 
-	err := r.db.Transaction(func(tx *gorm.DB) error {
-		var err error
-		savedPkg, err = r.findOrCreatePackage(tx, pkg)
-		if err != nil {
-			return err
-		}
-
-		if ver != nil {
-			savedVer, err = r.findOrCreateVersion(tx, ver, savedPkg.ID)
+	var err error
+	retryErr := retryOnLocked(func() error {
+		err = r.db.Transaction(func(tx *gorm.DB) error {
+			var err error
+			savedPkg, err = r.findOrCreatePackage(tx, pkg)
 			if err != nil {
 				return err
 			}
 
-			if file != nil {
-				savedFile, err = r.findOrCreateFile(tx, file, savedVer.ID)
+			if ver != nil {
+				savedVer, err = r.findOrCreateVersion(tx, ver, savedPkg.ID)
 				if err != nil {
 					return err
 				}
 
-				totalSize, err := r.recalculateVersionSize(tx, savedVer.ID)
-				if err != nil {
-					return err
+				if file != nil {
+					savedFile, err = r.findOrCreateFile(tx, file, savedVer.ID)
+					if err != nil {
+						return err
+					}
+
+					totalSize, err := r.recalculateVersionSize(tx, savedVer.ID)
+					if err != nil {
+						return err
+					}
+					savedVer.SizeBytes = totalSize
 				}
-				savedVer.SizeBytes = totalSize
 			}
-		}
 
-		return nil
-	})
+			return nil
+		})
+		return err
+	}, 10)
 
-	if err != nil {
-		return nil, nil, nil, err
+	if retryErr != nil {
+		return nil, nil, nil, retryErr
 	}
 
 	return savedPkg, savedVer, savedFile, nil

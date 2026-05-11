@@ -132,35 +132,44 @@ func NewYumAdapter(
 	pkgCache *cache.PackageCache,
 ) *YumAdapter {
 	adapter := &YumAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache),
+		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
 		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
 	}
 	return adapter
 }
 
 func (a *YumAdapter) Type() PackageType   { return YumType }
-func (a *YumAdapter) RoutePrefix() string { return "/yum" }
 
-func (a *YumAdapter) BuildRemotePath(name, version, filename string) string {
-	if filename != "" {
-		return fmt.Sprintf("%s/%s", name, filename)
-	}
-	return name
-}
-
-func (a *YumAdapter) ParsePackagePath(path string) (*PackageIdentity, error) {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 1 {
+func (a *YumAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
 		return nil, fmt.Errorf("invalid yum path: %s", path)
 	}
 
-	name := parts[0]
+	filename := parts[len(parts)-1]
+	name := strings.Join(parts[:len(parts)-1], "/")
 	version := ""
-	if len(parts) >= 2 {
-		version = parts[1]
+
+	if strings.Contains(filename, ".rpm") {
+		base := strings.TrimSuffix(filename, ".rpm")
+		pkgParts := strings.Split(base, "-")
+		if len(pkgParts) >= 2 {
+			version = pkgParts[1]
+		}
 	}
 
-	return &PackageIdentity{Name: name, Version: version, Type: YumType}, nil
+	storageName := name
+	storageVersion := filename
+	remotePath := name + "/" + filename
+
+	return &types.PackagePathInfo{
+		Name:           name,
+		Version:        version,
+		Filename:       filename,
+		StorageName:    storageName,
+		StorageVersion: storageVersion,
+		RemotePath:     remotePath,
+	}, nil
 }
 
 func (a *YumAdapter) RepoMetadata(c *gin.Context) {
@@ -271,7 +280,7 @@ func (a *YumAdapter) UploadRPM(c *gin.Context) {
 		return
 	}
 
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(c.Request.Context(), &model.Package{
+	pkg, _, err := a.GetPackageRepository().CreateOrUpdate(c.Request.Context(), &model.Package{
 		Name:           packageName,
 		Type:           model.PackageTypeYum,
 		RepositoryType: model.RepoTypeLocal,
@@ -363,7 +372,7 @@ func (a *YumAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageVe
 }
 
 func (a *YumAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
-	pkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypeYum)
+	pkg, err := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeYum)
 	if err != nil {
 		return nil, err
 	}
@@ -388,11 +397,11 @@ func (a *YumAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta
 }
 
 func (a *YumAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeYum)
+	return a.GetPackageRepository().DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeYum)
 }
 
 func (a *YumAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {
-	return a.pkgRepo.ListVersions(name, model.PackageTypeYum)
+	return a.GetPackageRepository().ListVersions(name, model.PackageTypeYum)
 }
 
 func (a *YumAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
@@ -481,7 +490,7 @@ func (a *YumAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) *
 		return nil
 	}
 
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(c.Request.Context(), &model.Package{
+	pkg, _, err := a.GetPackageRepository().CreateOrUpdate(c.Request.Context(), &model.Package{
 		Name:           packageName,
 		Type:           model.PackageTypeYum,
 		RepositoryType: model.RepoTypeLocal,
@@ -555,7 +564,7 @@ func (a *YumAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) *t
 		return nil
 	}
 
-	pkg, _ := a.pkgRepo.FindByNameAndType(name, model.PackageTypeYum)
+	pkg, _ := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeYum)
 	var pkgID *uint
 	if pkg != nil {
 		pkgID = &pkg.ID
@@ -621,7 +630,7 @@ func (a *YumAdapter) generateRepomdXML(ctx context.Context, repo string) (string
 }
 
 func (a *YumAdapter) regenerateRepodata(ctx context.Context, repo string) error {
-	packages, _, err := a.pkgRepo.List(1, 10000, string(model.PackageTypeYum), "")
+	packages, _, err := a.GetPackageRepository().List(1, 10000, string(model.PackageTypeYum), "")
 	if err != nil {
 		return err
 	}
@@ -759,43 +768,6 @@ func (a *YumAdapter) FormatDownloadResponse(c *gin.Context, result *types.Downlo
 	c.DataFromReader(200, result.Size, contentType, result.Content, nil)
 }
 
-func (a *YumAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
-	name := ctx.Name
-	version := ctx.Version
-	filename := ctx.Filename
-
-	storageName := name + "/" + filename
-	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "yum", storageName, version)
-	if err == nil {
-		return &types.DownloadResult{
-			Content:   content,
-			Size:      size,
-			FromCache: false,
-			RepoID:    ctx.Repo.ID,
-			Filename:  filename,
-			Name:      name,
-			Version:   version,
-		}, nil
-	}
-
-	if a.fetcher != nil && ctx.Repo.Type == "proxy" {
-		result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), ctx.Repo, "yum", name, version+"/"+filename)
-		if fetchErr == nil && result != nil {
-			return &types.DownloadResult{
-				Content:   result.Content,
-				Size:      result.Size,
-				FromCache: result.FromCache,
-				RepoID:    result.RepoID,
-				Filename:  filename,
-				Name:      name,
-				Version:   version,
-			}, nil
-		}
-	}
-
-	return nil, fmt.Errorf("package not found")
-}
-
 func (a *YumAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	userID := ctx.UserID
 
@@ -825,7 +797,7 @@ func (a *YumAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*
 		return nil, err
 	}
 
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(c.Request.Context(), &model.Package{
+	pkg, _, err := a.GetPackageRepository().CreateOrUpdate(c.Request.Context(), &model.Package{
 		Name:           packageName,
 		Type:           model.PackageTypeYum,
 		RepositoryType: model.RepoTypeLocal,
@@ -886,7 +858,7 @@ func (a *YumAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) erro
 		return err
 	}
 
-	pkg, _ := a.pkgRepo.FindByNameAndType(name, model.PackageTypeYum)
+	pkg, _ := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeYum)
 	var pkgID *uint
 	if pkg != nil {
 		pkgID = &pkg.ID

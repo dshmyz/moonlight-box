@@ -35,14 +35,14 @@ func Initialize(cfg *config.Config) error {
 		dsn := cfg.Database.DSN
 		// SQLite 配置优化
 		// - _journal_mode=WAL: 启用 Write-Ahead Logging 提高并发性能
-		// - _busy_timeout: 设置锁等待超时时间（毫秒）
+		// - _busy_timeout: 设置锁等待超时时间（毫秒），增加到 30 秒以应对高并发写入
 		// - _synchronous=NORMAL: 平衡性能和安全性
 		// - _cache_size: 页面缓存大小（KB），负数表示 KB，正数表示页数
 		// - _txlock=immediate: 事务开始时立即获取写锁，减少死锁
 		if !strings.Contains(dsn, "?") {
-			dsn += "?_journal_mode=WAL&_busy_timeout=10000&_synchronous=NORMAL&_cache_size=-64000&_txlock=immediate"
+			dsn += "?_journal_mode=WAL&_busy_timeout=30000&_synchronous=NORMAL&_cache_size=-64000&_txlock=immediate"
 		} else if !strings.Contains(dsn, "_journal_mode") {
-			dsn += "&_journal_mode=WAL&_busy_timeout=10000&_synchronous=NORMAL&_cache_size=-64000&_txlock=immediate"
+			dsn += "&_journal_mode=WAL&_busy_timeout=30000&_synchronous=NORMAL&_cache_size=-64000&_txlock=immediate"
 		}
 		dialector = gormlite.Open(dsn)
 	}
@@ -75,18 +75,9 @@ func Initialize(cfg *config.Config) error {
 
 	if cfg.Database.Driver == "sqlite" {
 		// SQLite WAL 模式下支持并发读，写入仍然串行
-		// 使用配置文件中的连接池设置，如果未配置则使用默认值
-		maxOpenConns := cfg.Database.MaxOpenConns
-		if maxOpenConns == 0 {
-			maxOpenConns = 20 // 提升默认值以支持更高并发
-		}
-		maxIdleConns := cfg.Database.MaxIdleConns
-		if maxIdleConns == 0 {
-			maxIdleConns = 10 // 提升默认值以支持更高并发
-		}
-
-		sqlDB.SetMaxOpenConns(maxOpenConns)
-		sqlDB.SetMaxIdleConns(maxIdleConns)
+		// 100 人使用场景：提升连接数以支持并发读操作
+		sqlDB.SetMaxOpenConns(8)
+		sqlDB.SetMaxIdleConns(4)
 		sqlDB.SetConnMaxLifetime(time.Hour)
 		sqlDB.SetConnMaxIdleTime(30 * time.Minute)
 
@@ -97,7 +88,7 @@ func Initialize(cfg *config.Config) error {
 		sqlDB.Exec("PRAGMA temp_store=MEMORY")
 		sqlDB.Exec("PRAGMA mmap_size=268435456")
 		sqlDB.Exec("PRAGMA wal_autocheckpoint=1000")
-		sqlDB.Exec("PRAGMA busy_timeout=10000")
+		sqlDB.Exec("PRAGMA busy_timeout=30000")
 	} else {
 		sqlDB.SetMaxOpenConns(cfg.Database.MaxOpenConns)
 		sqlDB.SetMaxIdleConns(cfg.Database.MaxIdleConns)

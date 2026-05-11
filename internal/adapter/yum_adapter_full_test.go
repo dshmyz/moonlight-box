@@ -1,6 +1,8 @@
 package adapter
 
 import (
+	"time"
+	"github.com/moonlight-box/registry/internal/cache"
 	"bytes"
 	"context"
 	"net/http/httptest"
@@ -59,7 +61,9 @@ func setupYumAdapter(t *testing.T) (*YumAdapter, *gorm.DB) {
 
 	auditSvc := service.NewAuditService()
 
-	adapter := NewYumAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, nil)
+	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
+
+	adapter := NewYumAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache)
 	return adapter, db
 }
 
@@ -68,12 +72,8 @@ func TestYumAdapter_Type(t *testing.T) {
 	assert.Equal(t, YumType, adapter.Type())
 }
 
-func TestYumAdapter_RoutePrefix(t *testing.T) {
-	adapter, _ := setupYumAdapter(t)
-	assert.Equal(t, "/yum", adapter.RoutePrefix())
-}
 
-func TestYumAdapter_ParsePackagePath(t *testing.T) {
+func TestYumAdapter_ResolvePackagePath(t *testing.T) {
 	adapter, _ := setupYumAdapter(t)
 
 	tests := []struct {
@@ -101,14 +101,13 @@ func TestYumAdapter_ParsePackagePath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			identity, err := adapter.ParsePackagePath(tt.path)
+			pathInfo, err := adapter.ResolvePackagePath(tt.path)
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
 				assert.Nil(t, err)
-				assert.Equal(t, tt.expectedName, identity.Name)
-				assert.Equal(t, tt.expectedVersion, identity.Version)
-				assert.Equal(t, YumType, identity.Type)
+				assert.Equal(t, tt.expectedName, pathInfo.Name)
+				assert.Equal(t, tt.expectedVersion, pathInfo.Version)
 			}
 		})
 	}

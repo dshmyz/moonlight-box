@@ -16,19 +16,14 @@ import (
 )
 
 type BaseAdapter struct {
-	pkgRepo    *repository.PackageRepository
-	repoRepo   *repository.RepositoryRepository
 	storageSvc *service.StorageService
-	webhookSvc *service.WebhookService
 	auditSvc   *service.AuditService
 	fetcher    proxy.ProxyFetcher
 	pkgCache   *cache.PackageCache
 }
 
-func NewBaseAdapter(pkgRepo *repository.PackageRepository, repoRepo *repository.RepositoryRepository, storageSvc *service.StorageService, auditSvc *service.AuditService, pkgCache *cache.PackageCache) *BaseAdapter {
+func NewBaseAdapter(storageSvc *service.StorageService, auditSvc *service.AuditService, pkgCache *cache.PackageCache) *BaseAdapter {
 	return &BaseAdapter{
-		pkgRepo:    pkgRepo,
-		repoRepo:   repoRepo,
 		storageSvc: storageSvc,
 		auditSvc:   auditSvc,
 		pkgCache:   pkgCache,
@@ -88,36 +83,12 @@ func (b *BaseAdapter) CheckDownloadPermissionFromContext(ctx *types.DownloadCont
 	return pluginChain.Execute(downloadCtx)
 }
 
-func (b *BaseAdapter) SetWebhookService(webhookSvc *service.WebhookService) {
-	b.webhookSvc = webhookSvc
-}
-
-func (b *BaseAdapter) TriggerWebhook(event model.WebhookEvent, pkgName, version, repoName string, extraData map[string]interface{}) {
-	if b.webhookSvc == nil {
-		return
-	}
-
-	payload := &service.WebhookPayload{
-		Event:       string(event),
-		Timestamp:   time.Now().Format(time.RFC3339),
-		PackageName: pkgName,
-		Version:     version,
-		Repository:  repoName,
-		Data:        extraData,
-	}
-	b.webhookSvc.TriggerEvent(event, payload)
-}
-
 func (b *BaseAdapter) GetPackageMetadata(ctx context.Context, name string, pkgType model.PackageType, typeStr types.PackageType) (*types.PackageMeta, error) {
-	var pkg *model.Package
-	var err error
-
-	if b.pkgCache != nil {
-		pkg, err = b.pkgCache.GetByNameAndType(name, pkgType)
-	} else {
-		pkg, err = b.pkgRepo.FindByNameAndType(name, pkgType)
+	if b.pkgCache == nil {
+		return nil, fmt.Errorf("package cache not initialized")
 	}
 
+	pkg, err := b.pkgCache.GetByNameAndType(name, pkgType)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +117,10 @@ func (b *BaseAdapter) GetPackageMetadata(ctx context.Context, name string, pkgTy
 }
 
 func (b *BaseAdapter) GetPackageRepository() *repository.PackageRepository {
-	return b.pkgRepo
+	if b.pkgCache == nil {
+		return nil
+	}
+	return b.pkgCache.GetPackageRepository()
 }
 
 func (b *BaseAdapter) GetStorageService() *service.StorageService {

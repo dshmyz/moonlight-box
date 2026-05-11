@@ -286,7 +286,7 @@ func TestE2E_PyPI_ProxyRepository(t *testing.T) {
 		"description":  "Proxy PyPI repository for e2e testing",
 		"type":         "proxy",
 		"package_type": "pypi",
-		"remote_url":   "https://pypi.org/simple",
+		"remote_url":   "https://pypi.org",
 	}
 
 	body, _ := json.Marshal(payload)
@@ -300,7 +300,7 @@ func TestE2E_PyPI_ProxyRepository(t *testing.T) {
 
 	var result map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&result)
-	assert.Equal(t, "https://pypi.org/simple", result["remote_url"])
+	assert.Equal(t, "https://pypi.org", result["remote_url"])
 }
 
 func TestE2E_PyPI_CompleteWorkflow(t *testing.T) {

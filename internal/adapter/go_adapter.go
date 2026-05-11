@@ -33,14 +33,87 @@ func NewGoAdapter(
 	pkgCache *cache.PackageCache,
 ) *GoAdapter {
 	adapter := &GoAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache),
+		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
 		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
 	}
 	return adapter
 }
 
-func (a *GoAdapter) Type() PackageType   { return GoType }
-func (a *GoAdapter) RoutePrefix() string { return "/go" }
+func (a *GoAdapter) Type() PackageType { return GoType }
+
+func (a *GoAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+	// 处理元数据请求：name/@v/list
+	if strings.HasSuffix(path, "/@v/list") {
+		name := strings.TrimSuffix(path, "/@v/list")
+		return &types.PackagePathInfo{
+			Name:        name,
+			Version:     "",
+			Filename:    "list",
+			StorageName: name,
+			RemotePath:  name + "/@v/list",
+		}, nil
+	}
+
+	// 处理 @v/ 路径（包含 version.info, version.mod, version.zip）
+	if strings.Contains(path, "/@v/") {
+		parts := strings.Split(path, "/@v/")
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("invalid go module path: %s", path)
+		}
+
+		name := parts[0]
+		versionFile := parts[1]
+
+		fileParts := strings.Split(versionFile, ".")
+		if len(fileParts) < 2 {
+			return nil, fmt.Errorf("invalid go module version file: %s", versionFile)
+		}
+
+		version := strings.Join(fileParts[:len(fileParts)-1], ".")
+		filename := versionFile
+
+		storageName := name
+		storageVersion := "@v/" + filename
+		remotePath := name + "/@v/" + filename
+
+		return &types.PackagePathInfo{
+			Name:           name,
+			Version:        version,
+			Filename:       filename,
+			StorageName:    storageName,
+			StorageVersion: storageVersion,
+			RemotePath:     remotePath,
+		}, nil
+	}
+
+	// 处理 name/version 格式（version 可能包含 .info/.mod/.zip）
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("invalid go module path: %s", path)
+	}
+
+	filename := parts[len(parts)-1]
+	name := strings.Join(parts[:len(parts)-1], "/")
+	version := filename
+
+	// 如果 filename 包含 .info/.mod/.zip，说明是完整的版本文件
+	if strings.HasSuffix(filename, ".info") || strings.HasSuffix(filename, ".mod") || strings.HasSuffix(filename, ".zip") {
+		storageName := name
+		storageVersion := "@v/" + filename
+		remotePath := name + "/@v/" + filename
+
+		return &types.PackagePathInfo{
+			Name:           name,
+			Version:        version,
+			Filename:       filename,
+			StorageName:    storageName,
+			StorageVersion: storageVersion,
+			RemotePath:     remotePath,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("invalid go module path: %s", path)
+}
 
 func (a *GoAdapter) goProxyHandler(c *gin.Context) {
 	fullPath := strings.TrimPrefix(c.Param("path"), "/")
@@ -103,7 +176,14 @@ func (a *GoAdapter) handleListVersions(c *gin.Context, module string) {
 				repo = r.(*model.Repository)
 			}
 
-			result, resolveErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, "go", module, "")
+			result, resolveErr := func() (*types.RouteResult, error) {
+				pathInfo, err := a.ResolvePackagePath(module + "/@v/list")
+				if err != nil {
+					return nil, err
+				}
+				remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+				return a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+			}()
 			if resolveErr == nil && result != nil {
 				defer result.Content.Close()
 				body, readErr := io.ReadAll(result.Content)
@@ -124,33 +204,8 @@ func (a *GoAdapter) handleListVersions(c *gin.Context, module string) {
 	c.Data(200, "text/plain", []byte(strings.Join(versions, "\n")+"\n"))
 }
 
-func (a *GoAdapter) BuildRemotePath(name, version, filename string) string {
-	if filename != "" {
-		return fmt.Sprintf("%s/@v/%s", name, filename)
-	}
-	if version == "" {
-		return fmt.Sprintf("%s/@v/list", name)
-	}
-	if strings.HasSuffix(version, ".info") || strings.HasSuffix(version, ".mod") || strings.HasSuffix(version, ".zip") {
-		return fmt.Sprintf("%s/@v/%s", name, version)
-	}
-	return fmt.Sprintf("%s/@v/%s", name, version)
-}
-
-func (a *GoAdapter) ParsePackagePath(path string) (*PackageIdentity, error) {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 2 {
-		return nil, fmt.Errorf("invalid go module path")
-	}
-	return &PackageIdentity{
-		Name:    decodeGoModulePath(parts[0]),
-		Version: strings.TrimSuffix(parts[1], ".zip"),
-		Type:    GoType,
-	}, nil
-}
-
 func (a *GoAdapter) handleVersionInfo(c *gin.Context, module, version string) {
-	pkg, err := a.pkgRepo.FindByNameAndType(module, model.PackageTypeGo)
+	pkg, err := a.GetPackageRepository().FindByNameAndType(module, model.PackageTypeGo)
 	if err != nil {
 		if util.IsErr(err, util.ErrPackageNotFound) {
 			if a.fetcher != nil {
@@ -159,7 +214,14 @@ func (a *GoAdapter) handleVersionInfo(c *gin.Context, module, version string) {
 					repo = r.(*model.Repository)
 				}
 
-				result, resolveErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, "go", module, version)
+				result, resolveErr := func() (*types.RouteResult, error) {
+					pathInfo, err := a.ResolvePackagePath(module + "/@v/" + version + ".info")
+					if err != nil {
+						return nil, err
+					}
+					remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+					return a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+				}()
 				if resolveErr == nil && result != nil {
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
@@ -210,13 +272,19 @@ func (a *GoAdapter) handleGoMod(c *gin.Context, module, version string) {
 		}
 
 		remotePath := fmt.Sprintf("%s/@v/%s.mod", module, version)
-		result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, "go", module, version+".mod")
-		if fetchErr == nil && result != nil {
-			defer result.Content.Close()
-			c.DataFromReader(200, result.Size, "text/plain", result.Content, nil)
-			return
+		pathInfo, pathErr := a.ResolvePackagePath(module + "/@v/" + version + ".mod")
+		if pathErr != nil {
+			slog.Info("Failed to resolve go.mod path", "module", module, "version", version, "error", pathErr)
+		} else {
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+			result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+			if fetchErr == nil && result != nil {
+				defer result.Content.Close()
+				c.DataFromReader(200, result.Size, "text/plain", result.Content, nil)
+				return
+			}
+			slog.Info("Failed to fetch go.mod from remote", "module", module, "version", version, "remotePath", remotePath, "error", fetchErr)
 		}
-		slog.Info("Failed to fetch go.mod from remote", "module", module, "version", version, "remotePath", remotePath, "error", fetchErr)
 	}
 
 	response.NotFound(c, "go.mod not found")
@@ -245,14 +313,20 @@ func (a *GoAdapter) handleDownloadZip(c *gin.Context, module, version string) {
 	}
 
 	if a.fetcher != nil {
-		result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, "go", module, version)
-		if fetchErr == nil && result != nil {
-			defer result.Content.Close()
-			c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, version))
-			c.DataFromReader(200, result.Size, "application/zip", result.Content, nil)
-			return
+		pathInfo, pathErr := a.ResolvePackagePath(module + "/@v/" + version + ".zip")
+		if pathErr != nil {
+			slog.Info("Failed to resolve zip path", "module", module, "version", version, "error", pathErr)
+		} else {
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+			result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+			if fetchErr == nil && result != nil {
+				defer result.Content.Close()
+				c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, version))
+				c.DataFromReader(200, result.Size, "application/zip", result.Content, nil)
+				return
+			}
+			slog.Info("Failed to fetch zip from remote", "module", module, "version", version, "error", fetchErr)
 		}
-		slog.Info("Failed to fetch zip from remote", "module", module, "version", version, "error", fetchErr)
 	}
 
 	response.NotFound(c, "module zip not found")
@@ -271,7 +345,14 @@ func (a *GoAdapter) latestHandler(c *gin.Context) {
 				repo = r.(*model.Repository)
 			}
 
-			result, resolveErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, "go", module, "@latest")
+			result, resolveErr := func() (*types.RouteResult, error) {
+				pathInfo, err := a.ResolvePackagePath(module + "/@latest")
+				if err != nil {
+					return nil, err
+				}
+				remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+				return a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+			}()
 			if resolveErr == nil && result != nil {
 				defer result.Content.Close()
 				body, readErr := io.ReadAll(result.Content)
@@ -338,11 +419,11 @@ func (a *GoAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta,
 }
 
 func (a *GoAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeGo)
+	return a.GetPackageRepository().DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeGo)
 }
 
 func (a *GoAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {
-	return a.pkgRepo.ListVersions(name, model.PackageTypeGo)
+	return a.GetPackageRepository().ListVersions(name, model.PackageTypeGo)
 }
 
 func (a *GoAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
@@ -362,7 +443,7 @@ func (a *GoAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) *ty
 }
 
 func (a *GoAdapter) syncVersionsToLocal(ctx context.Context, module string, versions []string, repoID uint) {
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(ctx, &model.Package{
+	pkg, _, err := a.GetPackageRepository().CreateOrUpdate(ctx, &model.Package{
 		Name:           module,
 		Type:           model.PackageTypeGo,
 		RepositoryID:   repoID,
@@ -373,7 +454,7 @@ func (a *GoAdapter) syncVersionsToLocal(ctx context.Context, module string, vers
 	}
 
 	for _, v := range versions {
-		a.pkgRepo.CreateOrUpdateMetadata(ctx, pkg, &model.PackageVersion{
+		a.GetPackageRepository().CreateOrUpdateMetadata(ctx, pkg, &model.PackageVersion{
 			Version:     v,
 			Status:      model.StatusPublished,
 			PublishedAt: time.Now(),
@@ -416,43 +497,6 @@ func (a *GoAdapter) FormatDownloadResponse(c *gin.Context, result *types.Downloa
 		contentType = "application/json"
 	}
 	c.DataFromReader(200, result.Size, contentType, result.Content, nil)
-}
-
-func (a *GoAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
-	name := ctx.Name
-	version := ctx.Version
-	filename := ctx.Filename
-
-	storageName := name + "/" + version + "/" + filename
-	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "go", storageName, version)
-	if err == nil {
-		return &types.DownloadResult{
-			Content:   content,
-			Size:      size,
-			FromCache: false,
-			RepoID:    ctx.Repo.ID,
-			Filename:  filename,
-			Name:      name,
-			Version:   version,
-		}, nil
-	}
-
-	if a.fetcher != nil && ctx.Repo.Type == "proxy" {
-		result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), ctx.Repo, "go", name, version+"/"+filename)
-		if fetchErr == nil && result != nil {
-			return &types.DownloadResult{
-				Content:   result.Content,
-				Size:      result.Size,
-				FromCache: result.FromCache,
-				RepoID:    result.RepoID,
-				Filename:  filename,
-				Name:      name,
-				Version:   version,
-			}, nil
-		}
-	}
-
-	return nil, fmt.Errorf("module not found")
 }
 
 func (a *GoAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {

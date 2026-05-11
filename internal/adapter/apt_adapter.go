@@ -74,36 +74,45 @@ func NewAptAdapter(
 	pkgCache *cache.PackageCache,
 ) *AptAdapter {
 	adapter := &AptAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache),
+		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
 		repoRepo:    repoRepo,
 		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
 	}
 	return adapter
 }
 
-func (a *AptAdapter) Type() PackageType   { return AptType }
-func (a *AptAdapter) RoutePrefix() string { return "/apt" }
+func (a *AptAdapter) Type() PackageType { return AptType }
 
-func (a *AptAdapter) BuildRemotePath(name, version, filename string) string {
-	if filename != "" {
-		return filename
-	}
-	return name
-}
-
-func (a *AptAdapter) ParsePackagePath(path string) (*PackageIdentity, error) {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 1 {
+func (a *AptAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
 		return nil, fmt.Errorf("invalid apt path: %s", path)
 	}
 
-	name := parts[0]
+	filename := parts[len(parts)-1]
+	name := strings.Join(parts[:len(parts)-1], "/")
 	version := ""
-	if len(parts) >= 2 {
-		version = parts[1]
+
+	if strings.Contains(filename, ".deb") {
+		base := strings.TrimSuffix(filename, ".deb")
+		pkgParts := strings.Split(base, "_")
+		if len(pkgParts) >= 2 {
+			version = pkgParts[1]
+		}
 	}
 
-	return &PackageIdentity{Name: name, Version: version, Type: AptType}, nil
+	storageName := name
+	storageVersion := filename
+	remotePath := path
+
+	return &types.PackagePathInfo{
+		Name:           name,
+		Version:        version,
+		Filename:       filename,
+		StorageName:    storageName,
+		StorageVersion: storageVersion,
+		RemotePath:     remotePath,
+	}, nil
 }
 
 func (a *AptAdapter) ReleaseFile(c *gin.Context) {
@@ -164,7 +173,7 @@ func (a *AptAdapter) PackagesFile(c *gin.Context) {
 	_ = c.Param("dist")
 	_ = c.Param("component")
 
-	packages, _, err := a.pkgRepo.List(1, 10000, string(model.PackageTypeApt), "")
+	packages, _, err := a.GetPackageRepository().List(1, 10000, string(model.PackageTypeApt), "")
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -205,7 +214,7 @@ func (a *AptAdapter) PackagesFileGz(c *gin.Context) {
 	_ = c.Param("dist")
 	_ = c.Param("component")
 
-	packages, _, err := a.pkgRepo.List(1, 10000, string(model.PackageTypeApt), "")
+	packages, _, err := a.GetPackageRepository().List(1, 10000, string(model.PackageTypeApt), "")
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -278,21 +287,27 @@ func (a *AptAdapter) DownloadDeb(c *gin.Context) {
 
 	if a.fetcher != nil && repo != nil && repo.Type == "proxy" {
 		slog.Info("APT proxy: fetching from remote", "filePath", filePath)
-		result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, "apt", filePath, "")
-		if fetchErr == nil && result != nil {
-			defer result.Content.Close()
-			filename := filepath.Base(filePath)
-			slog.Info("APT proxy: successfully fetched from remote", "filePath", filePath, "size", result.Size)
-			decision := a.CheckDownloadPermission(c, repo, model.PackageTypeApt, filename, "", filename)
-			if !decision.Allow {
-				c.JSON(decision.Code, gin.H{"error": decision.Message})
+		pathInfo, pathErr := a.ResolvePackagePath(filePath)
+		if pathErr != nil {
+			slog.Warn("APT proxy: failed to resolve path", "filePath", filePath, "error", pathErr)
+		} else {
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+			result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+			if fetchErr == nil && result != nil {
+				defer result.Content.Close()
+				filename := filepath.Base(filePath)
+				slog.Info("APT proxy: successfully fetched from remote", "filePath", filePath, "size", result.Size)
+				decision := a.CheckDownloadPermission(c, repo, model.PackageTypeApt, filename, "", filename)
+				if !decision.Allow {
+					c.JSON(decision.Code, gin.H{"error": decision.Message})
+					return
+				}
+				c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)))
+				c.DataFromReader(200, result.Size, "application/vnd.debian.binary-package", result.Content, nil)
 				return
 			}
-			c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)))
-			c.DataFromReader(200, result.Size, "application/vnd.debian.binary-package", result.Content, nil)
-			return
+			slog.Warn("APT proxy: failed to fetch from remote", "filePath", filePath, "error", fetchErr)
 		}
-		slog.Warn("APT proxy: failed to fetch from remote", "filePath", filePath, "error", fetchErr)
 	}
 
 	response.NotFound(c, "DEB not found")
@@ -351,11 +366,11 @@ func (a *AptAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta
 }
 
 func (a *AptAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeApt)
+	return a.GetPackageRepository().DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeApt)
 }
 
 func (a *AptAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {
-	return a.pkgRepo.ListVersions(name, model.PackageTypeApt)
+	return a.GetPackageRepository().ListVersions(name, model.PackageTypeApt)
 }
 
 func formatPackageEntry(entry AptPackageEntry) string {
@@ -407,43 +422,6 @@ func (a *AptAdapter) FormatDownloadResponse(c *gin.Context, result *types.Downlo
 	c.DataFromReader(200, result.Size, contentType, result.Content, nil)
 }
 
-func (a *AptAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
-	name := ctx.Name
-	version := ctx.Version
-	filename := ctx.Filename
-
-	storageName := name + "/" + filename
-	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "apt", storageName, version)
-	if err == nil {
-		return &types.DownloadResult{
-			Content:   content,
-			Size:      size,
-			FromCache: false,
-			RepoID:    ctx.Repo.ID,
-			Filename:  filename,
-			Name:      name,
-			Version:   version,
-		}, nil
-	}
-
-	if a.fetcher != nil && ctx.Repo.Type == "proxy" {
-		result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), ctx.Repo, "apt", name, version+"/"+filename)
-		if fetchErr == nil && result != nil {
-			return &types.DownloadResult{
-				Content:   result.Content,
-				Size:      result.Size,
-				FromCache: result.FromCache,
-				RepoID:    result.RepoID,
-				Filename:  filename,
-				Name:      name,
-				Version:   version,
-			}, nil
-		}
-	}
-
-	return nil, fmt.Errorf("package not found")
-}
-
 func (a *AptAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	userID := ctx.UserID
 
@@ -481,7 +459,7 @@ func (a *AptAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*
 	md5Hash := md5.Sum(debData)
 	sha256Hash := sha256.Sum256(debData)
 
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(c.Request.Context(), &model.Package{
+	pkg, _, err := a.GetPackageRepository().CreateOrUpdate(c.Request.Context(), &model.Package{
 		Name:           packageName,
 		Type:           model.PackageTypeApt,
 		RepositoryID:   ctx.Repo.ID,
@@ -538,7 +516,7 @@ func (a *AptAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) erro
 		return err
 	}
 
-	pkg, _ := a.pkgRepo.FindByNameAndType(identity.Name, model.PackageTypeApt)
+	pkg, _ := a.GetPackageRepository().FindByNameAndType(identity.Name, model.PackageTypeApt)
 	var pkgID *uint
 	if pkg != nil {
 		pkgID = &pkg.ID
@@ -645,7 +623,7 @@ func (a *AptAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) *
 	md5Hash := md5.Sum(debData)
 	sha256Hash := sha256.Sum256(debData)
 
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(c.Request.Context(), &model.Package{
+	pkg, _, err := a.GetPackageRepository().CreateOrUpdate(c.Request.Context(), &model.Package{
 		Name:           packageName,
 		Type:           model.PackageTypeApt,
 		RepositoryID:   repo.ID,
@@ -711,7 +689,7 @@ func (a *AptAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) *t
 		return nil
 	}
 
-	pkg, _ := a.pkgRepo.FindByNameAndType(identity.Name, model.PackageTypeApt)
+	pkg, _ := a.GetPackageRepository().FindByNameAndType(identity.Name, model.PackageTypeApt)
 	var pkgID *uint
 	if pkg != nil {
 		pkgID = &pkg.ID

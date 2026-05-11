@@ -145,7 +145,7 @@ func testPyPIPackage(svc *service.ProxyDownloadService, repoRepo *repository.Rep
 		DisplayName: "PyPI Proxy Test",
 		Type:        model.RepoTypeProxy,
 		PackageType: string(model.PackageTypePyPI),
-		RemoteURL:   "https://pypi.org/simple",
+		RemoteURL:   "https://pypi.org",
 		Enabled:     true,
 	}
 

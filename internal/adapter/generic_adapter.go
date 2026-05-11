@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"log/slog"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -41,22 +42,38 @@ func NewGenericAdapter(
 	pkgCache *cache.PackageCache,
 ) *GenericAdapter {
 	adapter := &GenericAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache),
+		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
 		repoRepo:    repoRepo,
 	}
 	return adapter
 }
 
-func (a *GenericAdapter) Type() PackageType   { return GenericType }
-func (a *GenericAdapter) RoutePrefix() string { return "/files" }
+func (a *GenericAdapter) Type() PackageType { return GenericType }
 
-func (a *GenericAdapter) ParsePackagePath(path string) (*PackageIdentity, error) {
-	name := strings.TrimPrefix(path, "/")
-	if name == "" {
+func (a *GenericAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+	parts := strings.Split(path, "/")
+	if len(parts) < 1 {
 		return nil, fmt.Errorf("invalid generic path: %s", path)
 	}
 
-	return &PackageIdentity{Name: name, Version: "", Type: GenericType}, nil
+	filename := parts[len(parts)-1]
+	name := strings.Join(parts[:len(parts)-1], "/")
+	if name == "" {
+		name = filename
+	}
+
+	storageName := name
+	storageVersion := filename
+	remotePath := path
+
+	return &types.PackagePathInfo{
+		Name:           name,
+		Version:        "",
+		Filename:       filename,
+		StorageName:    storageName,
+		StorageVersion: storageVersion,
+		RemotePath:     remotePath,
+	}, nil
 }
 
 func (a *GenericAdapter) DownloadOrBrowse(c *gin.Context) {
@@ -129,13 +146,19 @@ func (a *GenericAdapter) DownloadOrBrowse(c *gin.Context) {
 				return
 			}
 
-			result, err := a.fetcher.FetchFromRemote(c.Request.Context(), repo, "generic", filePath, "")
-			if err == nil && result != nil {
-				defer result.Content.Close()
-				contentType := a.storageSvc.GetContentType(filename)
-				c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, url.PathEscape(filename)))
-				c.DataFromReader(200, result.Size, contentType, result.Content, nil)
-				return
+			pathInfo, pathErr := a.ResolvePackagePath(filePath)
+			if pathErr != nil {
+				slog.Warn("failed to resolve generic package path", "path", filePath, "error", pathErr)
+			} else {
+				remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+				result, err := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+				if err == nil && result != nil {
+					defer result.Content.Close()
+					contentType := a.storageSvc.GetContentType(filename)
+					c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, url.PathEscape(filename)))
+					c.DataFromReader(200, result.Size, contentType, result.Content, nil)
+					return
+				}
 			}
 		}
 	}
@@ -183,7 +206,7 @@ func (a *GenericAdapter) UploadFile(c *gin.Context) {
 		return
 	}
 
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(c.Request.Context(), &model.Package{
+	pkg, _, err := a.GetPackageRepository().CreateOrUpdate(c.Request.Context(), &model.Package{
 		Name:           targetPath,
 		Type:           model.PackageTypeGeneric,
 		RepositoryID:   repositoryID,
@@ -266,7 +289,7 @@ func (a *GenericAdapter) Upload(ctx context.Context, req *UploadRequest) (*Packa
 		return nil, err
 	}
 
-	pkg, ver, _, err := a.pkgRepo.StorePackageFile(ctx, &model.Package{
+	pkg, ver, _, err := a.GetPackageRepository().StorePackageFile(ctx, &model.Package{
 		Name:           path,
 		Type:           model.PackageTypeGeneric,
 		RepositoryType: model.RepoTypeLocal,
@@ -302,11 +325,11 @@ func (a *GenericAdapter) GetMetadata(ctx context.Context, name string) (*Package
 }
 
 func (a *GenericAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeGeneric)
+	return a.GetPackageRepository().DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeGeneric)
 }
 
 func (a *GenericAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {
-	return a.pkgRepo.ListVersions(name, model.PackageTypeGeneric)
+	return a.GetPackageRepository().ListVersions(name, model.PackageTypeGeneric)
 }
 
 func (a *GenericAdapter) listRoot(c *gin.Context) {
@@ -374,13 +397,6 @@ func (a *GenericAdapter) listDirectory(c *gin.Context, backend storage.Backend, 
 	return nil, fileEntries
 }
 
-func (a *GenericAdapter) BuildRemotePath(name, version, filename string) string {
-	if filename != "" {
-		return name + "/" + filename
-	}
-	return name
-}
-
 func (a *GenericAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
 	c.Set("repo", ctx.Repo)
 	a.DownloadOrBrowse(c)
@@ -390,43 +406,6 @@ func (a *GenericAdapter) FormatDownloadResponse(c *gin.Context, result *types.Do
 	contentType := a.storageSvc.GetContentType(result.Filename)
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, result.Filename))
 	c.DataFromReader(200, result.Size, contentType, result.Content, nil)
-}
-
-func (a *GenericAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
-	name := ctx.Name
-	version := ctx.Version
-	filename := ctx.Filename
-
-	storageName := name + "/" + filename
-	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "generic", storageName, version)
-	if err == nil {
-		return &types.DownloadResult{
-			Content:   content,
-			Size:      size,
-			FromCache: false,
-			RepoID:    ctx.Repo.ID,
-			Filename:  filename,
-			Name:      name,
-			Version:   version,
-		}, nil
-	}
-
-	if a.fetcher != nil && ctx.Repo.Type == "proxy" {
-		result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), ctx.Repo, "generic", name, version+"/"+filename)
-		if fetchErr == nil && result != nil {
-			return &types.DownloadResult{
-				Content:   result.Content,
-				Size:      result.Size,
-				FromCache: result.FromCache,
-				RepoID:    result.RepoID,
-				Filename:  filename,
-				Name:      name,
-				Version:   version,
-			}, nil
-		}
-	}
-
-	return nil, fmt.Errorf("file not found")
 }
 
 func (a *GenericAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
@@ -452,7 +431,7 @@ func (a *GenericAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext
 		return nil, err
 	}
 
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(c.Request.Context(), &model.Package{
+	pkg, _, err := a.GetPackageRepository().CreateOrUpdate(c.Request.Context(), &model.Package{
 		Name:           targetPath,
 		Type:           model.PackageTypeGeneric,
 		RepositoryID:   ctx.Repo.ID,
@@ -510,7 +489,7 @@ func (a *GenericAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) 
 		return err
 	}
 
-	pkg, _ := a.pkgRepo.FindByNameAndType(identity.Name, model.PackageTypeGeneric)
+	pkg, _ := a.GetPackageRepository().FindByNameAndType(identity.Name, model.PackageTypeGeneric)
 	var pkgID *uint
 	if pkg != nil {
 		pkgID = &pkg.ID

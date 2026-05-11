@@ -6,8 +6,10 @@ import (
 	"encoding/xml"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/moonlight-box/registry/internal/cache"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
@@ -60,7 +62,9 @@ func setupMavenAdapter(t *testing.T) (*MavenAdapter, *gorm.DB) {
 
 	auditSvc := service.NewAuditService()
 
-	adapter := NewMavenAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, nil)
+	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
+
+	adapter := NewMavenAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache)
 	return adapter, db
 }
 
@@ -69,12 +73,7 @@ func TestMavenAdapter_Type(t *testing.T) {
 	assert.Equal(t, MavenType, adapter.Type())
 }
 
-func TestMavenAdapter_RoutePrefix(t *testing.T) {
-	adapter, _ := setupMavenAdapter(t)
-	assert.Equal(t, "/maven2", adapter.RoutePrefix())
-}
-
-func TestMavenAdapter_ParsePackagePath(t *testing.T) {
+func TestMavenAdapter_ResolvePackagePath(t *testing.T) {
 	adapter, _ := setupMavenAdapter(t)
 
 	tests := []struct {
@@ -112,14 +111,13 @@ func TestMavenAdapter_ParsePackagePath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			identity, err := adapter.ParsePackagePath(tt.path)
+			pathInfo, err := adapter.ResolvePackagePath(tt.path)
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
 				assert.Nil(t, err)
-				assert.Equal(t, tt.expectedName, identity.Name)
-				assert.Equal(t, tt.expectedVersion, identity.Version)
-				assert.Equal(t, MavenType, identity.Type)
+				assert.Equal(t, tt.expectedName, pathInfo.Name)
+				assert.Equal(t, tt.expectedVersion, pathInfo.Version)
 			}
 		})
 	}

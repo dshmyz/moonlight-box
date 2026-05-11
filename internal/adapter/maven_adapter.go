@@ -103,13 +103,108 @@ func NewMavenAdapter(
 	pkgCache *cache.PackageCache,
 ) *MavenAdapter {
 	return &MavenAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache),
+		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
 		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
 	}
 }
 
-func (a *MavenAdapter) Type() PackageType   { return MavenType }
-func (a *MavenAdapter) RoutePrefix() string { return "/maven2" }
+func (a *MavenAdapter) Type() PackageType { return MavenType }
+
+func (a *MavenAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+	// 处理 groupId:artifactId 格式（元数据请求）
+	if strings.Contains(path, ":") && !strings.Contains(path, "/") {
+		parts := strings.Split(path, ":")
+		if len(parts) == 2 {
+			groupPath := strings.ReplaceAll(parts[0], ".", "/")
+			artifactID := parts[1]
+			remotePath := groupPath + "/" + artifactID + "/maven-metadata.xml"
+			return &types.PackagePathInfo{
+				Name:        path,
+				Version:     "",
+				Filename:    "maven-metadata.xml",
+				StorageName: groupPath + "/" + artifactID,
+				RemotePath:  remotePath,
+			}, nil
+		}
+	}
+
+	// 处理 groupId:artifactId/version/filename 格式
+	if strings.Contains(path, ":") {
+		colonIdx := strings.Index(path, ":")
+		groupArtifact := path[:colonIdx]
+		rest := path[colonIdx+1:]
+
+		parts := strings.Split(rest, "/")
+		if len(parts) >= 2 {
+			filename := parts[len(parts)-1]
+			version := parts[0]
+			if len(parts) > 2 {
+				version = strings.Join(parts[:len(parts)-1], "/")
+			}
+
+			groupPath := strings.ReplaceAll(groupArtifact, ".", "/")
+			artifactID := ""
+			if idx := strings.LastIndex(groupPath, "/"); idx != -1 {
+				artifactID = groupPath[idx+1:]
+			} else {
+				artifactID = groupArtifact
+			}
+
+			name := groupArtifact + ":" + artifactID
+			storageName := groupPath + "/" + artifactID
+			storageVersion := version + "/" + filename
+
+			remotePath := groupPath + "/" + artifactID + "/" + version + "/" + filename
+
+			return &types.PackagePathInfo{
+				Name:           name,
+				Version:        version,
+				Filename:       filename,
+				StorageName:    storageName,
+				StorageVersion: storageVersion,
+				RemotePath:     remotePath,
+			}, nil
+		}
+	}
+
+	// 处理 groupId/artifactId/version/filename 格式（标准 Maven 路径）
+	parts := strings.Split(path, "/")
+	if len(parts) >= 4 {
+		filename := parts[len(parts)-1]
+		version := parts[len(parts)-2]
+		artifactId := parts[len(parts)-3]
+		groupId := strings.Join(parts[:len(parts)-3], ".")
+		name := groupId + ":" + artifactId
+
+		groupPath := strings.Join(parts[:len(parts)-3], "/")
+		storageName := groupPath + "/" + artifactId
+
+		storageVersion := version + "/" + filename
+		if strings.HasSuffix(version, "-SNAPSHOT") {
+			baseVersion := strings.TrimSuffix(version, "-SNAPSHOT")
+			if strings.Contains(filename, baseVersion) {
+				idx := strings.Index(filename, baseVersion)
+				if idx != -1 {
+					actualVersion := strings.TrimSuffix(filename[idx:], filepath.Ext(filename))
+					storageVersion = version + "/" + actualVersion + "/" + filename
+				}
+			}
+		}
+
+		remotePath := groupPath + "/" + artifactId + "/" + version + "/" + filename
+
+		return &types.PackagePathInfo{
+			Name:           name,
+			Version:        version,
+			Filename:       filename,
+			StorageName:    storageName,
+			StorageVersion: storageVersion,
+			RemotePath:     remotePath,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("invalid maven path: %s", path)
+}
 
 func (a *MavenAdapter) handleMetadataXML(c *gin.Context, fullPath string) {
 	group := strings.TrimSuffix(fullPath, "/maven-metadata.xml")
@@ -150,7 +245,7 @@ func (a *MavenAdapter) handleMetadataXML(c *gin.Context, fullPath string) {
 		return
 	}
 
-	pkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypeMaven)
+	pkg, err := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeMaven)
 
 	needRefresh := false
 	if err != nil {
@@ -163,32 +258,38 @@ func (a *MavenAdapter) handleMetadataXML(c *gin.Context, fullPath string) {
 	}
 
 	if needRefresh && repo != nil && repo.Type == model.RepoTypeProxy && a.fetcher != nil {
-		result, resolveErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, "maven", name, "")
-		if resolveErr == nil && result != nil {
-			defer result.Content.Close()
-			body, readErr := io.ReadAll(result.Content)
-			if readErr == nil {
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							logrus.Errorf("panic in updatePackageMetadata for %s: %v", name, r)
+		pathInfo, err := a.ResolvePackagePath(name)
+		if err != nil {
+			logrus.Warnf("failed to resolve package path for %s: %v", name, err)
+		} else {
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+			result, resolveErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+			if resolveErr == nil && result != nil {
+				defer result.Content.Close()
+				body, readErr := io.ReadAll(result.Content)
+				if readErr == nil {
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								logrus.Errorf("panic in updatePackageMetadata for %s: %v", name, r)
+							}
+						}()
+						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
+						if err := a.updatePackageMetadata(ctx, name, body, repo.ID); err != nil {
+							logrus.Warnf("failed to update package metadata for %s: %v", name, err)
 						}
 					}()
-					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer cancel()
-					if err := a.updatePackageMetadata(ctx, name, body, repo.ID); err != nil {
-						logrus.Warnf("failed to update package metadata for %s: %v", name, err)
+
+					storageName := groupArtifactToStorageName(group)
+					storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "maven", storageName, "maven-metadata.xml", bytes.NewReader(body), int64(len(body)))
+					if storeErr == nil {
+						_ = storageKey
 					}
-				}()
 
-				storageName := groupArtifactToStorageName(group)
-				storageKey, storeErr := a.storageSvc.StorePackage(c.Request.Context(), "maven", storageName, "maven-metadata.xml", bytes.NewReader(body), int64(len(body)))
-				if storeErr == nil {
-					_ = storageKey
+					c.Data(200, "application/xml", body)
+					return
 				}
-
-				c.Data(200, "application/xml", body)
-				return
 			}
 		}
 	}
@@ -228,7 +329,7 @@ func (a *MavenAdapter) handleMetadataXML(c *gin.Context, fullPath string) {
 	if len(snapshotVersions) > 0 {
 		latestSnapshot := snapshotVersions[len(snapshotVersions)-1]
 		if pkg == nil {
-			pkg, _ = a.pkgRepo.FindByNameAndType(name, model.PackageTypeMaven)
+			pkg, _ = a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeMaven)
 		}
 		if pkg != nil {
 			for _, ver := range pkg.Versions {
@@ -260,7 +361,7 @@ func (a *MavenAdapter) handleMetadataXML(c *gin.Context, fullPath string) {
 func (a *MavenAdapter) handleVersionLevelMetadata(c *gin.Context, name, version, groupID, artifactID string, repo *model.Repository) {
 	logrus.Infof("handleVersionLevelMetadata: name=%s, version=%s, groupID=%s, artifactID=%s", name, version, groupID, artifactID)
 
-	pkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypeMaven)
+	pkg, err := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeMaven)
 	if err != nil {
 		logrus.Warnf("Package not found for SNAPSHOT metadata: %s, will generate from storage", name)
 		a.generateSnapshotMetadataFromStorage(c, name, version, groupID, artifactID, repo)
@@ -460,7 +561,7 @@ func (a *MavenAdapter) updatePackageMetadata(ctx context.Context, name string, m
 	}
 
 	now := time.Now()
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(ctx, &model.Package{
+	pkg, _, err := a.GetPackageRepository().CreateOrUpdate(ctx, &model.Package{
 		Name:           name,
 		Type:           model.PackageTypeMaven,
 		RepositoryID:   repoID,
@@ -471,12 +572,12 @@ func (a *MavenAdapter) updatePackageMetadata(ctx context.Context, name string, m
 		return err
 	}
 
-	if err := a.pkgRepo.DB().Model(pkg).Update("updated_at", now).Error; err != nil {
+	if err := a.GetPackageRepository().DB().Model(pkg).Update("updated_at", now).Error; err != nil {
 		return err
 	}
 
 	for _, version := range metadata.Versioning.Versions.Version {
-		a.pkgRepo.CreateOrUpdateMetadata(ctx, pkg, &model.PackageVersion{
+		a.GetPackageRepository().CreateOrUpdateMetadata(ctx, pkg, &model.PackageVersion{
 			Version: version,
 			Status:  model.StatusPublished,
 		})
@@ -599,14 +700,22 @@ func (a *MavenAdapter) handleDownloadArtifact(c *gin.Context, fullPath string) {
 
 	if a.fetcher != nil && repo != nil && repo.Type == "proxy" {
 		logrus.Infof("Maven proxy: fetching from remote for %s, version=%s, filename=%s", pkgName, version, filename)
-		result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, "maven", pkgName, version+"/"+filename)
-		if fetchErr == nil && result != nil {
-			defer result.Content.Close()
-			logrus.Infof("Maven proxy: successfully fetched %s from remote, size=%d", pkgName, result.Size)
-			contentType := a.storageSvc.GetContentType(filename)
-			c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-			c.DataFromReader(200, result.Size, contentType, result.Content, nil)
-			return
+		pathInfo, err := a.ResolvePackagePath(pkgName + ":" + version + "/" + filename)
+		var fetchErr error
+		if err != nil {
+			logrus.Warnf("failed to resolve package path: %v", err)
+			fetchErr = err
+		} else {
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+			result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+			if fetchErr == nil && result != nil {
+				defer result.Content.Close()
+				logrus.Infof("Maven proxy: successfully fetched %s from remote, size=%d", pkgName, result.Size)
+				contentType := a.storageSvc.GetContentType(filename)
+				c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+				c.DataFromReader(200, result.Size, contentType, result.Content, nil)
+				return
+			}
 		}
 		logrus.Warnf("Maven proxy: failed to fetch %s from remote: %v", pkgName, fetchErr)
 	}
@@ -686,14 +795,18 @@ func (a *MavenAdapter) handleChecksumRequest(c *gin.Context, fullPath string) {
 
 	if err != nil {
 		if a.fetcher != nil && repo != nil && repo.Type == model.RepoTypeProxy {
-			result, resolveErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, "maven", groupArtifactToStorageName(groupArtifact), version)
-			if resolveErr == nil && result != nil {
-				defer result.Content.Close()
-				body, readErr := io.ReadAll(result.Content)
-				if readErr == nil {
-					checksum := calculateChecksum(body, checksumType)
-					c.String(200, "%s  %s", checksum, actualFilename)
-					return
+			pathInfo, resolveErr := a.ResolvePackagePath(groupArtifactToStorageName(groupArtifact) + ":" + version)
+			if resolveErr == nil {
+				remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+				result, resolveErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+				if resolveErr == nil && result != nil {
+					defer result.Content.Close()
+					body, readErr := io.ReadAll(result.Content)
+					if readErr == nil {
+						checksum := calculateChecksum(body, checksumType)
+						c.String(200, "%s  %s", checksum, actualFilename)
+						return
+					}
 				}
 			}
 		}
@@ -736,7 +849,7 @@ func (a *MavenAdapter) handleMetadataChecksum(c *gin.Context, fullPath, checksum
 	var metadata *MavenMetadata
 
 	if isVersionLevelMetadata {
-		pkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypeMaven)
+		pkg, err := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeMaven)
 		if err != nil {
 			logrus.Warnf("Package not found for SNAPSHOT metadata checksum: %s, will generate from storage", name)
 			metadata = a.generateSnapshotMetadataForChecksum(c, name, version, groupID, artifactID)
@@ -820,7 +933,7 @@ func (a *MavenAdapter) handleMetadataChecksum(c *gin.Context, fullPath, checksum
 
 		if len(snapshotVersions) > 0 {
 			latestSnapshot := snapshotVersions[len(snapshotVersions)-1]
-			pkg, _ := a.pkgRepo.FindByNameAndType(name, model.PackageTypeMaven)
+			pkg, _ := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeMaven)
 			if pkg != nil {
 				for _, ver := range pkg.Versions {
 					if ver.Version == latestSnapshot {
@@ -915,7 +1028,7 @@ func (a *MavenAdapter) handleIndexRequest(c *gin.Context) {
 	}
 
 	var packages []model.Package
-	err := a.pkgRepo.DB().
+	err := a.GetPackageRepository().DB().
 		Preload("Versions").
 		Where("repository_id = ?", repo.ID).
 		Find(&packages).
@@ -1014,11 +1127,11 @@ func (a *MavenAdapter) Delete(ctx context.Context, identity *PackageIdentity) er
 		}
 	}
 
-	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeMaven)
+	return a.GetPackageRepository().DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeMaven)
 }
 
 func (a *MavenAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {
-	return a.pkgRepo.ListVersions(name, model.PackageTypeMaven)
+	return a.GetPackageRepository().ListVersions(name, model.PackageTypeMaven)
 }
 
 func (a *MavenAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
@@ -1134,7 +1247,7 @@ func (a *MavenAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) 
 		return nil
 	}
 
-	pkg, _ := a.pkgRepo.FindByNameAndType(identity.Name, model.PackageTypeMaven)
+	pkg, _ := a.GetPackageRepository().FindByNameAndType(identity.Name, model.PackageTypeMaven)
 	var pkgID *uint
 	if pkg != nil {
 		pkgID = &pkg.ID
@@ -1147,46 +1260,6 @@ func (a *MavenAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) 
 		PackageName: name,
 		Version:     version,
 	}
-}
-
-func (a *MavenAdapter) BuildRemotePath(name, version, filename string) string {
-	groupPath := name
-	if strings.Contains(name, ":") {
-		parts := strings.SplitN(name, ":", 2)
-		groupId := strings.ReplaceAll(parts[0], ".", "/")
-		artifactId := parts[1]
-		groupPath = groupId + "/" + artifactId
-	} else {
-		groupPath = strings.ReplaceAll(name, ".", "/")
-	}
-
-	if filename != "" {
-		return fmt.Sprintf("%s/%s/%s", groupPath, version, filename)
-	}
-	return fmt.Sprintf("%s/%s", groupPath, version)
-}
-
-func (a *MavenAdapter) ParsePackagePath(path string) (*PackageIdentity, error) {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 4 {
-		return nil, fmt.Errorf("invalid maven path: %s", path)
-	}
-
-	filename := parts[len(parts)-1]
-
-	if strings.HasSuffix(filename, ".sha1") || strings.HasSuffix(filename, ".md5") {
-		return nil, fmt.Errorf("checksum files should be handled by HandleRepoRequest: %s", path)
-	}
-
-	groupArtifact := strings.Join(parts[:len(parts)-2], "/")
-	version := parts[len(parts)-2]
-
-	pkgName := groupArtifactToName(groupArtifact)
-	return &PackageIdentity{
-		Name:    pkgName,
-		Version: version,
-		Type:    MavenType,
-	}, nil
 }
 
 func getMavenFileType(filename string) model.PackageFileType {
@@ -1259,69 +1332,6 @@ func (a *MavenAdapter) FormatDownloadResponse(c *gin.Context, result *types.Down
 	contentType := a.storageSvc.GetContentType(result.Filename)
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, result.Filename))
 	c.DataFromReader(200, result.Size, contentType, result.Content, nil)
-}
-
-func (a *MavenAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
-	logrus.Infof("MavenAdapter.HandleDownload called: name=%s, version=%s, filename=%s", ctx.Name, ctx.Version, ctx.Filename)
-
-	var storageVersion string
-	isSnapshot := strings.HasSuffix(ctx.Version, "-SNAPSHOT")
-
-	if isSnapshot {
-		baseVersion := strings.TrimSuffix(ctx.Version, "-SNAPSHOT")
-		if strings.Contains(ctx.Filename, baseVersion) {
-			idx := strings.Index(ctx.Filename, baseVersion)
-			if idx != -1 {
-				actualVersion := strings.TrimSuffix(ctx.Filename[idx:], filepath.Ext(ctx.Filename))
-				storageVersion = ctx.Version + "/" + actualVersion + "/" + ctx.Filename
-				logrus.Infof("SNAPSHOT file: actualVersion=%s, storageVersion=%s", actualVersion, storageVersion)
-			} else {
-				storageVersion = ctx.Version + "/" + ctx.Filename
-			}
-		} else {
-			storageVersion = ctx.Version + "/" + ctx.Filename
-		}
-	} else {
-		storageVersion = ctx.Version + "/" + ctx.Filename
-	}
-
-	groupArtifact := strings.ReplaceAll(ctx.Name, ":", "/")
-	storageNames := a.getStorageNamesForGroupArtifact(groupArtifact, strings.Split(groupArtifact, "/"))
-	logrus.Infof("Maven download: looking for %s in storage names=%v, version=%s", ctx.Name, storageNames, storageVersion)
-	content, size, _, err := a.findPackageInStorage(c.Request.Context(), "maven", storageNames, storageVersion)
-
-	if err == nil {
-		logrus.Infof("Maven cache hit: found %s in storage, size=%d", ctx.Name, size)
-		return &types.DownloadResult{
-			Content:   content,
-			Size:      size,
-			FromCache: false,
-			RepoID:    ctx.Repo.ID,
-			Filename:  ctx.Filename,
-			Name:      ctx.Name,
-			Version:   ctx.Version,
-		}, nil
-	}
-
-	if a.fetcher != nil && ctx.Repo.Type == "proxy" {
-		logrus.Infof("Maven proxy: fetching from remote for %s, version=%s, filename=%s", ctx.Name, ctx.Version, ctx.Filename)
-		result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), ctx.Repo, "maven", ctx.Name, ctx.Version+"/"+ctx.Filename)
-		if fetchErr == nil && result != nil {
-			logrus.Infof("Maven proxy: successfully fetched %s from remote, size=%d", ctx.Name, result.Size)
-			return &types.DownloadResult{
-				Content:   result.Content,
-				Size:      result.Size,
-				FromCache: result.FromCache,
-				RepoID:    result.RepoID,
-				Filename:  ctx.Filename,
-				Name:      ctx.Name,
-				Version:   ctx.Version,
-			}, nil
-		}
-		logrus.Warnf("Maven proxy: failed to fetch %s from remote: %v", ctx.Name, fetchErr)
-	}
-
-	return nil, fmt.Errorf("artifact not found")
 }
 
 func (a *MavenAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
@@ -1408,7 +1418,7 @@ func (a *MavenAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) er
 		return err
 	}
 
-	pkg, _ := a.pkgRepo.FindByNameAndType(identity.Name, model.PackageTypeMaven)
+	pkg, _ := a.GetPackageRepository().FindByNameAndType(identity.Name, model.PackageTypeMaven)
 	var pkgID *uint
 	if pkg != nil {
 		pkgID = &pkg.ID

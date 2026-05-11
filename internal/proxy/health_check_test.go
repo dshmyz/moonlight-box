@@ -35,7 +35,8 @@ type mockDownloadService struct {
 }
 
 func (m *mockDownloadService) Download(ctx context.Context, downloadCtx *types.DownloadContext) (*types.DownloadResult, error) {
-	result, err := m.downloader.FetchFromRemote(ctx, downloadCtx.Repo, string(downloadCtx.PkgType), downloadCtx.Name, downloadCtx.Version)
+	remoteURL := fmt.Sprintf("%s/%s/%s", downloadCtx.Repo.RemoteURL, downloadCtx.Name, downloadCtx.Version)
+	result, err := m.downloader.FetchFromRemote(ctx, downloadCtx.Repo, remoteURL)
 	if err != nil {
 		return nil, err
 	}
@@ -59,6 +60,12 @@ func (m *testMockAdapter) Type() types.PackageType { return "maven" }
 func (m *testMockAdapter) RoutePrefix() string     { return "/maven" }
 func (m *testMockAdapter) ParsePackagePath(path string) (*types.PackageIdentity, error) {
 	return nil, fmt.Errorf("not implemented")
+}
+func (m *testMockAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+	return &types.PackagePathInfo{
+		Name:       path,
+		RemotePath: path,
+	}, nil
 }
 func (m *testMockAdapter) BuildRemotePath(name, version, filename string) string {
 	return fmt.Sprintf("%s/%s/%s", name, version, filename)

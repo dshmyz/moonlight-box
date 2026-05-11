@@ -1,6 +1,8 @@
 package adapter
 
 import (
+	"time"
+	"github.com/moonlight-box/registry/internal/cache"
 	"context"
 	"testing"
 
@@ -55,7 +57,9 @@ func setupGoAdapter(t *testing.T) *GoAdapter {
 
 	auditSvc := service.NewAuditService()
 
-	adapter := NewGoAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, nil)
+	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
+
+	adapter := NewGoAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache)
 	return adapter
 }
 
@@ -66,12 +70,6 @@ func TestGoAdapter_Type(t *testing.T) {
 	}
 }
 
-func TestGoAdapter_RoutePrefix(t *testing.T) {
-	adapter := setupGoAdapter(t)
-	if adapter.RoutePrefix() != "/go" {
-		t.Errorf("expected /go, got %v", adapter.RoutePrefix())
-	}
-}
 
 func TestGoAdapter_ListVersions_Empty(t *testing.T) {
 	adapter := setupGoAdapter(t)

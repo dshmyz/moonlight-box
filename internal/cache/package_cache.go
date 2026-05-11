@@ -9,9 +9,9 @@ import (
 )
 
 type PackageCache struct {
-	cache     *MemoryCache
-	pkgRepo   *repository.PackageRepository
-	ttl       time.Duration
+	cache   *MemoryCache
+	pkgRepo *repository.PackageRepository
+	ttl     time.Duration
 }
 
 func NewPackageCache(pkgRepo *repository.PackageRepository, ttl time.Duration) *PackageCache {
@@ -67,4 +67,8 @@ func (c *PackageCache) TTL() time.Duration {
 
 func (c *PackageCache) makeKey(name string, pkgType model.PackageType) string {
 	return fmt.Sprintf("pkg:%s:%s", name, pkgType)
+}
+
+func (c *PackageCache) GetPackageRepository() *repository.PackageRepository {
+	return c.pkgRepo
 }

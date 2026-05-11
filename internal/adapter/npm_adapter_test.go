@@ -1,6 +1,8 @@
 package adapter
 
 import (
+	"time"
+	"github.com/moonlight-box/registry/internal/cache"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -73,7 +75,9 @@ func setupNpmAdapter(t *testing.T) (*NpmAdapter, *gorm.DB) {
 
 	auditSvc := service.NewAuditService()
 
-	adapter := NewNpmAdapter(pkgRepo, nil, storageSvc, auditSvc, nil)
+	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
+
+	adapter := NewNpmAdapter(pkgRepo, nil, storageSvc, auditSvc, pkgCache)
 	return adapter, db
 }
 
@@ -82,45 +86,40 @@ func TestNpmAdapter_Type(t *testing.T) {
 	assert.Equal(t, NpmType, adapter.Type())
 }
 
-func TestNpmAdapter_RoutePrefix(t *testing.T) {
+
+func TestNpmAdapter_ParsePath_Scoped(t *testing.T) {
 	adapter, _ := setupNpmAdapter(t)
-	assert.Equal(t, "/npm", adapter.RoutePrefix())
+
+	pathInfo, err := adapter.ResolvePackagePath("@scope/package")
+	assert.Nil(t, err)
+	assert.Equal(t, "@scope/package", pathInfo.Name)
 }
 
-func TestNpmAdapter_ParsePackagePath_Scoped(t *testing.T) {
+func TestNpmAdapter_ParsePath_ScopedWithVersion(t *testing.T) {
 	adapter, _ := setupNpmAdapter(t)
 
-	identity, err := adapter.ParsePackagePath("@scope/package")
+	pathInfo, err := adapter.ResolvePackagePath("@scope/package/1.0.0")
 	assert.Nil(t, err)
-	assert.Equal(t, "@scope/package", identity.Name)
-	assert.Equal(t, NpmType, identity.Type)
+	assert.Equal(t, "@scope/package", pathInfo.Name)
+	assert.Equal(t, "1.0.0", pathInfo.Version)
 }
 
-func TestNpmAdapter_ParsePackagePath_ScopedWithVersion(t *testing.T) {
+func TestNpmAdapter_ParsePath_NonScoped(t *testing.T) {
 	adapter, _ := setupNpmAdapter(t)
 
-	identity, err := adapter.ParsePackagePath("@scope/package/1.0.0")
+	pathInfo, err := adapter.ResolvePackagePath("express")
 	assert.Nil(t, err)
-	assert.Equal(t, "@scope/package", identity.Name)
-	assert.Equal(t, "1.0.0", identity.Version)
+	assert.Equal(t, "express", pathInfo.Name)
+	assert.Empty(t, pathInfo.Version)
 }
 
-func TestNpmAdapter_ParsePackagePath_NonScoped(t *testing.T) {
+func TestNpmAdapter_ParsePath_NonScopedWithVersion(t *testing.T) {
 	adapter, _ := setupNpmAdapter(t)
 
-	identity, err := adapter.ParsePackagePath("express")
+	pathInfo, err := adapter.ResolvePackagePath("express/4.17.1")
 	assert.Nil(t, err)
-	assert.Equal(t, "express", identity.Name)
-	assert.Empty(t, identity.Version)
-}
-
-func TestNpmAdapter_ParsePackagePath_NonScopedWithVersion(t *testing.T) {
-	adapter, _ := setupNpmAdapter(t)
-
-	identity, err := adapter.ParsePackagePath("express/4.17.1")
-	assert.Nil(t, err)
-	assert.Equal(t, "express", identity.Name)
-	assert.Equal(t, "4.17.1", identity.Version)
+	assert.Equal(t, "express", pathInfo.Name)
+	assert.Equal(t, "4.17.1", pathInfo.Version)
 }
 
 func TestGenerateRevision(t *testing.T) {

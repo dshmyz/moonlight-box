@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/moonlight-box/registry/internal/config"
@@ -54,9 +53,9 @@ func (r *ProxyDownloader) RegisterAdapter(pkgType string, adapter types.Adapter)
 type RouteResult = types.RouteResult
 
 // FetchFromRemote 从远程代理仓库拉取包
-// 这是 ProxyDownloader 的核心职责：给定仓库和包信息，发起远程请求并缓存
-func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repository, pkgType, name, version string) (*RouteResult, error) {
-	cacheKey := fmt.Sprintf("proxy:%s:%s:%s", repo.Name, name, version)
+// 这是 ProxyDownloader 的核心职责：给定仓库和远程URL，发起远程请求并缓存
+func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repository, remoteURL string) (*RouteResult, error) {
+	cacheKey := fmt.Sprintf("proxy:%s:%s", repo.Name, remoteURL)
 
 	cached, err := r.cache.Get(ctx, cacheKey)
 	if err == nil && cached != nil {
@@ -80,17 +79,10 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 		return nil, fmt.Errorf("circuit breaker open for repo %s, retry after %d seconds", repo.Name, retryAfter)
 	}
 
-	adp, ok := r.adapters[pkgType]
-	if !ok {
-		return nil, fmt.Errorf("no adapter for package type: %s", pkgType)
+	if remoteURL == "" {
+		return nil, fmt.Errorf("remote URL cannot be empty")
 	}
 
-	if repo.RemoteURL == "" {
-		return nil, fmt.Errorf("proxy repository %s (ID: %d) has empty remote_url, please configure the remote URL for this proxy repository", repo.Name, repo.ID)
-	}
-
-	remotePath := adp.BuildRemotePath(name, version, "")
-	remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), remotePath)
 	authCfg, err := repo.GetAuthConfig()
 	if err != nil {
 		return nil, err

@@ -130,13 +130,42 @@ type NpmSearchScoreDetail struct {
 
 func NewNpmAdapter(pkgRepo *repository.PackageRepository, repoRepo *repository.RepositoryRepository, storageSvc *service.StorageService, auditSvc *service.AuditService, pkgCache *cache.PackageCache) *NpmAdapter {
 	return &NpmAdapter{
-		BaseAdapter: NewBaseAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache),
+		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
 		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
 	}
 }
 
-func (a *NpmAdapter) Type() PackageType   { return NpmType }
-func (a *NpmAdapter) RoutePrefix() string { return "/npm" }
+func (a *NpmAdapter) Type() PackageType { return NpmType }
+
+func (a *NpmAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("invalid npm package path: %s", path)
+	}
+
+	filename := parts[len(parts)-1]
+	name := strings.Join(parts[:len(parts)-1], "/")
+
+	version := ""
+	if strings.Contains(filename, ".tgz") {
+		base := strings.TrimSuffix(filename, ".tgz")
+		if idx := strings.LastIndex(base, "-"); idx != -1 {
+			version = base[idx+1:]
+		}
+	}
+
+	storageName := name + "/" + filename
+	remotePath := name + "/-/" + filename
+
+	return &types.PackagePathInfo{
+		Name:           name,
+		Version:        version,
+		Filename:       filename,
+		StorageName:    storageName,
+		StorageVersion: version,
+		RemotePath:     remotePath,
+	}, nil
+}
 
 func (a *NpmAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
 	c.Set("repo", ctx.Repo)
@@ -177,7 +206,7 @@ func (a *NpmAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) *
 
 	allowOverwrite := c.GetBool("allowOverwrite")
 	if !allowOverwrite {
-		existingPkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypeNPM)
+		existingPkg, err := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeNPM)
 		if err == nil {
 			for _, ver := range existingPkg.Versions {
 				if ver.Version == metadata.Version {
@@ -250,10 +279,9 @@ func (a *NpmAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) *t
 		name = scope + "/" + pkgName
 	}
 
-	identity, err := a.ParsePackagePath(name)
-	if err != nil {
-		response.BadRequest(c, "invalid package path", err.Error())
-		return nil
+	identity := &PackageIdentity{
+		Name: name,
+		Type: NpmType,
 	}
 
 	if err := a.Delete(c.Request.Context(), identity); err != nil {
@@ -261,7 +289,7 @@ func (a *NpmAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) *t
 		return nil
 	}
 
-	pkg, _ := a.pkgRepo.FindByNameAndType(name, model.PackageTypeNPM)
+	pkg, _ := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeNPM)
 	var pkgID *uint
 	if pkg != nil {
 		pkgID = &pkg.ID
@@ -316,7 +344,13 @@ func (a *NpmAdapter) getPackageForRepo(c *gin.Context, repo *model.Repository, f
 }
 
 func (a *NpmAdapter) handleProxyMetadata(c *gin.Context, repo *model.Repository, name string) {
-	result, err := a.fetcher.FetchFromRemote(c.Request.Context(), repo, "npm", name, "")
+	pathInfo, err := a.ResolvePackagePath(name)
+	if err != nil {
+		response.NotFound(c, "package not found")
+		return
+	}
+	remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+	result, err := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
 	if err != nil {
 		response.NotFound(c, "package not found")
 		return
@@ -332,7 +366,13 @@ func (a *NpmAdapter) handleVirtualMetadata(c *gin.Context, repo *model.Repositor
 		return
 	}
 
-	result, err := a.fetcher.FetchFromRemote(c.Request.Context(), repo, "npm", name, "")
+	pathInfo, err := a.ResolvePackagePath(name)
+	if err != nil {
+		response.NotFound(c, "package not found")
+		return
+	}
+	remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+	result, err := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
 	if err != nil {
 		response.NotFound(c, "package not found")
 		return
@@ -340,61 +380,6 @@ func (a *NpmAdapter) handleVirtualMetadata(c *gin.Context, repo *model.Repositor
 	defer result.Content.Close()
 
 	c.DataFromReader(200, result.Size, "application/json", result.Content, nil)
-}
-
-func (a *NpmAdapter) BuildRemotePath(name, version, filename string) string {
-	if version != "" {
-		return fmt.Sprintf("%s/-/%s-%s.tgz", name, name, version)
-	}
-	return name
-}
-
-func (a *NpmAdapter) ParsePackagePath(path string) (*PackageIdentity, error) {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-
-	// 处理 tarball 路径：@scope/package/-/package-1.0.0.tgz 或 package/-/package-1.0.0.tgz
-	if strings.Contains(path, "/-/") {
-		// 找到 "-" 的位置
-		dashIdx := -1
-		for i, part := range parts {
-			if part == "-" {
-				dashIdx = i
-				break
-			}
-		}
-
-		if dashIdx > 0 && dashIdx < len(parts)-1 {
-			// 提取包名
-			name := strings.Join(parts[:dashIdx], "/")
-
-			// 从文件名提取版本：package-1.0.0.tgz → 1.0.0
-			filename := parts[len(parts)-1]
-			version := extractVersionFromTarball(filename, name)
-
-			return &PackageIdentity{
-				Name:    name,
-				Version: version,
-				Type:    NpmType,
-			}, nil
-		}
-	}
-
-	// 处理 metadata 路径：@scope/package 或 package
-	if len(parts) >= 2 && strings.HasPrefix(parts[0], "@") {
-		name := parts[0] + "/" + parts[1]
-		version := ""
-		if len(parts) >= 3 {
-			version = parts[2]
-		}
-		return &PackageIdentity{Name: name, Version: version, Type: NpmType}, nil
-	}
-
-	name := parts[0]
-	version := ""
-	if len(parts) >= 2 {
-		version = parts[1]
-	}
-	return &PackageIdentity{Name: name, Version: version, Type: NpmType}, nil
 }
 
 func extractVersionFromTarball(filename, pkgName string) string {
@@ -525,10 +510,9 @@ func (a *NpmAdapter) Unpublish(c *gin.Context) {
 		name = scope + "/" + pkgName
 	}
 
-	identity, err := a.ParsePackagePath(name)
-	if err != nil {
-		response.BadRequest(c, "invalid package path", err.Error())
-		return
+	identity := &PackageIdentity{
+		Name: name,
+		Type: NpmType,
 	}
 
 	if err := a.Delete(c.Request.Context(), identity); err != nil {
@@ -584,15 +568,20 @@ func (a *NpmAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta
 }
 
 func (a *NpmAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeNPM)
+	return a.GetPackageRepository().DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeNPM)
 }
 
 func (a *NpmAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {
-	return a.pkgRepo.ListVersions(name, model.PackageTypeNPM)
+	return a.GetPackageRepository().ListVersions(name, model.PackageTypeNPM)
 }
 
 func (a *NpmAdapter) syncFromProxy(ctx context.Context, name string, repo *model.Repository) error {
-	result, err := a.fetcher.FetchFromRemote(ctx, repo, "npm", name, "")
+	pathInfo, err := a.ResolvePackagePath(name)
+	if err != nil {
+		return err
+	}
+	remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+	result, err := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
 	if err != nil {
 		return err
 	}
@@ -608,7 +597,7 @@ func (a *NpmAdapter) syncFromProxy(ctx context.Context, name string, repo *model
 		return jsonErr
 	}
 
-	pkg, _, err := a.pkgRepo.CreateOrUpdate(ctx, &model.Package{
+	pkg, _, err := a.GetPackageRepository().CreateOrUpdate(ctx, &model.Package{
 		Name:           metadata.Name,
 		Type:           model.PackageTypeNPM,
 		RepositoryType: model.RepoTypeProxy,
@@ -626,7 +615,7 @@ func (a *NpmAdapter) syncFromProxy(ctx context.Context, name string, repo *model
 			"tarball":     verInfo.Dist.Tarball,
 		})
 
-		_, _, err := a.pkgRepo.CreateOrUpdateMetadata(ctx, pkg, &model.PackageVersion{
+		_, _, err := a.GetPackageRepository().CreateOrUpdateMetadata(ctx, pkg, &model.PackageVersion{
 			Version:     version,
 			Status:      model.StatusPublished,
 			PublishedAt: publishedAt,
@@ -665,7 +654,7 @@ func (a *NpmAdapter) searchPackages(ctx context.Context, query string, size, fro
 	var total int64
 
 	searchTerm := "%" + query + "%"
-	db := a.pkgRepo.DB().Model(&model.Package{}).
+	db := a.GetPackageRepository().DB().Model(&model.Package{}).
 		Where("type = ?", model.PackageTypeNPM).
 		Where("name LIKE ? OR description LIKE ?", searchTerm, searchTerm)
 
@@ -744,45 +733,6 @@ func (a *NpmAdapter) FormatDownloadResponse(c *gin.Context, result *types.Downlo
 	c.DataFromReader(200, result.Size, contentType, result.Content, nil)
 }
 
-func (a *NpmAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
-	name := ctx.Name
-	version := ctx.Version
-	filename := ctx.Filename
-
-	if strings.Contains(filename, ".tgz") {
-		storageName := name + "/" + filename
-		content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "npm", storageName, version)
-		if err == nil {
-			return &types.DownloadResult{
-				Content:   content,
-				Size:      size,
-				FromCache: false,
-				RepoID:    ctx.Repo.ID,
-				Filename:  filename,
-				Name:      name,
-				Version:   version,
-			}, nil
-		}
-
-		if a.fetcher != nil && ctx.Repo.Type == "proxy" {
-			result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), ctx.Repo, "npm", name, version+"/"+filename)
-			if fetchErr == nil && result != nil {
-				return &types.DownloadResult{
-					Content:   result.Content,
-					Size:      result.Size,
-					FromCache: result.FromCache,
-					RepoID:    result.RepoID,
-					Filename:  filename,
-					Name:      name,
-					Version:   version,
-				}, nil
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("package not found")
-}
-
 func (a *NpmAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	userID := ctx.UserID
 
@@ -815,7 +765,7 @@ func (a *NpmAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*
 
 	allowOverwrite := c.GetBool("allowOverwrite")
 	if !allowOverwrite {
-		existingPkg, err := a.pkgRepo.FindByNameAndType(name, model.PackageTypeNPM)
+		existingPkg, err := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeNPM)
 		if err == nil {
 			for _, ver := range existingPkg.Versions {
 				if ver.Version == metadata.Version {
@@ -879,16 +829,16 @@ func (a *NpmAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) erro
 		name = scope + "/" + pkgName
 	}
 
-	identity, err := a.ParsePackagePath(name)
-	if err != nil {
-		return fmt.Errorf("invalid package path: %v", err)
+	identity := &PackageIdentity{
+		Name: name,
+		Type: NpmType,
 	}
 
 	if err := a.Delete(c.Request.Context(), identity); err != nil {
 		return err
 	}
 
-	pkg, _ := a.pkgRepo.FindByNameAndType(name, model.PackageTypeNPM)
+	pkg, _ := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeNPM)
 	var pkgID *uint
 	if pkg != nil {
 		pkgID = &pkg.ID
