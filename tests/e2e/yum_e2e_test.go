@@ -94,7 +94,7 @@ func setupYumTestEnv() {
 	logRepo := repository.NewProxyDownloadLogRepository(yumTestDB)
 	countBatcher := service.NewDownloadCountBatcher(yumTestDB, 5*time.Second)
 	adapters := map[string]types.Adapter{"yum": yumAdapter}
-	downloadSvc := service.NewDownloadService(repoRepo, groupRepo, adapters, yumPkgRepo, yumStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	downloadSvc := service.NewDownloadService(adapters, yumPkgRepo, yumStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
 	yumRepoHandler.SetDownloadService(downloadSvc)
 
 	router := setupYumRouter()

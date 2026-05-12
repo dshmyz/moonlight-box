@@ -26,8 +26,7 @@ import (
 
 type YumAdapter struct {
 	*BaseAdapter
-	repoRepo  *repository.RepositoryRepository
-	uploadSvc *service.UploadService
+	repoRepo *repository.RepositoryRepository
 }
 
 type RepoMD struct {
@@ -125,7 +124,6 @@ type YumDependency struct {
 }
 
 func NewYumAdapter(
-	pkgRepo *repository.PackageRepository,
 	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
@@ -133,14 +131,14 @@ func NewYumAdapter(
 ) *YumAdapter {
 	adapter := &YumAdapter{
 		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
-		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
+		repoRepo:    repoRepo,
 	}
 	return adapter
 }
 
-func (a *YumAdapter) Type() PackageType   { return YumType }
+func (a *YumAdapter) Type() PackageType { return YumType }
 
-func (a *YumAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+func (a *YumAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 	path = strings.Trim(path, "/")
 	if path == "" {
 		return nil, fmt.Errorf("invalid yum path: empty path")
@@ -359,49 +357,6 @@ func (a *YumAdapter) RegenerateMetadata(c *gin.Context) {
 	})
 }
 
-func (a *YumAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageVersionResult, error) {
-	reader, ok := req.Package.(io.Reader)
-	if !ok {
-		return nil, fmt.Errorf("invalid package type")
-	}
-
-	name, _ := req.Metadata["name"].(string)
-	repo, _ := req.Metadata["repo"].(string)
-	if name == "" || repo == "" {
-		return nil, fmt.Errorf("missing name or repo in metadata")
-	}
-
-	arch := detectRpmArch(name)
-	storageKey := fmt.Sprintf("repos/%s/Packages/%s/%s", repo, arch, name)
-
-	uploadCtx := &service.UploadContext{
-		PkgType:        "yum",
-		Name:           name,
-		Version:        "1",
-		Filename:       name,
-		Content:        reader,
-		Size:           req.Size,
-		PackageType:    model.PackageTypeYum,
-		RepositoryType: model.RepoTypeLocal,
-		UploadedBy:     req.UploadedBy,
-		Metadata:       req.Metadata,
-		FileType:       model.FileTypePrimary,
-	}
-
-	result, err := a.uploadSvc.Upload(ctx, uploadCtx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &PackageVersionResult{
-		PackageID:  result.PackageID,
-		VersionID:  result.VersionID,
-		Version:    "1",
-		StorageKey: storageKey,
-		Size:       result.Size,
-	}, nil
-}
-
 func (a *YumAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
 	pkg, err := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeYum)
 	if err != nil {
@@ -485,128 +440,6 @@ func (a *YumAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestCon
 		}
 
 		response.NotFound(c, "file not found")
-	}
-}
-
-func (a *YumAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) *types.RepoOperationResult {
-	userID := c.GetUint("userID")
-
-	file, header, err := c.Request.FormFile("file")
-	if err != nil {
-		response.BadRequest(c, "missing file", err.Error())
-		return nil
-	}
-	defer file.Close()
-
-	rpmData, err := io.ReadAll(file)
-	if err != nil {
-		response.BadRequest(c, "failed to read file", err.Error())
-		return nil
-	}
-
-	rpmName := header.Filename
-	if !strings.HasSuffix(rpmName, ".rpm") {
-		response.BadRequest(c, "invalid file type", "file must be .rpm")
-		return nil
-	}
-
-	packageName, version, release, arch := parseRpmFilename(rpmName)
-
-	packagesDir := fmt.Sprintf("repos/%s/Packages/%s", repo.Name, arch)
-	storageKey := fmt.Sprintf("%s/%s", packagesDir, rpmName)
-
-	backend := a.storageSvc.GetDefaultBackend()
-	if err := backend.Put(c.Request.Context(), storageKey, bytes.NewReader(rpmData), header.Size); err != nil {
-		response.InternalError(c, err.Error())
-		return nil
-	}
-
-	pkg, _, err := a.GetPackageRepository().CreateOrUpdate(c.Request.Context(), &model.Package{
-		Name:           packageName,
-		Type:           model.PackageTypeYum,
-		RepositoryType: model.RepoTypeLocal,
-		CreatedBy:      userID,
-	}, &model.PackageVersion{
-		Version:     version,
-		Status:      model.StatusPublished,
-		StoragePath: storageKey,
-		SizeBytes:   header.Size,
-		PublishedBy: userID,
-		Metadata:    marshalMetadata(map[string]interface{}{"repo": repo.Name, "arch": arch, "release": release}),
-	})
-	if err != nil {
-		backend.Delete(c.Request.Context(), storageKey)
-		response.InternalError(c, err.Error())
-		return nil
-	}
-
-	result := &types.RepoOperationResult{
-		PackageName: packageName,
-		Version:     version,
-		Size:        header.Size,
-		Filename:    rpmName,
-		ExtraData: map[string]interface{}{
-			"repo":       repo.Name,
-			"arch":       arch,
-			"release":    release,
-			"storageKey": storageKey,
-			"packageId":  pkg.ID,
-		},
-	}
-
-	result.Response = &types.YumPublishResponse{
-		PublishResponse: types.PublishResponse{
-			Success:  true,
-			Message:  "Package published successfully",
-			Package:  packageName,
-			Version:  version,
-			Filename: rpmName,
-			Size:     header.Size,
-		},
-		Repo:       repo.Name,
-		Arch:       arch,
-		Release:    release,
-		StorageKey: storageKey,
-		PackageId:  pkg.ID,
-	}
-
-	return result
-}
-
-func (a *YumAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) *types.RepoOperationResult {
-	fullPath := strings.TrimPrefix(c.Param("path"), "/")
-	parts := strings.Split(fullPath, "/")
-	if len(parts) < 2 {
-		response.BadRequest(c, "invalid path", "expected name/version")
-		return nil
-	}
-
-	name := parts[0]
-	version := parts[1]
-
-	identity := &PackageIdentity{
-		Name:    name,
-		Version: version,
-		Type:    YumType,
-	}
-
-	if err := a.Delete(c.Request.Context(), identity); err != nil {
-		response.InternalError(c, err.Error())
-		return nil
-	}
-
-	pkg, _ := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeYum)
-	var pkgID *uint
-	if pkg != nil {
-		pkgID = &pkg.ID
-	}
-	a.LogDeleteAudit(c, repo.Name, name, version, pkgID)
-
-	c.JSON(200, gin.H{"ok": true})
-
-	return &types.RepoOperationResult{
-		PackageName: name,
-		Version:     version,
 	}
 }
 

@@ -266,7 +266,7 @@ func (w *MigrationWorker) storeMavenAsset(taskID uint, comp NexusComponent, asse
 	storageName := groupArtifactToStorageName(comp.Group, comp.Name)
 	storageVersion := comp.Version + "/" + filepath.Base(asset.Path)
 
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "maven", storageName, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "", "maven", storageName, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -317,7 +317,7 @@ func (w *MigrationWorker) storeNpmAsset(taskID uint, comp NexusComponent, _ Nexu
 	}
 
 	storageVersion := version + "/package.tgz"
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "npm", name, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "", "npm", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -356,7 +356,7 @@ func (w *MigrationWorker) storePypiAsset(taskID uint, comp NexusComponent, asset
 	}
 
 	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "pypi", name, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "", "pypi", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -395,7 +395,7 @@ func (w *MigrationWorker) storeGoAsset(taskID uint, comp NexusComponent, asset N
 	}
 
 	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "go", name, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "", "go", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}

@@ -31,7 +31,6 @@ func setupGoAdapter(t *testing.T) *GoAdapter {
 
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
 	pkgRepo := repository.NewPackageRepository(db)
-	repoRepo := repository.NewRepositoryRepository(db)
 
 	storageSvc, err := service.NewStorageService(storageBackendRepo, "", 0)
 	if err != nil {
@@ -59,7 +58,7 @@ func setupGoAdapter(t *testing.T) *GoAdapter {
 
 	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
 
-	adapter := NewGoAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+	adapter := NewGoAdapter(storageSvc, auditSvc, pkgCache)
 	return adapter
 }
 

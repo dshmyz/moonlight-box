@@ -61,7 +61,7 @@ func (m *testMockAdapter) RoutePrefix() string     { return "/maven" }
 func (m *testMockAdapter) ParsePackagePath(path string) (*types.PackageIdentity, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testMockAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+func (m *testMockAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 	return &types.PackagePathInfo{
 		Name:       path,
 		RemotePath: path,
@@ -395,7 +395,13 @@ func TestProxyDownloader_CircuitBreakerIntegration(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		_, err := repoHandler.resolveProxy(ctx, repo, "maven", "test", "1.0.0")
+		downloadCtx := &types.DownloadContext{
+			Repo:    repo,
+			PkgType: "maven",
+			Name:    "test",
+			Version: "1.0.0",
+		}
+		_, err := repoHandler.resolveProxy(ctx, downloadCtx)
 		assert.Error(t, err)
 	}
 
@@ -406,7 +412,13 @@ func TestProxyDownloader_CircuitBreakerIntegration(t *testing.T) {
 
 	assert.Equal(t, CircuitOpen, cb.GetState())
 
-	_, err = repoHandler.resolveProxy(ctx, repo, "maven", "test", "1.0.0")
+	downloadCtx := &types.DownloadContext{
+		Repo:    repo,
+		PkgType: "maven",
+		Name:    "test",
+		Version: "1.0.0",
+	}
+	_, err = repoHandler.resolveProxy(ctx, downloadCtx)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "circuit breaker open")
 }

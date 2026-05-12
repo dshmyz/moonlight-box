@@ -11,7 +11,6 @@ import (
 
 	"github.com/moonlight-box/registry/internal/cache"
 	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
@@ -23,7 +22,6 @@ import (
 
 type NpmAdapter struct {
 	*BaseAdapter
-	uploadSvc *service.UploadService
 }
 
 type NpmPackageMetadata struct {
@@ -128,16 +126,15 @@ type NpmSearchScoreDetail struct {
 	Maintenance float64 `json:"maintenance"`
 }
 
-func NewNpmAdapter(pkgRepo *repository.PackageRepository, repoRepo *repository.RepositoryRepository, storageSvc *service.StorageService, auditSvc *service.AuditService, pkgCache *cache.PackageCache) *NpmAdapter {
+func NewNpmAdapter(storageSvc *service.StorageService, auditSvc *service.AuditService, pkgCache *cache.PackageCache) *NpmAdapter {
 	return &NpmAdapter{
 		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
-		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
 	}
 }
 
 func (a *NpmAdapter) Type() PackageType { return NpmType }
 
-func (a *NpmAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+func (a *NpmAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 	if path == "" {
 		return nil, fmt.Errorf("invalid npm package path: %s", path)
 	}
@@ -228,138 +225,6 @@ func (a *NpmAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestCon
 	a.getPackageForRepo(c, ctx.Repo, ctx.Path)
 }
 
-func (a *NpmAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) *types.RepoOperationResult {
-	userID := c.GetUint("userID")
-
-	fullPath := strings.TrimPrefix(c.Param("path"), "/")
-	parts := strings.SplitN(fullPath, "/", 2)
-	scope := ""
-	pkgName := fullPath
-
-	if len(parts) >= 2 && strings.HasPrefix(parts[0], "@") {
-		scope = parts[0]
-		pkgName = parts[1]
-	}
-
-	name := pkgName
-	if scope != "" {
-		name = scope + "/" + pkgName
-	}
-
-	file, header, err := c.Request.FormFile("_attachments")
-	if err != nil {
-		response.BadRequest(c, "missing attachment", err.Error())
-		return nil
-	}
-	defer file.Close()
-
-	metadataRaw := c.PostForm("_attachment")
-	var metadata NpmVersionInfo
-	if err := json.Unmarshal([]byte(metadataRaw), &metadata); err != nil {
-		response.BadRequest(c, "invalid metadata", err.Error())
-		return nil
-	}
-
-	allowOverwrite := c.GetBool("allowOverwrite")
-	if !allowOverwrite {
-		existingPkg, err := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeNPM)
-		if err == nil {
-			for _, ver := range existingPkg.Versions {
-				if ver.Version == metadata.Version {
-					response.Conflict(c, fmt.Sprintf("版本 %s 已存在，不允许覆盖", metadata.Version))
-					return nil
-				}
-			}
-		}
-	}
-
-	req := &UploadRequest{
-		Package:  file,
-		Filename: header.Filename,
-		Size:     header.Size,
-		Metadata: map[string]interface{}{
-			"npm":         metadata,
-			"name":        name,
-			"version":     metadata.Version,
-			"description": metadata.Description,
-			"repo_name":   repo.Name,
-		},
-		UploadedBy: userID,
-	}
-
-	_, err = a.Upload(c.Request.Context(), req)
-	if err != nil {
-		response.InternalError(c, err.Error())
-		return nil
-	}
-
-	result := &types.RepoOperationResult{
-		PackageName: name,
-		Version:     metadata.Version,
-		Size:        header.Size,
-		Filename:    header.Filename,
-		ExtraData: map[string]interface{}{
-			"size":        req.Size,
-			"description": metadata.Description,
-		},
-	}
-
-	result.Response = &types.NpmPublishResponse{
-		PublishResponse: types.PublishResponse{
-			Success:  true,
-			Message:  "Package published successfully",
-			Package:  name,
-			Version:  metadata.Version,
-			Filename: header.Filename,
-			Size:     header.Size,
-		},
-		Description: metadata.Description,
-	}
-
-	return result
-}
-
-func (a *NpmAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) *types.RepoOperationResult {
-	fullPath := strings.TrimPrefix(c.Param("path"), "/")
-	parts := strings.SplitN(fullPath, "/", 2)
-	scope := ""
-	pkgName := fullPath
-
-	if len(parts) >= 2 && strings.HasPrefix(parts[0], "@") {
-		scope = parts[0]
-		pkgName = parts[1]
-	}
-
-	name := pkgName
-	if scope != "" {
-		name = scope + "/" + pkgName
-	}
-
-	identity := &PackageIdentity{
-		Name: name,
-		Type: NpmType,
-	}
-
-	if err := a.Delete(c.Request.Context(), identity); err != nil {
-		response.InternalError(c, err.Error())
-		return nil
-	}
-
-	pkg, _ := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeNPM)
-	var pkgID *uint
-	if pkg != nil {
-		pkgID = &pkg.ID
-	}
-	a.LogDeleteAudit(c, repo.Name, name, identity.Version, pkgID)
-
-	c.JSON(200, gin.H{"ok": true})
-
-	return &types.RepoOperationResult{
-		PackageName: name,
-		Version:     identity.Version,
-	}
-}
-
 func (a *NpmAdapter) getPackageForRepo(c *gin.Context, repo *model.Repository, fullPath string) {
 	parts := strings.SplitN(fullPath, "/", 2)
 	scope := ""
@@ -400,7 +265,7 @@ func (a *NpmAdapter) getPackageForRepo(c *gin.Context, repo *model.Repository, f
 }
 
 func (a *NpmAdapter) handleProxyMetadata(c *gin.Context, repo *model.Repository, name string) {
-	pathInfo, err := a.ResolvePackagePath(name)
+	pathInfo, err := a.ParsePath(name)
 	if err != nil {
 		response.NotFound(c, "package not found")
 		return
@@ -422,7 +287,7 @@ func (a *NpmAdapter) handleVirtualMetadata(c *gin.Context, repo *model.Repositor
 		return
 	}
 
-	pathInfo, err := a.ResolvePackagePath(name)
+	pathInfo, err := a.ParsePath(name)
 	if err != nil {
 		response.NotFound(c, "package not found")
 		return
@@ -505,8 +370,6 @@ func (a *NpmAdapter) GetPackageByPath(c *gin.Context, fullPath string) {
 }
 
 func (a *NpmAdapter) Publish(c *gin.Context) {
-	userID := c.GetUint("userID")
-
 	scope := c.Param("scope")
 	pkgName := c.Param("package")
 
@@ -515,45 +378,11 @@ func (a *NpmAdapter) Publish(c *gin.Context) {
 		name = scope + "/" + pkgName
 	}
 
-	file, header, err := c.Request.FormFile("_attachments")
-	if err != nil {
-		response.BadRequest(c, "missing attachment", err.Error())
-		return
-	}
-	defer file.Close()
-
-	metadataRaw := c.PostForm("_attachment")
-	var metadata NpmVersionInfo
-	if err := json.Unmarshal([]byte(metadataRaw), &metadata); err != nil {
-		response.BadRequest(c, "invalid metadata", err.Error())
-		return
-	}
-
-	req := &UploadRequest{
-		Package:  file,
-		Filename: header.Filename,
-		Size:     header.Size,
-		Metadata: map[string]interface{}{
-			"npm":         metadata,
-			"name":        name,
-			"version":     metadata.Version,
-			"description": metadata.Description,
-		},
-		UploadedBy: userID,
-	}
-
-	result, err := a.Upload(c.Request.Context(), req)
-	if err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
-
 	c.JSON(201, gin.H{
 		"ok":      true,
 		"id":      name,
 		"rev":     "1-" + generateRevision(),
 		"success": true,
-		"result":  result,
 	})
 }
 
@@ -579,46 +408,6 @@ func (a *NpmAdapter) Unpublish(c *gin.Context) {
 	c.JSON(200, gin.H{"ok": true})
 }
 
-func (a *NpmAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageVersionResult, error) {
-	reader, ok := req.Package.(io.Reader)
-	if !ok {
-		return nil, fmt.Errorf("invalid package type")
-	}
-
-	name, _ := req.Metadata["name"].(string)
-	version, _ := req.Metadata["version"].(string)
-	if name == "" || version == "" {
-		return nil, fmt.Errorf("missing name or version in metadata")
-	}
-
-	result, err := a.uploadSvc.Upload(ctx, &service.UploadContext{
-		PkgType:        "npm",
-		Name:           name,
-		Version:        version,
-		StorageVersion: filepath.Join(version, "package.tgz"),
-		Filename:       "package.tgz",
-		Content:        reader,
-		Size:           req.Size,
-		PackageType:    model.PackageTypeNPM,
-		RepositoryType: model.RepoTypeLocal,
-		UploadedBy:     req.UploadedBy,
-		Metadata:       req.Metadata,
-		FileType:       model.FileTypePrimary,
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return &PackageVersionResult{
-		PackageID:  result.PackageID,
-		VersionID:  result.VersionID,
-		Version:    result.Version,
-		StorageKey: result.StorageKey,
-		Size:       result.Size,
-	}, nil
-}
-
 func (a *NpmAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
 	return a.BaseAdapter.GetPackageMetadata(ctx, name, model.PackageTypeNPM, NpmType)
 }
@@ -632,7 +421,7 @@ func (a *NpmAdapter) ListVersions(ctx context.Context, name string) ([]string, e
 }
 
 func (a *NpmAdapter) syncFromProxy(ctx context.Context, name string, repo *model.Repository) error {
-	pathInfo, err := a.ResolvePackagePath(name)
+	pathInfo, err := a.ParsePath(name)
 	if err != nil {
 		return err
 	}
@@ -790,8 +579,6 @@ func (a *NpmAdapter) FormatDownloadResponse(c *gin.Context, result *types.Downlo
 }
 
 func (a *NpmAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
-	userID := ctx.UserID
-
 	fullPath := strings.TrimPrefix(c.Param("path"), "/")
 	parts := strings.SplitN(fullPath, "/", 2)
 	scope := ""
@@ -831,30 +618,13 @@ func (a *NpmAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*
 		}
 	}
 
-	req := &UploadRequest{
-		Package:  file,
-		Filename: header.Filename,
-		Size:     header.Size,
-		Metadata: map[string]interface{}{
-			"npm":         metadata,
-			"name":        name,
-			"version":     metadata.Version,
-			"description": metadata.Description,
-			"repo_name":   ctx.Repo.Name,
-		},
-		UploadedBy: userID,
-	}
-
-	_, err = a.Upload(c.Request.Context(), req)
-	if err != nil {
-		return nil, err
-	}
-
 	return &types.PublishResult{
 		PackageName: name,
 		Version:     metadata.Version,
-		Size:        header.Size,
 		Filename:    header.Filename,
+		Content:     file,
+		Size:        header.Size,
+		FileType:    model.FileTypePrimary,
 		Response: &types.NpmPublishResponse{
 			PublishResponse: types.PublishResponse{
 				Success:  true,

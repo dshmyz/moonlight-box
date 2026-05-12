@@ -3,17 +3,20 @@ package types
 import (
 	"io"
 
+	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/model"
 )
 
 type DownloadContext struct {
-	Repo     *model.Repository
-	PkgType  model.PackageType
-	Name     string
-	Version  string
-	Filename string
-	UserID   uint
-	ClientIP string
+	Repo         *model.Repository
+	PkgType      model.PackageType
+	Name         string
+	Version      string
+	Filename     string
+	UserID       uint
+	ClientIP     string
+	ResolvedPath *PackagePathInfo
+	GinCtx       *gin.Context
 }
 
 type PublishContext struct {
@@ -51,9 +54,13 @@ type DownloadResult struct {
 }
 
 type PublishResult struct {
-	PackageName string
-	Version     string
-	Size        int64
-	Filename    string
-	Response    interface{}
+	PackageName    string
+	Version        string
+	Filename       string
+	Content        io.Reader
+	Size           int64
+	FileType       model.PackageFileType
+	StorageVersion string
+	Metadata       map[string]interface{}
+	Response       interface{}
 }

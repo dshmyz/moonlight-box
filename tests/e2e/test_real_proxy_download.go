@@ -73,8 +73,6 @@ func main() {
 	defer logBatcher.Stop()
 
 	downloadSvc := service.NewDownloadService(
-		repoRepo,
-		nil,
 		nil,
 		pkgRepo,
 		storageSvc,

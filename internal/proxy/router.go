@@ -97,7 +97,7 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 		InsecureSkipVerify: repo.InsecureSkipVerify,
 	}
 
-	content, contentType, err := r.client.GetBytes(ctx, remoteURL, opts, toProxyAuthConfig(authCfg))
+	resp, err := r.client.GetStream(ctx, remoteURL, opts, toProxyAuthConfig(authCfg))
 	if err != nil {
 		if r.healthCheckSvc != nil {
 			r.healthCheckSvc.GetOrCreateCircuitBreaker(repo.ID).RecordFailure()
@@ -118,26 +118,48 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 		r.healthCheckSvc.GetOrCreateCircuitBreaker(repo.ID).RecordSuccess()
 	}
 
-	size := int64(len(content))
-	shouldCache := r.largeFileThreshold == 0 || size <= r.largeFileThreshold
+	contentLength := resp.ContentLength
+	isLargeFile := r.largeFileThreshold > 0 && contentLength > r.largeFileThreshold
 
-	if shouldCache {
-		r.cache.Set(ctx, &CacheItem{
-			Key:         cacheKey,
-			Content:     content,
-			ContentType: contentType,
-			Size:        size,
-		}, time.Duration(repo.CacheTTLSeconds)*time.Second)
+	if isLargeFile {
+		return &RouteResult{
+			Source:     repo.Name,
+			SourceType: "proxy",
+			RepoID:     repo.ID,
+			Content:    resp.Body,
+			Size:       contentLength,
+			FromCache:  false,
+			CacheTTL:   repo.CacheTTLSeconds,
+			IsLarge:    true,
+		}, nil
 	}
+
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		if r.healthCheckSvc != nil {
+			r.healthCheckSvc.GetOrCreateCircuitBreaker(repo.ID).RecordFailure()
+		}
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	size := int64(len(body))
+
+	r.cache.Set(ctx, &CacheItem{
+		Key:     cacheKey,
+		Content: body,
+		Size:    size,
+	}, time.Duration(repo.CacheTTLSeconds)*time.Second)
 
 	return &RouteResult{
 		Source:     repo.Name,
 		SourceType: "proxy",
 		RepoID:     repo.ID,
-		Content:    io.NopCloser(bytes.NewReader(content)),
+		Content:    io.NopCloser(bytes.NewReader(body)),
 		Size:       size,
 		FromCache:  false,
 		CacheTTL:   repo.CacheTTLSeconds,
+		IsLarge:    false,
 	}, nil
 }
 

@@ -1,8 +1,7 @@
 package adapter
 
 import (
-	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/types"
 )
 
 // DownloadDecision 表示插件对下载请求的决策
@@ -28,30 +27,18 @@ func BlockDownload(code int, message string) *DownloadDecision {
 	}
 }
 
-// DownloadContext 传递给插件的下载上下文信息
-type DownloadContext struct {
-	Ctx      *gin.Context       // Gin 请求上下文
-	Repo     *model.Repository  // 目标仓库
-	PkgType  model.PackageType  // 包类型
-	Name     string             // 包名称
-	Version  string             // 包版本
-	Filename string             // 文件名（可选）
-	UserID   uint               // 当前用户 ID
-	ClientIP string             // 客户端 IP
-}
-
 // DownloadPlugin 下载插件接口
 // 插件可以在下载前检查请求，决定是否允许下载
 type DownloadPlugin interface {
 	// Name 返回插件名称
 	Name() string
-	
+
 	// Priority 返回插件优先级（数字越小优先级越高）
 	Priority() int
-	
+
 	// BeforeDownload 在下载前执行检查
 	// 返回决策结果，如果返回阻断决策，下载将被中止
-	BeforeDownload(ctx *DownloadContext) *DownloadDecision
+	BeforeDownload(ctx *types.DownloadContext) *DownloadDecision
 }
 
 // DownloadPluginChain 下载插件链
@@ -75,7 +62,7 @@ func NewDownloadPluginChain(plugins []DownloadPlugin) *DownloadPluginChain {
 
 // Execute 执行插件链
 // 如果任一插件返回阻断决策，立即返回该决策
-func (c *DownloadPluginChain) Execute(ctx *DownloadContext) *DownloadDecision {
+func (c *DownloadPluginChain) Execute(ctx *types.DownloadContext) *DownloadDecision {
 	for _, plugin := range c.plugins {
 		decision := plugin.BeforeDownload(ctx)
 		if !decision.Allow {

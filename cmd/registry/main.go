@@ -217,13 +217,13 @@ func main() {
 	pkgCache := cache.NewPackageCache(packageRepo, 5*time.Minute)
 
 	// 初始化适配器（传入 pkgCache）
-	npmAdapter := adapter.NewNpmAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
-	mavenAdapter := adapter.NewMavenAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
-	pypiAdapter := adapter.NewPyPIAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
-	goAdapter := adapter.NewGoAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
-	genericAdapter := adapter.NewGenericAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
-	yumAdapter := adapter.NewYumAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
-	aptAdapter := adapter.NewAptAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+	npmAdapter := adapter.NewNpmAdapter(storageSvc, auditSvc, pkgCache)
+	mavenAdapter := adapter.NewMavenAdapter(storageSvc, auditSvc, pkgCache)
+	pypiAdapter := adapter.NewPyPIAdapter(repoRepo, storageSvc, auditSvc, pkgCache)
+	goAdapter := adapter.NewGoAdapter(storageSvc, auditSvc, pkgCache)
+	genericAdapter := adapter.NewGenericAdapter(storageSvc, auditSvc, pkgCache)
+	yumAdapter := adapter.NewYumAdapter(repoRepo, storageSvc, auditSvc, pkgCache)
+	aptAdapter := adapter.NewAptAdapter(storageSvc, auditSvc, pkgCache)
 
 	// 构建 adapter map 用于 DownloadService
 	adapterMap := map[string]types.Adapter{
@@ -244,8 +244,6 @@ func main() {
 
 	// 创建 DownloadService
 	downloadSvc := service.NewDownloadService(
-		repoRepo,
-		groupRepo,
 		adapterMap,
 		packageRepo,
 		storageSvc,
@@ -277,6 +275,7 @@ func main() {
 	repoSvc := service.NewRepositoryService(repoRepo, groupRepo, db)
 	repoSvc.SetRepoCache(repoCache)
 	blockRuleSvc := service.NewBlockRuleService(blockRuleRepo, auditSvc)
+	uploadSvc := service.NewUploadService(packageRepo, storageSvc)
 
 	// 注册所有缓存到缓存管理器
 	cacheSvcProvider := proxy.NewCacheServiceProvider(cacheSvc, "proxy-content", "代理下载内容缓存")
@@ -439,7 +438,7 @@ func main() {
 	}
 
 	// 创建路由器上下文
-	routerCtx := NewRouterContext(cfg, authService, auditSvc, permCacheSvc, blockRuleSvc, repoSvc, proxyRepoHandler, adapters, webhookSvc)
+	routerCtx := NewRouterContext(cfg, authService, auditSvc, permCacheSvc, blockRuleSvc, repoSvc, proxyRepoHandler, adapters, webhookSvc, uploadSvc)
 	routerCtx.RepoCache = repoCache
 	routerCtx.Handlers.Repo = repoHandler
 	routerCtx.Handlers.PublicRepo = publicRepoHandler

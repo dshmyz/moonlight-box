@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"bytes"
 	"context"
 	"encoding/xml"
 	"net/http/httptest"
@@ -9,13 +8,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/moonlight-box/registry/internal/cache"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
-	_ "github.com/mattn/go-sqlite3"
-	"gorm.io/driver/sqlite"
 	"github.com/stretchr/testify/assert"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -36,7 +35,6 @@ func setupMavenAdapter(t *testing.T) (*MavenAdapter, *gorm.DB) {
 
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
 	pkgRepo := repository.NewPackageRepository(db)
-	repoRepo := repository.NewRepositoryRepository(db)
 
 	storageSvc, err := service.NewStorageService(storageBackendRepo, "", 0)
 	if err != nil {
@@ -64,7 +62,7 @@ func setupMavenAdapter(t *testing.T) (*MavenAdapter, *gorm.DB) {
 
 	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
 
-	adapter := NewMavenAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+	adapter := NewMavenAdapter(storageSvc, auditSvc, pkgCache)
 	return adapter, db
 }
 
@@ -73,7 +71,7 @@ func TestMavenAdapter_Type(t *testing.T) {
 	assert.Equal(t, MavenType, adapter.Type())
 }
 
-func TestMavenAdapter_ResolvePackagePath(t *testing.T) {
+func TestMavenAdapter_ParsePath(t *testing.T) {
 	adapter, _ := setupMavenAdapter(t)
 
 	tests := []struct {
@@ -111,7 +109,7 @@ func TestMavenAdapter_ResolvePackagePath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pathInfo, err := adapter.ResolvePackagePath(tt.path)
+			pathInfo, err := adapter.ParsePath(tt.path)
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
@@ -121,105 +119,6 @@ func TestMavenAdapter_ResolvePackagePath(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestMavenAdapter_Upload_ReleaseVersion(t *testing.T) {
-	adapter, db := setupMavenAdapter(t)
-
-	ctx := context.Background()
-	jarContent := []byte("fake jar content for release")
-	req := &UploadRequest{
-		Package:  bytes.NewReader(jarContent),
-		Filename: "my-lib-1.0.0.jar",
-		Size:     int64(len(jarContent)),
-		Metadata: map[string]interface{}{
-			"groupId":    "com.test",
-			"artifactId": "my-lib",
-			"version":    "1.0.0",
-			"packaging":  "jar",
-		},
-		UploadedBy: 1,
-	}
-
-	result, err := adapter.Upload(ctx, req)
-	assert.Nil(t, err)
-	assert.NotNil(t, result)
-	assert.Equal(t, "1.0.0", result.Version)
-	assert.NotEmpty(t, result.StorageKey)
-
-	var pkg model.Package
-	err = db.Where("name = ? AND type = ?", "com.test:my-lib", "maven").First(&pkg).Error
-	assert.Nil(t, err)
-	assert.Equal(t, model.PackageTypeMaven, pkg.Type)
-
-	var version model.PackageVersion
-	err = db.Where("package_id = ? AND version = ?", pkg.ID, "1.0.0").First(&version).Error
-	assert.Nil(t, err)
-	assert.Equal(t, model.StatusPublished, version.Status)
-}
-
-func TestMavenAdapter_Upload_SnapshotVersion(t *testing.T) {
-	adapter, db := setupMavenAdapter(t)
-
-	ctx := context.Background()
-	jarContent := []byte("fake jar content for snapshot")
-	req := &UploadRequest{
-		Package:  bytes.NewReader(jarContent),
-		Filename: "my-lib-1.0-SNAPSHOT.jar",
-		Size:     int64(len(jarContent)),
-		Metadata: map[string]interface{}{
-			"groupId":    "com.test",
-			"artifactId": "my-lib",
-			"version":    "1.0-SNAPSHOT",
-			"packaging":  "jar",
-		},
-		UploadedBy: 1,
-	}
-
-	result, err := adapter.Upload(ctx, req)
-	assert.Nil(t, err)
-	assert.NotNil(t, result)
-	assert.Equal(t, "1.0-SNAPSHOT", result.Version)
-
-	var pkg model.Package
-	err = db.Where("name = ? AND type = ?", "com.test:my-lib", "maven").First(&pkg).Error
-	assert.Nil(t, err)
-
-	var version model.PackageVersion
-	err = db.Where("package_id = ? AND version = ?", pkg.ID, "1.0-SNAPSHOT").First(&version).Error
-	assert.Nil(t, err)
-	assert.Equal(t, model.StatusPublished, version.Status)
-}
-
-func TestMavenAdapter_Upload_PomFile(t *testing.T) {
-	adapter, _ := setupMavenAdapter(t)
-
-	ctx := context.Background()
-	pomContent := []byte(`<?xml version="1.0" encoding="UTF-8"?>
-<project>
-  <groupId>com.test</groupId>
-  <artifactId>my-lib</artifactId>
-  <version>1.0.0</version>
-  <packaging>jar</packaging>
-</project>`)
-
-	req := &UploadRequest{
-		Package:  bytes.NewReader(pomContent),
-		Filename: "my-lib-1.0.0.pom",
-		Size:     int64(len(pomContent)),
-		Metadata: map[string]interface{}{
-			"groupId":    "com.test",
-			"artifactId": "my-lib",
-			"version":    "1.0.0",
-			"packaging":  "pom",
-		},
-		UploadedBy: 1,
-	}
-
-	result, err := adapter.Upload(ctx, req)
-	assert.Nil(t, err)
-	assert.NotNil(t, result)
-	assert.Equal(t, "1.0.0", result.Version)
 }
 
 func TestMavenAdapter_GetMetadata(t *testing.T) {

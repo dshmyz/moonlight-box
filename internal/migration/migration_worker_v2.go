@@ -541,7 +541,7 @@ func (w *MigrationWorkerV2) storeMavenAsset(taskID uint, comp NexusComponent, as
 	storageName := groupArtifactToStorageName(comp.Group, comp.Name)
 	storageVersion := comp.Version + "/" + filepath.Base(asset.Path)
 
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "maven", storageName, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "", "maven", storageName, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -592,7 +592,7 @@ func (w *MigrationWorkerV2) storeNpmAsset(taskID uint, comp NexusComponent, _ Ne
 	}
 
 	storageVersion := version + "/package.tgz"
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "npm", name, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "", "npm", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -631,7 +631,7 @@ func (w *MigrationWorkerV2) storePypiAsset(taskID uint, comp NexusComponent, ass
 	}
 
 	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "pypi", name, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "", "pypi", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -670,7 +670,7 @@ func (w *MigrationWorkerV2) storeGoAsset(taskID uint, comp NexusComponent, asset
 	}
 
 	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "go", name, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "", "go", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -705,7 +705,7 @@ func (w *MigrationWorkerV2) storeGenericAsset(taskID uint, comp NexusComponent, 
 	}
 
 	storageVersion := filepath.Base(path)
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "generic", filepath.Dir(path), storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "", "generic", filepath.Dir(path), storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}

@@ -94,7 +94,7 @@ func setupPyPITestEnv() {
 	logRepo := repository.NewProxyDownloadLogRepository(pypiTestDB)
 	countBatcher := service.NewDownloadCountBatcher(pypiTestDB, 5*time.Second)
 	adapters := map[string]types.Adapter{"pypi": pypiAdapter}
-	downloadSvc := service.NewDownloadService(repoRepo, groupRepo, adapters, pypiPkgRepo, pypiStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	downloadSvc := service.NewDownloadService(adapters, pypiPkgRepo, pypiStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
 	pypiRepoHandler.SetDownloadService(downloadSvc)
 
 	router := setupPyPIRouter()

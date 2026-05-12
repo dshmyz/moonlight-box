@@ -35,22 +35,19 @@ type FileEntry struct {
 }
 
 func NewGenericAdapter(
-	pkgRepo *repository.PackageRepository,
-	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
 	pkgCache *cache.PackageCache,
 ) *GenericAdapter {
 	adapter := &GenericAdapter{
 		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
-		repoRepo:    repoRepo,
 	}
 	return adapter
 }
 
 func (a *GenericAdapter) Type() PackageType { return GenericType }
 
-func (a *GenericAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+func (a *GenericAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 	parts := strings.Split(path, "/")
 	if len(parts) < 1 {
 		return nil, fmt.Errorf("invalid generic path: %s", path)
@@ -146,7 +143,7 @@ func (a *GenericAdapter) DownloadOrBrowse(c *gin.Context) {
 				return
 			}
 
-			pathInfo, pathErr := a.ResolvePackagePath(filePath)
+			pathInfo, pathErr := a.ParsePath(filePath)
 			if pathErr != nil {
 				slog.Warn("failed to resolve generic package path", "path", filePath, "error", pathErr)
 			} else {

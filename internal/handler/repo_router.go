@@ -22,6 +22,8 @@ type RepoRouter struct {
 	webhookSvc     *service.WebhookService
 	permCache      *service.PermissionCacheService
 	blockSvc       *service.BlockRuleService
+	uploadSvc      *service.UploadService
+	auditSvc       *service.AuditService
 }
 
 func NewRepoRouter(repoSvc *service.RepositoryService) *RepoRouter {
@@ -48,6 +50,14 @@ func (r *RepoRouter) SetPermCache(permCache *service.PermissionCacheService) {
 
 func (r *RepoRouter) SetBlockService(blockSvc *service.BlockRuleService) {
 	r.blockSvc = blockSvc
+}
+
+func (r *RepoRouter) SetUploadService(uploadSvc *service.UploadService) {
+	r.uploadSvc = uploadSvc
+}
+
+func (r *RepoRouter) SetAuditService(auditSvc *service.AuditService) {
+	r.auditSvc = auditSvc
 }
 
 func (r *RepoRouter) checkBlock(c *gin.Context, pkgType, pkgName, version string) bool {
@@ -83,8 +93,8 @@ func (r *RepoRouter) CheckDownloadPermission(c *gin.Context, repo *model.Reposit
 	}
 
 	userID := c.GetUint("userID")
-	downloadCtx := &adapter.DownloadContext{
-		Ctx:      c,
+	downloadCtx := &types.DownloadContext{
+		GinCtx:   c,
 		Repo:     repo,
 		PkgType:  pkgType,
 		Name:     name,
@@ -229,10 +239,50 @@ func (r *RepoRouter) HandlePublish(c *gin.Context) {
 
 	c.Set("repo", repo)
 	c.Set("allowOverwrite", repo.AllowOverwrite)
-	result, err := r.resolver.HandleRepoPublish(c, repo)
+
+	publishResult, err := r.resolver.HandleRepoPublish(c, repo)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
+	}
+
+	if r.uploadSvc == nil {
+		response.NotFound(c, "上传服务未初始化")
+		return
+	}
+
+	uploadCtx := &service.UploadContext{
+		PkgType:        string(repo.PackageType),
+		Name:           publishResult.PackageName,
+		Version:        publishResult.Version,
+		StorageVersion: publishResult.StorageVersion,
+		Filename:       publishResult.Filename,
+		Content:        publishResult.Content,
+		Size:           publishResult.Size,
+		PackageType:    model.PackageType(repo.PackageType),
+		RepositoryType: repo.Type,
+		RepositoryID:   repo.ID,
+		UploadedBy:     c.GetUint("userID"),
+		Metadata:       publishResult.Metadata,
+		FileType:       publishResult.FileType,
+	}
+
+	uploadResult, err := r.uploadSvc.Upload(c.Request.Context(), uploadCtx)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	if r.auditSvc != nil {
+		r.auditSvc.LogWithStatus(c.Request.Context(), nil, model.ActionPackageUpload, string(repo.PackageType), &uploadResult.PackageID, publishResult.PackageName, "", 0, 0)
+	}
+
+	result := &types.RepoOperationResult{
+		PackageName: publishResult.PackageName,
+		Version:     publishResult.Version,
+		Size:        uploadResult.Size,
+		Filename:    publishResult.Filename,
+		Response:    publishResult.Response,
 	}
 
 	if result != nil {

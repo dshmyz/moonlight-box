@@ -96,7 +96,7 @@ func TestMain(m *testing.M) {
 	logRepo := repository.NewProxyDownloadLogRepository(testDB)
 	countBatcher := service.NewDownloadCountBatcher(testDB, 5*time.Second)
 	adapters := map[string]types.Adapter{"npm": npmAdapter}
-	downloadSvc := service.NewDownloadService(repoRepo, groupRepo, adapters, pkgRepo, storageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	downloadSvc := service.NewDownloadService(adapters, pkgRepo, storageSvc, proxyDownloader, logRepo, nil, countBatcher)
 	npmRepoHandler.SetDownloadService(downloadSvc)
 
 	router := setupRouter()

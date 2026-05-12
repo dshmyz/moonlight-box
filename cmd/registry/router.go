@@ -22,6 +22,7 @@ type RouterContext struct {
 	RepoCache    *proxy.RepositoryCache
 	RepoResolver *proxy.RepoHandler
 	WebhookSvc   *service.WebhookService
+	UploadSvc    *service.UploadService
 
 	Handlers struct {
 		Auth             *handler.AuthHandler
@@ -64,6 +65,7 @@ func NewRouterContext(
 	repoResolver *proxy.RepoHandler,
 	adapters []types.Adapter,
 	webhookSvc *service.WebhookService,
+	uploadSvc *service.UploadService,
 ) *RouterContext {
 	ctx := &RouterContext{
 		Config:       cfg,
@@ -75,6 +77,7 @@ func NewRouterContext(
 		RepoResolver: repoResolver,
 		Adapters:     adapters,
 		WebhookSvc:   webhookSvc,
+		UploadSvc:    uploadSvc,
 	}
 
 	ctx.Handlers.Auth = handler.NewAuthHandler(authSvc, auditSvc)
@@ -121,7 +124,7 @@ func (ctx *RouterContext) setupAPIRoutes(r *gin.Engine) {
 		ctx.setupProtectedRoutes(api)
 	}
 
-	ctx.setupRepoRoutes(r, ctx.RepoCache)
+	ctx.setupRepoRoutes(r, ctx.RepoCache, ctx.UploadSvc)
 	setupFrontendRouter(r, ctx.Config.Server.StaticDir)
 }
 
@@ -473,13 +476,15 @@ func (ctx *RouterContext) setupHealthRoutes(protected *gin.RouterGroup) {
 	}
 }
 
-func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.RepositoryCache) {
+func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.RepositoryCache, uploadSvc *service.UploadService) {
 	repoRouter := handler.NewRepoRouter(ctx.RepoSvc)
 	repoRouter.SetRepoCache(repoCache)
 	repoRouter.SetResolver(ctx.RepoResolver)
 	repoRouter.SetWebhookService(ctx.WebhookSvc)
 	repoRouter.SetPermCache(ctx.PermCache)
 	repoRouter.SetBlockService(ctx.BlockRule)
+	repoRouter.SetUploadService(uploadSvc)
+	repoRouter.SetAuditService(ctx.AuditSvc)
 	for _, adap := range ctx.Adapters {
 		if repoAware, ok := adap.(adapter.RepoAwareAdapter); ok {
 			ctx.RepoResolver.RegisterAdapter(string(adap.Type()), repoAware)

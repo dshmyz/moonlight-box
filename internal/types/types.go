@@ -124,7 +124,7 @@ type GenericPublishResponse struct {
 // Adapter defines the interface that all package adapters must implement
 type Adapter interface {
 	Type() PackageType
-	ResolvePackagePath(path string) (*PackagePathInfo, error)
+	ParsePath(path string) (*PackagePathInfo, error)
 	FormatDownloadResponse(c *gin.Context, result *DownloadResult)
 	HandlePublish(c *gin.Context, ctx *PublishContext) (*PublishResult, error)
 	HandleDelete(c *gin.Context, ctx *DeleteContext) error
@@ -140,7 +140,7 @@ type RouteResult struct {
 	Size       int64         // 内容大小
 	FromCache  bool          // 是否来自缓存
 	CacheTTL   int           // 缓存 TTL（秒）
-	IsLarge    bool          // 是否大文件（流式处理）
+	IsLarge    bool          // 是否大文件（流式传输）
 	Name       string        // 包名称
 	Version    string        // 包版本
 	Filename   string        // 文件名

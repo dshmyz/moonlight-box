@@ -94,7 +94,7 @@ func setupMavenTestEnv() {
 	logRepo := repository.NewProxyDownloadLogRepository(mavenTestDB)
 	countBatcher := service.NewDownloadCountBatcher(mavenTestDB, 5*time.Second)
 	adapters := map[string]types.Adapter{"maven": mavenAdapter}
-	downloadSvc := service.NewDownloadService(repoRepo, groupRepo, adapters, mavenPkgRepo, mavenStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	downloadSvc := service.NewDownloadService(adapters, mavenPkgRepo, mavenStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
 	mavenRepoHandler.SetDownloadService(downloadSvc)
 
 	router := setupMavenRouter()

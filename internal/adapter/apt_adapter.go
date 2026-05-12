@@ -1,13 +1,8 @@
 package adapter
 
 import (
-	"bytes"
 	"context"
-	"crypto/md5"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/url"
 	"path/filepath"
@@ -26,8 +21,7 @@ import (
 
 type AptAdapter struct {
 	*BaseAdapter
-	repoRepo  *repository.RepositoryRepository
-	uploadSvc *service.UploadService
+	repoRepo *repository.RepositoryRepository
 }
 
 type AptReleaseFile struct {
@@ -67,23 +61,19 @@ type AptPackageEntry struct {
 }
 
 func NewAptAdapter(
-	pkgRepo *repository.PackageRepository,
-	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
 	pkgCache *cache.PackageCache,
 ) *AptAdapter {
 	adapter := &AptAdapter{
 		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
-		repoRepo:    repoRepo,
-		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
 	}
 	return adapter
 }
 
 func (a *AptAdapter) Type() PackageType { return AptType }
 
-func (a *AptAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+func (a *AptAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 	parts := strings.Split(path, "/")
 	if len(parts) < 2 {
 		return nil, fmt.Errorf("invalid apt path: %s", path)
@@ -287,7 +277,7 @@ func (a *AptAdapter) DownloadDeb(c *gin.Context) {
 
 	if a.fetcher != nil && repo != nil && repo.Type == "proxy" {
 		slog.Info("APT proxy: fetching from remote", "filePath", filePath)
-		pathInfo, pathErr := a.ResolvePackagePath(filePath)
+		pathInfo, pathErr := a.ParsePath(filePath)
 		if pathErr != nil {
 			slog.Warn("APT proxy: failed to resolve path", "filePath", filePath, "error", pathErr)
 		} else {
@@ -311,54 +301,6 @@ func (a *AptAdapter) DownloadDeb(c *gin.Context) {
 	}
 
 	response.NotFound(c, "DEB not found")
-}
-
-func (a *AptAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageVersionResult, error) {
-	reader, ok := req.Package.(io.Reader)
-	if !ok {
-		return nil, fmt.Errorf("invalid package type")
-	}
-
-	name, _ := req.Metadata["name"].(string)
-	version, _ := req.Metadata["version"].(string)
-	if name == "" || version == "" {
-		return nil, fmt.Errorf("missing name or version in metadata")
-	}
-
-	firstLetter := string(name[0])
-	if len(firstLetter) > 0 {
-		firstLetter = strings.ToLower(firstLetter)
-	}
-	filename := fmt.Sprintf("%s_%s_amd64.deb", name, version)
-	storageVersion := fmt.Sprintf("pool/main/%s/%s/%s", firstLetter, name, filename)
-
-	uploadCtx := &service.UploadContext{
-		PkgType:        "apt",
-		Name:           name,
-		Version:        version,
-		StorageVersion: storageVersion,
-		Filename:       filename,
-		Content:        reader,
-		Size:           req.Size,
-		PackageType:    model.PackageTypeApt,
-		RepositoryType: model.RepoTypeLocal,
-		UploadedBy:     req.UploadedBy,
-		Metadata:       req.Metadata,
-		FileType:       model.FileTypePrimary,
-	}
-
-	result, err := a.uploadSvc.Upload(ctx, uploadCtx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &PackageVersionResult{
-		PackageID:  result.PackageID,
-		VersionID:  result.VersionID,
-		Version:    result.Version,
-		StorageKey: result.StorageKey,
-		Size:       result.Size,
-	}, nil
 }
 
 func (a *AptAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
@@ -423,18 +365,11 @@ func (a *AptAdapter) FormatDownloadResponse(c *gin.Context, result *types.Downlo
 }
 
 func (a *AptAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
-	userID := ctx.UserID
-
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
 		return nil, fmt.Errorf("missing file: %v", err)
 	}
 	defer file.Close()
-
-	debData, err := io.ReadAll(file)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file: %v", err)
-	}
 
 	debName := header.Filename
 	if !strings.HasSuffix(debName, ".deb") {
@@ -444,46 +379,13 @@ func (a *AptAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*
 	packageName := parseDebPackageName(debName)
 	packageVersion := parseDebPackageVersion(debName)
 
-	firstLetter := string(packageName[0])
-	if len(firstLetter) > 0 {
-		firstLetter = strings.ToLower(firstLetter)
-	}
-	poolDir := fmt.Sprintf("pool/main/%s/%s", firstLetter, packageName)
-	storageKey := poolDir + "/" + debName
-
-	backend := a.storageSvc.GetDefaultBackend()
-	if err := backend.Put(c.Request.Context(), storageKey, bytes.NewReader(debData), header.Size); err != nil {
-		return nil, err
-	}
-
-	md5Hash := md5.Sum(debData)
-	sha256Hash := sha256.Sum256(debData)
-
-	pkg, _, err := a.GetPackageRepository().CreateOrUpdate(c.Request.Context(), &model.Package{
-		Name:           packageName,
-		Type:           model.PackageTypeApt,
-		RepositoryID:   ctx.Repo.ID,
-		RepositoryType: ctx.Repo.Type,
-		CreatedBy:      userID,
-	}, &model.PackageVersion{
-		Version:        packageVersion,
-		Status:         model.StatusPublished,
-		StoragePath:    storageKey,
-		SizeBytes:      header.Size,
-		ChecksumMD5:    hex.EncodeToString(md5Hash[:]),
-		ChecksumSHA256: hex.EncodeToString(sha256Hash[:]),
-		PublishedBy:    userID,
-	})
-	if err != nil {
-		backend.Delete(c.Request.Context(), storageKey)
-		return nil, err
-	}
-
 	return &types.PublishResult{
 		PackageName: packageName,
 		Version:     packageVersion,
-		Size:        header.Size,
 		Filename:    debName,
+		Content:     file,
+		Size:        header.Size,
+		FileType:    model.FileTypePrimary,
 		Response: &types.AptPublishResponse{
 			PublishResponse: types.PublishResponse{
 				Success:  true,
@@ -493,8 +395,6 @@ func (a *AptAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*
 				Filename: debName,
 				Size:     header.Size,
 			},
-			StorageKey: storageKey,
-			PackageId:  pkg.ID,
 		},
 	}, nil
 }
@@ -580,126 +480,4 @@ func (a *AptAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestCon
 	}
 
 	response.NotFound(c, "APT resource not found")
-}
-
-func (a *AptAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) *types.RepoOperationResult {
-	userID := c.GetUint("userID")
-
-	file, header, err := c.Request.FormFile("file")
-	if err != nil {
-		response.BadRequest(c, "missing file", err.Error())
-		return nil
-	}
-	defer file.Close()
-
-	debData, err := io.ReadAll(file)
-	if err != nil {
-		response.BadRequest(c, "failed to read file", err.Error())
-		return nil
-	}
-
-	debName := header.Filename
-	if !strings.HasSuffix(debName, ".deb") {
-		response.BadRequest(c, "invalid file type", "file must be .deb")
-		return nil
-	}
-
-	packageName := parseDebPackageName(debName)
-	packageVersion := parseDebPackageVersion(debName)
-
-	firstLetter := string(packageName[0])
-	if len(firstLetter) > 0 {
-		firstLetter = strings.ToLower(firstLetter)
-	}
-	poolDir := fmt.Sprintf("pool/main/%s/%s", firstLetter, packageName)
-	storageKey := poolDir + "/" + debName
-
-	backend := a.storageSvc.GetDefaultBackend()
-	if err := backend.Put(c.Request.Context(), storageKey, bytes.NewReader(debData), header.Size); err != nil {
-		response.InternalError(c, err.Error())
-		return nil
-	}
-
-	md5Hash := md5.Sum(debData)
-	sha256Hash := sha256.Sum256(debData)
-
-	pkg, _, err := a.GetPackageRepository().CreateOrUpdate(c.Request.Context(), &model.Package{
-		Name:           packageName,
-		Type:           model.PackageTypeApt,
-		RepositoryID:   repo.ID,
-		RepositoryType: repo.Type,
-		CreatedBy:      userID,
-	}, &model.PackageVersion{
-		Version:        packageVersion,
-		Status:         model.StatusPublished,
-		StoragePath:    storageKey,
-		SizeBytes:      header.Size,
-		ChecksumMD5:    hex.EncodeToString(md5Hash[:]),
-		ChecksumSHA256: hex.EncodeToString(sha256Hash[:]),
-		PublishedBy:    userID,
-	})
-	if err != nil {
-		backend.Delete(c.Request.Context(), storageKey)
-		response.InternalError(c, err.Error())
-		return nil
-	}
-
-	result := &types.RepoOperationResult{
-		PackageName: packageName,
-		Version:     packageVersion,
-		Size:        header.Size,
-		Filename:    debName,
-		ExtraData: map[string]interface{}{
-			"storageKey": storageKey,
-			"packageId":  pkg.ID,
-		},
-	}
-
-	result.Response = &types.AptPublishResponse{
-		PublishResponse: types.PublishResponse{
-			Success:  true,
-			Message:  "Package published successfully",
-			Package:  packageName,
-			Version:  packageVersion,
-			Filename: debName,
-			Size:     header.Size,
-		},
-		StorageKey: storageKey,
-		PackageId:  pkg.ID,
-	}
-
-	return result
-}
-
-func (a *AptAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) *types.RepoOperationResult {
-	filePath := strings.TrimPrefix(c.Param("path"), "/")
-	filePath = strings.TrimPrefix(filePath, "pool/")
-
-	packageName := parseDebPackageName(filepath.Base(filePath))
-	packageVersion := parseDebPackageVersion(filepath.Base(filePath))
-
-	identity := &PackageIdentity{
-		Name:    packageName,
-		Version: packageVersion,
-		Type:    AptType,
-	}
-
-	if err := a.Delete(c.Request.Context(), identity); err != nil {
-		response.InternalError(c, err.Error())
-		return nil
-	}
-
-	pkg, _ := a.GetPackageRepository().FindByNameAndType(identity.Name, model.PackageTypeApt)
-	var pkgID *uint
-	if pkg != nil {
-		pkgID = &pkg.ID
-	}
-	a.LogDeleteAudit(c, repo.Name, identity.Name, identity.Version, pkgID)
-
-	c.JSON(200, gin.H{"ok": true})
-
-	return &types.RepoOperationResult{
-		PackageName: packageName,
-		Version:     packageVersion,
-	}
 }

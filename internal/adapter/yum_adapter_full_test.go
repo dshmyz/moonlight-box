@@ -1,19 +1,19 @@
 package adapter
 
 import (
-	"time"
-	"github.com/moonlight-box/registry/internal/cache"
-	"bytes"
 	"context"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/moonlight-box/registry/internal/cache"
 
 	"github.com/gin-gonic/gin"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/stretchr/testify/assert"
-	_ "github.com/mattn/go-sqlite3"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -63,7 +63,7 @@ func setupYumAdapter(t *testing.T) (*YumAdapter, *gorm.DB) {
 
 	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
 
-	adapter := NewYumAdapter(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+	adapter := NewYumAdapter(repoRepo, storageSvc, auditSvc, pkgCache)
 	return adapter, db
 }
 
@@ -73,7 +73,7 @@ func TestYumAdapter_Type(t *testing.T) {
 }
 
 
-func TestYumAdapter_ResolvePackagePath(t *testing.T) {
+func TestYumAdapter_ParsePath(t *testing.T) {
 	adapter, _ := setupYumAdapter(t)
 
 	tests := []struct {
@@ -101,7 +101,7 @@ func TestYumAdapter_ResolvePackagePath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pathInfo, err := adapter.ResolvePackagePath(tt.path)
+			pathInfo, err := adapter.ParsePath(tt.path)
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
@@ -113,34 +113,35 @@ func TestYumAdapter_ResolvePackagePath(t *testing.T) {
 	}
 }
 
-func TestYumAdapter_UploadRPM(t *testing.T) {
-	adapter, db := setupYumAdapter(t)
-
-	ctx := context.Background()
-	rpmContent := []byte("fake rpm content for test")
-
-	req := &UploadRequest{
-		Package:  bytes.NewReader(rpmContent),
-		Filename: "nginx-1.20.1-1.el9.x86_64.rpm",
-		Size:     int64(len(rpmContent)),
-		Metadata: map[string]interface{}{
-			"name":     "nginx-1.20.1-1.el9.x86_64.rpm",
-			"repo":     "test-repo",
-			"filename": "nginx-1.20.1-1.el9.x86_64.rpm",
-		},
-		UploadedBy: 1,
-	}
-
-	result, err := adapter.Upload(ctx, req)
-	assert.Nil(t, err)
-	assert.NotNil(t, result)
-	assert.NotEmpty(t, result.StorageKey)
-
-	var pkg model.Package
-	err = db.Where("name = ?", "nginx-1.20.1-1.el9.x86_64.rpm").First(&pkg).Error
-	assert.Nil(t, err)
-	assert.Equal(t, model.PackageTypeYum, pkg.Type)
-}
+// Upload 方法已移除，上传现在由 RepoRouter 统一处理
+// func TestYumAdapter_UploadRPM(t *testing.T) {
+// 	adapter, db := setupYumAdapter(t)
+//
+// 	ctx := context.Background()
+// 	rpmContent := []byte("fake rpm content for test")
+//
+// 	req := &UploadRequest{
+// 		Package:  bytes.NewReader(rpmContent),
+// 		Filename: "nginx-1.20.1-1.el9.x86_64.rpm",
+// 		Size:     int64(len(rpmContent)),
+// 		Metadata: map[string]interface{}{
+// 			"name":     "nginx-1.20.1-1.el9.x86_64.rpm",
+// 			"repo":     "test-repo",
+// 			"filename": "nginx-1.20.1-1.el9.x86_64.rpm",
+// 		},
+// 		UploadedBy: 1,
+// 	}
+//
+// 	result, err := adapter.Upload(ctx, req)
+// 	assert.Nil(t, err)
+// 	assert.NotNil(t, result)
+// 	assert.NotEmpty(t, result.StorageKey)
+//
+// 	var pkg model.Package
+// 	err = db.Where("name = ?", "nginx-1.20.1-1.el9.x86_64.rpm").First(&pkg).Error
+// 	assert.Nil(t, err)
+// 	assert.Equal(t, model.PackageTypeYum, pkg.Type)
+// }
 
 func TestYumAdapter_GetMetadata(t *testing.T) {
 	adapter, db := setupYumAdapter(t)

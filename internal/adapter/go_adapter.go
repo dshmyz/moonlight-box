@@ -11,7 +11,6 @@ import (
 
 	"github.com/moonlight-box/registry/internal/cache"
 	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
@@ -22,26 +21,22 @@ import (
 
 type GoAdapter struct {
 	*BaseAdapter
-	uploadSvc *service.UploadService
 }
 
 func NewGoAdapter(
-	pkgRepo *repository.PackageRepository,
-	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
 	auditSvc *service.AuditService,
 	pkgCache *cache.PackageCache,
 ) *GoAdapter {
 	adapter := &GoAdapter{
 		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
-		uploadSvc:   service.NewUploadService(pkgRepo, storageSvc),
 	}
 	return adapter
 }
 
 func (a *GoAdapter) Type() PackageType { return GoType }
 
-func (a *GoAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+func (a *GoAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 	// 处理元数据请求：name/@v/list
 	if strings.HasSuffix(path, "/@v/list") {
 		name := strings.TrimSuffix(path, "/@v/list")
@@ -177,7 +172,7 @@ func (a *GoAdapter) handleListVersions(c *gin.Context, module string) {
 			}
 
 			result, resolveErr := func() (*types.RouteResult, error) {
-				pathInfo, err := a.ResolvePackagePath(module + "/@v/list")
+				pathInfo, err := a.ParsePath(module + "/@v/list")
 				if err != nil {
 					return nil, err
 				}
@@ -215,7 +210,7 @@ func (a *GoAdapter) handleVersionInfo(c *gin.Context, module, version string) {
 				}
 
 				result, resolveErr := func() (*types.RouteResult, error) {
-					pathInfo, err := a.ResolvePackagePath(module + "/@v/" + version + ".info")
+					pathInfo, err := a.ParsePath(module + "/@v/" + version + ".info")
 					if err != nil {
 						return nil, err
 					}
@@ -272,7 +267,7 @@ func (a *GoAdapter) handleGoMod(c *gin.Context, module, version string) {
 		}
 
 		remotePath := fmt.Sprintf("%s/@v/%s.mod", module, version)
-		pathInfo, pathErr := a.ResolvePackagePath(module + "/@v/" + version + ".mod")
+		pathInfo, pathErr := a.ParsePath(module + "/@v/" + version + ".mod")
 		if pathErr != nil {
 			slog.Info("Failed to resolve go.mod path", "module", module, "version", version, "error", pathErr)
 		} else {
@@ -313,7 +308,7 @@ func (a *GoAdapter) handleDownloadZip(c *gin.Context, module, version string) {
 	}
 
 	if a.fetcher != nil {
-		pathInfo, pathErr := a.ResolvePackagePath(module + "/@v/" + version + ".zip")
+		pathInfo, pathErr := a.ParsePath(module + "/@v/" + version + ".zip")
 		if pathErr != nil {
 			slog.Info("Failed to resolve zip path", "module", module, "version", version, "error", pathErr)
 		} else {
@@ -346,7 +341,7 @@ func (a *GoAdapter) latestHandler(c *gin.Context) {
 			}
 
 			result, resolveErr := func() (*types.RouteResult, error) {
-				pathInfo, err := a.ResolvePackagePath(module + "/@latest")
+				pathInfo, err := a.ParsePath(module + "/@latest")
 				if err != nil {
 					return nil, err
 				}
@@ -374,46 +369,6 @@ func (a *GoAdapter) latestHandler(c *gin.Context) {
 	c.JSON(200, latestInfo)
 }
 
-func (a *GoAdapter) Upload(ctx context.Context, req *UploadRequest) (*PackageVersionResult, error) {
-	reader, ok := req.Package.(io.Reader)
-	if !ok {
-		return nil, fmt.Errorf("invalid package type")
-	}
-
-	name, _ := req.Metadata["module"].(string)
-	version, _ := req.Metadata["version"].(string)
-	if name == "" || version == "" {
-		return nil, fmt.Errorf("missing module name or version")
-	}
-
-	uploadCtx := &service.UploadContext{
-		PkgType:        "go",
-		Name:           name,
-		Version:        version,
-		Filename:       version + ".zip",
-		Content:        reader,
-		Size:           req.Size,
-		PackageType:    model.PackageTypeGo,
-		RepositoryType: model.RepoTypeLocal,
-		UploadedBy:     req.UploadedBy,
-		Metadata:       req.Metadata,
-		FileType:       model.FileTypePrimary,
-	}
-
-	result, err := a.uploadSvc.Upload(ctx, uploadCtx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &PackageVersionResult{
-		PackageID:  result.PackageID,
-		VersionID:  result.VersionID,
-		Version:    result.Version,
-		StorageKey: result.StorageKey,
-		Size:       result.Size,
-	}, nil
-}
-
 func (a *GoAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
 	return a.BaseAdapter.GetPackageMetadata(ctx, name, model.PackageTypeGo, GoType)
 }
@@ -430,16 +385,6 @@ func (a *GoAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestCont
 	c.Set("repo", ctx.Repo)
 	c.Params = append(c.Params, gin.Param{Key: "path", Value: "/" + ctx.Path})
 	a.goProxyHandler(c)
-}
-
-func (a *GoAdapter) HandleRepoPublish(c *gin.Context, repo *model.Repository) *types.RepoOperationResult {
-	response.Forbidden(c, "Go modules cannot be published directly")
-	return nil
-}
-
-func (a *GoAdapter) HandleRepoDelete(c *gin.Context, repo *model.Repository) *types.RepoOperationResult {
-	response.Forbidden(c, "Go modules cannot be deleted directly")
-	return nil
 }
 
 func (a *GoAdapter) syncVersionsToLocal(ctx context.Context, module string, versions []string, repoID uint) {
@@ -500,7 +445,26 @@ func (a *GoAdapter) FormatDownloadResponse(c *gin.Context, result *types.Downloa
 }
 
 func (a *GoAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
-	return nil, fmt.Errorf("Go modules cannot be published directly")
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		return nil, fmt.Errorf("missing file: %v", err)
+	}
+
+	name := c.PostForm("name")
+	version := c.PostForm("version")
+	if name == "" || version == "" {
+		file.Close()
+		return nil, fmt.Errorf("missing module name or version")
+	}
+
+	return &types.PublishResult{
+		PackageName: name,
+		Version:     version,
+		Filename:    header.Filename,
+		Content:     file,
+		Size:        header.Size,
+		FileType:    model.FileTypePrimary,
+	}, nil
 }
 
 func (a *GoAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {

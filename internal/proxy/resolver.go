@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -54,6 +55,11 @@ func NewRepoHandler(
 	}
 }
 
+func (r *RepoHandler) GetAdapter(pkgType model.PackageType) (RepoRequestHandler, bool) {
+	adp, ok := r.adapters[string(pkgType)]
+	return adp, ok
+}
+
 func (r *RepoHandler) SetDownloadService(svc DownloadService) {
 	r.downloadSvc = svc
 }
@@ -63,34 +69,41 @@ func (r *RepoHandler) RegisterAdapter(pkgType string, handler RepoRequestHandler
 }
 
 // Resolve 解析包：根据仓库类型路由到不同的解析策略
-// 供 RepoRouter 使用，传入 name/version
-func (r *RepoHandler) Resolve(ctx context.Context, repo *model.Repository, pkgType, name, version string) (*RouteResult, error) {
-	switch repo.Type {
+func (r *RepoHandler) Resolve(ctx context.Context, downloadCtx *types.DownloadContext) (*RouteResult, error) {
+	switch downloadCtx.Repo.Type {
 	case model.RepoTypeLocal:
-		return r.resolveLocal(ctx, repo, pkgType, name, version)
+		return r.resolveLocal(ctx, downloadCtx)
 	case model.RepoTypeProxy:
-		return r.resolveProxy(ctx, repo, pkgType, name, version)
+		return r.resolveProxy(ctx, downloadCtx)
 	case model.RepoTypeVirtual:
-		return r.resolveVirtual(ctx, repo, pkgType, name, version)
+		return r.resolveVirtual(ctx, downloadCtx)
 	default:
-		return nil, fmt.Errorf("unsupported repository type: %s", repo.Type)
+		return nil, fmt.Errorf("unsupported repository type: %s", downloadCtx.Repo.Type)
 	}
 }
 
 // TryResolveDownload 尝试将路径解析为下载请求
-// 返回 nil 表示不是下载路径，应交给 HandleRepoRequest 处理
 func (r *RepoHandler) TryResolveDownload(ctx context.Context, repo *model.Repository, pkgType, path string) (*RouteResult, error) {
 	adp, ok := r.adapters[pkgType]
 	if !ok {
 		return nil, fmt.Errorf("unsupported package type: %s", pkgType)
 	}
 
-	pkgIdentity, err := adp.ResolvePackagePath(path)
+	pkgIdentity, err := adp.ParsePath(path)
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := r.Resolve(ctx, repo, pkgType, pkgIdentity.Name, pkgIdentity.Version)
+	downloadCtx := &types.DownloadContext{
+		Repo:         repo,
+		PkgType:      model.PackageType(pkgType),
+		Name:         pkgIdentity.Name,
+		Version:      pkgIdentity.Version,
+		Filename:     filepath.Base(path),
+		ResolvedPath: pkgIdentity,
+	}
+
+	result, err := r.Resolve(ctx, downloadCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +148,7 @@ func (r *RepoHandler) HandleRepoRequest(c *gin.Context, repo *model.Repository, 
 	return nil
 }
 
-func (r *RepoHandler) HandleRepoPublish(c *gin.Context, repo *model.Repository) (*types.RepoOperationResult, error) {
+func (r *RepoHandler) HandleRepoPublish(c *gin.Context, repo *model.Repository) (*types.PublishResult, error) {
 	adp, ok := r.adapters[repo.PackageType]
 	if !ok {
 		return nil, fmt.Errorf("unsupported package type: %s", repo.PackageType)
@@ -143,17 +156,7 @@ func (r *RepoHandler) HandleRepoPublish(c *gin.Context, repo *model.Repository) 
 	ctx := &types.PublishContext{
 		Repo: repo,
 	}
-	result, err := adp.HandlePublish(c, ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &types.RepoOperationResult{
-		PackageName: result.PackageName,
-		Version:     result.Version,
-		Size:        result.Size,
-		Filename:    result.Filename,
-		Response:    result.Response,
-	}, nil
+	return adp.HandlePublish(c, ctx)
 }
 
 func (r *RepoHandler) HandleRepoDelete(c *gin.Context, repo *model.Repository) (*types.RepoOperationResult, error) {
@@ -171,17 +174,9 @@ func (r *RepoHandler) HandleRepoDelete(c *gin.Context, repo *model.Repository) (
 	return &types.RepoOperationResult{}, nil
 }
 
-func (r *RepoHandler) resolveLocal(ctx context.Context, repo *model.Repository, pkgType, name, version string) (*RouteResult, error) {
+func (r *RepoHandler) resolveLocal(ctx context.Context, downloadCtx *types.DownloadContext) (*RouteResult, error) {
 	if r.downloadSvc == nil {
 		return nil, fmt.Errorf("download service not initialized")
-	}
-
-	downloadCtx := &types.DownloadContext{
-		Repo:     repo,
-		PkgType:  model.PackageType(pkgType),
-		Name:     name,
-		Version:  version,
-		Filename: "",
 	}
 
 	result, err := r.downloadSvc.Download(ctx, downloadCtx)
@@ -199,17 +194,9 @@ func (r *RepoHandler) resolveLocal(ctx context.Context, repo *model.Repository, 
 	}, nil
 }
 
-func (r *RepoHandler) resolveProxy(ctx context.Context, repo *model.Repository, pkgType, name, version string) (*RouteResult, error) {
+func (r *RepoHandler) resolveProxy(ctx context.Context, downloadCtx *types.DownloadContext) (*RouteResult, error) {
 	if r.downloadSvc == nil {
 		return nil, fmt.Errorf("download service not initialized")
-	}
-
-	downloadCtx := &types.DownloadContext{
-		Repo:     repo,
-		PkgType:  model.PackageType(pkgType),
-		Name:     name,
-		Version:  version,
-		Filename: "",
 	}
 
 	result, err := r.downloadSvc.Download(ctx, downloadCtx)
@@ -217,7 +204,7 @@ func (r *RepoHandler) resolveProxy(ctx context.Context, repo *model.Repository, 
 		return nil, err
 	}
 	return &RouteResult{
-		Source:     repo.Name,
+		Source:     downloadCtx.Repo.Name,
 		SourceType: "proxy",
 		RepoID:     result.RepoID,
 		Content:    result.Content,
@@ -229,26 +216,83 @@ func (r *RepoHandler) resolveProxy(ctx context.Context, repo *model.Repository, 
 	}, nil
 }
 
-func (r *RepoHandler) resolveVirtual(ctx context.Context, virtualRepo *model.Repository, pkgType, name, version string) (*RouteResult, error) {
-	members, err := r.getMembers(virtualRepo.ID)
+func (r *RepoHandler) resolveVirtual(ctx context.Context, downloadCtx *types.DownloadContext) (*RouteResult, error) {
+	members, err := r.getMembers(downloadCtx.Repo.ID)
 	if err != nil {
 		return nil, err
 	}
 
+	var matchingMembers []model.RepositoryGroup
 	for _, member := range members {
-		if !r.isMemberTypeMatch(&member.MemberRepo, pkgType) {
-			continue
-		}
-
-		result, err := r.Resolve(ctx, &member.MemberRepo, pkgType, name, version)
-		if err == nil && result != nil {
-			result.Source = member.MemberRepo.Name
-			result.RepoID = member.MemberRepo.ID
-			return result, nil
+		if r.isMemberTypeMatch(&member.MemberRepo, string(downloadCtx.PkgType)) {
+			matchingMembers = append(matchingMembers, member)
 		}
 	}
 
+	if len(matchingMembers) == 0 {
+		return nil, ErrPackageNotFound
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type memberResult struct {
+		res        *RouteResult
+		err        error
+		sourceName string
+		repoID     uint
+	}
+	resultCh := make(chan memberResult, len(matchingMembers))
+
+	for _, member := range matchingMembers {
+		member := member
+		go func() {
+			memberCtx := *downloadCtx
+			memberCtx.Repo = &member.MemberRepo
+			res, err := r.Resolve(ctx, &memberCtx)
+			resultCh <- memberResult{
+				res:        res,
+				err:        err,
+				sourceName: member.MemberRepo.Name,
+				repoID:     member.MemberRepo.ID,
+			}
+		}()
+	}
+
+	var firstErr error
+	remaining := len(matchingMembers)
+	for remaining > 0 {
+		select {
+		case <-ctx.Done():
+			if firstErr == nil {
+				return nil, ErrPackageNotFound
+			}
+			return nil, firstErr
+		case mr := <-resultCh:
+			remaining--
+			if mr.err != nil {
+				if firstErr == nil && !isPackageNotFoundError(mr.err) {
+					firstErr = mr.err
+				}
+				continue
+			}
+			if mr.res != nil {
+				cancel()
+				mr.res.Source = mr.sourceName
+				mr.res.RepoID = mr.repoID
+				return mr.res, nil
+			}
+		}
+	}
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
 	return nil, ErrPackageNotFound
+}
+
+func isPackageNotFoundError(err error) bool {
+	return errors.Is(err, ErrPackageNotFound)
 }
 
 func (r *RepoHandler) getMembers(virtualRepoID uint) ([]model.RepositoryGroup, error) {

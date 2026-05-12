@@ -3,7 +3,6 @@ package adapter
 import (
 	"context"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -45,8 +44,8 @@ func (b *BaseAdapter) CheckDownloadPermission(c *gin.Context, repo *model.Reposi
 	}
 
 	userID := c.GetUint("userID")
-	downloadCtx := &DownloadContext{
-		Ctx:      c,
+	downloadCtx := &types.DownloadContext{
+		GinCtx:   c,
 		Repo:     repo,
 		PkgType:  pkgType,
 		Name:     name,
@@ -69,18 +68,9 @@ func (b *BaseAdapter) CheckDownloadPermissionFromContext(ctx *types.DownloadCont
 		return AllowDownload()
 	}
 
-	downloadCtx := &DownloadContext{
-		Ctx:      c,
-		Repo:     ctx.Repo,
-		PkgType:  ctx.PkgType,
-		Name:     ctx.Name,
-		Version:  ctx.Version,
-		Filename: ctx.Filename,
-		UserID:   ctx.UserID,
-		ClientIP: ctx.ClientIP,
-	}
+	ctx.GinCtx = c
 
-	return pluginChain.Execute(downloadCtx)
+	return pluginChain.Execute(ctx)
 }
 
 func (b *BaseAdapter) GetPackageMetadata(ctx context.Context, name string, pkgType model.PackageType, typeStr types.PackageType) (*types.PackageMeta, error) {
@@ -125,71 +115,6 @@ func (b *BaseAdapter) GetPackageRepository() *repository.PackageRepository {
 
 func (b *BaseAdapter) GetStorageService() *service.StorageService {
 	return b.storageSvc
-}
-
-type UploadHelperOpts struct {
-	PkgType        string
-	Name           string
-	Version        string
-	StorageVersion string
-	Filename       string
-	PackageType    model.PackageType
-	RepositoryType model.RepositoryType
-	RepositoryID   uint
-	UploadedBy     uint
-	Metadata       map[string]interface{}
-	FileType       model.PackageFileType
-}
-
-func (b *BaseAdapter) ExecuteUpload(ctx context.Context, opts *UploadHelperOpts, reader io.Reader, size int64, uploadSvc *service.UploadService) (*PackageVersionResult, error) {
-	storageVersion := opts.StorageVersion
-	if storageVersion == "" {
-		storageVersion = opts.Version
-	}
-
-	result, err := uploadSvc.Upload(ctx, &service.UploadContext{
-		PkgType:        opts.PkgType,
-		Name:           opts.Name,
-		Version:        opts.Version,
-		StorageVersion: storageVersion,
-		Filename:       opts.Filename,
-		Content:        reader,
-		Size:           size,
-		PackageType:    opts.PackageType,
-		RepositoryType: opts.RepositoryType,
-		RepositoryID:   opts.RepositoryID,
-		UploadedBy:     opts.UploadedBy,
-		Metadata:       opts.Metadata,
-		FileType:       opts.FileType,
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	if b.auditSvc != nil && opts.UploadedBy > 0 {
-		uploadedBy := opts.UploadedBy
-		_ = b.auditSvc.LogWithStatus(
-			ctx,
-			&uploadedBy,
-			model.ActionPackageUpload,
-			"package",
-			&result.PackageID,
-			opts.Name,
-			fmt.Sprintf(`{"version":"%s","filename":"%s","size":%d}`, opts.Version, opts.Filename, size),
-			201,
-			0,
-		)
-	}
-
-	return &PackageVersionResult{
-		PackageID:  result.PackageID,
-		VersionID:  result.VersionID,
-		Version:    result.Version,
-		StorageKey: result.StorageKey,
-		Size:       result.Size,
-		Checksum:   result.ChecksumSHA256,
-	}, nil
 }
 
 func (b *BaseAdapter) LogDeleteAudit(c *gin.Context, repoName, pkgName, version string, pkgID *uint) {

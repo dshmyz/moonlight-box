@@ -152,10 +152,10 @@ func (s *StorageService) GetDefaultBackend() storage.Backend {
 }
 
 func (s *StorageService) StorePackage(ctx context.Context, pkgType, name, version string, content io.Reader, size int64) (string, error) {
-	return s.StorePackageWithBackend(ctx, pkgType, name, version, content, size, 0)
+	return s.StorePackageWithBackend(ctx, "", pkgType, name, version, content, size, 0)
 }
 
-func (s *StorageService) StorePackageWithBackend(ctx context.Context, pkgType, name, version string, content io.Reader, size int64, backendID uint) (string, error) {
+func (s *StorageService) StorePackageWithBackend(ctx context.Context, repoName, pkgType, name, version string, content io.Reader, size int64, backendID uint) (string, error) {
 	var backend storage.Backend
 	var err error
 
@@ -168,7 +168,7 @@ func (s *StorageService) StorePackageWithBackend(ctx context.Context, pkgType, n
 		}
 	}
 
-	key := s.buildKey(pkgType, name, version)
+	key := s.buildKey(repoName, pkgType, name, version)
 
 	if err := backend.Put(ctx, key, content, size); err != nil {
 		return "", err
@@ -177,33 +177,11 @@ func (s *StorageService) StorePackageWithBackend(ctx context.Context, pkgType, n
 	return key, nil
 }
 
-// NormalizeVersion 根据不同包类型规范化版本号
-// 返回规范化后的版本字符串，调用方可直接用其构建存储键
-func (s *StorageService) NormalizeVersion(pkgType, version, filename string) string {
-	version = strings.TrimPrefix(version, "/")
-
-	switch pkgType {
-	case "maven", "maven2":
-		// Maven: 版本路径包含文件名，每个文件独立路径
-		if filename != "" {
-			return version + "/" + filename
-		}
-
-	case "go":
-		// Go: 符合 Go module proxy 规范
-		if filename != "" {
-			return "@v/" + filename
-		}
-	}
-
-	return version
-}
-
 func (s *StorageService) GetPackage(ctx context.Context, pkgType, name, version string) (io.ReadCloser, int64, error) {
-	return s.GetPackageWithBackend(ctx, pkgType, name, version, 0)
+	return s.GetPackageWithBackend(ctx, "", pkgType, name, version, 0)
 }
 
-func (s *StorageService) GetPackageWithBackend(ctx context.Context, pkgType, name, version string, backendID uint) (io.ReadCloser, int64, error) {
+func (s *StorageService) GetPackageWithBackend(ctx context.Context, repoName, pkgType, name, version string, backendID uint) (io.ReadCloser, int64, error) {
 	var backend storage.Backend
 	var err error
 
@@ -216,7 +194,7 @@ func (s *StorageService) GetPackageWithBackend(ctx context.Context, pkgType, nam
 		}
 	}
 
-	key := s.buildKey(pkgType, name, version)
+	key := s.buildKey(repoName, pkgType, name, version)
 
 	size, err := backend.Size(ctx, key)
 	if err != nil {
@@ -232,10 +210,10 @@ func (s *StorageService) GetPackageWithBackend(ctx context.Context, pkgType, nam
 }
 
 func (s *StorageService) DeletePackage(ctx context.Context, pkgType, name, version string) error {
-	return s.DeletePackageWithBackend(ctx, pkgType, name, version, 0)
+	return s.DeletePackageWithBackend(ctx, "", pkgType, name, version, 0)
 }
 
-func (s *StorageService) DeletePackageWithBackend(ctx context.Context, pkgType, name, version string, backendID uint) error {
+func (s *StorageService) DeletePackageWithBackend(ctx context.Context, repoName, pkgType, name, version string, backendID uint) error {
 	var backend storage.Backend
 	var err error
 
@@ -248,15 +226,15 @@ func (s *StorageService) DeletePackageWithBackend(ctx context.Context, pkgType, 
 		}
 	}
 
-	key := s.buildKey(pkgType, name, version)
+	key := s.buildKey(repoName, pkgType, name, version)
 	return backend.Delete(ctx, key)
 }
 
 func (s *StorageService) Exists(ctx context.Context, pkgType, name, version string) (bool, error) {
-	return s.ExistsWithBackend(ctx, pkgType, name, version, 0)
+	return s.ExistsWithBackend(ctx, "", pkgType, name, version, 0)
 }
 
-func (s *StorageService) ExistsWithBackend(ctx context.Context, pkgType, name, version string, backendID uint) (bool, error) {
+func (s *StorageService) ExistsWithBackend(ctx context.Context, repoName, pkgType, name, version string, backendID uint) (bool, error) {
 	var backend storage.Backend
 	var err error
 
@@ -269,7 +247,7 @@ func (s *StorageService) ExistsWithBackend(ctx context.Context, pkgType, name, v
 		}
 	}
 
-	key := s.buildKey(pkgType, name, version)
+	key := s.buildKey(repoName, pkgType, name, version)
 	return backend.Exists(ctx, key)
 }
 
@@ -282,9 +260,13 @@ func (s *StorageService) GetContentType(filename string) string {
 	return contentType
 }
 
-func (s *StorageService) buildKey(pkgType, name, version string) string {
+func (s *StorageService) buildKey(repoName, pkgType, name, version string) string {
 	name = strings.TrimPrefix(name, "/")
 	version = s.normalizeVersion(pkgType, version)
+
+	if repoName != "" {
+		return filepath.Join(repoName, name, version)
+	}
 
 	switch pkgType {
 	case "npm":
@@ -318,16 +300,8 @@ func (s *StorageService) buildKey(pkgType, name, version string) string {
 }
 
 // normalizeVersion 根据不同包类型规范化版本号
-// 这是存储层的核心逻辑，确保同一包在不同场景下使用一致的存储路径
 func (s *StorageService) normalizeVersion(pkgType, version string) string {
 	version = strings.TrimPrefix(version, "/")
-
-	// Maven: 版本格式 "version/filename"
-	// 例如: "32.1.3-jre/guava-32.1.3-jre.jar"
-	// 这样每个文件有独立的存储路径
-	if (pkgType == "maven" || pkgType == "maven2") && strings.Contains(version, "/") {
-		return version
-	}
 
 	// Go: 版本格式 "@v/filename"
 	// 例如: "@v/v1.8.4.zip"
