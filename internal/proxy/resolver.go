@@ -232,6 +232,77 @@ func isPackageNotFoundError(err error) bool {
 	return errors.Is(err, ErrPackageNotFound)
 }
 
+// ResolveMetadata 解析虚拟仓库的元数据请求
+// 遍历成员仓库，对每个成员调用 adapter 的 HandleGet，返回第一个成功的结果
+func (r *RepoHandler) ResolveMetadata(ctx context.Context, virtualRepo *model.Repository, intent *types.RequestIntent, adp RepoRequestHandler) (*types.ContentResult, error) {
+	members, err := r.getMembers(virtualRepo.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	var matchingMembers []model.RepositoryGroup
+	for _, member := range members {
+		if r.isMemberTypeMatch(&member.MemberRepo, string(adp.Type())) {
+			matchingMembers = append(matchingMembers, member)
+		}
+	}
+
+	if len(matchingMembers) == 0 {
+		return nil, ErrPackageNotFound
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type memberResult struct {
+		res        *types.ContentResult
+		err        error
+		sourceName string
+	}
+	resultCh := make(chan memberResult, len(matchingMembers))
+
+	for _, member := range matchingMembers {
+		member := member
+		go func() {
+			res, err := adp.HandleGet(ctx, &member.MemberRepo, intent)
+			resultCh <- memberResult{
+				res:        res,
+				err:        err,
+				sourceName: member.MemberRepo.Name,
+			}
+		}()
+	}
+
+	var firstErr error
+	remaining := len(matchingMembers)
+	for remaining > 0 {
+		select {
+		case <-ctx.Done():
+			if firstErr == nil {
+				return nil, ErrPackageNotFound
+			}
+			return nil, firstErr
+		case mr := <-resultCh:
+			remaining--
+			if mr.err != nil {
+				if firstErr == nil && !isPackageNotFoundError(mr.err) {
+					firstErr = mr.err
+				}
+				continue
+			}
+			if mr.res != nil && mr.res.StatusCode < 400 {
+				cancel()
+				return mr.res, nil
+			}
+		}
+	}
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return nil, ErrPackageNotFound
+}
+
 func (r *RepoHandler) getMembers(virtualRepoID uint) ([]model.RepositoryGroup, error) {
 	if r.repoCache != nil {
 		return r.repoCache.GetMembers(virtualRepoID)

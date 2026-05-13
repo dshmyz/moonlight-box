@@ -210,7 +210,14 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 			},
 		})
 	} else {
-		contentResult, err := adp.HandleGet(c.Request.Context(), repo, intent)
+		var contentResult *types.ContentResult
+		var err error
+		if repo.Type == model.RepoTypeVirtual {
+			// 虚拟仓库没有 RemoteURL 也没有本地包数据，需要遍历成员仓库处理元数据请求
+			contentResult, err = r.resolver.ResolveMetadata(c.Request.Context(), repo, intent, adp)
+		} else {
+			contentResult, err = adp.HandleGet(c.Request.Context(), repo, intent)
+		}
 		if err != nil {
 			response.NotFound(c, err.Error())
 			return
