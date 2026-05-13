@@ -245,8 +245,13 @@ const openCreateDialog = () => {
   showDialog.value = true
 }
 
-const openEditDialog = (repo: Repository) => {
-  editingRepo.value = { ...repo }
+const openEditDialog = async (repo: Repository) => {
+  if (repo.type === 'virtual') {
+    const detail = await repositoryApi.get(repo.name)
+    editingRepo.value = { ...detail }
+  } else {
+    editingRepo.value = { ...repo }
+  }
   showDialog.value = true
 }
 
