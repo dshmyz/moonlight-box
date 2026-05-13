@@ -101,22 +101,49 @@ func (s *MigrationService) GetQueueStatus() QueueStatus {
 	}
 }
 
-func (s *MigrationService) recoverInterruptedTasks() {
+func (s *MigrationService) recoverInterruptedTasks() []uint {
 	var runningTasks []model.MigrationTask
-	if err := s.db.Where("status = ?", model.MigrationRunning).Find(&runningTasks).Error; err != nil {
-		return
+	if err := s.db.Where("status IN (?, ?)", model.MigrationRunning, model.MigrationQueued).Find(&runningTasks).Error; err != nil {
+		logrus.WithError(err).Error("Failed to query interrupted migration tasks")
+		return nil
 	}
 
-	for _, task := range runningTasks {
-		s.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
-			"status":        model.MigrationFailed,
-			"error_message": "服务器重启导致任务中断",
-		})
-		s.db.Model(&model.MigrationItem{}).Where("task_id = ? AND status = ?", task.ID, model.MigrationItemProcessing).Updates(map[string]interface{}{
-			"status":        model.MigrationItemPending,
-			"error_message": "处理中被中断",
-		})
+	if len(runningTasks) == 0 {
+		return nil
 	}
+
+	logrus.WithField("module", "migration").Infof("Recovering %d interrupted migration tasks", len(runningTasks))
+
+	var recoveredTaskIDs []uint
+	for _, task := range runningTasks {
+		// 将 running/queued 状态的任务重置为 queued，等待重新入队
+		s.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
+			"status":        model.MigrationQueued,
+			"started_at":    nil,
+			"error_message": "",
+		})
+
+		// 将 processing 状态的 item 重置为 pending（因为不确定是否真正完成）
+		resetItems := s.db.Model(&model.MigrationItem{}).
+			Where("task_id = ? AND status = ?", task.ID, model.MigrationItemProcessing).
+			Updates(map[string]interface{}{
+				"status":        model.MigrationItemPending,
+				"error_message": "",
+				"retry_count":   0,
+			})
+
+		logrus.WithFields(logrus.Fields{
+			"module":      "migration",
+			"task_id":     task.ID,
+			"task_type":   task.TaskType,
+			"source_url":  task.SourceURL,
+			"reset_items": resetItems.RowsAffected,
+		}).Info("Task recovered, will be requeued automatically")
+
+		recoveredTaskIDs = append(recoveredTaskIDs, task.ID)
+	}
+
+	return recoveredTaskIDs
 }
 
 // StartQueue 启动任务队列处理器
@@ -130,6 +157,29 @@ func (s *MigrationService) StartQueue() {
 	s.queueMu.Unlock()
 
 	go s.processQueue()
+}
+
+// StartQueueWithRecovery 启动任务队列处理器并自动恢复中断的任务
+func (s *MigrationService) StartQueueWithRecovery() {
+	// 先恢复中断的任务
+	recoveredTaskIDs := s.recoverInterruptedTasks()
+
+	// 启动队列处理器
+	s.StartQueue()
+
+	// 将恢复的任务自动入队
+	if len(recoveredTaskIDs) > 0 {
+		for _, taskID := range recoveredTaskIDs {
+			if err := s.EnqueueTask(taskID); err != nil {
+				logrus.WithFields(logrus.Fields{
+					"module":  "migration",
+					"task_id": taskID,
+				}).Error("Failed to enqueue recovered task: " + err.Error())
+			} else {
+				logrus.WithField("module", "migration").Infof("Recovered task %d has been enqueued", taskID)
+			}
+		}
+	}
 }
 
 // EnqueueTask 将任务 ID 加入队列

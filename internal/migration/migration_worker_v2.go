@@ -172,6 +172,8 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 		}
 
 		// 步骤1：先扫描所有仓库，获取组件总数并创建数据库记录
+		// 注意：即使之前扫描过一部分，也会重新扫描，但 BatchCreate 会按 component_id 去重，
+		// 所以已扫描的不会重复插入，未扫描的会继续创建
 		w.service.AddLog(task.ID, "正在扫描组件...")
 		totalScanned := 0
 		for _, repoName := range selectedRepos {

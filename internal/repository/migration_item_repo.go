@@ -51,7 +51,37 @@ func (r *MigrationItemRepository) BatchCreate(items []model.MigrationItem) error
 		return nil
 	}
 
-	return r.db.CreateInBatches(uniqueItems, 100).Error
+	// 过滤掉数据库中已存在的 component_id（避免重复插入）
+	var existingIDs []string
+	r.db.Model(&model.MigrationItem{}).
+		Where("task_id = ? AND component_id IN ?", uniqueItems[0].TaskID, uniqueComponentIDs(uniqueItems)).
+		Pluck("component_id", &existingIDs)
+
+	existingMap := make(map[string]bool)
+	for _, id := range existingIDs {
+		existingMap[id] = true
+	}
+
+	newItems := make([]model.MigrationItem, 0, len(uniqueItems))
+	for _, item := range uniqueItems {
+		if !existingMap[item.ComponentID] {
+			newItems = append(newItems, item)
+		}
+	}
+
+	if len(newItems) == 0 {
+		return nil
+	}
+
+	return r.db.CreateInBatches(newItems, 100).Error
+}
+
+func uniqueComponentIDs(items []model.MigrationItem) []string {
+	ids := make([]string, len(items))
+	for i, item := range items {
+		ids[i] = item.ComponentID
+	}
+	return ids
 }
 
 func (r *MigrationItemRepository) GetPendingItems(taskID uint, maxRetries int, limit int) ([]model.MigrationItem, error) {
@@ -174,4 +204,10 @@ func (r *MigrationItemRepository) ListByTask(taskID uint, page, pageSize int) ([
 
 	err := query.Order("created_at ASC").Find(&items).Error
 	return items, total, err
+}
+
+func (r *MigrationItemRepository) CountByTaskID(taskID uint) int64 {
+	var count int64
+	r.db.Model(&model.MigrationItem{}).Where("task_id = ?", taskID).Count(&count)
+	return count
 }

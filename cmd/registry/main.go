@@ -373,7 +373,7 @@ func main() {
 
 	// 初始化迁移 service（注入 worker 和 repoCreator，最大并发 1 个任务）
 	migrationSvc := migration.NewMigrationService(db, migrationWorker, repoCreator, 1)
-	migrationSvc.StartQueue() // 启动队列处理器
+	migrationSvc.StartQueueWithRecovery() // 启动队列处理器并自动恢复中断的任务
 
 	// 设置 worker 的 service 引用
 	migrationWorker.SetService(migrationSvc)
