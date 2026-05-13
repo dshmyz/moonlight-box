@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,13 +12,11 @@ import (
 
 	"github.com/moonlight-box/registry/internal/cache"
 	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
 	"github.com/moonlight-box/registry/internal/util"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 type NpmAdapter struct {
@@ -91,44 +90,9 @@ type NpmRepository struct {
 	URL  string `json:"url"`
 }
 
-type NpmSearchRequest struct {
-	Text string `form:"text" binding:"required"`
-	Size int    `form:"size" binding:"omitempty,min=1,max=100"`
-	From int    `form:"from" binding:"omitempty,min=0"`
-}
-
-type NpmSearchResponse struct {
-	Objects []NpmSearchObject `json:"objects"`
-	Total   int               `json:"total"`
-	Time    string            `json:"time"`
-}
-
-type NpmSearchObject struct {
-	Package NpmSearchPackage `json:"package"`
-	Score   NpmSearchScore   `json:"score"`
-}
-
-type NpmSearchPackage struct {
-	Name        string `json:"name"`
-	Version     string `json:"version"`
-	Description string `json:"description,omitempty"`
-	Date        string `json:"date"`
-}
-
-type NpmSearchScore struct {
-	Detail NpmSearchScoreDetail `json:"detail"`
-	Final  float64              `json:"final"`
-}
-
-type NpmSearchScoreDetail struct {
-	Quality     float64 `json:"quality"`
-	Popularity  float64 `json:"popularity"`
-	Maintenance float64 `json:"maintenance"`
-}
-
-func NewNpmAdapter(storageSvc *service.StorageService, auditSvc *service.AuditService, pkgCache *cache.PackageCache) *NpmAdapter {
+func NewNpmAdapter(storageSvc *service.StorageService, pkgCache *cache.PackageCache) *NpmAdapter {
 	return &NpmAdapter{
-		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
+		BaseAdapter: NewBaseAdapter(storageSvc, pkgCache),
 	}
 }
 
@@ -220,87 +184,195 @@ func (a *NpmAdapter) resolveTarballPath(path string) (*types.PackagePathInfo, er
 	}, nil
 }
 
-func (a *NpmAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
-	c.Set("repo", ctx.Repo)
-	a.getPackageForRepo(c, ctx.Repo, ctx.Path)
+// ParseIntent 解析请求路径为意图
+func (a *NpmAdapter) ParseIntent(path string, method string) *types.RequestIntent {
+	path = strings.TrimPrefix(path, "/")
+	intent := &types.RequestIntent{
+		Path:  path,
+		Extra: make(map[string]interface{}),
+	}
+
+	pathInfo, err := a.ParsePath(path)
+	if err != nil {
+		// 无法解析，设为未知意图
+		intent.Type = types.RequestUnknown
+		return intent
+	}
+	intent.PkgPathInfo = pathInfo
+
+	// 根据路径特征区分意图
+	if strings.Contains(path, ".tgz") {
+		// tarball 路径是下载请求
+		intent.Type = types.RequestDownload
+		intent.Name = pathInfo.Name
+		intent.Version = pathInfo.Version
+		intent.Filename = pathInfo.Filename
+	} else if strings.Contains(path, "/-/") {
+		// 附件路径也是下载请求
+		intent.Type = types.RequestDownload
+		intent.Name = pathInfo.Name
+		intent.Version = pathInfo.Version
+		intent.Filename = pathInfo.Filename
+	} else {
+		// 其余都是元数据请求
+		intent.Type = types.RequestMetadata
+		intent.Name = pathInfo.Name
+		intent.Version = pathInfo.Version
+	}
+
+	return intent
 }
 
-func (a *NpmAdapter) getPackageForRepo(c *gin.Context, repo *model.Repository, fullPath string) {
-	parts := strings.SplitN(fullPath, "/", 2)
-	scope := ""
-	pkgName := fullPath
+// FetchContent 根据意图获取内容
+func (a *NpmAdapter) HandleGet(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
+	switch intent.Type {
+	case types.RequestDownload:
+		return a.handleTarballDownload(ctx, repo, intent)
+	case types.RequestMetadata:
+		return a.handleMetadataFetch(ctx, repo, intent)
+	default:
+		return &types.ContentResult{
+			StatusCode: 404,
+			ExtraData:  map[string]interface{}{"message": "unknown request type"},
+		}, nil
+	}
+}
 
-	if len(parts) >= 2 && strings.HasPrefix(parts[0], "@") {
-		scope = parts[0]
-		pkgName = parts[1]
+// handleTarballDownload 处理 tarball 下载
+func (a *NpmAdapter) handleTarballDownload(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
+	filename := intent.Filename
+
+	// NPM tarball 通常从远程 CDN 获取
+	if a.fetcher != nil && repo != nil {
+		pathInfo := intent.PkgPathInfo
+		if pathInfo == nil {
+			pathInfo, _ = a.ParsePath(intent.Path)
+		}
+		if pathInfo != nil {
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+			result, fetchErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
+			if fetchErr == nil && result != nil {
+				return &types.ContentResult{
+					StatusCode:  200,
+					ContentType: "application/octet-stream",
+					Content:     result.Content,
+					Size:        result.Size,
+					Headers:     map[string]string{"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, filename)},
+				}, nil
+			}
+		}
 	}
 
-	name := pkgName
-	if scope != "" {
-		name = scope + "/" + pkgName
-	}
+	return &types.ContentResult{
+		StatusCode: 404,
+		ExtraData:  map[string]interface{}{"message": "tarball not found"},
+	}, nil
+}
+
+// handleMetadataFetch 处理元数据获取
+func (a *NpmAdapter) handleMetadataFetch(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
+	name := intent.Name
 
 	switch repo.Type {
 	case model.RepoTypeLocal:
-		meta, err := a.GetMetadata(c.Request.Context(), name)
+		meta, err := a.GetMetadata(ctx, name)
 		if err != nil {
 			if util.IsErr(err, util.ErrPackageNotFound) {
-				response.NotFound(c, "package not found")
-				return
+				return &types.ContentResult{
+					StatusCode: 404,
+					ExtraData:  map[string]interface{}{"message": "package not found"},
+				}, nil
 			}
-			response.InternalError(c, err.Error())
-			return
+			return &types.ContentResult{
+				StatusCode: 500,
+				ExtraData:  map[string]interface{}{"message": err.Error()},
+			}, nil
 		}
-		c.JSON(200, meta)
+		metaJSON, marshalErr := json.Marshal(meta)
+		if marshalErr != nil {
+			return &types.ContentResult{
+				StatusCode: 500,
+				ExtraData:  map[string]interface{}{"message": "failed to marshal metadata"},
+			}, nil
+		}
+		return &types.ContentResult{
+			ContentType: "application/json",
+			StatusCode:  200,
+			Content:     io.NopCloser(bytes.NewReader(metaJSON)),
+			Size:        int64(len(metaJSON)),
+		}, nil
 
 	case model.RepoTypeProxy:
-		a.handleProxyMetadata(c, repo, name)
+		return a.handleProxyMetadataFetch(ctx, repo, name)
 
 	case model.RepoTypeVirtual:
-		a.handleVirtualMetadata(c, repo, name)
+		return a.handleVirtualMetadataFetch(ctx, repo, name)
 
 	default:
-		response.NotFound(c, "unknown repository type")
+		return &types.ContentResult{
+			StatusCode: 404,
+			ExtraData:  map[string]interface{}{"message": "unknown repository type"},
+		}, nil
 	}
 }
 
-func (a *NpmAdapter) handleProxyMetadata(c *gin.Context, repo *model.Repository, name string) {
+// handleProxyMetadataFetch 处理代理仓库元数据请求（不依赖 gin.Context）
+func (a *NpmAdapter) handleProxyMetadataFetch(ctx context.Context, repo *model.Repository, name string) (*types.ContentResult, error) {
 	pathInfo, err := a.ParsePath(name)
 	if err != nil {
-		response.NotFound(c, "package not found")
-		return
+		return &types.ContentResult{
+			StatusCode: 404,
+			ExtraData:  map[string]interface{}{"message": "package not found"},
+		}, nil
 	}
 	remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-	result, err := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+	result, err := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
 	if err != nil {
-		response.NotFound(c, "package not found")
-		return
+		return &types.ContentResult{
+			StatusCode: 404,
+			ExtraData:  map[string]interface{}{"message": "package not found"},
+		}, nil
 	}
-	defer result.Content.Close()
 
-	c.DataFromReader(200, result.Size, "application/json", result.Content, nil)
+	return &types.ContentResult{
+		Content:     result.Content,
+		Size:        result.Size,
+		ContentType: "application/json",
+		StatusCode:  200,
+	}, nil
 }
 
-func (a *NpmAdapter) handleVirtualMetadata(c *gin.Context, repo *model.Repository, name string) {
+// handleVirtualMetadataFetch 处理虚拟仓库元数据请求（不依赖 gin.Context）
+func (a *NpmAdapter) handleVirtualMetadataFetch(ctx context.Context, repo *model.Repository, name string) (*types.ContentResult, error) {
 	if a.fetcher == nil {
-		response.NotFound(c, "package not found")
-		return
+		return &types.ContentResult{
+			StatusCode: 404,
+			ExtraData:  map[string]interface{}{"message": "package not found"},
+		}, nil
 	}
 
 	pathInfo, err := a.ParsePath(name)
 	if err != nil {
-		response.NotFound(c, "package not found")
-		return
+		return &types.ContentResult{
+			StatusCode: 404,
+			ExtraData:  map[string]interface{}{"message": "package not found"},
+		}, nil
 	}
 	remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-	result, err := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+	result, err := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
 	if err != nil {
-		response.NotFound(c, "package not found")
-		return
+		return &types.ContentResult{
+			StatusCode: 404,
+			ExtraData:  map[string]interface{}{"message": "package not found"},
+		}, nil
 	}
-	defer result.Content.Close()
 
-	c.DataFromReader(200, result.Size, "application/json", result.Content, nil)
+	return &types.ContentResult{
+		Content:     result.Content,
+		Size:        result.Size,
+		ContentType: "application/json",
+		StatusCode:  200,
+	}, nil
 }
 
 func extractVersionFromTarball(filename, pkgName string) string {
@@ -315,97 +387,6 @@ func extractVersionFromTarball(filename, pkgName string) string {
 	}
 
 	return base
-}
-
-func (a *NpmAdapter) HandleNpmPath(c *gin.Context) {
-	fullPath := strings.TrimPrefix(c.Param("path"), "/")
-
-	if fullPath == "-/v1/search" {
-		a.HandleSearch(c)
-		return
-	}
-
-	a.GetPackageByPath(c, fullPath)
-}
-
-func (a *NpmAdapter) GetPackageByPath(c *gin.Context, fullPath string) {
-	parts := strings.SplitN(fullPath, "/", 2)
-	scope := ""
-	pkgName := fullPath
-
-	if len(parts) >= 2 && strings.HasPrefix(parts[0], "@") {
-		scope = parts[0]
-		pkgName = parts[1]
-	}
-
-	name := pkgName
-	if scope != "" {
-		name = scope + "/" + pkgName
-	}
-
-	meta, err := a.GetMetadata(c.Request.Context(), name)
-	if err != nil {
-		if util.IsErr(err, util.ErrPackageNotFound) {
-			if a.fetcher != nil {
-				var repo *model.Repository
-				if r, ok := c.Get("repo"); ok {
-					repo = r.(*model.Repository)
-				}
-				if syncErr := a.syncFromProxy(c.Request.Context(), name, repo); syncErr == nil {
-					meta, err = a.GetMetadata(c.Request.Context(), name)
-					if err == nil {
-						c.JSON(200, meta)
-						return
-					}
-				}
-			}
-			response.NotFound(c, "package not found")
-			return
-		}
-		response.InternalError(c, err.Error())
-		return
-	}
-
-	c.JSON(200, meta)
-}
-
-func (a *NpmAdapter) Publish(c *gin.Context) {
-	scope := c.Param("scope")
-	pkgName := c.Param("package")
-
-	name := pkgName
-	if scope != "" {
-		name = scope + "/" + pkgName
-	}
-
-	c.JSON(201, gin.H{
-		"ok":      true,
-		"id":      name,
-		"rev":     "1-" + generateRevision(),
-		"success": true,
-	})
-}
-
-func (a *NpmAdapter) Unpublish(c *gin.Context) {
-	scope := c.Param("scope")
-	pkgName := c.Param("package")
-
-	name := pkgName
-	if scope != "" {
-		name = scope + "/" + pkgName
-	}
-
-	identity := &PackageIdentity{
-		Name: name,
-		Type: NpmType,
-	}
-
-	if err := a.Delete(c.Request.Context(), identity); err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
-
-	c.JSON(200, gin.H{"ok": true})
 }
 
 func (a *NpmAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
@@ -494,91 +475,7 @@ func marshalMetadata(meta map[string]interface{}) string {
 	return string(data)
 }
 
-func (a *NpmAdapter) searchPackages(ctx context.Context, query string, size, from int) ([]model.Package, int, error) {
-	var packages []model.Package
-	var total int64
-
-	searchTerm := "%" + query + "%"
-	db := a.GetPackageRepository().DB().Model(&model.Package{}).
-		Where("type = ?", model.PackageTypeNPM).
-		Where("name LIKE ? OR description LIKE ?", searchTerm, searchTerm)
-
-	db.Count(&total)
-
-	err := db.Preload("Versions", func(db *gorm.DB) *gorm.DB {
-		return db.Order("published_at DESC").Limit(1)
-	}).
-		Order("updated_at DESC").
-		Offset(from).
-		Limit(size).
-		Find(&packages).Error
-
-	return packages, int(total), err
-}
-
-func (a *NpmAdapter) formatSearchResponse(packages []model.Package, total int) *NpmSearchResponse {
-	objects := make([]NpmSearchObject, 0, len(packages))
-
-	for _, pkg := range packages {
-		var latestVersion string
-		var updatedAt string
-		if len(pkg.Versions) > 0 {
-			latestVersion = pkg.Versions[0].Version
-			updatedAt = pkg.Versions[0].PublishedAt.Format(time.RFC3339)
-		}
-
-		objects = append(objects, NpmSearchObject{
-			Package: NpmSearchPackage{
-				Name:        pkg.Name,
-				Version:     latestVersion,
-				Description: pkg.Description,
-				Date:        updatedAt,
-			},
-			Score: NpmSearchScore{
-				Detail: NpmSearchScoreDetail{
-					Quality:     1.0,
-					Popularity:  1.0,
-					Maintenance: 1.0,
-				},
-				Final: 1.0,
-			},
-		})
-	}
-
-	return &NpmSearchResponse{
-		Objects: objects,
-		Total:   total,
-		Time:    time.Now().Format("Mon Jan 02 2006 15:04:05 GMT-0700"),
-	}
-}
-
-func (a *NpmAdapter) HandleSearch(c *gin.Context) {
-	var req NpmSearchRequest
-	if err := c.ShouldBindQuery(&req); err != nil {
-		response.BadRequest(c, "invalid search parameters", err.Error())
-		return
-	}
-
-	if req.Size == 0 {
-		req.Size = 20
-	}
-
-	packages, total, err := a.searchPackages(c.Request.Context(), req.Text, req.Size, req.From)
-	if err != nil {
-		response.InternalError(c, "search failed")
-		return
-	}
-
-	resp := a.formatSearchResponse(packages, total)
-	c.JSON(200, resp)
-}
-
-func (a *NpmAdapter) FormatDownloadResponse(c *gin.Context, result *types.DownloadResult) {
-	contentType := a.storageSvc.GetContentType(result.Filename)
-	c.DataFromReader(200, result.Size, contentType, result.Content, nil)
-}
-
-func (a *NpmAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
+func (a *NpmAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	fullPath := strings.TrimPrefix(c.Param("path"), "/")
 	parts := strings.SplitN(fullPath, "/", 2)
 	scope := ""
@@ -663,13 +560,6 @@ func (a *NpmAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) erro
 	if err := a.Delete(c.Request.Context(), identity); err != nil {
 		return err
 	}
-
-	pkg, _ := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeNPM)
-	var pkgID *uint
-	if pkg != nil {
-		pkgID = &pkg.ID
-	}
-	a.LogDeleteAudit(c, ctx.Repo.Name, name, identity.Version, pkgID)
 
 	return nil
 }

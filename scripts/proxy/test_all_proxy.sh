@@ -99,7 +99,7 @@ HTTP_CODE=$(curl -s -o /tmp/test_proxy_npm_scope.json -w "%{http_code}" "$BASE_U
 assert_status "NPM 作用域包 (@babel/core)" "200" "$HTTP_CODE"
 
 # 测试 npm tarball 下载
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_npm_tgz.tgz -w "%{http_code}" "$BASE_URL/repo/npm-proxy-cn/lodash/-/tarball/lodash-4.17.21.tgz")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_npm_tgz.tgz -w "%{http_code}" "$BASE_URL/repo/npm-proxy-cn/lodash/-/lodash-4.17.21.tgz")
 assert_status "NPM tarball 下载" "200" "$HTTP_CODE"
 if [ "$HTTP_CODE" = "200" ]; then
     assert_file_not_empty "NPM tarball 文件非空" "/tmp/test_proxy_npm_tgz.tgz"

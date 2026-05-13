@@ -1,8 +1,10 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
 	"path/filepath"
@@ -12,7 +14,6 @@ import (
 	"github.com/moonlight-box/registry/internal/cache"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
 
@@ -62,11 +63,10 @@ type AptPackageEntry struct {
 
 func NewAptAdapter(
 	storageSvc *service.StorageService,
-	auditSvc *service.AuditService,
 	pkgCache *cache.PackageCache,
 ) *AptAdapter {
 	adapter := &AptAdapter{
-		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
+		BaseAdapter: NewBaseAdapter(storageSvc, pkgCache),
 	}
 	return adapter
 }
@@ -105,9 +105,7 @@ func (a *AptAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 	}, nil
 }
 
-func (a *AptAdapter) ReleaseFile(c *gin.Context) {
-	dist := c.Param("dist")
-
+func (a *AptAdapter) ReleaseFile(c *gin.Context, dist string) *types.ContentResult {
 	release := fmt.Sprintf(
 		`Origin: Moonlight Registry
 Label: Moonlight
@@ -125,13 +123,15 @@ Description: Moonlight Registry APT Repository
 	release += "SHA1:\n"
 	release += "SHA256:\n"
 
-	c.Header("Content-Type", "text/plain; charset=utf-8")
-	c.String(200, release)
+	return &types.ContentResult{
+		ContentType: "text/plain; charset=utf-8",
+		StatusCode:  200,
+		Content:     io.NopCloser(bytes.NewReader([]byte(release))),
+		Size:        int64(len(release)),
+	}
 }
 
-func (a *AptAdapter) InReleaseFile(c *gin.Context) {
-	dist := c.Param("dist")
-
+func (a *AptAdapter) InReleaseFile(c *gin.Context, dist string) *types.ContentResult {
 	release := fmt.Sprintf(
 		`-----BEGIN PGP SIGNED MESSAGE-----
 Hash: SHA256
@@ -151,28 +151,34 @@ Description: Moonlight Registry APT Repository
 		dist, dist, time.Now().UTC().Format(time.RFC1123),
 	)
 
-	c.Header("Content-Type", "text/plain; charset=utf-8")
-	c.String(200, release)
+	return &types.ContentResult{
+		ContentType: "text/plain; charset=utf-8",
+		StatusCode:  200,
+		Content:     io.NopCloser(bytes.NewReader([]byte(release))),
+		Size:        int64(len(release)),
+	}
 }
 
-func (a *AptAdapter) ReleaseGPG(c *gin.Context) {
-	response.NotFound(c, "GPG signature not available")
+func (a *AptAdapter) ReleaseGPG(c *gin.Context) *types.ContentResult {
+	return &types.ContentResult{
+		StatusCode: 404,
+		ExtraData:  map[string]interface{}{"message": "GPG signature not available"},
+	}
 }
 
-func (a *AptAdapter) PackagesFile(c *gin.Context) {
-	_ = c.Param("dist")
-	_ = c.Param("component")
-
+func (a *AptAdapter) PackagesFile(c *gin.Context) *types.ContentResult {
 	packages, _, err := a.GetPackageRepository().List(1, 10000, string(model.PackageTypeApt), "")
 	if err != nil {
-		response.InternalError(c, err.Error())
-		return
+		return &types.ContentResult{
+			StatusCode: 500,
+			ExtraData:  map[string]interface{}{"message": err.Error()},
+		}
 	}
 
 	var output strings.Builder
 	for _, pkg := range packages {
 		for _, ver := range pkg.Versions {
-			filename := filepath.Base(ver.StoragePath)
+			filename := filepath.Base(ver.Version)
 			entry := AptPackageEntry{
 				Package:       pkg.Name,
 				Version:       ver.Version,
@@ -192,28 +198,34 @@ func (a *AptAdapter) PackagesFile(c *gin.Context) {
 	}
 
 	if output.Len() == 0 {
-		response.NotFound(c, "packages not found")
-		return
+		return &types.ContentResult{
+			StatusCode: 404,
+			ExtraData:  map[string]interface{}{"message": "packages not found"},
+		}
 	}
 
-	c.Header("Content-Type", "text/plain; charset=utf-8")
-	c.String(200, output.String())
+	content := output.String()
+	return &types.ContentResult{
+		ContentType: "text/plain; charset=utf-8",
+		StatusCode:  200,
+		Content:     io.NopCloser(bytes.NewReader([]byte(content))),
+		Size:        int64(len(content)),
+	}
 }
 
-func (a *AptAdapter) PackagesFileGz(c *gin.Context) {
-	_ = c.Param("dist")
-	_ = c.Param("component")
-
+func (a *AptAdapter) PackagesFileGz(c *gin.Context) *types.ContentResult {
 	packages, _, err := a.GetPackageRepository().List(1, 10000, string(model.PackageTypeApt), "")
 	if err != nil {
-		response.InternalError(c, err.Error())
-		return
+		return &types.ContentResult{
+			StatusCode: 500,
+			ExtraData:  map[string]interface{}{"message": err.Error()},
+		}
 	}
 
 	var output strings.Builder
 	for _, pkg := range packages {
 		for _, ver := range pkg.Versions {
-			filename := filepath.Base(ver.StoragePath)
+			filename := filepath.Base(ver.Version)
 			entry := AptPackageEntry{
 				Package:       pkg.Name,
 				Version:       ver.Version,
@@ -230,13 +242,21 @@ func (a *AptAdapter) PackagesFileGz(c *gin.Context) {
 		}
 	}
 
-	c.Header("Content-Type", "application/gzip")
-	c.Header("Content-Disposition", `attachment; filename="Packages.gz"`)
-	c.String(200, output.String())
+	content := output.String()
+	headers := map[string]string{
+		"Content-Disposition": `attachment; filename="Packages.gz"`,
+	}
+
+	return &types.ContentResult{
+		ContentType: "application/gzip",
+		StatusCode:  200,
+		Content:     io.NopCloser(bytes.NewReader([]byte(content))),
+		Size:        int64(len(content)),
+		Headers:     headers,
+	}
 }
 
-func (a *AptAdapter) DownloadDeb(c *gin.Context) {
-	filePath := c.Param("path")
+func (a *AptAdapter) DownloadDeb(c *gin.Context, filePath string) *types.ContentResult {
 	filePath = strings.TrimPrefix(filePath, "/")
 
 	storageKey := filePath
@@ -248,26 +268,24 @@ func (a *AptAdapter) DownloadDeb(c *gin.Context) {
 
 		size, err := backend.Size(c.Request.Context(), storageKey)
 		if err != nil {
-			response.NotFound(c, "DEB not found")
-			return
+			return &types.ContentResult{
+				StatusCode: 404,
+				ExtraData:  map[string]interface{}{"message": "DEB not found"},
+			}
 		}
 
 		filename := filepath.Base(filePath)
-
-		var repo *model.Repository
-		if r, ok := c.Get("repo"); ok {
-			repo = r.(*model.Repository)
+		headers := map[string]string{
+			"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)),
 		}
 
-		decision := a.CheckDownloadPermission(c, repo, model.PackageTypeApt, filename, "", filename)
-		if !decision.Allow {
-			c.JSON(decision.Code, gin.H{"error": decision.Message})
-			return
+		return &types.ContentResult{
+			Content:     content,
+			Size:        size,
+			ContentType: "application/vnd.debian.binary-package",
+			StatusCode:  200,
+			Headers:     headers,
 		}
-
-		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)))
-		c.DataFromReader(200, size, "application/vnd.debian.binary-package", content, nil)
-		return
 	}
 
 	var repo *model.Repository
@@ -287,20 +305,25 @@ func (a *AptAdapter) DownloadDeb(c *gin.Context) {
 				defer result.Content.Close()
 				filename := filepath.Base(filePath)
 				slog.Info("APT proxy: successfully fetched from remote", "filePath", filePath, "size", result.Size)
-				decision := a.CheckDownloadPermission(c, repo, model.PackageTypeApt, filename, "", filename)
-				if !decision.Allow {
-					c.JSON(decision.Code, gin.H{"error": decision.Message})
-					return
+				headers := map[string]string{
+					"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)),
 				}
-				c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)))
-				c.DataFromReader(200, result.Size, "application/vnd.debian.binary-package", result.Content, nil)
-				return
+				return &types.ContentResult{
+					Content:     result.Content,
+					Size:        result.Size,
+					ContentType: "application/vnd.debian.binary-package",
+					StatusCode:  200,
+					Headers:     headers,
+				}
 			}
 			slog.Warn("APT proxy: failed to fetch from remote", "filePath", filePath, "error", fetchErr)
 		}
 	}
 
-	response.NotFound(c, "DEB not found")
+	return &types.ContentResult{
+		StatusCode: 404,
+		ExtraData:  map[string]interface{}{"message": "DEB not found"},
+	}
 }
 
 func (a *AptAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
@@ -359,12 +382,7 @@ func parseDebPackageVersion(filename string) string {
 	return "1.0.0"
 }
 
-func (a *AptAdapter) FormatDownloadResponse(c *gin.Context, result *types.DownloadResult) {
-	contentType := a.storageSvc.GetContentType(result.Filename)
-	c.DataFromReader(200, result.Size, contentType, result.Content, nil)
-}
-
-func (a *AptAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
+func (a *AptAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
 		return nil, fmt.Errorf("missing file: %v", err)
@@ -416,68 +434,333 @@ func (a *AptAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) erro
 		return err
 	}
 
-	pkg, _ := a.GetPackageRepository().FindByNameAndType(identity.Name, model.PackageTypeApt)
-	var pkgID *uint
-	if pkg != nil {
-		pkgID = &pkg.ID
-	}
-	a.LogDeleteAudit(c, ctx.Repo.Name, identity.Name, identity.Version, pkgID)
-
 	return nil
 }
 
-func (a *AptAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
-	c.Set("repo", ctx.Repo)
-
-	if strings.HasPrefix(ctx.Path, "pool/") {
-		a.DownloadDeb(c)
-		return
+// ParseIntent 解析请求路径为意图
+func (a *AptAdapter) ParseIntent(path string, method string) *types.RequestIntent {
+	path = strings.TrimPrefix(path, "/")
+	intent := &types.RequestIntent{
+		Path:  path,
+		Extra: make(map[string]interface{}),
 	}
 
-	if strings.HasPrefix(ctx.Path, "dists/") {
-		parts := strings.Split(strings.Trim(ctx.Path, "/"), "/")
+	if strings.HasPrefix(path, "pool/") {
+		filePath := strings.TrimPrefix(path, "pool/")
+		filename := filepath.Base(filePath)
+		version := parseDebPackageVersion(filename)
+		name := parseDebPackageName(filename)
+
+		intent.Type = types.RequestDownload
+		intent.Filename = filename
+		intent.Name = name
+		intent.Version = version
+		return intent
+	}
+
+	if strings.HasPrefix(path, "dists/") {
+		parts := strings.Split(strings.Trim(path, "/"), "/")
 		if len(parts) >= 3 {
 			dist := parts[1]
-			if parts[2] == "Release" {
-				c.Params = append(c.Params, gin.Param{Key: "dist", Value: dist})
-				a.ReleaseFile(c)
-				return
-			}
-			if parts[2] == "InRelease" {
-				c.Params = append(c.Params, gin.Param{Key: "dist", Value: dist})
-				a.InReleaseFile(c)
-				return
-			}
-			if parts[2] == "Release.gpg" {
-				c.Params = append(c.Params, gin.Param{Key: "dist", Value: dist})
-				a.ReleaseGPG(c)
-				return
+			switch parts[2] {
+			case "Release":
+				intent.Type = types.RequestMetadata
+				intent.Extra["dist"] = dist
+				intent.Extra["file"] = "Release"
+				return intent
+			case "InRelease":
+				intent.Type = types.RequestMetadata
+				intent.Extra["dist"] = dist
+				intent.Extra["file"] = "InRelease"
+				return intent
+			case "Release.gpg":
+				intent.Type = types.RequestMetadata
+				intent.Extra["file"] = "Release.gpg"
+				return intent
 			}
 		}
 
 		if len(parts) >= 6 {
-			dist := parts[1]
-			component := parts[2]
 			fileName := parts[4]
+			if fileName == "Packages" || fileName == "Packages.gz" {
+				intent.Type = types.RequestList
+				intent.Filename = fileName
+				return intent
+			}
+		}
 
+		// Other dists paths
+		intent.Type = types.RequestMetadata
+		return intent
+	}
+
+	// Fallback
+	pathInfo, _ := a.ParsePath(path)
+	intent.Type = types.RequestDownload
+	if pathInfo != nil {
+		intent.Name = pathInfo.Name
+		intent.Filename = pathInfo.Filename
+		intent.PkgPathInfo = pathInfo
+	}
+
+	return intent
+}
+
+// FetchContent 根据意图获取内容
+func (a *AptAdapter) HandleGet(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
+	if strings.HasPrefix(intent.Path, "pool/") {
+		return a.downloadDeb(ctx, intent.Path, repo)
+	}
+
+	if strings.HasPrefix(intent.Path, "dists/") {
+		parts := strings.Split(strings.Trim(intent.Path, "/"), "/")
+		if len(parts) >= 3 {
+			dist := parts[1]
+			switch parts[2] {
+			case "Release":
+				return a.releaseFile(dist)
+			case "InRelease":
+				return a.inReleaseFile(dist)
+			case "Release.gpg":
+				return a.releaseGPG()
+			}
+		}
+
+		if len(parts) >= 6 {
+			fileName := parts[4]
 			if fileName == "Packages" {
-				c.Params = append(c.Params,
-					gin.Param{Key: "dist", Value: dist},
-					gin.Param{Key: "component", Value: component},
-				)
-				a.PackagesFile(c)
-				return
+				return a.packagesFile()
 			}
 			if fileName == "Packages.gz" {
-				c.Params = append(c.Params,
-					gin.Param{Key: "dist", Value: dist},
-					gin.Param{Key: "component", Value: component},
-				)
-				a.PackagesFileGz(c)
-				return
+				return a.packagesFileGz()
 			}
 		}
 	}
 
-	response.NotFound(c, "APT resource not found")
+	return &types.ContentResult{
+		StatusCode: 404,
+		ExtraData:  map[string]interface{}{"message": "APT resource not found"},
+	}, nil
+}
+
+// releaseFile 生成 Release 文件内容（不依赖 gin.Context）
+func (a *AptAdapter) releaseFile(dist string) (*types.ContentResult, error) {
+	release := fmt.Sprintf(
+		`Origin: Moonlight Registry
+Label: Moonlight
+Suite: %s
+Codename: %s
+Architectures: amd64 arm64 i386
+Components: main
+Date: %s
+Description: Moonlight Registry APT Repository
+`,
+		dist, dist, time.Now().UTC().Format(time.RFC1123),
+	)
+
+	release += "\nMD5Sum:\n"
+	release += "SHA1:\n"
+	release += "SHA256:\n"
+
+	return &types.ContentResult{
+		ContentType: "text/plain; charset=utf-8",
+		StatusCode:  200,
+		Content:     io.NopCloser(bytes.NewReader([]byte(release))),
+		Size:        int64(len(release)),
+	}, nil
+}
+
+// inReleaseFile 生成 InRelease 文件内容（不依赖 gin.Context）
+func (a *AptAdapter) inReleaseFile(dist string) (*types.ContentResult, error) {
+	release := fmt.Sprintf(
+		`-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Origin: Moonlight Registry
+Label: Moonlight
+Suite: %s
+Codename: %s
+Architectures: amd64 arm64 i386
+Components: main
+Date: %s
+Description: Moonlight Registry APT Repository
+-----BEGIN PGP SIGNATURE-----
+(placeholder - not signed)
+-----END PGP SIGNATURE-----
+`,
+		dist, dist, time.Now().UTC().Format(time.RFC1123),
+	)
+
+	return &types.ContentResult{
+		ContentType: "text/plain; charset=utf-8",
+		StatusCode:  200,
+		Content:     io.NopCloser(bytes.NewReader([]byte(release))),
+		Size:        int64(len(release)),
+	}, nil
+}
+
+// releaseGPG 返回 GPG 签名不可用的响应（不依赖 gin.Context）
+func (a *AptAdapter) releaseGPG() (*types.ContentResult, error) {
+	return &types.ContentResult{
+		StatusCode: 404,
+		ExtraData:  map[string]interface{}{"message": "GPG signature not available"},
+	}, nil
+}
+
+// packagesFile 生成 Packages 文件内容（不依赖 gin.Context）
+func (a *AptAdapter) packagesFile() (*types.ContentResult, error) {
+	packages, _, err := a.GetPackageRepository().List(1, 10000, string(model.PackageTypeApt), "")
+	if err != nil {
+		return &types.ContentResult{
+			StatusCode: 500,
+			ExtraData:  map[string]interface{}{"message": err.Error()},
+		}, nil
+	}
+
+	var output strings.Builder
+	for _, pkg := range packages {
+		for _, ver := range pkg.Versions {
+			filename := filepath.Base(ver.Version)
+			entry := AptPackageEntry{
+				Package:       pkg.Name,
+				Version:       ver.Version,
+				Architecture:  "amd64",
+				Maintainer:    "Moonlight Registry",
+				Description:   pkg.Description,
+				Section:       "misc",
+				Priority:      "optional",
+				InstalledSize: fmt.Sprintf("%d", ver.SizeBytes/1024),
+				Filename:      fmt.Sprintf("pool/%s", filename),
+				Size:          ver.SizeBytes,
+				MD5Sum:        ver.ChecksumMD5,
+				SHA256:        ver.ChecksumSHA256,
+			}
+			output.WriteString(formatPackageEntry(entry))
+		}
+	}
+
+	if output.Len() == 0 {
+		return &types.ContentResult{
+			StatusCode: 404,
+			ExtraData:  map[string]interface{}{"message": "packages not found"},
+		}, nil
+	}
+
+	content := output.String()
+	return &types.ContentResult{
+		ContentType: "text/plain; charset=utf-8",
+		StatusCode:  200,
+		Content:     io.NopCloser(bytes.NewReader([]byte(content))),
+		Size:        int64(len(content)),
+	}, nil
+}
+
+// packagesFileGz 生成 Packages.gz 文件内容（不依赖 gin.Context）
+func (a *AptAdapter) packagesFileGz() (*types.ContentResult, error) {
+	packages, _, err := a.GetPackageRepository().List(1, 10000, string(model.PackageTypeApt), "")
+	if err != nil {
+		return &types.ContentResult{
+			StatusCode: 500,
+			ExtraData:  map[string]interface{}{"message": err.Error()},
+		}, nil
+	}
+
+	var output strings.Builder
+	for _, pkg := range packages {
+		for _, ver := range pkg.Versions {
+			filename := filepath.Base(ver.Version)
+			entry := AptPackageEntry{
+				Package:       pkg.Name,
+				Version:       ver.Version,
+				Architecture:  "amd64",
+				Maintainer:    "Moonlight Registry",
+				Description:   pkg.Description,
+				Section:       "misc",
+				Priority:      "optional",
+				InstalledSize: fmt.Sprintf("%d", ver.SizeBytes/1024),
+				Filename:      fmt.Sprintf("pool/%s", filename),
+				Size:          ver.SizeBytes,
+			}
+			output.WriteString(formatPackageEntry(entry))
+		}
+	}
+
+	content := output.String()
+	headers := map[string]string{
+		"Content-Disposition": `attachment; filename="Packages.gz"`,
+	}
+
+	return &types.ContentResult{
+		ContentType: "application/gzip",
+		StatusCode:  200,
+		Content:     io.NopCloser(bytes.NewReader([]byte(content))),
+		Size:        int64(len(content)),
+		Headers:     headers,
+	}, nil
+}
+
+// downloadDeb 下载 deb 文件（不依赖 gin.Context）
+func (a *AptAdapter) downloadDeb(ctx context.Context, filePath string, repo *model.Repository) (*types.ContentResult, error) {
+	filePath = strings.TrimPrefix(filePath, "/")
+
+	storageKey := filePath
+
+	backend := a.storageSvc.GetDefaultBackend()
+	content, err := backend.Get(ctx, storageKey)
+	if err == nil {
+		defer content.Close()
+
+		size, err := backend.Size(ctx, storageKey)
+		if err != nil {
+			return &types.ContentResult{
+				StatusCode: 404,
+				ExtraData:  map[string]interface{}{"message": "DEB not found"},
+			}, nil
+		}
+
+		filename := filepath.Base(filePath)
+		headers := map[string]string{
+			"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)),
+		}
+
+		return &types.ContentResult{
+			Content:     content,
+			Size:        size,
+			ContentType: "application/vnd.debian.binary-package",
+			StatusCode:  200,
+			Headers:     headers,
+		}, nil
+	}
+
+	if a.fetcher != nil && repo != nil && repo.Type == "proxy" {
+		slog.Info("APT proxy: fetching from remote", "filePath", filePath)
+		pathInfo, pathErr := a.ParsePath(filePath)
+		if pathErr != nil {
+			slog.Warn("APT proxy: failed to resolve path", "filePath", filePath, "error", pathErr)
+		} else {
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+			result, fetchErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
+			if fetchErr == nil && result != nil {
+				defer result.Content.Close()
+				filename := filepath.Base(filePath)
+				slog.Info("APT proxy: successfully fetched from remote", "filePath", filePath, "size", result.Size)
+				headers := map[string]string{
+					"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)),
+				}
+				return &types.ContentResult{
+					Content:     result.Content,
+					Size:        result.Size,
+					ContentType: "application/vnd.debian.binary-package",
+					StatusCode:  200,
+					Headers:     headers,
+				}, nil
+			}
+			slog.Warn("APT proxy: failed to fetch from remote", "filePath", filePath, "error", fetchErr)
+		}
+	}
+
+	return &types.ContentResult{
+		StatusCode: 404,
+		ExtraData:  map[string]interface{}{"message": "DEB not found"},
+	}, nil
 }

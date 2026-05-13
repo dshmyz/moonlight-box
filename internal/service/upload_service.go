@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"path/filepath"
 
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
@@ -38,6 +37,8 @@ type UploadContext struct {
 	UploadedBy     uint
 	Metadata       map[string]interface{}
 	FileType       model.PackageFileType
+	DownloadURL    string
+	RepoName       string
 }
 
 type UploadResult struct {
@@ -58,7 +59,7 @@ func (s *UploadService) Upload(ctx context.Context, uc *UploadContext) (*UploadR
 		storageVersion = uc.Version
 	}
 
-	storageKey, err := s.storageSvc.StorePackage(ctx, uc.PkgType, uc.Name, storageVersion, checksumReader, uc.Size)
+	storageKey, err := s.storageSvc.StorePackageWithBackend(ctx, uc.RepoName, uc.PkgType, uc.Name, storageVersion, checksumReader, uc.Size, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to store package: %w", err)
 	}
@@ -78,7 +79,6 @@ func (s *UploadService) Upload(ctx context.Context, uc *UploadContext) (*UploadR
 	}, &model.PackageVersion{
 		Version:     uc.Version,
 		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
 		PublishedBy: uc.UploadedBy,
 		Metadata:    marshalMetadata(uc.Metadata),
 	}, &model.PackageFile{
@@ -88,10 +88,11 @@ func (s *UploadService) Upload(ctx context.Context, uc *UploadContext) (*UploadR
 		SizeBytes:      checksumReader.GetWrittenBytes(),
 		ChecksumSHA256: checksum.SHA256,
 		ChecksumMD5:    checksum.MD5,
+		DownloadURL:    uc.DownloadURL,
 	})
 
 	if err != nil {
-		s.storageSvc.DeletePackage(ctx, uc.PkgType, uc.Name, storageVersion)
+		s.storageSvc.DeletePackageWithBackend(ctx, uc.RepoName, uc.PkgType, uc.Name, storageVersion, 0)
 		return nil, fmt.Errorf("failed to store package metadata: %w", err)
 	}
 

@@ -58,12 +58,10 @@ func setupPyPIAdapter(t *testing.T) (*PyPIAdapter, *gorm.DB) {
 
 	storageSvc.RefreshBackends()
 
-	auditSvc := service.NewAuditService()
-
 	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
 	repoRepo := repository.NewRepositoryRepository(db)
 
-	adapter := NewPyPIAdapter(repoRepo, storageSvc, auditSvc, pkgCache)
+	adapter := NewPyPIAdapter(repoRepo, storageSvc, pkgCache)
 	return adapter, db
 }
 
@@ -281,13 +279,20 @@ func TestPyPIAdapter_ListPackages(t *testing.T) {
 		db.Create(&p)
 	}
 
+	repo := &model.Repository{
+		Name:        "pypi",
+		PackageType: string(model.PackageTypePyPI),
+	}
+
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/pypi/simple/", nil)
 
-	adapter.ListPackages(c)
-
-	assert.Equal(t, 200, w.Code)
+	intent := adapter.ParseIntent("simple/", c.Request.Method)
+	result, err := adapter.HandleGet(c.Request.Context(), repo, intent)
+	assert.Nil(t, err)
+	assert.NotNil(t, result)
+	assert.Equal(t, 200, result.StatusCode)
 }
 
 func TestPyPIAdapter_PackageFiles(t *testing.T) {
@@ -317,31 +322,42 @@ func TestPyPIAdapter_PackageFiles(t *testing.T) {
 	}
 	db.Create(file)
 
+	repo := &model.Repository{
+		Name:        "pypi",
+		PackageType: string(model.PackageTypePyPI),
+	}
+
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/pypi/simple/flask/", nil)
-	c.Params = gin.Params{
-		{Key: "package", Value: "flask"},
-	}
 
-	adapter.PackageFiles(c)
-
-	assert.Equal(t, 200, w.Code)
+	intent := adapter.ParseIntent("simple/flask/", c.Request.Method)
+	result, err := adapter.HandleGet(c.Request.Context(), repo, intent)
+	assert.Nil(t, err)
+	assert.NotNil(t, result)
+	assert.Equal(t, 200, result.StatusCode)
 }
 
 func TestPyPIAdapter_DownloadPackage(t *testing.T) {
 	adapter, _ := setupPyPIAdapter(t)
 
+	repo := &model.Repository{
+		Name:        "pypi",
+		PackageType: string(model.PackageTypePyPI),
+	}
+
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/pypi/packages/test-package-1.0.0.whl", nil)
-	c.Params = gin.Params{
-		{Key: "filename", Value: "test-package-1.0.0.whl"},
+
+	intent := adapter.ParseIntent("packages/test-package-1.0.0.whl", c.Request.Method)
+	result, err := adapter.HandleGet(c.Request.Context(), repo, intent)
+	if err != nil {
+		assert.Nil(t, result)
+	} else {
+		assert.NotNil(t, result)
+		assert.True(t, result.StatusCode == 200 || result.StatusCode == 404)
 	}
-
-	adapter.DownloadPackage(c)
-
-	assert.True(t, w.Code == 200 || w.Code == 404)
 }
 
 func TestPyPIAdapter_JSONAPI(t *testing.T) {
@@ -362,15 +378,18 @@ func TestPyPIAdapter_JSONAPI(t *testing.T) {
 	}
 	db.Create(version)
 
+	repo := &model.Repository{
+		Name:        "pypi",
+		PackageType: string(model.PackageTypePyPI),
+	}
+
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/pypi/jsonapi-test/1.0.0/json", nil)
-	c.Params = gin.Params{
-		{Key: "package", Value: "jsonapi-test"},
-		{Key: "version", Value: "1.0.0"},
-	}
 
-	adapter.JSONAPI(c)
-
-	assert.Equal(t, 200, w.Code)
+	intent := adapter.ParseIntent("jsonapi-test/1.0.0/json", c.Request.Method)
+	result, err := adapter.HandleGet(c.Request.Context(), repo, intent)
+	assert.Nil(t, err)
+	assert.NotNil(t, result)
+	assert.Equal(t, 200, result.StatusCode)
 }

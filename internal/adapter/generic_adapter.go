@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"html/template"
@@ -36,11 +37,10 @@ type FileEntry struct {
 
 func NewGenericAdapter(
 	storageSvc *service.StorageService,
-	auditSvc *service.AuditService,
 	pkgCache *cache.PackageCache,
 ) *GenericAdapter {
 	adapter := &GenericAdapter{
-		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
+		BaseAdapter: NewBaseAdapter(storageSvc, pkgCache),
 	}
 	return adapter
 }
@@ -73,94 +73,18 @@ func (a *GenericAdapter) ParsePath(path string) (*types.PackagePathInfo, error) 
 	}, nil
 }
 
-func (a *GenericAdapter) DownloadOrBrowse(c *gin.Context) {
-	filePath := c.Param("path")
-	filePath = strings.TrimPrefix(filePath, "/")
-
-	if filePath == "" {
-		a.listRoot(c)
-		return
-	}
-
-	storageKey := "generic/" + filePath
-
-	backend := a.storageSvc.GetDefaultBackend()
-	exists, err := backend.Exists(c.Request.Context(), storageKey)
-	if err == nil && exists {
-		size, err := backend.Size(c.Request.Context(), storageKey)
-		if err != nil {
-			content, entries := a.listDirectory(c, backend, storageKey, filePath)
-			if content != nil {
-				c.Header("Content-Type", "text/html; charset=utf-8")
-				_ = browseHTML.Execute(c.Writer, gin.H{
-					"path":    filePath,
-					"entries": entries,
-				})
-				return
-			}
-			response.NotFound(c, "path not found")
-			return
-		}
-
-		filename := filepath.Base(filePath)
-
-		var repo *model.Repository
-		if r, ok := c.Get("repo"); ok {
-			repo = r.(*model.Repository)
-		}
-
-		decision := a.CheckDownloadPermission(c, repo, model.PackageTypeGeneric, filePath, "", filename)
-		if !decision.Allow {
-			c.JSON(decision.Code, gin.H{"error": decision.Message})
-			return
-		}
-
-		content, err := backend.Get(c.Request.Context(), storageKey)
-		if err != nil {
-			response.NotFound(c, "file not found")
-			return
-		}
-		defer content.Close()
-
-		contentType := a.storageSvc.GetContentType(filename)
-
-		c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, url.PathEscape(filename)))
-		c.DataFromReader(200, size, contentType, content, nil)
-		return
-	}
-
-	if a.fetcher != nil {
-		var repo *model.Repository
-		if r, ok := c.Get("repo"); ok {
-			repo = r.(*model.Repository)
-		}
-
-		if repo != nil && repo.Type == "proxy" {
-			filename := filepath.Base(filePath)
-			decision := a.CheckDownloadPermission(c, repo, model.PackageTypeGeneric, filePath, "", filename)
-			if !decision.Allow {
-				c.JSON(decision.Code, gin.H{"error": decision.Message})
-				return
-			}
-
-			pathInfo, pathErr := a.ParsePath(filePath)
-			if pathErr != nil {
-				slog.Warn("failed to resolve generic package path", "path", filePath, "error", pathErr)
-			} else {
-				remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-				result, err := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
-				if err == nil && result != nil {
-					defer result.Content.Close()
-					contentType := a.storageSvc.GetContentType(filename)
-					c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, url.PathEscape(filename)))
-					c.DataFromReader(200, result.Size, contentType, result.Content, nil)
-					return
-				}
-			}
+func (a *GenericAdapter) DownloadOrBrowse(c *gin.Context, filePath string) *types.ContentResult {
+	result, err := a.HandleGet(c.Request.Context(), nil, &types.RequestIntent{
+		Path:  strings.TrimPrefix(filePath, "/"),
+		Extra: make(map[string]interface{}),
+	})
+	if err != nil {
+		return &types.ContentResult{
+			StatusCode: 404,
+			ExtraData:  map[string]interface{}{"message": "file not found"},
 		}
 	}
-
-	response.NotFound(c, "file not found")
+	return result
 }
 
 func (a *GenericAdapter) UploadFile(c *gin.Context) {
@@ -212,7 +136,6 @@ func (a *GenericAdapter) UploadFile(c *gin.Context) {
 	}, &model.PackageVersion{
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: storageKey,
 		SizeBytes:   header.Size,
 		PublishedBy: userID,
 	})
@@ -294,7 +217,6 @@ func (a *GenericAdapter) Upload(ctx context.Context, req *UploadRequest) (*Packa
 	}, &model.PackageVersion{
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
 		PublishedBy: req.UploadedBy,
 		Metadata:    marshalMetadata(req.Metadata),
 	}, &model.PackageFile{
@@ -329,23 +251,164 @@ func (a *GenericAdapter) ListVersions(ctx context.Context, name string) ([]strin
 	return a.GetPackageRepository().ListVersions(name, model.PackageTypeGeneric)
 }
 
-func (a *GenericAdapter) listRoot(c *gin.Context) {
+// ParseIntent 解析请求路径为意图
+func (a *GenericAdapter) ParseIntent(path string, method string) *types.RequestIntent {
+	path = strings.TrimPrefix(path, "/")
+	intent := &types.RequestIntent{
+		Path:  path,
+		Extra: make(map[string]interface{}),
+	}
+
+	if path == "" {
+		intent.Type = types.RequestList
+		return intent
+	}
+
+	// For generic, all paths are downloads or directory listings
+	pathInfo, _ := a.ParsePath(path)
+	intent.Type = types.RequestDownload
+	if pathInfo != nil {
+		intent.Name = pathInfo.Name
+		intent.Filename = pathInfo.Filename
+		intent.PkgPathInfo = pathInfo
+	}
+
+	return intent
+}
+
+// FetchContent 根据意图获取内容
+func (a *GenericAdapter) HandleGet(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
+	filePath := intent.Path
+
+	if filePath == "" {
+		return a.listRoot(ctx)
+	}
+
+	storageKey := "generic/" + filePath
+
 	backend := a.storageSvc.GetDefaultBackend()
-	_, entries := a.listDirectory(c, backend, "generic/", "")
+	exists, err := backend.Exists(ctx, storageKey)
+	if err == nil && exists {
+		size, err := backend.Size(ctx, storageKey)
+		if err != nil {
+			content, entries := a.listDirectory(ctx, backend, storageKey, filePath)
+			if content != nil {
+				var buf bytes.Buffer
+				err := browseHTML.Execute(&buf, gin.H{
+					"path":    filePath,
+					"entries": entries,
+				})
+				if err != nil {
+					return &types.ContentResult{
+						StatusCode: 500,
+						ExtraData:  map[string]interface{}{"message": "failed to render directory listing"},
+					}, nil
+				}
+				htmlContent := buf.String()
+				return &types.ContentResult{
+					ContentType: "text/html; charset=utf-8",
+					StatusCode:  200,
+					Content:     io.NopCloser(bytes.NewReader([]byte(htmlContent))),
+					Size:        int64(len(htmlContent)),
+				}, nil
+			}
+			return &types.ContentResult{
+				StatusCode: 404,
+				ExtraData:  map[string]interface{}{"message": "path not found"},
+			}, nil
+		}
+
+		filename := filepath.Base(filePath)
+
+		content, err := backend.Get(ctx, storageKey)
+		if err != nil {
+			return &types.ContentResult{
+				StatusCode: 404,
+				ExtraData:  map[string]interface{}{"message": "file not found"},
+			}, nil
+		}
+
+		contentType := a.storageSvc.GetContentType(filename)
+		headers := map[string]string{
+			"Content-Disposition": fmt.Sprintf(`inline; filename="%s"`, url.PathEscape(filename)),
+		}
+
+		return &types.ContentResult{
+			Content:     content,
+			Size:        size,
+			ContentType: contentType,
+			StatusCode:  200,
+			Headers:     headers,
+		}, nil
+	}
+
+	if a.fetcher != nil && repo != nil && repo.Type == "proxy" {
+		filename := filepath.Base(filePath)
+
+		pathInfo, pathErr := a.ParsePath(filePath)
+		if pathErr != nil {
+			slog.Warn("failed to resolve generic package path", "path", filePath, "error", pathErr)
+		} else {
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+			result, err := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
+			if err == nil && result != nil {
+				defer result.Content.Close()
+				contentType := a.storageSvc.GetContentType(filename)
+				headers := map[string]string{
+					"Content-Disposition": fmt.Sprintf(`inline; filename="%s"`, url.PathEscape(filename)),
+				}
+				return &types.ContentResult{
+					Content:     result.Content,
+					Size:        result.Size,
+					ContentType: contentType,
+					StatusCode:  200,
+					Headers:     headers,
+				}, nil
+			}
+		}
+	}
+
+	return &types.ContentResult{
+		StatusCode: 404,
+		ExtraData:  map[string]interface{}{"message": "file not found"},
+	}, nil
+}
+
+// listRoot 列出根目录（不依赖 gin.Context）
+func (a *GenericAdapter) listRoot(ctx context.Context) (*types.ContentResult, error) {
+	backend := a.storageSvc.GetDefaultBackend()
+	_, entries := a.listDirectory(ctx, backend, "generic/", "")
 	if entries != nil {
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		_ = browseHTML.Execute(c.Writer, gin.H{
+		var buf bytes.Buffer
+		err := browseHTML.Execute(&buf, gin.H{
 			"path":    "/",
 			"entries": entries,
 		})
-		return
+		if err != nil {
+			return &types.ContentResult{
+				StatusCode: 500,
+				ExtraData:  map[string]interface{}{"message": "failed to render directory listing"},
+			}, nil
+		}
+		htmlContent := buf.String()
+		return &types.ContentResult{
+			ContentType: "text/html; charset=utf-8",
+			StatusCode:  200,
+			Content:     io.NopCloser(bytes.NewReader([]byte(htmlContent))),
+			Size:        int64(len(htmlContent)),
+		}, nil
 	}
 
-	c.JSON(200, gin.H{"message": "Generic file storage"})
+	message := "Generic file storage"
+	return &types.ContentResult{
+		StatusCode: 200,
+		ExtraData:  map[string]interface{}{"message": message},
+	}, nil
 }
 
-func (a *GenericAdapter) listDirectory(c *gin.Context, backend storage.Backend, storagePrefix string, displayPath string) (io.ReadCloser, []FileEntry) {
-	entries, err := backend.List(c.Request.Context(), storagePrefix)
+// listDirectory 列出目录（不依赖 gin.Context）
+func (a *GenericAdapter) listDirectory(ctx context.Context, backend storage.Backend, storagePrefix string, displayPath string) (io.ReadCloser, []FileEntry) {
+	entries, err := backend.List(ctx, storagePrefix)
 	if err != nil {
 		return nil, nil
 	}
@@ -394,18 +457,7 @@ func (a *GenericAdapter) listDirectory(c *gin.Context, backend storage.Backend, 
 	return nil, fileEntries
 }
 
-func (a *GenericAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
-	c.Set("repo", ctx.Repo)
-	a.DownloadOrBrowse(c)
-}
-
-func (a *GenericAdapter) FormatDownloadResponse(c *gin.Context, result *types.DownloadResult) {
-	contentType := a.storageSvc.GetContentType(result.Filename)
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, result.Filename))
-	c.DataFromReader(200, result.Size, contentType, result.Content, nil)
-}
-
-func (a *GenericAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
+func (a *GenericAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	userID := ctx.UserID
 
 	file, header, err := c.Request.FormFile("file")
@@ -437,7 +489,6 @@ func (a *GenericAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext
 	}, &model.PackageVersion{
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: storageKey,
 		SizeBytes:   header.Size,
 		PublishedBy: userID,
 	})
@@ -485,13 +536,6 @@ func (a *GenericAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) 
 	if err := a.Delete(c.Request.Context(), identity); err != nil {
 		return err
 	}
-
-	pkg, _ := a.GetPackageRepository().FindByNameAndType(identity.Name, model.PackageTypeGeneric)
-	var pkgID *uint
-	if pkg != nil {
-		pkgID = &pkg.ID
-	}
-	a.LogDeleteAudit(c, ctx.Repo.Name, identity.Name, identity.Version, pkgID)
 
 	return nil
 }

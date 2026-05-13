@@ -1,9 +1,11 @@
 package types
 
 import (
+	"context"
 	"io"
 
 	"github.com/gin-gonic/gin"
+	"github.com/moonlight-box/registry/internal/model"
 )
 
 type PackageType string
@@ -17,6 +19,29 @@ const (
 	AptType     PackageType = "apt"
 	GenericType PackageType = "generic"
 )
+
+// RequestType 定义请求意图类型
+type RequestType string
+
+const (
+	RequestDownload RequestType = "download"
+	RequestMetadata RequestType = "metadata"
+	RequestList     RequestType = "list"
+	RequestChecksum RequestType = "checksum"
+	RequestDelete   RequestType = "delete"
+	RequestUnknown  RequestType = "unknown"
+)
+
+// RequestIntent 表示 adapter 解析出的请求意图
+type RequestIntent struct {
+	Type        RequestType
+	Name        string
+	Version     string
+	Filename    string
+	Path        string
+	PkgPathInfo *PackagePathInfo
+	Extra       map[string]interface{}
+}
 
 type PackageIdentity struct {
 	Name    string
@@ -121,14 +146,30 @@ type GenericPublishResponse struct {
 	PackageId  uint   `json:"packageId,omitempty"`
 }
 
+type PublishResult struct {
+	PackageName    string
+	Version        string
+	Filename       string
+	Content        io.Reader
+	Size           int64
+	StorageVersion string
+	FileType       model.PackageFileType
+	Metadata       map[string]interface{}
+	DownloadURL    string
+	Response       interface{}
+}
+
 // Adapter defines the interface that all package adapters must implement
 type Adapter interface {
 	Type() PackageType
 	ParsePath(path string) (*PackagePathInfo, error)
-	FormatDownloadResponse(c *gin.Context, result *DownloadResult)
-	HandlePublish(c *gin.Context, ctx *PublishContext) (*PublishResult, error)
+	HandlePut(c *gin.Context, ctx *PublishContext) (*PublishResult, error)
 	HandleDelete(c *gin.Context, ctx *DeleteContext) error
-	HandleRepoRequest(c *gin.Context, ctx *RepoRequestContext)
+
+	// ParseIntent 解析请求路径为意图
+	ParseIntent(path string, method string) *RequestIntent
+	// HandleGet 处理 GET 请求（元数据/列表/校验和/包索引等）
+	HandleGet(ctx context.Context, repo *model.Repository, intent *RequestIntent) (*ContentResult, error)
 }
 
 // RouteResult 包解析结果

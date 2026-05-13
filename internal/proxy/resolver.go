@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 
 	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/model"
@@ -13,9 +12,13 @@ import (
 )
 
 // RepoRequestHandler 定义仓库请求处理接口
-// 由 adapter 包实现，避免 proxy 包直接依赖 adapter 包
 type RepoRequestHandler interface {
-	types.Adapter
+	ParseIntent(path string, method string) *types.RequestIntent
+	HandleGet(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error)
+	HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error)
+	HandleDelete(c *gin.Context, ctx *types.DeleteContext) error
+	ParsePath(path string) (*types.PackagePathInfo, error)
+	Type() types.PackageType
 }
 
 // ProxyFetcher 定义代理获取能力接口
@@ -82,72 +85,6 @@ func (r *RepoHandler) Resolve(ctx context.Context, downloadCtx *types.DownloadCo
 	}
 }
 
-// TryResolveDownload 尝试将路径解析为下载请求
-func (r *RepoHandler) TryResolveDownload(ctx context.Context, repo *model.Repository, pkgType, path string) (*RouteResult, error) {
-	adp, ok := r.adapters[pkgType]
-	if !ok {
-		return nil, fmt.Errorf("unsupported package type: %s", pkgType)
-	}
-
-	pkgIdentity, err := adp.ParsePath(path)
-	if err != nil {
-		return nil, err
-	}
-
-	downloadCtx := &types.DownloadContext{
-		Repo:         repo,
-		PkgType:      model.PackageType(pkgType),
-		Name:         pkgIdentity.Name,
-		Version:      pkgIdentity.Version,
-		Filename:     filepath.Base(path),
-		ResolvedPath: pkgIdentity,
-	}
-
-	result, err := r.Resolve(ctx, downloadCtx)
-	if err != nil {
-		return nil, err
-	}
-
-	result.Name = pkgIdentity.Name
-	result.Version = pkgIdentity.Version
-	result.Filename = filepath.Base(path)
-
-	return result, nil
-}
-
-// FormatDownloadResponse 格式化下载响应，内部调用对应 adapter
-func (r *RepoHandler) FormatDownloadResponse(c *gin.Context, pkgType string, result *RouteResult) error {
-	adp, ok := r.adapters[pkgType]
-	if !ok {
-		return fmt.Errorf("unsupported package type: %s", pkgType)
-	}
-	downloadResult := &types.DownloadResult{
-		Content:   result.Content,
-		Size:      result.Size,
-		FromCache: result.FromCache,
-		RepoID:    result.RepoID,
-		Filename:  result.Filename,
-		Name:      result.Name,
-		Version:   result.Version,
-	}
-	adp.FormatDownloadResponse(c, downloadResult)
-	return nil
-}
-
-// HandleRepoRequest 处理仓库请求，内部调用对应 adapter
-func (r *RepoHandler) HandleRepoRequest(c *gin.Context, repo *model.Repository, path string) error {
-	adp, ok := r.adapters[repo.PackageType]
-	if !ok {
-		return fmt.Errorf("unsupported package type: %s", repo.PackageType)
-	}
-	ctx := &types.RepoRequestContext{
-		Repo: repo,
-		Path: path,
-	}
-	adp.HandleRepoRequest(c, ctx)
-	return nil
-}
-
 func (r *RepoHandler) HandleRepoPublish(c *gin.Context, repo *model.Repository) (*types.PublishResult, error) {
 	adp, ok := r.adapters[repo.PackageType]
 	if !ok {
@@ -156,7 +93,7 @@ func (r *RepoHandler) HandleRepoPublish(c *gin.Context, repo *model.Repository) 
 	ctx := &types.PublishContext{
 		Repo: repo,
 	}
-	return adp.HandlePublish(c, ctx)
+	return adp.HandlePut(c, ctx)
 }
 
 func (r *RepoHandler) HandleRepoDelete(c *gin.Context, repo *model.Repository) (*types.RepoOperationResult, error) {

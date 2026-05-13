@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/types"
-	_ "github.com/mattn/go-sqlite3"
-	"gorm.io/driver/sqlite"
 	"github.com/stretchr/testify/assert"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -70,17 +70,21 @@ func (m *testMockAdapter) ParsePath(path string) (*types.PackagePathInfo, error)
 func (m *testMockAdapter) BuildRemotePath(name, version, filename string) string {
 	return fmt.Sprintf("%s/%s/%s", name, version, filename)
 }
-func (m *testMockAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {}
-func (m *testMockAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
-	return nil, fmt.Errorf("not implemented")
-}
 func (m *testMockAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 func (m *testMockAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
 	return fmt.Errorf("not implemented")
 }
-func (m *testMockAdapter) FormatDownloadResponse(c *gin.Context, result *types.DownloadResult) {}
+func (m *testMockAdapter) ParseIntent(path string, method string) *types.RequestIntent {
+	return &types.RequestIntent{Type: types.RequestUnknown}
+}
+func (m *testMockAdapter) HandleGet(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (m *testMockAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
+	return nil, fmt.Errorf("not implemented")
+}
 
 func (m *mockConfigReader) GetConfigAsInt(key string, defaultValue int) int {
 	return defaultValue

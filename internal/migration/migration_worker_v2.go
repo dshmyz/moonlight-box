@@ -567,10 +567,9 @@ func (w *MigrationWorkerV2) storeMavenAsset(taskID uint, comp NexusComponent, as
 		RepositoryType: repoType,
 		Description:    comp.Name,
 	}, &model.PackageVersion{
-		Version:     comp.Version,
-		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
-		Metadata:    marshalMetadata(metadata),
+		Version:  comp.Version,
+		Status:   model.StatusPublished,
+		Metadata: marshalMetadata(metadata),
 	}, &model.PackageFile{
 		Filename:    filepath.Base(asset.Path),
 		FileType:    model.FileTypePrimary,
@@ -607,9 +606,8 @@ func (w *MigrationWorkerV2) storeNpmAsset(taskID uint, comp NexusComponent, _ Ne
 		RepositoryType: repoType,
 		Description:    name,
 	}, &model.PackageVersion{
-		Version:     version,
-		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
+		Version: version,
+		Status:  model.StatusPublished,
 	}, &model.PackageFile{
 		Filename:    "package.tgz",
 		FileType:    model.FileTypePrimary,
@@ -646,9 +644,8 @@ func (w *MigrationWorkerV2) storePypiAsset(taskID uint, comp NexusComponent, ass
 		RepositoryType: repoType,
 		Description:    name,
 	}, &model.PackageVersion{
-		Version:     version,
-		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
+		Version: version,
+		Status:  model.StatusPublished,
 	}, &model.PackageFile{
 		Filename:    filepath.Base(asset.Path),
 		FileType:    model.FileTypePrimary,
@@ -685,9 +682,8 @@ func (w *MigrationWorkerV2) storeGoAsset(taskID uint, comp NexusComponent, asset
 		RepositoryType: repoType,
 		Description:    name,
 	}, &model.PackageVersion{
-		Version:     version,
-		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
+		Version: version,
+		Status:  model.StatusPublished,
 	}, &model.PackageFile{
 		Filename:    filepath.Base(asset.Path),
 		FileType:    model.FileTypePrimary,
@@ -720,9 +716,8 @@ func (w *MigrationWorkerV2) storeGenericAsset(taskID uint, comp NexusComponent, 
 		RepositoryType: repoType,
 		Description:    path,
 	}, &model.PackageVersion{
-		Version:     "1.0.0",
-		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
+		Version: "1.0.0",
+		Status:  model.StatusPublished,
 	}, &model.PackageFile{
 		Filename:    filepath.Base(path),
 		FileType:    model.FileTypePrimary,

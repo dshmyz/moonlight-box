@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -21,8 +20,6 @@ import (
 const maxPkgCacheSize = 10000
 
 type DownloadService struct {
-	adapters map[string]types.Adapter
-
 	pkgRepo      *repository.PackageRepository
 	storageSvc   *StorageService
 	fetcher      proxy.ProxyFetcher
@@ -33,7 +30,6 @@ type DownloadService struct {
 }
 
 func NewDownloadService(
-	adapters map[string]types.Adapter,
 	pkgRepo *repository.PackageRepository,
 	storageSvc *StorageService,
 	fetcher proxy.ProxyFetcher,
@@ -42,7 +38,6 @@ func NewDownloadService(
 	countBatcher *DownloadCountBatcher,
 ) *DownloadService {
 	return &DownloadService{
-		adapters:     adapters,
 		pkgRepo:      pkgRepo,
 		storageSvc:   storageSvc,
 		fetcher:      fetcher,
@@ -56,22 +51,10 @@ func NewDownloadService(
 func (s *DownloadService) Download(ctx context.Context, downloadCtx *types.DownloadContext) (*types.DownloadResult, error) {
 	startTime := time.Now()
 
-	adp := s.adapters[string(downloadCtx.PkgType)]
-	if adp == nil {
-		return nil, fmt.Errorf("unsupported package type: %s", downloadCtx.PkgType)
-	}
-
 	pathInfo := downloadCtx.ResolvedPath
-	if pathInfo == nil {
-		var err error
-		pathInfo, err = adp.ParsePath(downloadCtx.Name + "/" + downloadCtx.Version + "/" + downloadCtx.Filename)
-		if err != nil {
-			return nil, err
-		}
-	}
 
-	if content, size, err := s.storageSvc.GetPackage(ctx, string(downloadCtx.PkgType), pathInfo.StorageName, pathInfo.StorageVersion); err == nil {
-		s.recordLog(downloadCtx, size, time.Since(startTime), nil)
+	if content, size, err := s.storageSvc.GetPackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, pathInfo.StorageVersion, 0); err == nil {
+		s.recordLog(downloadCtx, size, time.Since(startTime), true, nil)
 		s.incrementDownloadCount(downloadCtx)
 
 		return &types.DownloadResult{
@@ -85,8 +68,8 @@ func (s *DownloadService) Download(ctx context.Context, downloadCtx *types.Downl
 		}, nil
 	}
 
-	if s.fetcher == nil {
-		s.recordLog(downloadCtx, 0, time.Since(startTime), fmt.Errorf("package not found"))
+	if s.fetcher == nil || downloadCtx.Repo.Type == model.RepoTypeLocal {
+		s.recordLog(downloadCtx, 0, time.Since(startTime), false, fmt.Errorf("package not found"))
 		return nil, fmt.Errorf("package not found")
 	}
 
@@ -95,14 +78,14 @@ func (s *DownloadService) Download(ctx context.Context, downloadCtx *types.Downl
 
 func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *types.DownloadContext, pathInfo *types.PackagePathInfo, startTime time.Time) (*types.DownloadResult, error) {
 	if s.fetcher == nil {
-		s.recordLog(downloadCtx, 0, time.Since(startTime), fmt.Errorf("fetcher not configured"))
+		s.recordLog(downloadCtx, 0, time.Since(startTime), false, fmt.Errorf("fetcher not configured"))
 		return nil, fmt.Errorf("fetcher not configured")
 	}
 
 	remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(downloadCtx.Repo.RemoteURL, "/"), pathInfo.RemotePath)
 	result, fetchErr := s.fetcher.FetchFromRemote(ctx, downloadCtx.Repo, remoteURL)
 	if fetchErr != nil {
-		s.recordLog(downloadCtx, 0, time.Since(startTime), fetchErr)
+		s.recordLog(downloadCtx, 0, time.Since(startTime), false, fetchErr)
 		return nil, fetchErr
 	}
 	defer result.Content.Close()
@@ -118,21 +101,21 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 		storageKey, storeErr := s.storageSvc.StorePackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, result.Content, result.Size, backendID)
 		if storeErr != nil {
 			result.Content.Close()
-			s.recordLog(downloadCtx, 0, time.Since(startTime), storeErr)
+			s.recordLog(downloadCtx, 0, time.Since(startTime), false, storeErr)
 			return nil, storeErr
 		}
 		result.Content.Close()
 
 		if storageKey != "" {
-			s.storePackageFileRecord(ctx, downloadCtx, result.RepoID, storageKey, result.Size)
+			s.storePackageFileRecord(ctx, downloadCtx, result.RepoID, storageKey, result.Size, pathInfo.RemotePath)
 		}
 
-		storedContent, storedSize, getErr := s.storageSvc.GetPackage(ctx, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion)
+		storedContent, storedSize, getErr := s.storageSvc.GetPackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, 0)
 		if getErr != nil {
 			return nil, fmt.Errorf("failed to read stored large package: %w", getErr)
 		}
 
-		s.recordLog(downloadCtx, storedSize, time.Since(startTime), nil)
+		s.recordLog(downloadCtx, storedSize, time.Since(startTime), true, nil)
 		return &types.DownloadResult{
 			Content:   storedContent,
 			Size:      storedSize,
@@ -147,7 +130,7 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 	contentBytes, readErr := io.ReadAll(result.Content)
 	result.Content.Close()
 	if readErr != nil {
-		s.recordLog(downloadCtx, 0, time.Since(startTime), readErr)
+		s.recordLog(downloadCtx, 0, time.Since(startTime), false, readErr)
 		return nil, readErr
 	}
 	size := int64(len(contentBytes))
@@ -155,7 +138,7 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 	storageKey, storeErr := s.storageSvc.StorePackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, bytes.NewReader(contentBytes), size, backendID)
 	if storeErr != nil {
 		logrus.Warnf("failed to store proxy package %s: %v", pathInfo.Name, storeErr)
-		s.recordLog(downloadCtx, size, time.Since(startTime), nil)
+		s.recordLog(downloadCtx, size, time.Since(startTime), false, nil)
 		return &types.DownloadResult{
 			Content:   io.NopCloser(bytes.NewReader(contentBytes)),
 			Size:      size,
@@ -168,10 +151,10 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 	}
 
 	if storageKey != "" {
-		s.storePackageFileRecord(ctx, downloadCtx, result.RepoID, storageKey, size)
+		s.storePackageFileRecord(ctx, downloadCtx, result.RepoID, storageKey, size, pathInfo.RemotePath)
 	}
 
-	s.recordLog(downloadCtx, size, time.Since(startTime), nil)
+	s.recordLog(downloadCtx, size, time.Since(startTime), true, nil)
 
 	return &types.DownloadResult{
 		Content:   io.NopCloser(bytes.NewReader(contentBytes)),
@@ -184,21 +167,21 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 	}, nil
 }
 
-func (s *DownloadService) storePackageFileRecord(ctx context.Context, req *types.DownloadContext, repoID uint, storageKey string, size int64) {
+func (s *DownloadService) storePackageFileRecord(ctx context.Context, req *types.DownloadContext, repoID uint, storageKey string, size int64, downloadURL string) {
 	pkg, ver, file, dbErr := s.pkgRepo.StorePackageFile(ctx, &model.Package{
 		Name:           req.Name,
 		Type:           req.PkgType,
 		RepositoryID:   repoID,
 		RepositoryType: req.Repo.Type,
 	}, &model.PackageVersion{
-		Version:     req.Version,
-		Status:      model.StatusPublished,
-		StoragePath: filepath.Dir(storageKey),
+		Version: req.Version,
+		Status:  model.StatusPublished,
 	}, &model.PackageFile{
 		Filename:    req.Filename,
 		FileType:    model.FileTypePrimary,
 		StoragePath: storageKey,
 		SizeBytes:   size,
+		DownloadURL: downloadURL,
 	})
 	if dbErr != nil {
 		logrus.Warnf("failed to store proxy package file to database %s: %v", req.Name, dbErr)
@@ -220,7 +203,7 @@ func (s *DownloadService) storePackageFileRecord(ctx context.Context, req *types
 	s.countBatcher.Increment(pkg.ID, versionID, fileID, repoID)
 }
 
-func (s *DownloadService) recordLog(req *types.DownloadContext, sizeBytes int64, duration time.Duration, err error) {
+func (s *DownloadService) recordLog(req *types.DownloadContext, sizeBytes int64, duration time.Duration, fromCache bool, err error) {
 	if s.logRepo == nil && s.logBatcher == nil {
 		return
 	}
@@ -242,7 +225,7 @@ func (s *DownloadService) recordLog(req *types.DownloadContext, sizeBytes int64,
 		StatusCode:   statusCode,
 		SizeBytes:    sizeBytes,
 		DurationMs:   int(duration.Milliseconds()),
-		FromCache:    false,
+		FromCache:    fromCache,
 		IPAddress:    req.ClientIP,
 	}
 

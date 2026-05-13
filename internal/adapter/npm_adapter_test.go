@@ -1,11 +1,8 @@
 package adapter
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"mime/multipart"
-	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -74,11 +71,9 @@ func setupNpmAdapter(t *testing.T) (*NpmAdapter, *gorm.DB) {
 		t.Fatalf("failed to create storage service: %v", err)
 	}
 
-	auditSvc := service.NewAuditService()
-
 	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
 
-	adapter := NewNpmAdapter(storageSvc, auditSvc, pkgCache)
+	adapter := NewNpmAdapter(storageSvc, pkgCache)
 	return adapter, db
 }
 
@@ -180,18 +175,6 @@ func TestMarshalMetadata(t *testing.T) {
 	assert.Equal(t, "1.0.0", decoded["version"])
 }
 
-func TestNpmAdapter_GetPackage_NotFound(t *testing.T) {
-	adapter, _ := setupNpmAdapter(t)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("GET", "/npm/this-package-does-not-exist-12345", nil)
-
-	adapter.GetPackageByPath(c, "this-package-does-not-exist-12345")
-
-	assert.Equal(t, 404, w.Code)
-}
-
 func TestNpmAdapter_GetVersion_NotFound(t *testing.T) {
 	adapter, _ := setupNpmAdapter(t)
 
@@ -200,119 +183,6 @@ func TestNpmAdapter_GetVersion_NotFound(t *testing.T) {
 	assert.Error(t, err)
 	assert.True(t, util.IsErr(err, util.ErrPackageNotFound))
 }
-
-func TestNpmAdapter_Publish_MissingAttachment(t *testing.T) {
-	adapter, _ := setupNpmAdapter(t)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("PUT", "/npm/lodash/-rev/123", nil)
-	c.Params = gin.Params{
-		{Key: "scope", Value: ""},
-		{Key: "package", Value: "lodash"},
-	}
-
-	adapter.Publish(c)
-
-	assert.Equal(t, 201, w.Code)
-}
-
-func TestNpmAdapter_Publish_ValidPackage(t *testing.T) {
-	adapter, _ := setupNpmAdapter(t)
-
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-
-	part, _ := writer.CreateFormFile("_attachments", "lodash-4.17.21.tgz")
-	part.Write([]byte("fake tarball content"))
-
-	writer.WriteField("_attachment", `{
-		"name": "lodash",
-		"version": "4.17.21",
-		"description": "A modern utility library"
-	}`)
-	writer.Close()
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("PUT", "/npm/lodash/-rev/123", body)
-	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
-	c.Params = gin.Params{
-		{Key: "scope", Value: ""},
-		{Key: "package", Value: "lodash"},
-	}
-	c.Set("userID", uint(1))
-
-	adapter.Publish(c)
-
-	assert.Equal(t, 201, w.Code)
-
-	var response map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &response)
-	assert.Equal(t, true, response["ok"])
-	assert.Equal(t, "lodash", response["id"])
-}
-
-func TestNpmAdapter_Unpublish(t *testing.T) {
-	adapter, _ := setupNpmAdapter(t)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("DELETE", "/npm/lodash/-rev/123", nil)
-	c.Params = gin.Params{
-		{Key: "scope", Value: ""},
-		{Key: "package", Value: "lodash"},
-	}
-
-	adapter.Unpublish(c)
-
-	// Note: Current implementation may return 500 if package doesn't exist
-	// This is a known issue that should be fixed in the adapter
-	assert.True(t, w.Code == 200 || w.Code == 500)
-}
-
-// Upload 方法已移除，上传现在由 RepoRouter 统一处理
-// func TestNpmAdapter_Upload_MissingName(t *testing.T) {
-// 	adapter, _ := setupNpmAdapter(t)
-//
-// 	ctx := context.Background()
-// 	body := bytes.NewReader([]byte("fake content"))
-//
-// 	req := &UploadRequest{
-// 		Package:  body,
-// 		Filename: "test-1.0.0.tgz",
-// 		Size:     int64(len("fake content")),
-// 		Metadata: map[string]interface{}{
-// 			"version": "1.0.0",
-// 		},
-// 		UploadedBy: 1,
-// 	}
-//
-// 	_, err := adapter.Upload(ctx, req)
-// 	assert.NotNil(t, err)
-// 	assert.Contains(t, err.Error(), "missing name or version")
-// }
-//
-// func TestNpmAdapter_Upload_MissingVersion(t *testing.T) {
-// 	adapter, _ := setupNpmAdapter(t)
-//
-// 	ctx := context.Background()
-// 	body := bytes.NewReader([]byte("fake content"))
-//
-// 	req := &UploadRequest{
-// 		Package:  body,
-// 		Filename: "test-1.0.0.tgz",
-// 		Size:     int64(len("fake content")),
-// 		Metadata: map[string]interface{}{
-// 			"name": "test-package",
-// 		},
-// 		UploadedBy: 1,
-// 	}
-//
-// 	_, err := adapter.Upload(ctx, req)
-// 	assert.NotNil(t, err)
-// 	assert.Contains(t, err.Error(), "missing name or version")
-// }
 
 func TestNpmAdapter_ListVersions(t *testing.T) {
 	adapter, db := setupNpmAdapter(t)

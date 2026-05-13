@@ -217,13 +217,13 @@ func main() {
 	pkgCache := cache.NewPackageCache(packageRepo, 5*time.Minute)
 
 	// 初始化适配器（传入 pkgCache）
-	npmAdapter := adapter.NewNpmAdapter(storageSvc, auditSvc, pkgCache)
-	mavenAdapter := adapter.NewMavenAdapter(storageSvc, auditSvc, pkgCache)
-	pypiAdapter := adapter.NewPyPIAdapter(repoRepo, storageSvc, auditSvc, pkgCache)
-	goAdapter := adapter.NewGoAdapter(storageSvc, auditSvc, pkgCache)
-	genericAdapter := adapter.NewGenericAdapter(storageSvc, auditSvc, pkgCache)
-	yumAdapter := adapter.NewYumAdapter(repoRepo, storageSvc, auditSvc, pkgCache)
-	aptAdapter := adapter.NewAptAdapter(storageSvc, auditSvc, pkgCache)
+	npmAdapter := adapter.NewNpmAdapter(storageSvc, pkgCache)
+	mavenAdapter := adapter.NewMavenAdapter(storageSvc, pkgCache)
+	pypiAdapter := adapter.NewPyPIAdapter(repoRepo, storageSvc, pkgCache)
+	goAdapter := adapter.NewGoAdapter(storageSvc, pkgCache)
+	genericAdapter := adapter.NewGenericAdapter(storageSvc, pkgCache)
+	yumAdapter := adapter.NewYumAdapter(repoRepo, storageSvc, pkgCache)
+	aptAdapter := adapter.NewAptAdapter(storageSvc, pkgCache)
 
 	// 构建 adapter map 用于 DownloadService
 	adapterMap := map[string]types.Adapter{
@@ -244,7 +244,6 @@ func main() {
 
 	// 创建 DownloadService
 	downloadSvc := service.NewDownloadService(
-		adapterMap,
 		packageRepo,
 		storageSvc,
 		proxyDownloader,

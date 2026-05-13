@@ -73,7 +73,6 @@ func main() {
 	defer logBatcher.Stop()
 
 	downloadSvc := service.NewDownloadService(
-		nil,
 		pkgRepo,
 		storageSvc,
 		proxyDownloader,
@@ -200,7 +199,7 @@ func verifyDatabaseStorage(db *gorm.DB) {
 
 		for _, version := range pkg.Versions {
 			fmt.Printf("   版本: %s (状态: %s)\n", version.Version, version.Status)
-			fmt.Printf("      存储路径: %s\n", version.StoragePath)
+			fmt.Printf("      存储路径: %s\n", version.Version)
 			fmt.Printf("      下载次数: %d\n", version.DownloadCount)
 
 			for _, file := range version.Files {

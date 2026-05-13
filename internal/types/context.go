@@ -35,14 +35,6 @@ type DeleteContext struct {
 	ClientIP string
 }
 
-type RepoRequestContext struct {
-	Repo     *model.Repository
-	PkgType  model.PackageType
-	Path     string
-	UserID   uint
-	ClientIP string
-}
-
 type DownloadResult struct {
 	Content   io.ReadCloser
 	Size      int64
@@ -53,14 +45,12 @@ type DownloadResult struct {
 	Version   string
 }
 
-type PublishResult struct {
-	PackageName    string
-	Version        string
-	Filename       string
-	Content        io.Reader
-	Size           int64
-	FileType       model.PackageFileType
-	StorageVersion string
-	Metadata       map[string]interface{}
-	Response       interface{}
+// ContentResult 表示 adapter 返回的内容结果
+type ContentResult struct {
+	Content     io.ReadCloser
+	Size        int64
+	ContentType string
+	StatusCode  int
+	Headers     map[string]string
+	ExtraData   map[string]interface{} // 用于 JSON/XML 等非流式响应
 }

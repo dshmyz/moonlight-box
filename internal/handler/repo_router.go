@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -142,34 +143,103 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 		return
 	}
 
-	// 先尝试解析为下载请求
-	result, err := r.resolver.TryResolveDownload(c.Request.Context(), repo, pkgType, strings.TrimPrefix(path, "/"))
-	if err == nil && result != nil {
-		// 阻断检查
-		if r.checkBlock(c, pkgType, result.Name, result.Version) {
-			result.Content.Close()
+	// 获取 adapter
+	adp, ok := r.resolver.GetAdapter(model.PackageType(pkgType))
+	if !ok {
+		response.NotFound(c, "不支持的包类型: "+pkgType)
+		return
+	}
+
+	// 第一步：解析意图
+	requestPath := strings.TrimPrefix(path, "/")
+	intent := adp.ParseIntent(requestPath, c.Request.Method)
+	if intent.Type == types.RequestUnknown {
+		response.NotFound(c, "无法识别的请求路径")
+		return
+	}
+
+	// 第二步：阻断检查（对下载和元数据请求都检查）
+	if r.blockSvc != nil {
+		blockName := intent.Name
+		blockVersion := intent.Version
+		if blockName != "" && r.checkBlock(c, pkgType, blockName, blockVersion) {
 			return
 		}
+	}
 
-		// 下载路径，检查权限后返回内容
-		filename := result.Filename
-		decision := r.CheckDownloadPermission(c, repo, model.PackageType(pkgType), result.Name, result.Version, filename)
+	// 第三步：权限检查（针对下载类型请求）
+	if intent.Type == types.RequestDownload {
+		decision := r.CheckDownloadPermission(c, repo, model.PackageType(pkgType), intent.Name, intent.Version, intent.Filename)
 		if !decision.Allow {
 			c.JSON(decision.Code, gin.H{"error": decision.Message})
-			result.Content.Close()
 			return
 		}
+	}
 
+	// 第四步：获取内容 — 下载走 Resolve（含 Local/Proxy/Virtual + 缓存 + 日志），非下载走 FetchContent
+	if intent.Type == types.RequestDownload {
+		downloadCtx := &types.DownloadContext{
+			Repo:         repo,
+			PkgType:      model.PackageType(pkgType),
+			Name:         intent.Name,
+			Version:      intent.Version,
+			Filename:     intent.Filename,
+			UserID:       c.GetUint("userID"),
+			ClientIP:     c.ClientIP(),
+			ResolvedPath: intent.PkgPathInfo,
+		}
+		routeResult, err := r.resolver.Resolve(c.Request.Context(), downloadCtx)
+		if err != nil {
+			response.NotFound(c, err.Error())
+			return
+		}
+		defer routeResult.Content.Close()
+		r.formatContentResponse(c, &types.ContentResult{
+			Content:     routeResult.Content,
+			Size:        routeResult.Size,
+			ContentType: "application/octet-stream",
+			StatusCode:  200,
+			Headers: map[string]string{
+				"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, intent.Filename),
+			},
+		})
+	} else {
+		contentResult, err := adp.HandleGet(c.Request.Context(), repo, intent)
+		if err != nil {
+			response.NotFound(c, err.Error())
+			return
+		}
+		r.formatContentResponse(c, contentResult)
+	}
+
+	// 审计日志（下载请求）
+	if intent.Type == types.RequestDownload && r.auditSvc != nil {
+		r.auditSvc.LogWithStatus(c.Request.Context(), nil, model.ActionPackageDownload, pkgType, nil, intent.Name, intent.Version, 0, 0)
+	}
+}
+
+func (r *RepoRouter) formatContentResponse(c *gin.Context, result *types.ContentResult) {
+	if result == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+
+	for key, value := range result.Headers {
+		c.Header(key, value)
+	}
+
+	if result.Content != nil {
 		defer result.Content.Close()
-		r.resolver.FormatDownloadResponse(c, pkgType, result)
+		c.DataFromReader(result.StatusCode, result.Size, result.ContentType, result.Content, nil)
 		return
 	}
 
-	// 非下载路径，交给 adapter 处理
-	if err := r.resolver.HandleRepoRequest(c, repo, strings.TrimPrefix(path, "/")); err != nil {
-		response.NotFound(c, err.Error())
+	if result.ExtraData != nil {
+		c.JSON(result.StatusCode, result.ExtraData)
 		return
 	}
+
+	c.Status(result.StatusCode)
 }
 
 func (r *RepoRouter) HandlePublish(c *gin.Context) {
@@ -265,6 +335,8 @@ func (r *RepoRouter) HandlePublish(c *gin.Context) {
 		UploadedBy:     c.GetUint("userID"),
 		Metadata:       publishResult.Metadata,
 		FileType:       publishResult.FileType,
+		DownloadURL:    publishResult.DownloadURL,
+		RepoName:       repo.Name,
 	}
 
 	uploadResult, err := r.uploadSvc.Upload(c.Request.Context(), uploadCtx)
@@ -369,5 +441,27 @@ func (r *RepoRouter) HandleDelete(c *gin.Context) {
 			Repository:  repo.Name,
 			Data:        result.ExtraData,
 		})
+	}
+
+	if r.auditSvc != nil && result != nil {
+		userID := c.GetUint("userID")
+		var uid *uint
+		if userID > 0 {
+			uid = &userID
+		}
+		details := fmt.Sprintf(`{"repo":"%s","name":"%s","version":"%s"}`, repo.Name, result.PackageName, result.Version)
+		r.auditSvc.LogWithRequestAndStatus(
+			c.Request.Context(),
+			uid,
+			model.ActionPackageDelete,
+			"package",
+			nil,
+			result.PackageName,
+			details,
+			c.ClientIP(),
+			c.Request.UserAgent(),
+			200,
+			0,
+		)
 	}
 }

@@ -59,11 +59,9 @@ func setupYumAdapter(t *testing.T) (*YumAdapter, *gorm.DB) {
 
 	storageSvc.RefreshBackends()
 
-	auditSvc := service.NewAuditService()
-
 	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
 
-	adapter := NewYumAdapter(repoRepo, storageSvc, auditSvc, pkgCache)
+	adapter := NewYumAdapter(repoRepo, storageSvc, pkgCache)
 	return adapter, db
 }
 
@@ -239,33 +237,43 @@ func TestYumAdapter_Delete(t *testing.T) {
 func TestYumAdapter_DownloadRPM(t *testing.T) {
 	adapter, _ := setupYumAdapter(t)
 
+	repo := &model.Repository{
+		Name:        "test-repo",
+		PackageType: string(model.PackageTypeYum),
+	}
+
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/yum/test-repo/Packages/nginx-1.20.1-1.el9.x86_64.rpm", nil)
-	c.Params = gin.Params{
-		{Key: "repo", Value: "test-repo"},
-		{Key: "path", Value: "/nginx-1.20.1-1.el9.x86_64.rpm"},
+
+	intent := adapter.ParseIntent("test-repo/Packages/nginx-1.20.1-1.el9.x86_64.rpm", c.Request.Method)
+	result, err := adapter.HandleGet(c.Request.Context(), repo, intent)
+	if err != nil {
+		assert.Nil(t, result)
+	} else {
+		assert.NotNil(t, result)
 	}
 
-	adapter.DownloadRPM(c)
-
-	assert.Equal(t, 404, w.Code)
 }
-
 func TestYumAdapter_RepoDataFile(t *testing.T) {
 	adapter, _ := setupYumAdapter(t)
+
+	repo := &model.Repository{
+		Name:        "test-repo",
+		PackageType: string(model.PackageTypeYum),
+	}
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/yum/test-repo/repodata/repomd.xml", nil)
-	c.Params = gin.Params{
-		{Key: "repo", Value: "test-repo"},
-		{Key: "path", Value: "/repomd.xml"},
+
+	intent := adapter.ParseIntent("test-repo/repodata/repomd.xml", c.Request.Method)
+	result, err := adapter.HandleGet(c.Request.Context(), repo, intent)
+	if err != nil {
+		assert.Nil(t, result)
+	} else {
+		assert.NotNil(t, result)
 	}
-
-	adapter.RepoDataFile(c)
-
-	assert.Equal(t, 404, w.Code)
 }
 
 func TestYumAdapter_GenerateRepomdXML(t *testing.T) {

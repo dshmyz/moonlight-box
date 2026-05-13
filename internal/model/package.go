@@ -63,7 +63,6 @@ type PackageVersion struct {
 	PackageID      uint                `gorm:"not null;uniqueIndex:idx_ver_pkg_version" json:"package_id"`
 	Version        string              `gorm:"not null;uniqueIndex:idx_ver_pkg_version" json:"version"`
 	Status         PackageStatus       `gorm:"default:published;index" json:"status"`
-	StoragePath    string              `gorm:"size:500" json:"storage_path"`
 	PublishedAt    time.Time           `gorm:"autoCreateTime" json:"published_at"`
 	PublishedBy    uint                `json:"published_by"`
 	Metadata       string              `gorm:"type:text" json:"metadata,omitempty"`
@@ -90,6 +89,7 @@ type PackageFile struct {
 	ChecksumMD5    string          `gorm:"size:32" json:"checksum_md5,omitempty"`
 	DownloadCount  int64           `gorm:"default:0" json:"download_count"`
 	Version        PackageVersion  `gorm:"foreignKey:VersionID" json:"-"`
+	DownloadURL    string          `gorm:"size:500" json:"download_url,omitempty"`
 }
 
 type PackageDependency struct {

@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -30,11 +31,10 @@ type PyPIAdapter struct {
 func NewPyPIAdapter(
 	repoRepo *repository.RepositoryRepository,
 	storageSvc *service.StorageService,
-	auditSvc *service.AuditService,
 	pkgCache *cache.PackageCache,
 ) *PyPIAdapter {
 	return &PyPIAdapter{
-		BaseAdapter: NewBaseAdapter(storageSvc, auditSvc, pkgCache),
+		BaseAdapter: NewBaseAdapter(storageSvc, pkgCache),
 		repoRepo:    repoRepo,
 	}
 }
@@ -109,20 +109,17 @@ func (a *PyPIAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 	return nil, fmt.Errorf("invalid pypi path: %s", path)
 }
 
-func (a *PyPIAdapter) ListPackages(c *gin.Context) {
-	accept := c.GetHeader("Accept")
-	if strings.Contains(accept, "application/vnd.pypi.simple") || strings.Contains(accept, "application/json") {
-		a.listPackagesJSON(c)
-	} else {
-		a.listPackagesHTML(c)
+func (a *PyPIAdapter) ListPackages(acceptHeader string) (*types.ContentResult, error) {
+	if strings.Contains(acceptHeader, "application/vnd.pypi.simple") || strings.Contains(acceptHeader, "application/json") {
+		return a.listPackagesJSON()
 	}
+	return a.listPackagesHTML()
 }
 
-func (a *PyPIAdapter) listPackagesJSON(c *gin.Context) {
+func (a *PyPIAdapter) listPackagesJSON() (*types.ContentResult, error) {
 	packages, _, err := a.GetPackageRepository().List(1, 10000, "pypi", "")
 	if err != nil {
-		response.InternalError(c, err.Error())
-		return
+		return nil, err
 	}
 
 	type project struct {
@@ -138,14 +135,17 @@ func (a *PyPIAdapter) listPackagesJSON(c *gin.Context) {
 		}
 	}
 
-	c.JSON(200, gin.H{"projects": result})
+	return &types.ContentResult{
+		StatusCode:  200,
+		ContentType: "application/json",
+		ExtraData:   gin.H{"projects": result},
+	}, nil
 }
 
-func (a *PyPIAdapter) listPackagesHTML(c *gin.Context) {
+func (a *PyPIAdapter) listPackagesHTML() (*types.ContentResult, error) {
 	packages, _, err := a.GetPackageRepository().List(1, 10000, "pypi", "")
 	if err != nil {
-		response.InternalError(c, err.Error())
-		return
+		return nil, err
 	}
 
 	var sb strings.Builder
@@ -161,47 +161,45 @@ func (a *PyPIAdapter) listPackagesHTML(c *gin.Context) {
 	}
 	sb.WriteString("</body></html>")
 
-	c.Data(200, "text/html", []byte(sb.String()))
+	return &types.ContentResult{
+		StatusCode:  200,
+		ContentType: "text/html",
+		Content:     io.NopCloser(strings.NewReader(sb.String())),
+		Size:        int64(sb.Len()),
+	}, nil
 }
 
-func (a *PyPIAdapter) PackageFiles(c *gin.Context) {
-	pkgName := c.Param("package")
-
-	accept := c.GetHeader("Accept")
-	if strings.Contains(accept, "application/json") {
-		a.packageFilesJSON(c, pkgName)
-	} else {
-		a.packageFilesHTML(c, pkgName)
+func (a *PyPIAdapter) PackageFiles(acceptHeader string, pkgName string, repo *model.Repository) (*types.ContentResult, error) {
+	if strings.Contains(acceptHeader, "application/json") {
+		return a.packageFilesJSON(pkgName, repo)
 	}
+	return a.packageFilesHTML(pkgName, repo)
 }
 
-func (a *PyPIAdapter) packageFilesJSON(c *gin.Context, pkgName string) {
+func (a *PyPIAdapter) packageFilesJSON(pkgName string, repo *model.Repository) (*types.ContentResult, error) {
 	pkg, err := a.GetPackageRepository().FindByNameAndType(pkgName, model.PackageTypePyPI)
 	if err != nil {
 		if util.IsErr(err, util.ErrPackageNotFound) {
-			if a.fetcher != nil {
-				var repo *model.Repository
-				if r, ok := c.Get("repo"); ok {
-					repo = r.(*model.Repository)
-				}
-
+			if a.fetcher != nil && repo != nil {
 				pathInfo, _ := a.ParsePath("simple/" + pkgName + "/")
 				remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-				result, resolveErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+				result, resolveErr := a.fetcher.FetchFromRemote(context.Background(), repo, remoteURL)
 				if resolveErr == nil && result != nil {
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
 					if readErr == nil {
-						c.Data(200, "application/vnd.pypi.simple.v1+json", body)
-						return
+						return &types.ContentResult{
+							StatusCode:  200,
+							ContentType: "application/vnd.pypi.simple.v1+json",
+							Content:     io.NopCloser(bytes.NewReader(body)),
+							Size:        int64(len(body)),
+						}, nil
 					}
 				}
 			}
-			response.NotFound(c, "package not found")
-			return
+			return nil, fmt.Errorf("package not found")
 		}
-		response.InternalError(c, err.Error())
-		return
+		return nil, err
 	}
 
 	type file struct {
@@ -212,46 +210,46 @@ func (a *PyPIAdapter) packageFilesJSON(c *gin.Context, pkgName string) {
 	files := make([]file, 0)
 	for _, ver := range pkg.Versions {
 		files = append(files, file{
-			URL:      fmt.Sprintf("/pypi/packages/%s", filepath.Base(ver.StoragePath)),
-			Filename: filepath.Base(ver.StoragePath),
+			URL:      fmt.Sprintf("/pypi/packages/%s", filepath.Base(ver.Version)),
+			Filename: filepath.Base(ver.Version),
 		})
 	}
 
-	c.JSON(200, gin.H{
-		"files": files,
-		"meta": gin.H{
-			"api-version": "1.0",
+	return &types.ContentResult{
+		StatusCode: 200,
+		ExtraData: gin.H{
+			"files": files,
+			"meta": gin.H{
+				"api-version": "1.0",
+			},
 		},
-	})
+	}, nil
 }
 
-func (a *PyPIAdapter) packageFilesHTML(c *gin.Context, pkgName string) {
+func (a *PyPIAdapter) packageFilesHTML(pkgName string, repo *model.Repository) (*types.ContentResult, error) {
 	pkg, err := a.GetPackageRepository().FindByNameAndType(pkgName, model.PackageTypePyPI)
 	if err != nil {
 		if util.IsErr(err, util.ErrPackageNotFound) {
-			if a.fetcher != nil {
-				var repo *model.Repository
-				if r, ok := c.Get("repo"); ok {
-					repo = r.(*model.Repository)
-				}
-
+			if a.fetcher != nil && repo != nil {
 				pathInfo, _ := a.ParsePath("simple/" + pkgName + "/")
 				remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-				result, resolveErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+				result, resolveErr := a.fetcher.FetchFromRemote(context.Background(), repo, remoteURL)
 				if resolveErr == nil && result != nil {
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
 					if readErr == nil {
-						c.Data(200, "text/html", body)
-						return
+						return &types.ContentResult{
+							StatusCode:  200,
+							ContentType: "text/html",
+							Content:     io.NopCloser(bytes.NewReader(body)),
+							Size:        int64(len(body)),
+						}, nil
 					}
 				}
 			}
-			response.NotFound(c, "package not found")
-			return
+			return nil, fmt.Errorf("package not found")
 		}
-		response.InternalError(c, err.Error())
-		return
+		return nil, err
 	}
 
 	html := fmt.Sprintf(`<!DOCTYPE html>
@@ -264,7 +262,7 @@ func (a *PyPIAdapter) packageFilesHTML(c *gin.Context, pkgName string) {
 	sb.WriteString(html)
 
 	for _, ver := range pkg.Versions {
-		filename := filepath.Base(ver.StoragePath)
+		filename := filepath.Base(ver.Version)
 		sb.WriteString(`<a href="/pypi/packages/`)
 		sb.WriteString(filename)
 		sb.WriteString(`">`)
@@ -273,45 +271,38 @@ func (a *PyPIAdapter) packageFilesHTML(c *gin.Context, pkgName string) {
 	}
 	sb.WriteString("</body></html>")
 
-	c.Data(200, "text/html", []byte(sb.String()))
+	return &types.ContentResult{
+		StatusCode:  200,
+		ContentType: "text/html",
+		Content:     io.NopCloser(strings.NewReader(sb.String())),
+		Size:        int64(sb.Len()),
+	}, nil
 }
 
-func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
-	filename := c.Param("filename")
+func (a *PyPIAdapter) DownloadPackage(filename string, repo *model.Repository, ctx context.Context) (*types.ContentResult, error) {
 	slog.Info("DownloadPackage called", "filename", filename)
 
 	if strings.HasSuffix(filename, ".sha256") {
-		a.handleChecksumRequest(c, filename)
-		return
+		return a.handleChecksumRequest(filename, repo, ctx)
 	}
 
 	actualFilename := filepath.Base(filename)
 	name, version := parseWheelFilename(actualFilename)
 	slog.Info("Parsed filename", "name", name, "version", version, "actualFilename", actualFilename)
 	if name == "" {
-		response.BadRequest(c, "invalid filename", "unable to parse package name from filename")
-		return
+		return nil, fmt.Errorf("invalid filename: unable to parse package name from filename")
 	}
 
-	var repo *model.Repository
-	if r, ok := c.Get("repo"); ok {
-		repo = r.(*model.Repository)
-	}
-
-	decision := a.CheckDownloadPermission(c, repo, model.PackageTypePyPI, name, version, actualFilename)
-	if !decision.Allow {
-		c.JSON(decision.Code, gin.H{"error": decision.Message})
-		return
-	}
-
-	content, size, err := a.storageSvc.GetPackage(c.Request.Context(), "pypi", name, actualFilename)
+	content, size, err := a.storageSvc.GetPackageWithBackend(ctx, repo.Name, "pypi", name, actualFilename, 0)
 	if err == nil {
-		defer content.Close()
-
 		contentType := a.storageSvc.GetContentType(actualFilename)
-		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, actualFilename))
-		c.DataFromReader(200, size, contentType, content, nil)
-		return
+		return &types.ContentResult{
+			StatusCode:  200,
+			ContentType: contentType,
+			Content:     content,
+			Size:        size,
+			Headers:     map[string]string{"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, actualFilename)},
+		}, nil
 	}
 
 	if a.fetcher != nil && repo != nil && repo.Type == "proxy" {
@@ -322,31 +313,33 @@ func (a *PyPIAdapter) DownloadPackage(c *gin.Context) {
 			slog.Warn("PyPI proxy: failed to resolve path", "filename", actualFilename, "error", fetchErr)
 		} else {
 			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-			result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+			result, fetchErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
 			if fetchErr == nil && result != nil {
-				defer result.Content.Close()
 				slog.Info("PyPI proxy: successfully fetched from remote", "filename", actualFilename, "size", result.Size)
 				contentType := a.storageSvc.GetContentType(actualFilename)
-				c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, actualFilename))
-				c.DataFromReader(200, result.Size, contentType, result.Content, nil)
-				return
+				return &types.ContentResult{
+					StatusCode:  200,
+					ContentType: contentType,
+					Content:     result.Content,
+					Size:        result.Size,
+					Headers:     map[string]string{"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, actualFilename)},
+				}, nil
 			}
 			slog.Warn("PyPI proxy: failed to fetch from remote", "filename", actualFilename, "error", fetchErr)
 		}
 	}
 
-	response.NotFound(c, "package not found")
+	return nil, fmt.Errorf("package not found")
 }
 
-func (a *PyPIAdapter) handleChecksumRequest(c *gin.Context, filename string) {
+func (a *PyPIAdapter) handleChecksumRequest(filename string, repo *model.Repository, ctx context.Context) (*types.ContentResult, error) {
 	// 移除 .sha256 后缀获取实际文件名
 	actualFilename := strings.TrimSuffix(filename, ".sha256")
 
 	// 从数据库查找文件记录
 	files, err := a.GetPackageRepository().FindFilesByFilename(actualFilename)
 	if err != nil || len(files) == 0 {
-		response.NotFound(c, "checksum not found")
-		return
+		return nil, fmt.Errorf("checksum not found")
 	}
 
 	// 获取第一个匹配的文件
@@ -355,66 +348,66 @@ func (a *PyPIAdapter) handleChecksumRequest(c *gin.Context, filename string) {
 		// 如果数据库中没有校验和，尝试从存储中读取文件并计算
 		name, _ := parseWheelFilename(actualFilename)
 		if name == "" {
-			response.NotFound(c, "invalid filename")
-			return
+			return nil, fmt.Errorf("invalid filename")
 		}
 
-		content, _, err := a.storageSvc.GetPackage(c.Request.Context(), "pypi", name, actualFilename)
+		content, _, err := a.storageSvc.GetPackageWithBackend(ctx, repo.Name, "pypi", name, actualFilename, 0)
 		if err != nil {
-			response.NotFound(c, "file not found")
-			return
+			return nil, fmt.Errorf("file not found")
 		}
 		defer content.Close()
 
 		// 计算SHA256
 		body, err := io.ReadAll(content)
 		if err != nil {
-			response.InternalError(c, "failed to read file")
-			return
+			return nil, fmt.Errorf("failed to read file")
 		}
 
 		hash := sha256.Sum256(body)
 		checksum := hex.EncodeToString(hash[:])
 
 		// 返回校验和
-		c.Data(200, "text/plain", []byte(checksum))
-		return
+		return &types.ContentResult{
+			StatusCode:  200,
+			ContentType: "text/plain",
+			Content:     io.NopCloser(bytes.NewReader([]byte(checksum))),
+			Size:        int64(len(checksum)),
+		}, nil
 	}
 
 	// 返回数据库中的校验和
-	c.Data(200, "text/plain", []byte(file.ChecksumSHA256))
+	return &types.ContentResult{
+		StatusCode:  200,
+		ContentType: "text/plain",
+		Content:     io.NopCloser(bytes.NewReader([]byte(file.ChecksumSHA256))),
+		Size:        int64(len(file.ChecksumSHA256)),
+	}, nil
 }
 
-func (a *PyPIAdapter) JSONAPI(c *gin.Context) {
-	pkgName := c.Param("package")
-	version := c.Param("version")
-
+func (a *PyPIAdapter) JSONAPI(pkgName string, version string, repo *model.Repository, ctx context.Context) (*types.ContentResult, error) {
 	pkg, err := a.GetPackageRepository().FindByNameAndType(pkgName, model.PackageTypePyPI)
 	if err != nil {
 		if util.IsErr(err, util.ErrPackageNotFound) {
-			if a.fetcher != nil {
-				var repo *model.Repository
-				if r, ok := c.Get("repo"); ok {
-					repo = r.(*model.Repository)
-				}
-
+			if a.fetcher != nil && repo != nil {
 				pathInfo, _ := a.ParsePath("simple/" + pkgName + "/")
 				remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-				result, resolveErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
+				result, resolveErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
 				if resolveErr == nil && result != nil {
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
 					if readErr == nil {
-						c.Data(200, "application/json", body)
-						return
+						return &types.ContentResult{
+							StatusCode:  200,
+							ContentType: "application/json",
+							Content:     io.NopCloser(bytes.NewReader(body)),
+							Size:        int64(len(body)),
+						}, nil
 					}
 				}
 			}
-			response.NotFound(c, "package not found")
-			return
+			return nil, fmt.Errorf("package not found")
 		}
-		response.InternalError(c, err.Error())
-		return
+		return nil, err
 	}
 
 	var versionInfo *model.PackageVersion
@@ -427,8 +420,7 @@ func (a *PyPIAdapter) JSONAPI(c *gin.Context) {
 	}
 
 	if versionInfo == nil {
-		response.NotFound(c, "version not found")
-		return
+		return nil, fmt.Errorf("version not found")
 	}
 
 	type urlInfo struct {
@@ -439,21 +431,24 @@ func (a *PyPIAdapter) JSONAPI(c *gin.Context) {
 		Size     int64  `json:"size"`
 	}
 
-	c.JSON(200, gin.H{
-		"info": gin.H{
-			"name":    pkg.Name,
-			"version": version,
-			"summary": pkg.Description,
+	return &types.ContentResult{
+		StatusCode: 200,
+		ExtraData: gin.H{
+			"info": gin.H{
+				"name":    pkg.Name,
+				"version": version,
+				"summary": pkg.Description,
+			},
+			"releases": gin.H{
+				version: []urlInfo{{
+					URL:    fmt.Sprintf("/pypi/packages/%s", versionInfo.Version),
+					Size:   versionInfo.SizeBytes,
+					MD5:    versionInfo.ChecksumMD5,
+					SHA256: versionInfo.ChecksumSHA256,
+				}},
+			},
 		},
-		"releases": gin.H{
-			version: []urlInfo{{
-				URL:    fmt.Sprintf("/pypi/packages/%s", filepath.Base(versionInfo.StoragePath)),
-				Size:   versionInfo.SizeBytes,
-				MD5:    versionInfo.ChecksumMD5,
-				SHA256: versionInfo.ChecksumSHA256,
-			}},
-		},
-	})
+	}, nil
 }
 
 func (a *PyPIAdapter) UploadPackage(c *gin.Context) {
@@ -472,45 +467,123 @@ func (a *PyPIAdapter) ListVersions(ctx context.Context, name string) ([]string, 
 	return a.GetPackageRepository().ListVersions(name, model.PackageTypePyPI)
 }
 
-func (a *PyPIAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {
-	c.Set("repo", ctx.Repo)
-	if strings.HasPrefix(ctx.Path, "simple/") {
-		pkgPath := strings.TrimPrefix(ctx.Path, "simple/")
+// ParseIntent 解析请求路径为意图
+func (a *PyPIAdapter) ParseIntent(path string, method string) *types.RequestIntent {
+	path = strings.TrimPrefix(path, "/")
+	intent := &types.RequestIntent{
+		Path:  path,
+		Extra: make(map[string]interface{}),
+	}
+
+	if strings.HasPrefix(path, "simple/") {
+		pkgPath := strings.TrimPrefix(path, "simple/")
 		if pkgPath == "" || pkgPath == "/" {
-			a.ListPackages(c)
+			intent.Type = types.RequestList
+			intent.Name = ""
+			intent.Filename = ""
 		} else {
-			c.Params = append(c.Params, gin.Param{Key: "package", Value: strings.Trim(pkgPath, "/")})
-			a.PackageFiles(c)
+			pkgName := strings.Trim(pkgPath, "/")
+			intent.Type = types.RequestMetadata
+			intent.Name = pkgName
+			intent.Filename = ""
 		}
-	} else if strings.HasPrefix(ctx.Path, "packages/") {
-		filename := strings.TrimPrefix(ctx.Path, "packages/")
-		c.Params = append(c.Params, gin.Param{Key: "filename", Value: filename})
-		a.DownloadPackage(c)
-	} else if strings.Contains(ctx.Path, "/json") {
-		parts := strings.Split(ctx.Path, "/")
+		return intent
+	}
+
+	if strings.HasPrefix(path, "packages/") {
+		filename := strings.TrimPrefix(path, "packages/")
+		intent.Type = types.RequestDownload
+		intent.Filename = filename
+		if strings.HasSuffix(filename, ".sha256") {
+			intent.Type = types.RequestChecksum
+		}
+		name, version := parseWheelFilename(filename)
+		intent.Name = name
+		intent.Version = version
+		return intent
+	}
+
+	if strings.Contains(intent.Path, "/json") {
+		rest := strings.TrimPrefix(intent.Path, "pypi/")
+		parts := strings.Split(rest, "/")
 		if len(parts) >= 2 {
-			c.Params = append(c.Params, gin.Param{Key: "package", Value: parts[0]})
-			c.Params = append(c.Params, gin.Param{Key: "version", Value: parts[1]})
-			a.JSONAPI(c)
+			intent.Type = types.RequestMetadata
+			intent.Name = parts[0]
+			if len(parts) >= 3 {
+				intent.Version = parts[1]
+			}
+			return intent
 		}
-	} else {
-		if a.fetcher != nil {
-			pathInfo, _ := a.ParsePath(ctx.Path)
-			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(ctx.Repo.RemoteURL, "/"), pathInfo.RemotePath)
-			result, resolveErr := a.fetcher.FetchFromRemote(c.Request.Context(), ctx.Repo, remoteURL)
+	}
+
+	// Fallback
+	pathInfo, _ := a.ParsePath(path)
+	intent.Type = types.RequestDownload
+	if pathInfo != nil {
+		intent.Name = pathInfo.Name
+		intent.Version = pathInfo.Version
+		intent.Filename = pathInfo.Filename
+		intent.PkgPathInfo = pathInfo
+	}
+
+	return intent
+}
+
+// FetchContent 根据意图获取内容
+func (a *PyPIAdapter) HandleGet(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
+	accept := ""
+	if v, ok := intent.Extra["accept"]; ok {
+		accept = v.(string)
+	}
+
+	if intent.Type == types.RequestList {
+		return a.ListPackages(accept)
+	}
+
+	if strings.HasPrefix(intent.Path, "simple/") {
+		pkgName := strings.Trim(strings.TrimPrefix(intent.Path, "simple/"), "/")
+		return a.PackageFiles(accept, pkgName, repo)
+	}
+
+	if strings.HasPrefix(intent.Path, "packages/") {
+		filename := strings.TrimPrefix(intent.Path, "packages/")
+		return a.DownloadPackage(filename, repo, ctx)
+	}
+
+	if strings.Contains(intent.Path, "/json") {
+		rest := strings.TrimPrefix(intent.Path, "pypi/")
+		parts := strings.Split(rest, "/")
+		if len(parts) >= 2 {
+			version := ""
+			if len(parts) >= 3 {
+				version = parts[1]
+			}
+			return a.JSONAPI(parts[0], version, repo, ctx)
+		}
+	}
+
+	// 未知路径，尝试从远程获取
+	if a.fetcher != nil {
+		pathInfo, _ := a.ParsePath(intent.Path)
+		if pathInfo != nil {
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+			result, resolveErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
 			if resolveErr == nil && result != nil {
-				defer result.Content.Close()
 				body, readErr := io.ReadAll(result.Content)
 				if readErr == nil {
-					contentType := a.storageSvc.GetContentType(ctx.Path)
-					c.Data(200, contentType, body)
-					return
+					contentType := a.storageSvc.GetContentType(intent.Path)
+					return &types.ContentResult{
+						StatusCode:  200,
+						ContentType: contentType,
+						Content:     io.NopCloser(bytes.NewReader(body)),
+						Size:        int64(len(body)),
+					}, nil
 				}
 			}
 		}
-
-		response.NotFound(c, "path not found")
 	}
+
+	return nil, fmt.Errorf("path not found")
 }
 
 var wheelRegex = regexp.MustCompile(`^([A-Za-z0-9_]+)-([^-]+)-.+\.whl$`)
@@ -540,13 +613,7 @@ func normalizePackageName(name string) string {
 	return strings.ToLower(strings.ReplaceAll(name, "_", "-"))
 }
 
-func (a *PyPIAdapter) FormatDownloadResponse(c *gin.Context, result *types.DownloadResult) {
-	contentType := a.storageSvc.GetContentType(result.Filename)
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, result.Filename))
-	c.DataFromReader(200, result.Size, contentType, result.Content, nil)
-}
-
-func (a *PyPIAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
+func (a *PyPIAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	file, header, err := c.Request.FormFile("content")
 	if err != nil {
 		return nil, fmt.Errorf("missing file: %v", err)
@@ -600,13 +667,6 @@ func (a *PyPIAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) err
 	if err := a.Delete(c.Request.Context(), identity); err != nil {
 		return err
 	}
-
-	pkg, _ := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypePyPI)
-	var pkgID *uint
-	if pkg != nil {
-		pkgID = &pkg.ID
-	}
-	a.LogDeleteAudit(c, ctx.Repo.Name, name, version, pkgID)
 
 	return nil
 }

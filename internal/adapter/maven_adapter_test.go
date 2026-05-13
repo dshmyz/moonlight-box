@@ -2,7 +2,6 @@ package adapter
 
 import (
 	"context"
-	"encoding/xml"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -58,11 +57,9 @@ func setupMavenAdapter(t *testing.T) (*MavenAdapter, *gorm.DB) {
 
 	storageSvc.RefreshBackends()
 
-	auditSvc := service.NewAuditService()
-
 	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
 
-	adapter := NewMavenAdapter(storageSvc, auditSvc, pkgCache)
+	adapter := NewMavenAdapter(storageSvc, pkgCache)
 	return adapter, db
 }
 
@@ -233,17 +230,23 @@ func TestMavenAdapter_HandleMetadataXML(t *testing.T) {
 		db.Create(&v)
 	}
 
+	repo := &model.Repository{
+		Name:        "maven2",
+		PackageType: string(model.PackageTypeMaven),
+	}
+
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/maven2/com/test/metadata/metadata-lib/maven-metadata.xml", nil)
 
-	adapter.handleMetadataXML(c, "com/test/metadata/metadata-lib/maven-metadata.xml")
-
-	assert.Equal(t, 200, w.Code)
-
-	var metadata MavenMetadata
-	err := xml.Unmarshal(w.Body.Bytes(), &metadata)
+	intent := adapter.ParseIntent("com/test/metadata/metadata-lib/maven-metadata.xml", c.Request.Method)
+	result, err := adapter.HandleGet(c.Request.Context(), repo, intent)
 	assert.Nil(t, err)
+	assert.NotNil(t, result)
+
+	// Verify XML content through ExtraData
+	metadata, ok := result.ExtraData["xml_struct"].(*MavenMetadata)
+	assert.True(t, ok)
 	assert.Equal(t, "com.test.metadata", metadata.GroupID)
 	assert.Equal(t, "metadata-lib", metadata.ArtifactID)
 	assert.Equal(t, "2.0.0-SNAPSHOT", metadata.Versioning.Latest)
@@ -254,13 +257,19 @@ func TestMavenAdapter_HandleMetadataXML(t *testing.T) {
 func TestMavenAdapter_HandleDownloadArtifact(t *testing.T) {
 	adapter, _ := setupMavenAdapter(t)
 
+	repo := &model.Repository{
+		Name:        "maven2",
+		PackageType: string(model.PackageTypeMaven),
+	}
+
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/maven2/com/test/download-lib/1.0.0/download-lib-1.0.0.jar", nil)
 
-	adapter.handleDownloadArtifact(c, "com/test/download-lib/1.0.0/download-lib-1.0.0.jar")
-
-	assert.Equal(t, 404, w.Code)
+	intent := adapter.ParseIntent("com/test/download-lib/1.0.0/download-lib-1.0.0.jar", c.Request.Method)
+	result, err := adapter.HandleGet(c.Request.Context(), repo, intent)
+	assert.NotNil(t, err)
+	assert.Nil(t, result)
 }
 
 func TestMavenAdapter_HandleChecksumRequest(t *testing.T) {
@@ -285,13 +294,18 @@ func TestMavenAdapter_HandleChecksumRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			repo := &model.Repository{
+				Name:        "maven2",
+				PackageType: string(model.PackageTypeMaven),
+			}
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest("GET", "/maven2/"+tt.path, nil)
 
-			adapter.handleChecksumRequest(c, tt.path)
-
-			assert.Equal(t, tt.expected, w.Code)
+			intent := adapter.ParseIntent(tt.path, c.Request.Method)
+			result, err := adapter.HandleGet(c.Request.Context(), repo, intent)
+			assert.NotNil(t, err)
+			assert.Nil(t, result)
 		})
 	}
 }

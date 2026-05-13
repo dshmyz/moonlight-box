@@ -54,11 +54,9 @@ func setupGoAdapter(t *testing.T) *GoAdapter {
 
 	storageSvc.RefreshBackends()
 
-	auditSvc := service.NewAuditService()
-
 	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
 
-	adapter := NewGoAdapter(storageSvc, auditSvc, pkgCache)
+	adapter := NewGoAdapter(storageSvc, pkgCache)
 	return adapter
 }
 
