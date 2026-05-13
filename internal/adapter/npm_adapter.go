@@ -12,6 +12,7 @@ import (
 
 	"github.com/moonlight-box/registry/internal/cache"
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
 	"github.com/moonlight-box/registry/internal/util"
@@ -94,6 +95,35 @@ func NewNpmAdapter(storageSvc *service.StorageService, pkgCache *cache.PackageCa
 	return &NpmAdapter{
 		BaseAdapter: NewBaseAdapter(storageSvc, pkgCache),
 	}
+}
+
+// NewNpmAdapterCompat keeps backward compatibility with old call sites.
+// Supported signatures:
+//   - NewNpmAdapter(storageSvc, pkgCache)
+//   - NewNpmAdapterCompat(pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+func NewNpmAdapterCompat(args ...interface{}) *NpmAdapter {
+	if len(args) >= 2 {
+		if storageSvc, ok := args[0].(*service.StorageService); ok {
+			if pkgCache, ok := args[1].(*cache.PackageCache); ok {
+				return NewNpmAdapter(storageSvc, pkgCache)
+			}
+		}
+	}
+	if len(args) >= 3 {
+		if storageSvc, ok := args[2].(*service.StorageService); ok {
+			var pkgCache *cache.PackageCache
+			if pkgRepo, ok := args[0].(*repository.PackageRepository); ok {
+				pkgCache = cache.NewPackageCache(pkgRepo, 5*time.Minute)
+			}
+			if len(args) >= 5 {
+				if c, ok := args[4].(*cache.PackageCache); ok {
+					pkgCache = c
+				}
+			}
+			return NewNpmAdapter(storageSvc, pkgCache)
+		}
+	}
+	return NewNpmAdapter(nil, nil)
 }
 
 func (a *NpmAdapter) Type() PackageType { return NpmType }
@@ -186,7 +216,7 @@ func (a *NpmAdapter) resolveTarballPath(path string) (*types.PackagePathInfo, er
 
 // ParseIntent 解析请求路径为意图
 func (a *NpmAdapter) ParseIntent(path string, method string) *types.RequestIntent {
-	path = strings.TrimPrefix(path, "/")
+	path = trimLeadingSlash(path)
 	intent := &types.RequestIntent{
 		Path:  path,
 		Extra: make(map[string]interface{}),
@@ -476,8 +506,8 @@ func marshalMetadata(meta map[string]interface{}) string {
 }
 
 func (a *NpmAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
-	fullPath := strings.TrimPrefix(c.Param("path"), "/")
-	parts := strings.SplitN(fullPath, "/", 2)
+	fullPath := cutBeforeMarker(trimLeadingSlash(c.Param("path")), "/-rev/")
+	parts := splitPathN(fullPath, 2)
 	scope := ""
 	pkgName := fullPath
 
@@ -505,7 +535,11 @@ func (a *NpmAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*type
 
 	allowOverwrite := c.GetBool("allowOverwrite")
 	if !allowOverwrite {
-		existingPkg, err := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeNPM)
+		pkgRepo := a.GetPackageRepository()
+		if pkgRepo == nil {
+			return nil, fmt.Errorf("package repository not initialized")
+		}
+		existingPkg, err := pkgRepo.FindByNameAndType(name, model.PackageTypeNPM)
 		if err == nil {
 			for _, ver := range existingPkg.Versions {
 				if ver.Version == metadata.Version {
@@ -537,8 +571,8 @@ func (a *NpmAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*type
 }
 
 func (a *NpmAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
-	fullPath := strings.TrimPrefix(c.Param("path"), "/")
-	parts := strings.SplitN(fullPath, "/", 2)
+	fullPath := cutBeforeMarker(trimLeadingSlash(c.Param("path")), "/-rev/")
+	parts := splitPathN(fullPath, 2)
 	scope := ""
 	pkgName := fullPath
 
@@ -555,6 +589,23 @@ func (a *NpmAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) erro
 	identity := &PackageIdentity{
 		Name: name,
 		Type: NpmType,
+	}
+
+	if identity.Version == "" {
+		versions, err := a.ListVersions(c.Request.Context(), name)
+		if err != nil {
+			return err
+		}
+		for _, version := range versions {
+			if err := a.Delete(c.Request.Context(), &PackageIdentity{
+				Name:    name,
+				Version: version,
+				Type:    NpmType,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	if err := a.Delete(c.Request.Context(), identity); err != nil {

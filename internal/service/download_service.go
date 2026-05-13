@@ -51,7 +51,18 @@ func NewDownloadService(
 func (s *DownloadService) Download(ctx context.Context, downloadCtx *types.DownloadContext) (*types.DownloadResult, error) {
 	startTime := time.Now()
 
+	if s.storageSvc == nil {
+		return nil, fmt.Errorf("storage service not configured")
+	}
+	if downloadCtx == nil || downloadCtx.Repo == nil {
+		return nil, fmt.Errorf("invalid download context")
+	}
+
 	pathInfo := downloadCtx.ResolvedPath
+	if pathInfo == nil {
+		s.recordLog(downloadCtx, 0, time.Since(startTime), false, fmt.Errorf("resolved path is nil"))
+		return nil, fmt.Errorf("invalid download path")
+	}
 
 	if content, size, err := s.storageSvc.GetPackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, pathInfo.StorageVersion, 0); err == nil {
 		s.recordLog(downloadCtx, size, time.Since(startTime), true, nil)

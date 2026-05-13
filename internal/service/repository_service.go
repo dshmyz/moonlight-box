@@ -1,6 +1,8 @@
 package service
 
 import (
+	"fmt"
+
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
@@ -61,15 +63,15 @@ func (s *RepositoryService) Create(repo *model.Repository, members []string) err
 			return err
 		}
 
-		if repo.Type == model.RepoTypeVirtual && len(members) > 0 {
-			for i, memberName := range members {
-				var memberRepo model.Repository
-				if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
-					continue
-				}
-				group := model.RepositoryGroup{
-					VirtualRepoID: repo.ID,
-					MemberRepoID:  memberRepo.ID,
+			if repo.Type == model.RepoTypeVirtual && len(members) > 0 {
+				for i, memberName := range members {
+					var memberRepo model.Repository
+					if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
+						return fmt.Errorf("member repository not found: %s", memberName)
+					}
+					group := model.RepositoryGroup{
+						VirtualRepoID: repo.ID,
+						MemberRepoID:  memberRepo.ID,
 					Priority:      i,
 				}
 				if err := tx.Create(&group).Error; err != nil {
@@ -162,14 +164,14 @@ func (s *RepositoryService) Update(name string, updates map[string]interface{}) 
 				return err
 			}
 
-			for i, memberName := range members {
-				var memberRepo model.Repository
-				if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
-					continue
-				}
-				group := model.RepositoryGroup{
-					VirtualRepoID: virtualRepo.ID,
-					MemberRepoID:  memberRepo.ID,
+				for i, memberName := range members {
+					var memberRepo model.Repository
+					if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
+						return fmt.Errorf("member repository not found: %s", memberName)
+					}
+					group := model.RepositoryGroup{
+						VirtualRepoID: virtualRepo.ID,
+						MemberRepoID:  memberRepo.ID,
 					Priority:      i,
 				}
 				if err := tx.Create(&group).Error; err != nil {

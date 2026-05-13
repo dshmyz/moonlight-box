@@ -222,7 +222,6 @@ func TestNpmAdapter_Delete(t *testing.T) {
 		PackageID:   pkg.ID,
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: "packages/npm/delete-test/1.0.0",
 		SizeBytes:   1000,
 	}
 	db.Create(version)

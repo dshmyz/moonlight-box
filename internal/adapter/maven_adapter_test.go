@@ -132,7 +132,6 @@ func TestMavenAdapter_GetMetadata(t *testing.T) {
 		PackageID:   pkg.ID,
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: "maven/com.test/my-lib/1.0.0",
 	}
 	db.Create(version)
 
@@ -163,9 +162,9 @@ func TestMavenAdapter_ListVersions(t *testing.T) {
 	db.Create(pkg)
 
 	versions := []model.PackageVersion{
-		{PackageID: pkg.ID, Version: "1.0.0", Status: model.StatusPublished, StoragePath: "path1"},
-		{PackageID: pkg.ID, Version: "1.1.0", Status: model.StatusPublished, StoragePath: "path2"},
-		{PackageID: pkg.ID, Version: "2.0.0", Status: model.StatusPublished, StoragePath: "path3"},
+		{PackageID: pkg.ID, Version: "1.0.0", Status: model.StatusPublished},
+		{PackageID: pkg.ID, Version: "1.1.0", Status: model.StatusPublished},
+		{PackageID: pkg.ID, Version: "2.0.0", Status: model.StatusPublished},
 	}
 	for _, v := range versions {
 		db.Create(&v)
@@ -193,7 +192,6 @@ func TestMavenAdapter_Delete(t *testing.T) {
 		PackageID:   pkg.ID,
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: "maven/com.test/deletable-lib/1.0.0",
 	}
 	db.Create(version)
 
@@ -222,9 +220,9 @@ func TestMavenAdapter_HandleMetadataXML(t *testing.T) {
 	db.Create(pkg)
 
 	versions := []model.PackageVersion{
-		{PackageID: pkg.ID, Version: "1.0.0", Status: model.StatusPublished, StoragePath: "path1"},
-		{PackageID: pkg.ID, Version: "1.1.0", Status: model.StatusPublished, StoragePath: "path2"},
-		{PackageID: pkg.ID, Version: "2.0.0-SNAPSHOT", Status: model.StatusPublished, StoragePath: "path3"},
+		{PackageID: pkg.ID, Version: "1.0.0", Status: model.StatusPublished},
+		{PackageID: pkg.ID, Version: "1.1.0", Status: model.StatusPublished},
+		{PackageID: pkg.ID, Version: "2.0.0-SNAPSHOT", Status: model.StatusPublished},
 	}
 	for _, v := range versions {
 		db.Create(&v)
@@ -268,8 +266,9 @@ func TestMavenAdapter_HandleDownloadArtifact(t *testing.T) {
 
 	intent := adapter.ParseIntent("com/test/download-lib/1.0.0/download-lib-1.0.0.jar", c.Request.Method)
 	result, err := adapter.HandleGet(c.Request.Context(), repo, intent)
-	assert.NotNil(t, err)
-	assert.Nil(t, result)
+	assert.Nil(t, err)
+	assert.NotNil(t, result)
+	assert.Equal(t, 404, result.StatusCode)
 }
 
 func TestMavenAdapter_HandleChecksumRequest(t *testing.T) {
@@ -302,12 +301,13 @@ func TestMavenAdapter_HandleChecksumRequest(t *testing.T) {
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest("GET", "/maven2/"+tt.path, nil)
 
-			intent := adapter.ParseIntent(tt.path, c.Request.Method)
-			result, err := adapter.HandleGet(c.Request.Context(), repo, intent)
-			assert.NotNil(t, err)
-			assert.Nil(t, result)
-		})
-	}
+				intent := adapter.ParseIntent(tt.path, c.Request.Method)
+				result, err := adapter.HandleGet(c.Request.Context(), repo, intent)
+				assert.Nil(t, err)
+				assert.NotNil(t, result)
+				assert.Equal(t, tt.expected, result.StatusCode)
+			})
+		}
 }
 
 func TestIsRelease(t *testing.T) {

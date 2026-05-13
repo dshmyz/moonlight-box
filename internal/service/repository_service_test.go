@@ -258,13 +258,8 @@ func TestRepositoryService_Create_VirtualRepoWithNonExistentMember(t *testing.T)
 
 	members := []string{"non-existent-repo"}
 	err := service.Create(virtualRepo, members)
-	assert.Nil(t, err)
-	assert.NotZero(t, virtualRepo.ID)
-
-	// 验证没有成员被添加
-	memberList, err := service.GetMembers("npm-virtual-empty")
-	assert.Nil(t, err)
-	assert.Equal(t, 0, len(memberList))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "member repository not found")
 }
 
 func TestRepositoryService_GetAuthConfig_None(t *testing.T) {

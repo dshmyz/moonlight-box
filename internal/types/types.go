@@ -148,6 +148,7 @@ type GenericPublishResponse struct {
 
 type PublishResult struct {
 	PackageName    string
+	StorageName    string
 	Version        string
 	Filename       string
 	Content        io.Reader

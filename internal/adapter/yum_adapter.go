@@ -123,11 +123,45 @@ type YumDependency struct {
 	Pre   bool   `xml:"pre,attr,omitempty"`
 }
 
-func NewYumAdapter(
-	repoRepo *repository.RepositoryRepository,
-	storageSvc *service.StorageService,
-	pkgCache *cache.PackageCache,
-) *YumAdapter {
+func NewYumAdapter(args ...interface{}) *YumAdapter {
+	var repoRepo *repository.RepositoryRepository
+	var storageSvc *service.StorageService
+	var pkgCache *cache.PackageCache
+
+	// New signature: (repoRepo, storageSvc, pkgCache)
+	if len(args) >= 1 {
+		if r, ok := args[0].(*repository.RepositoryRepository); ok {
+			repoRepo = r
+		}
+	}
+	if len(args) >= 2 {
+		if s, ok := args[1].(*service.StorageService); ok {
+			storageSvc = s
+		}
+	}
+	if len(args) >= 3 {
+		if c, ok := args[2].(*cache.PackageCache); ok {
+			pkgCache = c
+		}
+	}
+
+	// Legacy signature: (pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+	if repoRepo == nil && len(args) >= 2 {
+		if r, ok := args[1].(*repository.RepositoryRepository); ok {
+			repoRepo = r
+		}
+	}
+	if storageSvc == nil && len(args) >= 3 {
+		if s, ok := args[2].(*service.StorageService); ok {
+			storageSvc = s
+		}
+	}
+	if pkgCache == nil && len(args) >= 1 {
+		if pkgRepo, ok := args[0].(*repository.PackageRepository); ok {
+			pkgCache = cache.NewPackageCache(pkgRepo, 5*time.Minute)
+		}
+	}
+
 	adapter := &YumAdapter{
 		BaseAdapter: NewBaseAdapter(storageSvc, pkgCache),
 		repoRepo:    repoRepo,
@@ -177,7 +211,7 @@ func (a *YumAdapter) resolveRpmPath(path string) (*types.PackagePathInfo, error)
 	}
 
 	filename := parts[len(parts)-1]
-	name := strings.Join(parts[:len(parts)-1], "/")
+	name := strings.TrimSuffix(filename, ".rpm")
 	version := ""
 
 	base := strings.TrimSuffix(filename, ".rpm")
@@ -186,9 +220,10 @@ func (a *YumAdapter) resolveRpmPath(path string) (*types.PackagePathInfo, error)
 		version = pkgParts[1]
 	}
 
-	storageName := name
+	pkgName, _, _, _ := parseRpmFilename(filename)
+	storageName := pkgName
 	storageVersion := filename
-	remotePath := name + "/" + filename
+	remotePath := path
 
 	return &types.PackagePathInfo{
 		Name:           name,
@@ -415,6 +450,9 @@ func (a *YumAdapter) ParseIntent(path string, method string) *types.RequestInten
 			name, version, _, _ := parseRpmFilename(intent.Filename)
 			intent.Name = name
 			intent.Version = version
+		}
+		if pathInfo, err := a.ParsePath(path); err == nil {
+			intent.PkgPathInfo = pathInfo
 		}
 		return intent
 	}
@@ -710,8 +748,6 @@ func unmarshalMetadata(data string) map[string]interface{} {
 }
 
 func (a *YumAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
-	userID := ctx.UserID
-
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
 		return nil, fmt.Errorf("missing file: %v", err)
@@ -729,37 +765,18 @@ func (a *YumAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*type
 	}
 
 	packageName, version, release, arch := parseRpmFilename(rpmName)
-
-	packagesDir := fmt.Sprintf("repos/%s/Packages/%s", ctx.Repo.Name, arch)
-	storageKey := fmt.Sprintf("%s/%s", packagesDir, rpmName)
-
-	backend := a.storageSvc.GetDefaultBackend()
-	if err := backend.Put(c.Request.Context(), storageKey, bytes.NewReader(rpmData), header.Size); err != nil {
-		return nil, err
-	}
-
-	pkg, _, err := a.GetPackageRepository().CreateOrUpdate(c.Request.Context(), &model.Package{
-		Name:           packageName,
-		Type:           model.PackageTypeYum,
-		RepositoryType: model.RepoTypeLocal,
-		CreatedBy:      userID,
-	}, &model.PackageVersion{
-		Version:     version,
-		Status:      model.StatusPublished,
-		SizeBytes:   header.Size,
-		PublishedBy: userID,
-		Metadata:    marshalMetadata(map[string]interface{}{"repo": ctx.Repo.Name, "arch": arch, "release": release}),
-	})
-	if err != nil {
-		backend.Delete(c.Request.Context(), storageKey)
-		return nil, err
-	}
+	storageVersion := rpmName
 
 	return &types.PublishResult{
-		PackageName: packageName,
-		Version:     version,
-		Size:        header.Size,
-		Filename:    rpmName,
+		PackageName:    packageName,
+		Version:        version,
+		Size:           header.Size,
+		Filename:       rpmName,
+		Content:        bytes.NewReader(rpmData),
+		FileType:       model.FileTypePrimary,
+		StorageVersion: storageVersion,
+		DownloadURL:    fmt.Sprintf("/Packages/%s/%s", arch, rpmName),
+		Metadata:       map[string]interface{}{"repo": ctx.Repo.Name, "arch": arch, "release": release},
 		Response: &types.YumPublishResponse{
 			PublishResponse: types.PublishResponse{
 				Success:  true,
@@ -772,14 +789,14 @@ func (a *YumAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*type
 			Repo:       ctx.Repo.Name,
 			Arch:       arch,
 			Release:    release,
-			StorageKey: storageKey,
-			PackageId:  pkg.ID,
+			StorageKey: "",
+			PackageId:  0,
 		},
 	}, nil
 }
 
 func (a *YumAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
-	fullPath := strings.TrimPrefix(c.Param("path"), "/")
+	fullPath := trimLeadingSlash(c.Param("path"))
 	parts := strings.Split(fullPath, "/")
 	if len(parts) < 2 {
 		return fmt.Errorf("invalid path: expected name/version")

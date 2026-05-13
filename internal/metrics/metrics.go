@@ -30,6 +30,31 @@ var (
 		[]string{"package_type", "package_name", "version"},
 	)
 
+	DownloadRequestsByTypeTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "moonlight_download_requests_by_type_total",
+			Help: "Total number of package download requests by type/source/result",
+		},
+		[]string{"package_type", "source", "result"},
+	)
+
+	DownloadBytesByTypeTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "moonlight_download_bytes_by_type_total",
+			Help: "Total downloaded bytes by package type and source",
+		},
+		[]string{"package_type", "source"},
+	)
+
+	DownloadDurationByType = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "moonlight_download_duration_seconds",
+			Help:    "Download request duration in seconds by package type/source/result",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"package_type", "source", "result"},
+	)
+
 	UploadsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "moonlight_uploads_total",
@@ -113,6 +138,14 @@ var (
 
 func RecordDownload(packageType, packageName, version string) {
 	DownloadsTotal.WithLabelValues(packageType, packageName, version).Inc()
+}
+
+func RecordDownloadStats(packageType, source, result string, sizeBytes int64, durationSeconds float64) {
+	DownloadRequestsByTypeTotal.WithLabelValues(packageType, source, result).Inc()
+	if sizeBytes > 0 {
+		DownloadBytesByTypeTotal.WithLabelValues(packageType, source).Add(float64(sizeBytes))
+	}
+	DownloadDurationByType.WithLabelValues(packageType, source, result).Observe(durationSeconds)
 }
 
 func RecordUpload(packageType, packageName, version string) {

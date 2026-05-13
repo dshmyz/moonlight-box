@@ -134,6 +134,9 @@ func (s *MigrationService) StartQueue() {
 
 // EnqueueTask 将任务 ID 加入队列
 func (s *MigrationService) EnqueueTask(taskID uint) error {
+	// 确保队列处理器已启动，避免任务长期停留在 queued
+	s.StartQueue()
+
 	select {
 	case s.queue <- taskID:
 		return nil
@@ -399,6 +402,11 @@ func (s *MigrationService) CreateTask(sourceURL, username, password string, sele
 
 	// 加入队列
 	if err := s.EnqueueTask(task.ID); err != nil {
+		// 与 CreateSyncConfigTask 行为对齐，避免遗留 queued 孤儿任务
+		s.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
+			"status":        model.MigrationFailed,
+			"error_message": "任务入队失败: " + err.Error(),
+		})
 		return nil, err
 	}
 

@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/moonlight-box/registry/internal/cache"
 	"github.com/moonlight-box/registry/internal/model"
@@ -23,16 +25,55 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func looksLikeJSON(body []byte) bool {
+	trimmed := strings.TrimSpace(string(body))
+	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
+}
+
 type PyPIAdapter struct {
 	*BaseAdapter
 	repoRepo *repository.RepositoryRepository
 }
 
-func NewPyPIAdapter(
-	repoRepo *repository.RepositoryRepository,
-	storageSvc *service.StorageService,
-	pkgCache *cache.PackageCache,
-) *PyPIAdapter {
+func NewPyPIAdapter(args ...interface{}) *PyPIAdapter {
+	var repoRepo *repository.RepositoryRepository
+	var storageSvc *service.StorageService
+	var pkgCache *cache.PackageCache
+
+	// New signature: (repoRepo, storageSvc, pkgCache)
+	if len(args) >= 1 {
+		if r, ok := args[0].(*repository.RepositoryRepository); ok {
+			repoRepo = r
+		}
+	}
+	if len(args) >= 2 {
+		if s, ok := args[1].(*service.StorageService); ok {
+			storageSvc = s
+		}
+	}
+	if len(args) >= 3 {
+		if c, ok := args[2].(*cache.PackageCache); ok {
+			pkgCache = c
+		}
+	}
+
+	// Legacy signature: (pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+	if repoRepo == nil && len(args) >= 2 {
+		if r, ok := args[1].(*repository.RepositoryRepository); ok {
+			repoRepo = r
+		}
+	}
+	if storageSvc == nil && len(args) >= 3 {
+		if s, ok := args[2].(*service.StorageService); ok {
+			storageSvc = s
+		}
+	}
+	if pkgCache == nil && len(args) >= 1 {
+		if pkgRepo, ok := args[0].(*repository.PackageRepository); ok {
+			pkgCache = cache.NewPackageCache(pkgRepo, 5*time.Minute)
+		}
+	}
+
 	return &PyPIAdapter{
 		BaseAdapter: NewBaseAdapter(storageSvc, pkgCache),
 		repoRepo:    repoRepo,
@@ -76,11 +117,12 @@ func (a *PyPIAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 		name = regexp.MustCompile(`-\d+.*$`).ReplaceAllString(name, "")
 
 		return &types.PackagePathInfo{
-			Name:        name,
-			Version:     "",
-			Filename:    filename,
-			StorageName: name,
-			RemotePath:  path,
+			Name:           name,
+			Version:        "",
+			Filename:       filename,
+			StorageName:    name,
+			StorageVersion: filename,
+			RemotePath:     path,
 		}, nil
 	}
 
@@ -262,12 +304,17 @@ func (a *PyPIAdapter) packageFilesHTML(pkgName string, repo *model.Repository) (
 	sb.WriteString(html)
 
 	for _, ver := range pkg.Versions {
-		filename := filepath.Base(ver.Version)
+		for _, f := range ver.Files {
+			filename := f.Filename
+			if filename == "" {
+				continue
+			}
 		sb.WriteString(`<a href="/pypi/packages/`)
 		sb.WriteString(filename)
 		sb.WriteString(`">`)
 		sb.WriteString(filename)
 		sb.WriteString(`</a><br>` + "\n")
+		}
 	}
 	sb.WriteString("</body></html>")
 
@@ -389,19 +436,62 @@ func (a *PyPIAdapter) JSONAPI(pkgName string, version string, repo *model.Reposi
 	if err != nil {
 		if util.IsErr(err, util.ErrPackageNotFound) {
 			if a.fetcher != nil && repo != nil {
-				pathInfo, _ := a.ParsePath("simple/" + pkgName + "/")
-				remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+				baseURL := strings.TrimSuffix(repo.RemoteURL, "/")
+				jsonPath := fmt.Sprintf("pypi/%s/json", pkgName)
+				if version != "" {
+					jsonPath = fmt.Sprintf("pypi/%s/%s/json", pkgName, version)
+				}
+				remoteURL := fmt.Sprintf("%s/%s", baseURL, jsonPath)
 				result, resolveErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
 				if resolveErr == nil && result != nil {
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
 					if readErr == nil {
+						if !looksLikeJSON(body) {
+							fallback := gin.H{
+								"info": gin.H{
+									"name":    pkgName,
+									"version": version,
+									"summary": "",
+								},
+								"releases": gin.H{},
+							}
+							body, _ = json.Marshal(fallback)
+						}
 						return &types.ContentResult{
 							StatusCode:  200,
 							ContentType: "application/json",
 							Content:     io.NopCloser(bytes.NewReader(body)),
 							Size:        int64(len(body)),
 						}, nil
+					}
+				}
+				// 兜底：某些镜像不支持版本级 JSON，回退到包级 JSON。
+				if version != "" {
+					remoteURL = fmt.Sprintf("%s/pypi/%s/json", baseURL, pkgName)
+					result, resolveErr = a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
+					if resolveErr == nil && result != nil {
+						defer result.Content.Close()
+						body, readErr := io.ReadAll(result.Content)
+						if readErr == nil {
+							if !looksLikeJSON(body) {
+								fallback := gin.H{
+									"info": gin.H{
+										"name":    pkgName,
+										"version": version,
+										"summary": "",
+									},
+									"releases": gin.H{},
+								}
+								body, _ = json.Marshal(fallback)
+							}
+							return &types.ContentResult{
+								StatusCode:  200,
+								ContentType: "application/json",
+								Content:     io.NopCloser(bytes.NewReader(body)),
+								Size:        int64(len(body)),
+							}, nil
+						}
 					}
 				}
 			}
@@ -469,7 +559,7 @@ func (a *PyPIAdapter) ListVersions(ctx context.Context, name string) ([]string, 
 
 // ParseIntent 解析请求路径为意图
 func (a *PyPIAdapter) ParseIntent(path string, method string) *types.RequestIntent {
-	path = strings.TrimPrefix(path, "/")
+	path = trimLeadingSlash(path)
 	intent := &types.RequestIntent{
 		Path:  path,
 		Extra: make(map[string]interface{}),
@@ -500,6 +590,9 @@ func (a *PyPIAdapter) ParseIntent(path string, method string) *types.RequestInte
 		name, version := parseWheelFilename(filename)
 		intent.Name = name
 		intent.Version = version
+		if pathInfo, err := a.ParsePath(path); err == nil {
+			intent.PkgPathInfo = pathInfo
+		}
 		return intent
 	}
 
@@ -649,7 +742,7 @@ func (a *PyPIAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*typ
 }
 
 func (a *PyPIAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
-	fullPath := strings.TrimPrefix(c.Param("path"), "/")
+	fullPath := trimLeadingSlash(c.Param("path"))
 	parts := strings.Split(fullPath, "/")
 	if len(parts) < 2 {
 		return fmt.Errorf("invalid path: expected name/version")

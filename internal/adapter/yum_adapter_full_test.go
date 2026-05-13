@@ -155,7 +155,6 @@ func TestYumAdapter_GetMetadata(t *testing.T) {
 		PackageID:   pkg.ID,
 		Version:     "1.20.1",
 		Status:      model.StatusPublished,
-		StoragePath: "yum/nginx/1.20.1",
 	}
 	db.Create(version)
 
@@ -186,9 +185,9 @@ func TestYumAdapter_ListVersions(t *testing.T) {
 	db.Create(pkg)
 
 	versions := []model.PackageVersion{
-		{PackageID: pkg.ID, Version: "2.4.51", Status: model.StatusPublished, StoragePath: "path1"},
-		{PackageID: pkg.ID, Version: "2.4.52", Status: model.StatusPublished, StoragePath: "path2"},
-		{PackageID: pkg.ID, Version: "2.4.53", Status: model.StatusPublished, StoragePath: "path3"},
+		{PackageID: pkg.ID, Version: "2.4.51", Status: model.StatusPublished},
+		{PackageID: pkg.ID, Version: "2.4.52", Status: model.StatusPublished},
+		{PackageID: pkg.ID, Version: "2.4.53", Status: model.StatusPublished},
 	}
 	for _, v := range versions {
 		db.Create(&v)
@@ -216,7 +215,6 @@ func TestYumAdapter_Delete(t *testing.T) {
 		PackageID:   pkg.ID,
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: "yum/deletable-pkg/1.0.0",
 	}
 	db.Create(version)
 

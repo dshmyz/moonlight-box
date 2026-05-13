@@ -21,7 +21,6 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
-	"github.com/moonlight-box/registry/internal/types"
 	_ "github.com/mattn/go-sqlite3"
 	"gorm.io/driver/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -87,14 +86,12 @@ func setupMavenTestEnv() {
 	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
 	mavenRepoHandler = proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
 
-	auditSvc := service.NewAuditService()
-	mavenAdapter = adapter.NewMavenAdapter(mavenPkgRepo, repoRepo, mavenStorageSvc, auditSvc, nil)
+	mavenAdapter = adapter.NewMavenAdapter(mavenPkgRepo, repoRepo, mavenStorageSvc, nil, nil)
 	mavenRepoHandler.RegisterAdapter("maven", mavenAdapter)
 
 	logRepo := repository.NewProxyDownloadLogRepository(mavenTestDB)
 	countBatcher := service.NewDownloadCountBatcher(mavenTestDB, 5*time.Second)
-	adapters := map[string]types.Adapter{"maven": mavenAdapter}
-	downloadSvc := service.NewDownloadService(adapters, mavenPkgRepo, mavenStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	downloadSvc := service.NewDownloadService(mavenPkgRepo, mavenStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
 	mavenRepoHandler.SetDownloadService(downloadSvc)
 
 	router := setupMavenRouter()
@@ -124,6 +121,7 @@ func setupMavenRouter() *gin.Engine {
 
 	repoRouter := handler.NewRepoRouter(mavenRepoSvc)
 	repoRouter.SetResolver(mavenRepoHandler)
+	repoRouter.SetUploadService(service.NewUploadService(mavenPkgRepo, mavenStorageSvc))
 
 	repoGroup := router.Group("/repo/:repoName")
 	{
@@ -133,7 +131,7 @@ func setupMavenRouter() *gin.Engine {
 	}
 
 	repoHandler := handler.NewRepositoryHandler(mavenRepoSvc)
-	repoAPI := router.Group("/api/repositories")
+	repoAPI := router.Group("/api/v1/repositories")
 	{
 		repoAPI.GET("", repoHandler.List)
 		repoAPI.GET("/:name", repoHandler.Get)
@@ -267,19 +265,28 @@ func TestE2E_Maven_DownloadArtifact(t *testing.T) {
 	defer teardownMavenTestEnv()
 
 	mavenPkgRepo.StorePackageFile(context.Background(), &model.Package{
-		Name:        "com.test/download-lib",
+		Name:        "com.test:download-lib",
 		Type:        model.PackageTypeMaven,
 		Description: "Download test library",
 	}, &model.PackageVersion{
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: "maven/com.test/download-lib/1.0.0",
 	}, &model.PackageFile{
 		Filename:    "download-lib-1.0.0.jar",
 		FileType:    model.FileTypePrimary,
-		StoragePath: "maven/com.test/download-lib/1.0.0/download-lib-1.0.0.jar",
+		StoragePath: "com/test/download-lib/1.0.0/download-lib-1.0.0.jar",
 		SizeBytes:   1000,
 	})
+	_, _ = mavenStorageSvc.StorePackageWithBackend(
+		context.Background(),
+		"maven-download-e2e",
+		"maven",
+		"com/test/download-lib",
+		"1.0.0/download-lib-1.0.0.jar",
+		bytes.NewReader([]byte("download test content")),
+		int64(len([]byte("download test content"))),
+		0,
+	)
 
 	repo := &model.Repository{
 		Name:        "maven-download-e2e",
@@ -302,26 +309,6 @@ func TestE2E_Maven_ChecksumFiles(t *testing.T) {
 	defer teardownMavenTestEnv()
 
 	jarContent := []byte("test jar for checksum")
-
-	storageKey := "maven2/com.test:checksum-lib/1.0.0/checksum-lib-1.0.0.jar"
-	err := mavenStorageSvc.GetDefaultBackend().Put(context.Background(), storageKey, bytes.NewReader(jarContent), int64(len(jarContent)))
-	assert.Nil(t, err)
-
-	mavenPkgRepo.StorePackageFile(context.Background(), &model.Package{
-		Name:        "com.test/checksum-lib",
-		Type:        model.PackageTypeMaven,
-		Description: "Checksum test library",
-	}, &model.PackageVersion{
-		Version:     "1.0.0",
-		Status:      model.StatusPublished,
-		StoragePath: "maven2/com.test:checksum-lib/1.0.0",
-	}, &model.PackageFile{
-		Filename:    "checksum-lib-1.0.0.jar",
-		FileType:    model.FileTypePrimary,
-		StoragePath: storageKey,
-		SizeBytes:   int64(len(jarContent)),
-	})
-
 	repo := &model.Repository{
 		Name:        "maven-checksum-e2e",
 		Type:        model.RepoTypeLocal,
@@ -329,6 +316,31 @@ func TestE2E_Maven_ChecksumFiles(t *testing.T) {
 		Enabled:     true,
 	}
 	mavenRepoSvc.Create(repo, nil)
+
+	_, _ = mavenStorageSvc.StorePackageWithBackend(
+		context.Background(),
+		"maven-checksum-e2e",
+		"maven",
+		"com/test/checksum-lib",
+		"1.0.0/checksum-lib-1.0.0.jar",
+		bytes.NewReader(jarContent),
+		int64(len(jarContent)),
+		0,
+	)
+
+	mavenPkgRepo.StorePackageFile(context.Background(), &model.Package{
+		Name:        "com.test:checksum-lib",
+		Type:        model.PackageTypeMaven,
+		Description: "Checksum test library",
+	}, &model.PackageVersion{
+		Version:     "1.0.0",
+		Status:      model.StatusPublished,
+	}, &model.PackageFile{
+		Filename:    "checksum-lib-1.0.0.jar",
+		FileType:    model.FileTypePrimary,
+		StoragePath: "com/test/checksum-lib/1.0.0/checksum-lib-1.0.0.jar",
+		SizeBytes:   int64(len(jarContent)),
+	})
 
 	sha1Resp, err := http.Get(mavenTestServer.URL + "/repo/maven-checksum-e2e/com/test/checksum-lib/1.0.0/checksum-lib-1.0.0.jar.sha1")
 	assert.Nil(t, err)
@@ -350,19 +362,28 @@ func TestE2E_Maven_DeleteArtifact(t *testing.T) {
 	defer teardownMavenTestEnv()
 
 	mavenPkgRepo.StorePackageFile(context.Background(), &model.Package{
-		Name:        "com.test/deletable-lib",
+		Name:        "com.test:deletable-lib",
 		Type:        model.PackageTypeMaven,
 		Description: "Deletable test library",
 	}, &model.PackageVersion{
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: "maven/com.test/deletable-lib/1.0.0",
 	}, &model.PackageFile{
 		Filename:    "deletable-lib-1.0.0.jar",
 		FileType:    model.FileTypePrimary,
-		StoragePath: "maven/com.test/deletable-lib/1.0.0/deletable-lib-1.0.0.jar",
+		StoragePath: "com/test/deletable-lib/1.0.0/deletable-lib-1.0.0.jar",
 		SizeBytes:   1000,
 	})
+	_, _ = mavenStorageSvc.StorePackageWithBackend(
+		context.Background(),
+		"maven-delete-e2e",
+		"maven",
+		"com/test/deletable-lib",
+		"1.0.0/deletable-lib-1.0.0.jar",
+		bytes.NewReader([]byte("deletable content")),
+		int64(len([]byte("deletable content"))),
+		0,
+	)
 
 	repo := &model.Repository{
 		Name:        "maven-delete-e2e",
@@ -375,7 +396,7 @@ func TestE2E_Maven_DeleteArtifact(t *testing.T) {
 
 	req, _ := http.NewRequest(
 		"DELETE",
-		mavenTestServer.URL+"/repo/maven-delete-e2e/com/test/deletable-lib/1.0.0",
+		mavenTestServer.URL+"/repo/maven-delete-e2e/com/test/deletable-lib/1.0.0/deletable-lib-1.0.0.jar",
 		nil,
 	)
 	client := &http.Client{}
@@ -402,7 +423,7 @@ func TestE2E_Maven_RepositoryManagement(t *testing.T) {
 
 	body, _ := marshalJSON(payload)
 	resp, err := http.Post(
-		mavenTestServer.URL+"/api/repositories",
+		mavenTestServer.URL+"/api/v1/repositories",
 		"application/json",
 		bytes.NewBuffer(body),
 	)
@@ -414,17 +435,17 @@ func TestE2E_Maven_RepositoryManagement(t *testing.T) {
 	data := result["data"].(map[string]interface{})
 	assert.Equal(t, "maven-local-create", data["name"])
 
-	getResp, err := http.Get(mavenTestServer.URL + "/api/repositories/maven-local-create")
+	getResp, err := http.Get(mavenTestServer.URL + "/api/v1/repositories/maven-local-create")
 	assert.Nil(t, err)
 	assert.Equal(t, 200, getResp.StatusCode)
 
-	listResp, err := http.Get(mavenTestServer.URL + "/api/repositories")
+	listResp, err := http.Get(mavenTestServer.URL + "/api/v1/repositories")
 	assert.Nil(t, err)
 	assert.Equal(t, 200, listResp.StatusCode)
 
 	req, _ := http.NewRequest(
 		"DELETE",
-		mavenTestServer.URL+"/api/repositories/maven-local-create",
+		mavenTestServer.URL+"/api/v1/repositories/maven-local-create",
 		nil,
 	)
 	client := &http.Client{}
@@ -432,7 +453,7 @@ func TestE2E_Maven_RepositoryManagement(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, 200, deleteResp.StatusCode)
 
-	getResp2, err := http.Get(mavenTestServer.URL + "/api/repositories/maven-local-create")
+	getResp2, err := http.Get(mavenTestServer.URL + "/api/v1/repositories/maven-local-create")
 	assert.Nil(t, err)
 	assert.Equal(t, 404, getResp2.StatusCode)
 }
@@ -452,7 +473,7 @@ func TestE2E_Maven_ProxyRepository(t *testing.T) {
 
 	body, _ := marshalJSON(payload)
 	resp, err := http.Post(
-		mavenTestServer.URL+"/api/repositories",
+		mavenTestServer.URL+"/api/v1/repositories",
 		"application/json",
 		bytes.NewBuffer(body),
 	)
@@ -490,14 +511,14 @@ func TestE2E_Maven_VirtualRepository(t *testing.T) {
 
 	body, _ := marshalJSON(payload)
 	resp, err := http.Post(
-		mavenTestServer.URL+"/api/repositories/maven-virtual-members/members",
+		mavenTestServer.URL+"/api/v1/repositories/maven-virtual-members/members",
 		"application/json",
 		bytes.NewBuffer(body),
 	)
 	assert.Nil(t, err)
 	assert.Equal(t, 200, resp.StatusCode)
 
-	membersResp, err := http.Get(mavenTestServer.URL + "/api/repositories/maven-virtual-members/members")
+	membersResp, err := http.Get(mavenTestServer.URL + "/api/v1/repositories/maven-virtual-members/members")
 	assert.Nil(t, err)
 	assert.Equal(t, 200, membersResp.StatusCode)
 
@@ -549,6 +570,27 @@ func TestE2E_Maven_CompleteWorkflow(t *testing.T) {
 	pomResp, err := client.Do(pomReq)
 	assert.Nil(t, err)
 	assert.Equal(t, 200, pomResp.StatusCode)
+
+	_, _ = mavenStorageSvc.StorePackageWithBackend(
+		context.Background(),
+		"maven-workflow-complete",
+		"maven",
+		"com/test/workflow-lib",
+		"1.0.0/workflow-lib-1.0.0.jar",
+		bytes.NewReader(jarContent),
+		int64(len(jarContent)),
+		0,
+	)
+	_, _ = mavenStorageSvc.StorePackageWithBackend(
+		context.Background(),
+		"maven-workflow-complete",
+		"maven",
+		"com/test/workflow-lib",
+		"1.0.0/workflow-lib-1.0.0.pom",
+		bytes.NewReader(pomContent),
+		int64(len(pomContent)),
+		0,
+	)
 
 	metadataResp, err := http.Get(mavenTestServer.URL + "/repo/maven-workflow-complete/com/test/workflow-lib/maven-metadata.xml")
 	assert.Nil(t, err)

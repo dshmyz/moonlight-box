@@ -21,7 +21,6 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
-	"github.com/moonlight-box/registry/internal/types"
 	"github.com/stretchr/testify/assert"
 	_ "github.com/mattn/go-sqlite3"
 	"gorm.io/driver/sqlite"
@@ -87,14 +86,12 @@ func setupYumTestEnv() {
 	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
 	yumRepoHandler = proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
 
-	auditSvc := service.NewAuditService()
-	yumAdapter = adapter.NewYumAdapter(yumPkgRepo, repoRepo, yumStorageSvc, auditSvc, nil)
+	yumAdapter = adapter.NewYumAdapter(repoRepo, yumStorageSvc, nil)
 	yumRepoHandler.RegisterAdapter("yum", yumAdapter)
 
 	logRepo := repository.NewProxyDownloadLogRepository(yumTestDB)
 	countBatcher := service.NewDownloadCountBatcher(yumTestDB, 5*time.Second)
-	adapters := map[string]types.Adapter{"yum": yumAdapter}
-	downloadSvc := service.NewDownloadService(adapters, yumPkgRepo, yumStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	downloadSvc := service.NewDownloadService(yumPkgRepo, yumStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
 	yumRepoHandler.SetDownloadService(downloadSvc)
 
 	router := setupYumRouter()
@@ -124,6 +121,7 @@ func setupYumRouter() *gin.Engine {
 
 	repoRouter := handler.NewRepoRouter(yumRepoSvc)
 	repoRouter.SetResolver(yumRepoHandler)
+	repoRouter.SetUploadService(service.NewUploadService(yumPkgRepo, yumStorageSvc))
 
 	repoGroup := router.Group("/repo/:repoName")
 	{
@@ -133,7 +131,7 @@ func setupYumRouter() *gin.Engine {
 	}
 
 	repoHandler := handler.NewRepositoryHandler(yumRepoSvc)
-	repoAPI := router.Group("/api/repositories")
+	repoAPI := router.Group("/api/v1/repositories")
 	{
 		repoAPI.GET("", repoHandler.List)
 		repoAPI.GET("/:name", repoHandler.Get)
@@ -184,13 +182,21 @@ func TestE2E_Yum_DownloadRPM(t *testing.T) {
 	}, &model.PackageVersion{
 		Version:     "1.20.1",
 		Status:      model.StatusPublished,
-		StoragePath: "yum/nginx/1.20.1",
 	}, &model.PackageFile{
 		Filename:    "nginx-1.20.1-1.el9.x86_64.rpm",
 		FileType:    model.FileTypePrimary,
-		StoragePath: "repos/yum-download-e2e/Packages/x86_64/nginx-1.20.1-1.el9.x86_64.rpm",
 		SizeBytes:   1000,
 	})
+	_, _ = yumStorageSvc.StorePackageWithBackend(
+		context.Background(),
+		"yum-download-e2e",
+		"yum",
+		"nginx",
+		"nginx-1.20.1-1.el9.x86_64.rpm",
+		bytes.NewReader([]byte("yum rpm test")),
+		int64(len([]byte("yum rpm test"))),
+		0,
+	)
 
 	repo := &model.Repository{
 		Name:        "yum-download-e2e",
@@ -222,7 +228,7 @@ func TestE2E_Yum_RepositoryManagement(t *testing.T) {
 
 	body, _ := json.Marshal(payload)
 	resp, err := http.Post(
-		yumTestServer.URL+"/api/repositories",
+		yumTestServer.URL+"/api/v1/repositories",
 		"application/json",
 		bytes.NewBuffer(body),
 	)
@@ -231,19 +237,20 @@ func TestE2E_Yum_RepositoryManagement(t *testing.T) {
 
 	var result map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&result)
-	assert.Equal(t, "yum-local-create", result["name"])
+	data := result["data"].(map[string]interface{})
+	assert.Equal(t, "yum-local-create", data["name"])
 
-	getResp, err := http.Get(yumTestServer.URL + "/api/repositories/yum-local-create")
+	getResp, err := http.Get(yumTestServer.URL + "/api/v1/repositories/yum-local-create")
 	assert.Nil(t, err)
 	assert.Equal(t, 200, getResp.StatusCode)
 
-	listResp, err := http.Get(yumTestServer.URL + "/api/repositories")
+	listResp, err := http.Get(yumTestServer.URL + "/api/v1/repositories")
 	assert.Nil(t, err)
 	assert.Equal(t, 200, listResp.StatusCode)
 
 	req, _ := http.NewRequest(
 		"DELETE",
-		yumTestServer.URL+"/api/repositories/yum-local-create",
+		yumTestServer.URL+"/api/v1/repositories/yum-local-create",
 		nil,
 	)
 	client := &http.Client{}
@@ -251,7 +258,7 @@ func TestE2E_Yum_RepositoryManagement(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, 200, deleteResp.StatusCode)
 
-	getResp2, err := http.Get(yumTestServer.URL + "/api/repositories/yum-local-create")
+	getResp2, err := http.Get(yumTestServer.URL + "/api/v1/repositories/yum-local-create")
 	assert.Nil(t, err)
 	assert.Equal(t, 404, getResp2.StatusCode)
 }
@@ -271,7 +278,7 @@ func TestE2E_Yum_ProxyRepository(t *testing.T) {
 
 	body, _ := json.Marshal(payload)
 	resp, err := http.Post(
-		yumTestServer.URL+"/api/repositories",
+		yumTestServer.URL+"/api/v1/repositories",
 		"application/json",
 		bytes.NewBuffer(body),
 	)
@@ -280,7 +287,8 @@ func TestE2E_Yum_ProxyRepository(t *testing.T) {
 
 	var result map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&result)
-	assert.Equal(t, "http://mirror.centos.org/centos/9-stream/BaseOS/x86_64/os/", result["remote_url"])
+	data := result["data"].(map[string]interface{})
+	assert.Equal(t, "http://mirror.centos.org/centos/9-stream/BaseOS/x86_64/os/", data["remote_url"])
 }
 
 func TestE2E_Yum_CompleteWorkflow(t *testing.T) {
@@ -310,7 +318,7 @@ func TestE2E_Yum_CompleteWorkflow(t *testing.T) {
 	assert.Nil(t, err)
 	assert.True(t, resp.StatusCode == 200 || resp.StatusCode == 201)
 
-	listResp, err := http.Get(yumTestServer.URL + "/api/repositories")
+	listResp, err := http.Get(yumTestServer.URL + "/api/v1/repositories")
 	assert.Nil(t, err)
 	assert.Equal(t, 200, listResp.StatusCode)
 }

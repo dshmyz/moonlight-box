@@ -21,7 +21,6 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
-	"github.com/moonlight-box/registry/internal/types"
 	_ "github.com/mattn/go-sqlite3"
 	"gorm.io/driver/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -87,14 +86,12 @@ func setupPyPITestEnv() {
 	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
 	pypiRepoHandler = proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
 
-	auditSvc := service.NewAuditService()
-	pypiAdapter = adapter.NewPyPIAdapter(pypiPkgRepo, repoRepo, pypiStorageSvc, auditSvc, nil)
+	pypiAdapter = adapter.NewPyPIAdapter(pypiPkgRepo, repoRepo, pypiStorageSvc, nil, nil)
 	pypiRepoHandler.RegisterAdapter("pypi", pypiAdapter)
 
 	logRepo := repository.NewProxyDownloadLogRepository(pypiTestDB)
 	countBatcher := service.NewDownloadCountBatcher(pypiTestDB, 5*time.Second)
-	adapters := map[string]types.Adapter{"pypi": pypiAdapter}
-	downloadSvc := service.NewDownloadService(adapters, pypiPkgRepo, pypiStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	downloadSvc := service.NewDownloadService(pypiPkgRepo, pypiStorageSvc, proxyDownloader, logRepo, nil, countBatcher)
 	pypiRepoHandler.SetDownloadService(downloadSvc)
 
 	router := setupPyPIRouter()
@@ -124,6 +121,7 @@ func setupPyPIRouter() *gin.Engine {
 
 	repoRouter := handler.NewRepoRouter(pypiRepoSvc)
 	repoRouter.SetResolver(pypiRepoHandler)
+	repoRouter.SetUploadService(service.NewUploadService(pypiPkgRepo, pypiStorageSvc))
 
 	repoGroup := router.Group("/repo/:repoName")
 	{
@@ -133,7 +131,7 @@ func setupPyPIRouter() *gin.Engine {
 	}
 
 	repoHandler := handler.NewRepositoryHandler(pypiRepoSvc)
-	repoAPI := router.Group("/api/repositories")
+	repoAPI := router.Group("/api/v1/repositories")
 	{
 		repoAPI.GET("", repoHandler.List)
 		repoAPI.GET("/:name", repoHandler.Get)
@@ -168,7 +166,7 @@ func TestE2E_PyPI_UploadPackage(t *testing.T) {
 	writer.WriteField("version", "1.0.0")
 	writer.Close()
 
-	req, _ := http.NewRequest("POST", pypiTestServer.URL+"/repo/pypi-hosted-e2e/upload", body)
+	req, _ := http.NewRequest("PUT", pypiTestServer.URL+"/repo/pypi-hosted-e2e/upload", body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -187,11 +185,9 @@ func TestE2E_PyPI_ListPackages(t *testing.T) {
 	}, &model.PackageVersion{
 		Version:     "2.28.0",
 		Status:      model.StatusPublished,
-		StoragePath: "pypi/requests/2.28.0",
 	}, &model.PackageFile{
 		Filename:    "requests-2.28.0-py3-none-any.whl",
 		FileType:    model.FileTypePrimary,
-		StoragePath: "pypi/requests/2.28.0/requests-2.28.0-py3-none-any.whl",
 		SizeBytes:   1000,
 	})
 
@@ -222,11 +218,9 @@ func TestE2E_PyPI_GetPackageFiles(t *testing.T) {
 	}, &model.PackageVersion{
 		Version:     "2.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: "pypi/flask/2.0.0",
 	}, &model.PackageFile{
 		Filename:    "Flask-2.0.0-py3-none-any.whl",
 		FileType:    model.FileTypePrimary,
-		StoragePath: "pypi/flask/2.0.0/Flask-2.0.0-py3-none-any.whl",
 		SizeBytes:   1000,
 	})
 
@@ -257,13 +251,21 @@ func TestE2E_PyPI_DownloadPackage(t *testing.T) {
 	}, &model.PackageVersion{
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: "pypi/download-test/1.0.0",
 	}, &model.PackageFile{
 		Filename:    "download_test-1.0.0-py3-none-any.whl",
 		FileType:    model.FileTypePrimary,
-		StoragePath: "pypi/download-test/1.0.0/download_test-1.0.0-py3-none-any.whl",
 		SizeBytes:   1000,
 	})
+	_, _ = pypiStorageSvc.StorePackageWithBackend(
+		context.Background(),
+		"pypi-download-e2e",
+		"pypi",
+		"download_test",
+		"download_test-1.0.0-py3-none-any.whl",
+		bytes.NewReader([]byte("download test wheel")),
+		int64(len([]byte("download test wheel"))),
+		0,
+	)
 
 	repo := &model.Repository{
 		Name:        "pypi-download-e2e",
@@ -293,7 +295,7 @@ func TestE2E_PyPI_ProxyRepository(t *testing.T) {
 
 	body, _ := json.Marshal(payload)
 	resp, err := http.Post(
-		pypiTestServer.URL+"/api/repositories",
+		pypiTestServer.URL+"/api/v1/repositories",
 		"application/json",
 		bytes.NewBuffer(body),
 	)
@@ -302,7 +304,8 @@ func TestE2E_PyPI_ProxyRepository(t *testing.T) {
 
 	var result map[string]interface{}
 	json.NewDecoder(resp.Body).Decode(&result)
-	assert.Equal(t, "https://pypi.org", result["remote_url"])
+	data := result["data"].(map[string]interface{})
+	assert.Equal(t, "https://pypi.org", data["remote_url"])
 }
 
 func TestE2E_PyPI_CompleteWorkflow(t *testing.T) {
@@ -328,7 +331,7 @@ func TestE2E_PyPI_CompleteWorkflow(t *testing.T) {
 	writer.WriteField("version", "1.0.0")
 	writer.Close()
 
-	req, _ := http.NewRequest("POST", pypiTestServer.URL+"/repo/pypi-workflow-complete/upload", body)
+	req, _ := http.NewRequest("PUT", pypiTestServer.URL+"/repo/pypi-workflow-complete/upload", body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	client := &http.Client{}
 	resp, err := client.Do(req)

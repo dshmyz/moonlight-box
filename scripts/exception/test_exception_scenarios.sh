@@ -204,13 +204,14 @@ SPECIAL_FILES=(
 for FILENAME in "${SPECIAL_FILES[@]}"; do
     TEST_FILE="$TEST_DIR/$FILENAME"
     echo "Special character test content" > "$TEST_FILE"
-    
+
+    URL_FILENAME="${FILENAME// /%20}"
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-        "$BASE_URL/repo/maven-local/com/test/special-test/1.0.0/$FILENAME" \
+        "$BASE_URL/repo/maven-local/com/test/special-test/1.0.0/$URL_FILENAME" \
         -H "Authorization: Bearer $TOKEN" \
         -H "Content-Type: text/plain" \
-        --data-binary @"$TEST_FILE")
-    
+        --data-binary @"$TEST_FILE" || echo "000")
+
     if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "400" ]; then
         pass "特殊字符文件名处理正常 (HTTP $HTTP_CODE)"
     else

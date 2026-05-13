@@ -146,6 +146,7 @@ type SyncConfigOnlyRequest struct {
 	Username      string   `json:"username"`
 	Password      string   `json:"password"`
 	SelectedRepos []string `json:"selected_repos"`
+	Repos         []string `json:"repos"`
 }
 
 func (h *MigrationHandler) SyncConfigOnly(c *gin.Context) {
@@ -155,7 +156,13 @@ func (h *MigrationHandler) SyncConfigOnly(c *gin.Context) {
 		return
 	}
 
-	task, err := h.service.CreateSyncConfigTask(req.URL, req.Username, req.Password, req.SelectedRepos)
+	selectedRepos := req.SelectedRepos
+	// 向后兼容前端历史字段 `repos`
+	if len(selectedRepos) == 0 && len(req.Repos) > 0 {
+		selectedRepos = req.Repos
+	}
+
+	task, err := h.service.CreateSyncConfigTask(req.URL, req.Username, req.Password, selectedRepos)
 	if err != nil {
 		response.InternalError(c, "创建同步配置任务失败: "+err.Error())
 		return

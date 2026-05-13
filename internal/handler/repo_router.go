@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"bytes"
+	"encoding/xml"
 	"fmt"
 	"net/http"
 	"strings"
@@ -177,10 +179,14 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 	}
 
 	// 第四步：获取内容 — 下载走 Resolve（含 Local/Proxy/Virtual + 缓存 + 日志），非下载走 FetchContent
-	if intent.Type == types.RequestDownload {
-		downloadCtx := &types.DownloadContext{
-			Repo:         repo,
-			PkgType:      model.PackageType(pkgType),
+		if intent.Type == types.RequestDownload {
+			if intent.PkgPathInfo == nil {
+				response.NotFound(c, "invalid package path")
+				return
+			}
+			downloadCtx := &types.DownloadContext{
+				Repo:         repo,
+				PkgType:      model.PackageType(pkgType),
 			Name:         intent.Name,
 			Version:      intent.Version,
 			Filename:     intent.Filename,
@@ -235,6 +241,29 @@ func (r *RepoRouter) formatContentResponse(c *gin.Context, result *types.Content
 	}
 
 	if result.ExtraData != nil {
+		if xmlBody, ok := result.ExtraData["xml_body"]; ok {
+			if body, ok := xmlBody.([]byte); ok {
+				contentType := result.ContentType
+				if contentType == "" {
+					contentType = "application/xml"
+				}
+				c.Data(result.StatusCode, contentType, body)
+				return
+			}
+		}
+		if xmlStruct, ok := result.ExtraData["xml_struct"]; ok {
+			b, err := xml.MarshalIndent(xmlStruct, "", "  ")
+			if err == nil {
+				buf := bytes.NewBufferString(xml.Header)
+				buf.Write(b)
+				contentType := result.ContentType
+				if contentType == "" {
+					contentType = "application/xml"
+				}
+				c.Data(result.StatusCode, contentType, buf.Bytes())
+				return
+			}
+		}
 		c.JSON(result.StatusCode, result.ExtraData)
 		return
 	}
@@ -324,6 +353,7 @@ func (r *RepoRouter) HandlePublish(c *gin.Context) {
 	uploadCtx := &service.UploadContext{
 		PkgType:        string(repo.PackageType),
 		Name:           publishResult.PackageName,
+		StorageName:    publishResult.StorageName,
 		Version:        publishResult.Version,
 		StorageVersion: publishResult.StorageVersion,
 		Filename:       publishResult.Filename,

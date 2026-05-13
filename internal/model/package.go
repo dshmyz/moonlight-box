@@ -73,7 +73,6 @@ type PackageVersion struct {
 	Dependencies   []PackageDependency `gorm:"foreignKey:VersionID" json:"dependencies,omitempty"`
 	Files          []PackageFile       `gorm:"foreignKey:VersionID" json:"files,omitempty"`
 	Package        Package             `gorm:"foreignKey:PackageID" json:"-"`
-
 	// 文件下载状态
 	FilesDownloaded bool `json:"files_downloaded" gorm:"default:false"`
 }

@@ -26,6 +26,7 @@ func NewUploadService(pkgRepo *repository.PackageRepository, storageSvc *Storage
 type UploadContext struct {
 	PkgType        string
 	Name           string
+	StorageName    string
 	Version        string
 	StorageVersion string
 	Filename       string
@@ -58,8 +59,12 @@ func (s *UploadService) Upload(ctx context.Context, uc *UploadContext) (*UploadR
 	if storageVersion == "" {
 		storageVersion = uc.Version
 	}
+	storageName := uc.StorageName
+	if storageName == "" {
+		storageName = uc.Name
+	}
 
-	storageKey, err := s.storageSvc.StorePackageWithBackend(ctx, uc.RepoName, uc.PkgType, uc.Name, storageVersion, checksumReader, uc.Size, 0)
+	storageKey, err := s.storageSvc.StorePackageWithBackend(ctx, uc.RepoName, uc.PkgType, storageName, storageVersion, checksumReader, uc.Size, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to store package: %w", err)
 	}
@@ -92,7 +97,7 @@ func (s *UploadService) Upload(ctx context.Context, uc *UploadContext) (*UploadR
 	})
 
 	if err != nil {
-		s.storageSvc.DeletePackageWithBackend(ctx, uc.RepoName, uc.PkgType, uc.Name, storageVersion, 0)
+		s.storageSvc.DeletePackageWithBackend(ctx, uc.RepoName, uc.PkgType, storageName, storageVersion, 0)
 		return nil, fmt.Errorf("failed to store package metadata: %w", err)
 	}
 

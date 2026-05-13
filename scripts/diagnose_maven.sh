@@ -51,7 +51,7 @@ ORDER BY r.name, rg.priority;"
 echo
 echo "4. 检查最近的下载日志："
 echo "----------------------------------------"
-sqlite3 "$DB_PATH" "SELECT repo_name, package_name, version, source, error_message, created_at 
+sqlite3 "$DB_PATH" "SELECT repository_id, package_name, version, remote_url, error_message, created_at 
 FROM proxy_download_logs 
 WHERE package_type = 'maven' 
 ORDER BY created_at DESC 

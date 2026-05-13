@@ -188,7 +188,6 @@ func TestPyPIAdapter_GetMetadata(t *testing.T) {
 		PackageID:   pkg.ID,
 		Version:     "2.28.0",
 		Status:      model.StatusPublished,
-		StoragePath: "pypi/requests/2.28.0",
 	}
 	db.Create(version)
 
@@ -219,9 +218,9 @@ func TestPyPIAdapter_ListVersions(t *testing.T) {
 	db.Create(pkg)
 
 	versions := []model.PackageVersion{
-		{PackageID: pkg.ID, Version: "1.21.0", Status: model.StatusPublished, StoragePath: "path1"},
-		{PackageID: pkg.ID, Version: "1.22.0", Status: model.StatusPublished, StoragePath: "path2"},
-		{PackageID: pkg.ID, Version: "1.23.0", Status: model.StatusPublished, StoragePath: "path3"},
+		{PackageID: pkg.ID, Version: "1.21.0", Status: model.StatusPublished},
+		{PackageID: pkg.ID, Version: "1.22.0", Status: model.StatusPublished},
+		{PackageID: pkg.ID, Version: "1.23.0", Status: model.StatusPublished},
 	}
 	for _, v := range versions {
 		db.Create(&v)
@@ -249,7 +248,6 @@ func TestPyPIAdapter_Delete(t *testing.T) {
 		PackageID:   pkg.ID,
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: "pypi/deletable-package/1.0.0",
 	}
 	db.Create(version)
 
@@ -309,7 +307,6 @@ func TestPyPIAdapter_PackageFiles(t *testing.T) {
 		PackageID:   pkg.ID,
 		Version:     "2.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: "pypi/flask/2.0.0",
 	}
 	db.Create(version)
 
@@ -317,7 +314,6 @@ func TestPyPIAdapter_PackageFiles(t *testing.T) {
 		VersionID:   version.ID,
 		Filename:    "Flask-2.0.0-py3-none-any.whl",
 		FileType:    model.FileTypePrimary,
-		StoragePath: "pypi/flask/2.0.0/Flask-2.0.0-py3-none-any.whl",
 		SizeBytes:   1000,
 	}
 	db.Create(file)
@@ -374,7 +370,6 @@ func TestPyPIAdapter_JSONAPI(t *testing.T) {
 		PackageID:   pkg.ID,
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-		StoragePath: "pypi/jsonapi-test/1.0.0",
 	}
 	db.Create(version)
 

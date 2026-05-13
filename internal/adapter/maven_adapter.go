@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/cache"
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
 	"github.com/sirupsen/logrus"
@@ -92,10 +93,34 @@ type MavenDependency struct {
 	Scope      string `xml:"scope"`
 }
 
-func NewMavenAdapter(
-	storageSvc *service.StorageService,
-	pkgCache *cache.PackageCache,
-) *MavenAdapter {
+func NewMavenAdapter(args ...interface{}) *MavenAdapter {
+	var storageSvc *service.StorageService
+	var pkgCache *cache.PackageCache
+
+	// New signature: (storageSvc, pkgCache)
+	if len(args) >= 1 {
+		if s, ok := args[0].(*service.StorageService); ok {
+			storageSvc = s
+		}
+	}
+	if len(args) >= 2 {
+		if c, ok := args[1].(*cache.PackageCache); ok {
+			pkgCache = c
+		}
+	}
+
+	// Legacy signature: (pkgRepo, repoRepo, storageSvc, auditSvc, pkgCache)
+	if storageSvc == nil && len(args) >= 3 {
+		if s, ok := args[2].(*service.StorageService); ok {
+			storageSvc = s
+		}
+	}
+	if pkgCache == nil && len(args) >= 1 {
+		if pkgRepo, ok := args[0].(*repository.PackageRepository); ok {
+			pkgCache = cache.NewPackageCache(pkgRepo, 5*time.Minute)
+		}
+	}
+
 	return &MavenAdapter{
 		BaseAdapter: NewBaseAdapter(storageSvc, pkgCache),
 	}
@@ -609,6 +634,16 @@ func groupArtifactToStoragePath(groupArtifact string) string {
 	return groupArtifact
 }
 
+func mavenNameToStoragePath(name string) string {
+	if strings.Contains(name, ":") {
+		parts := strings.SplitN(name, ":", 2)
+		if len(parts) == 2 {
+			return strings.ReplaceAll(parts[0], ".", "/") + "/" + parts[1]
+		}
+	}
+	return name
+}
+
 func groupArtifactToName(groupArtifact string) string {
 	lastSlash := strings.LastIndex(groupArtifact, "/")
 	if lastSlash == -1 {
@@ -1093,10 +1128,26 @@ func (a *MavenAdapter) GetMetadata(ctx context.Context, name string) (*PackageMe
 }
 
 func (a *MavenAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	storageName := groupArtifactToStoragePath(identity.Name)
-	prefix := fmt.Sprintf("maven2/%s/%s/", storageName, identity.Version)
-	entries, err := a.storageSvc.GetDefaultBackend().List(ctx, prefix)
-	if err == nil {
+	storageName := mavenNameToStoragePath(identity.Name)
+	repoName := ""
+	if repo, ok := ctx.Value("repo").(*model.Repository); ok && repo != nil {
+		repoName = repo.Name
+	}
+	prefixes := []string{
+		fmt.Sprintf("maven2/%s/%s/", storageName, identity.Version),
+		fmt.Sprintf("%s/%s/%s/", repoName, storageName, identity.Version),
+	}
+	if repoName == "" {
+		prefixes = prefixes[:1]
+	}
+	for _, prefix := range prefixes {
+		if prefix == "//" || prefix == "" {
+			continue
+		}
+		entries, err := a.storageSvc.GetDefaultBackend().List(ctx, prefix)
+		if err != nil {
+			continue
+		}
 		for _, entry := range entries {
 			a.storageSvc.GetDefaultBackend().Delete(ctx, entry.Key)
 		}
@@ -1111,7 +1162,7 @@ func (a *MavenAdapter) ListVersions(ctx context.Context, name string) ([]string,
 
 // ParseIntent 解析请求路径为意图
 func (a *MavenAdapter) ParseIntent(path string, method string) *types.RequestIntent {
-	path = strings.TrimPrefix(path, "/")
+	path = trimLeadingSlash(path)
 
 	if path == "index" || strings.HasSuffix(path, "/index") {
 		return &types.RequestIntent{
@@ -1165,6 +1216,8 @@ func (a *MavenAdapter) HandleGet(ctx context.Context, repo *model.Repository, in
 		return a.handleMetadataXML(intent.Path, repo)
 	case types.RequestChecksum:
 		return a.handleChecksumRequest(intent.Path, repo)
+	case types.RequestDownload:
+		return a.handleDownloadArtifact(intent.Path, repo)
 	default:
 		return &types.ContentResult{
 			StatusCode: 404,
@@ -1240,7 +1293,7 @@ func calculateChecksum(data []byte, checksumType string) string {
 }
 
 func (a *MavenAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
-	fullPath := strings.TrimPrefix(c.Param("path"), "/")
+	fullPath := trimLeadingSlash(c.Param("path"))
 	parts := strings.Split(fullPath, "/")
 	if len(parts) < 4 {
 		return nil, fmt.Errorf("invalid path: expected group/artifact/version/file")
@@ -1260,7 +1313,7 @@ func (a *MavenAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*ty
 		return nil, fmt.Errorf("failed to read request body: %w", err)
 	}
 
-	storageVersion := version + "/" + filename
+	storageVersion := joinVersionFilename(version, filename)
 
 	// 构建标准 Maven 下载路径：/repo/{repo}/{groupId}/{artifactId}/{version}/{filename}
 	// groupId 用斜杠分隔：com.google.guava -> com/google/guava
@@ -1269,6 +1322,7 @@ func (a *MavenAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*ty
 
 	return &types.PublishResult{
 		PackageName:    name,
+		StorageName:    groupPath + "/" + artifactID,
 		Version:        version,
 		Filename:       filename,
 		Content:        bytes.NewReader(body),
@@ -1291,7 +1345,7 @@ func (a *MavenAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*ty
 }
 
 func (a *MavenAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
-	fullPath := strings.TrimPrefix(c.Param("path"), "/")
+	fullPath := trimLeadingSlash(c.Param("path"))
 	parts := strings.Split(fullPath, "/")
 	if len(parts) < 4 {
 		return fmt.Errorf("invalid path: expected group/artifact/version/filename")
@@ -1309,8 +1363,8 @@ func (a *MavenAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) er
 		Version: version,
 		Type:    MavenType,
 	}
-
-	if err := a.Delete(c.Request.Context(), identity); err != nil {
+	deleteCtx := context.WithValue(c.Request.Context(), "repo", ctx.Repo)
+	if err := a.Delete(deleteCtx, identity); err != nil {
 		return err
 	}
 
