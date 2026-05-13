@@ -12,6 +12,7 @@ func setDefaults(v interface {
 	v.SetDefault("server.read_timeout", 30*time.Second)
 	v.SetDefault("server.write_timeout", 30*time.Second)
 	v.SetDefault("server.static_dir", "./cmd/registry/dist")
+	v.SetDefault("server.max_upload_size", 200*1024*1024) // 200MB
 
 	// Database
 	v.SetDefault("database.driver", "sqlite")

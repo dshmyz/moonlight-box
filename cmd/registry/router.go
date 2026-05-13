@@ -92,6 +92,9 @@ func (ctx *RouterContext) SetupRouter(version string) *gin.Engine {
 	r.Use(middleware.RequestID())
 	r.Use(middleware.CORS())
 	r.Use(middleware.PrometheusMiddleware())
+	if ctx.Config != nil && ctx.Config.Server.MaxUploadSize > 0 {
+		r.Use(middleware.BodySizeLimit(ctx.Config.Server.MaxUploadSize))
+	}
 	r.Use(gin.Logger())
 
 	ctx.setupPublicRoutes(r, version)

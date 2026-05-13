@@ -15,6 +15,7 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/types"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 )
 
 const maxPkgCacheSize = 10000
@@ -27,6 +28,7 @@ type DownloadService struct {
 	logBatcher   *LogBatcher
 	countBatcher *DownloadCountBatcher
 	pkgCache     *cache.LRUCache
+	inflight     singleflight.Group
 }
 
 func NewDownloadService(
@@ -94,13 +96,6 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 	}
 
 	remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(downloadCtx.Repo.RemoteURL, "/"), pathInfo.RemotePath)
-	result, fetchErr := s.fetcher.FetchFromRemote(ctx, downloadCtx.Repo, remoteURL)
-	if fetchErr != nil {
-		s.recordLog(downloadCtx, 0, time.Since(startTime), false, fetchErr)
-		return nil, fetchErr
-	}
-	defer result.Content.Close()
-
 	storageVersion := pathInfo.StorageVersion
 
 	var backendID uint
@@ -108,70 +103,88 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 		backendID = *downloadCtx.Repo.StorageBackendID
 	}
 
-	if result.IsLarge {
-		storageKey, storeErr := s.storageSvc.StorePackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, result.Content, result.Size, backendID)
+	type proxyFetchOutcome struct {
+		repoID       uint
+		useStorage   bool
+		contentBytes []byte
+		size         int64
+	}
+
+	key := fmt.Sprintf("%d|%s|%s|%s", downloadCtx.Repo.ID, downloadCtx.PkgType, pathInfo.StorageName, storageVersion)
+	value, err, _ := s.inflight.Do(key, func() (interface{}, error) {
+		// Double-check storage to avoid redundant remote fetch during race.
+		if _, _, getErr := s.storageSvc.GetPackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, 0); getErr == nil {
+			return &proxyFetchOutcome{repoID: downloadCtx.Repo.ID, useStorage: true}, nil
+		}
+
+		result, fetchErr := s.fetcher.FetchFromRemote(ctx, downloadCtx.Repo, remoteURL)
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+		defer result.Content.Close()
+
+		if result.IsLarge {
+			storageKey, storeErr := s.storageSvc.StorePackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, result.Content, result.Size, backendID)
+			if storeErr != nil {
+				return nil, storeErr
+			}
+			if storageKey != "" {
+				s.storePackageFileRecord(ctx, downloadCtx, result.RepoID, storageKey, result.Size, pathInfo.RemotePath)
+			}
+			return &proxyFetchOutcome{repoID: result.RepoID, useStorage: true, size: result.Size}, nil
+		}
+
+		contentBytes, readErr := io.ReadAll(result.Content)
+		if readErr != nil {
+			return nil, readErr
+		}
+		size := int64(len(contentBytes))
+
+		storageKey, storeErr := s.storageSvc.StorePackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, bytes.NewReader(contentBytes), size, backendID)
 		if storeErr != nil {
-			result.Content.Close()
-			s.recordLog(downloadCtx, 0, time.Since(startTime), false, storeErr)
-			return nil, storeErr
+			logrus.Warnf("failed to store proxy package %s: %v", pathInfo.Name, storeErr)
+			return &proxyFetchOutcome{
+				repoID:       result.RepoID,
+				useStorage:   false,
+				contentBytes: contentBytes,
+				size:         size,
+			}, nil
 		}
-		result.Content.Close()
-
 		if storageKey != "" {
-			s.storePackageFileRecord(ctx, downloadCtx, result.RepoID, storageKey, result.Size, pathInfo.RemotePath)
+			s.storePackageFileRecord(ctx, downloadCtx, result.RepoID, storageKey, size, pathInfo.RemotePath)
 		}
+		return &proxyFetchOutcome{repoID: result.RepoID, useStorage: true, size: size}, nil
+	})
+	if err != nil {
+		s.recordLog(downloadCtx, 0, time.Since(startTime), false, err)
+		return nil, err
+	}
 
+	outcome := value.(*proxyFetchOutcome)
+	if outcome.useStorage {
 		storedContent, storedSize, getErr := s.storageSvc.GetPackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, 0)
 		if getErr != nil {
-			return nil, fmt.Errorf("failed to read stored large package: %w", getErr)
+			s.recordLog(downloadCtx, 0, time.Since(startTime), false, fmt.Errorf("failed to read stored proxy package: %w", getErr))
+			return nil, fmt.Errorf("failed to read stored proxy package: %w", getErr)
 		}
-
 		s.recordLog(downloadCtx, storedSize, time.Since(startTime), true, nil)
 		return &types.DownloadResult{
 			Content:   storedContent,
 			Size:      storedSize,
 			FromCache: true,
-			RepoID:    result.RepoID,
+			RepoID:    outcome.repoID,
 			Name:      pathInfo.Name,
 			Version:   pathInfo.Version,
 			Filename:  pathInfo.Filename,
 		}, nil
 	}
 
-	contentBytes, readErr := io.ReadAll(result.Content)
-	result.Content.Close()
-	if readErr != nil {
-		s.recordLog(downloadCtx, 0, time.Since(startTime), false, readErr)
-		return nil, readErr
-	}
-	size := int64(len(contentBytes))
-
-	storageKey, storeErr := s.storageSvc.StorePackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, bytes.NewReader(contentBytes), size, backendID)
-	if storeErr != nil {
-		logrus.Warnf("failed to store proxy package %s: %v", pathInfo.Name, storeErr)
-		s.recordLog(downloadCtx, size, time.Since(startTime), false, nil)
-		return &types.DownloadResult{
-			Content:   io.NopCloser(bytes.NewReader(contentBytes)),
-			Size:      size,
-			FromCache: false,
-			RepoID:    result.RepoID,
-			Name:      pathInfo.Name,
-			Version:   pathInfo.Version,
-			Filename:  pathInfo.Filename,
-		}, nil
-	}
-
-	if storageKey != "" {
-		s.storePackageFileRecord(ctx, downloadCtx, result.RepoID, storageKey, size, pathInfo.RemotePath)
-	}
-
-	s.recordLog(downloadCtx, size, time.Since(startTime), true, nil)
-
+	s.recordLog(downloadCtx, outcome.size, time.Since(startTime), false, nil)
 	return &types.DownloadResult{
-		Content:   io.NopCloser(bytes.NewReader(contentBytes)),
-		Size:      size,
-		FromCache: true,
-		RepoID:    result.RepoID,
+		Content:   io.NopCloser(bytes.NewReader(outcome.contentBytes)),
+		Size:      outcome.size,
+		FromCache: false,
+		RepoID:    outcome.repoID,
 		Name:      pathInfo.Name,
 		Version:   pathInfo.Version,
 		Filename:  pathInfo.Filename,
@@ -216,6 +229,8 @@ func (s *DownloadService) storePackageFileRecord(ctx context.Context, req *types
 
 func (s *DownloadService) recordLog(req *types.DownloadContext, sizeBytes int64, duration time.Duration, fromCache bool, err error) {
 	if s.logRepo == nil && s.logBatcher == nil {
+		// 即使日志后端未配置，也持续上报下载链路指标。
+		s.recordDownloadMetrics(req, sizeBytes, duration, fromCache, err)
 		return
 	}
 
@@ -254,7 +269,26 @@ func (s *DownloadService) recordLog(req *types.DownloadContext, sizeBytes int64,
 		s.logRepo.Create(log)
 	}
 
+	s.recordDownloadMetrics(req, sizeBytes, duration, fromCache, err)
 	metrics.RecordDownload(string(req.PkgType), req.Name, req.Version)
+}
+
+func (s *DownloadService) recordDownloadMetrics(req *types.DownloadContext, sizeBytes int64, duration time.Duration, fromCache bool, err error) {
+	source := "local"
+	if fromCache {
+		source = "cache"
+	} else if req != nil && req.Repo != nil && req.Repo.Type == model.RepoTypeProxy {
+		source = "proxy_remote"
+	}
+	result := "success"
+	if err != nil {
+		result = "failed"
+	}
+	pkgType := ""
+	if req != nil {
+		pkgType = string(req.PkgType)
+	}
+	metrics.RecordDownloadStats(pkgType, source, result, sizeBytes, duration.Seconds())
 }
 
 func (s *DownloadService) incrementDownloadCount(req *types.DownloadContext) {

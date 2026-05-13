@@ -33,6 +33,7 @@ type ServerConfig struct {
 	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout time.Duration `mapstructure:"write_timeout"`
 	StaticDir    string        `mapstructure:"static_dir"` // 前端静态文件目录
+	MaxUploadSize int64        `mapstructure:"max_upload_size"`
 }
 
 type DatabaseConfig struct {
