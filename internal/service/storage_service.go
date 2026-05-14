@@ -67,9 +67,11 @@ func (s *StorageService) CheckStoragePath(path string) error {
 
 func (s *StorageService) initDefaultBackend() (storage.Backend, error) {
 	// 首先尝试从数据库获取默认存储后端
-	defaultBackend, err := s.storageBackendRepo.FindDefault()
-	if err == nil {
-		return CreateStorageBackend(defaultBackend)
+	if s.storageBackendRepo != nil {
+		defaultBackend, err := s.storageBackendRepo.FindDefault()
+		if err == nil {
+			return CreateStorageBackend(defaultBackend)
+		}
 	}
 
 	// 如果数据库中没有默认后端，则使用本地存储作为默认值
@@ -77,6 +79,10 @@ func (s *StorageService) initDefaultBackend() (storage.Backend, error) {
 }
 
 func (s *StorageService) initStorageBackends() error {
+	if s.storageBackendRepo == nil {
+		return nil
+	}
+
 	backends, err := s.storageBackendRepo.List()
 	if err != nil {
 		return err
@@ -265,7 +271,7 @@ func (s *StorageService) buildKey(repoName, pkgType, name, version string) strin
 	version = s.normalizeVersion(pkgType, version)
 
 	if repoName != "" {
-		return filepath.Join(pkgType, repoName, name, version)
+		return filepath.Join(repoName, name, version)
 	}
 
 	switch pkgType {

@@ -11,9 +11,9 @@ import (
 )
 
 type MigrationHandler struct {
-	service          *migration.MigrationService
-	worker           migration.MigrationWorkerInterface
-	repoRepo         *repository.RepositoryRepository
+	service            *migration.MigrationService
+	worker             migration.MigrationWorkerInterface
+	repoRepo           *repository.RepositoryRepository
 	storageBackendRepo *repository.StorageBackendRepository
 }
 
@@ -110,7 +110,7 @@ func (h *MigrationHandler) CreateMigration(c *gin.Context) {
 
 	// 移除立即执行的 goroutine
 	// 任务已经在 CreateTask 中自动入队
-	
+
 	response.Success(c, task)
 }
 
@@ -337,6 +337,23 @@ func (h *MigrationHandler) RetryFailedMigration(c *gin.Context) {
 	response.Success(c, gin.H{"message": "重试任务已加入队列"})
 }
 
+func (h *MigrationHandler) StartMigration(c *gin.Context) {
+	id := c.Param("id")
+
+	taskID, err := parseUint(id)
+	if err != nil {
+		response.BadRequest(c, "无效的任务 ID", "")
+		return
+	}
+
+	if err := h.service.StartTask(taskID); err != nil {
+		response.BadRequest(c, err.Error(), "")
+		return
+	}
+
+	response.Success(c, gin.H{"message": "任务已加入队列"})
+}
+
 func (h *MigrationHandler) ListMigrations(c *gin.Context) {
 	tasks, err := h.service.ListTasks()
 	if err != nil {
@@ -358,7 +375,7 @@ func (h *MigrationHandler) ListMigrationItems(c *gin.Context) {
 
 	page := 1
 	pageSize := 50
-	
+
 	if p := c.Query("page"); p != "" {
 		fmt.Sscanf(p, "%d", &page)
 	}
@@ -376,9 +393,9 @@ func (h *MigrationHandler) ListMigrationItems(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"list": items,
-		"total": total,
-		"page": page,
+		"list":      items,
+		"total":     total,
+		"page":      page,
 		"page_size": pageSize,
 	})
 }

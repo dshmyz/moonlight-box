@@ -598,6 +598,30 @@ func (s *MigrationService) RetryFailedTask(task *model.MigrationTask) {
 	s.AddLog(task.ID, "重试任务已加入队列")
 }
 
+func (s *MigrationService) StartTask(taskID uint) error {
+	task, err := s.GetTask(taskID)
+	if err != nil {
+		return fmt.Errorf("任务不存在: %v", err)
+	}
+
+	if task.Status == model.MigrationRunning {
+		return fmt.Errorf("任务正在运行中")
+	}
+
+	s.db.Model(&model.MigrationTask{}).Where("id = ?", taskID).Updates(map[string]interface{}{
+		"status":     model.MigrationQueued,
+		"started_at": nil,
+	})
+
+	if err := s.EnqueueTask(taskID); err != nil {
+		s.AddLog(taskID, "任务入队失败: "+err.Error())
+		return fmt.Errorf("任务入队失败: %v", err)
+	}
+
+	s.AddLog(taskID, "任务已加入队列")
+	return nil
+}
+
 func (s *MigrationService) IsRetryTask(taskID uint) bool {
 	s.retryMu.Lock()
 	defer s.retryMu.Unlock()

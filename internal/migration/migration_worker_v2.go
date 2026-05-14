@@ -65,23 +65,64 @@ func (w *MigrationWorkerV2) RetryFailed(ctx context.Context, task *model.Migrati
 }
 
 func (w *MigrationWorkerV2) loadFailedItems(ctx context.Context, taskID uint, maxRetries int, queue *ComponentQueue) error {
-	items, err := w.itemRepo.GetPendingItems(taskID, maxRetries, 10000)
-	if err != nil {
-		return err
-	}
+	go w.streamPendingItems(ctx, taskID, maxRetries, queue)
+	return nil
+}
 
-	for _, item := range items {
-		queue.Push(item)
+// streamPendingItems 分批加载待处理项并推送到队列，避免一次性加载太多数据
+func (w *MigrationWorkerV2) streamPendingItems(ctx context.Context, taskID uint, maxRetries int, queue *ComponentQueue) {
+	defer queue.Close()
+
+	const batchSize = 50
+	offset := 0
+	totalLoaded := 0
+
+	for {
+		select {
+		case <-ctx.Done():
+			logrus.WithFields(logrus.Fields{
+				"module":  "migration",
+				"task_id": taskID,
+			}).Warn("Stream pending items cancelled")
+			return
+		default:
+		}
+
+		items, err := w.itemRepo.GetPendingItemsWithOffset(taskID, maxRetries, batchSize, offset)
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"module":  "migration",
+				"task_id": taskID,
+				"error":   err,
+			}).Error("Failed to load pending items")
+			return
+		}
+
+		if len(items) == 0 {
+			break
+		}
+
+		for _, item := range items {
+			queue.Push(item)
+		}
+
+		totalLoaded += len(items)
+		offset += batchSize
+
+		logrus.WithFields(logrus.Fields{
+			"module":     "migration",
+			"task_id":    taskID,
+			"batch":      len(items),
+			"total":      totalLoaded,
+			"queue_size": queue.Len(),
+		}).Debug("Streamed batch of pending items")
 	}
 
 	logrus.WithFields(logrus.Fields{
 		"module":  "migration",
 		"task_id": taskID,
-		"count":   len(items),
-	}).Info("Loaded failed items for retry")
-
-	w.service.AddLog(taskID, fmt.Sprintf("加载了 %d 个失败项目进行重试", len(items)))
-	return nil
+		"total":   totalLoaded,
+	}).Info("Streamed all pending items to queue")
 }
 
 func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTask, retryOnly bool) error {
@@ -197,15 +238,8 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 
 		w.service.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Update("phase", model.PhaseMigrating)
 
-		items, err := w.itemRepo.GetPendingItems(task.ID, task.MaxRetries, 1000000)
-		if err != nil {
-			return w.failTask(task.ID, fmt.Sprintf("获取待处理项目失败: %v", err))
-		}
-
-		for _, item := range items {
-			queue.Push(item)
-		}
-		queue.Close()
+		// 分批加载待处理项，每次 50 个，避免一次性加载太多数据到内存
+		go w.streamPendingItems(ctx, task.ID, task.MaxRetries, queue)
 	}
 
 	go progressUpdater.Start(ctx)

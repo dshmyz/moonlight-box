@@ -97,6 +97,20 @@ func (r *MigrationItemRepository) GetPendingItems(taskID uint, maxRetries int, l
 	return items, err
 }
 
+func (r *MigrationItemRepository) GetPendingItemsWithOffset(taskID uint, maxRetries int, limit int, offset int) ([]model.MigrationItem, error) {
+	var items []model.MigrationItem
+	err := r.db.Where("task_id = ? AND status IN ?", taskID, []model.MigrationItemStatus{
+		model.MigrationItemPending,
+		model.MigrationItemFailed,
+	}).
+		Where("retry_count < ?", maxRetries).
+		Order("created_at ASC").
+		Limit(limit).
+		Offset(offset).
+		Find(&items).Error
+	return items, err
+}
+
 func (r *MigrationItemRepository) BatchUpdateStatus(updates []ItemStatusUpdate) error {
 	if len(updates) == 0 {
 		return nil

@@ -445,6 +445,7 @@ func (ctx *RouterContext) setupMigrationRoutes(protected *gin.RouterGroup) {
 		migration.GET("/:id/status", ctx.Handlers.Migration.GetMigrationStatus)
 		migration.POST("/:id/cancel", ctx.Handlers.Migration.CancelMigration)
 		migration.POST("/:id/retry", ctx.Handlers.Migration.RetryFailedMigration)
+		migration.POST("/:id/start", ctx.Handlers.Migration.StartMigration)
 		migration.GET("/:id/items", ctx.Handlers.Migration.ListMigrationItems)
 	}
 }
