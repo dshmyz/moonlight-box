@@ -50,6 +50,7 @@ func NewTransportManager(connectTimeout time.Duration, dnsResolver *DNSResolver)
 		MaxConnsPerHost:       100,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		DisableCompression:    true,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 		},

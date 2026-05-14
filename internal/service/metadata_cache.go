@@ -29,32 +29,49 @@ func NewMetadataCache(storageSvc *StorageService) *MetadataCache {
 }
 
 func (mc *MetadataCache) cacheKey(repoName, pkgType, name string) string {
-	return filepath.Join("_metadata", pkgType, name)
+	return filepath.Join("_metadata", repoName, pkgType, name)
 }
 
 func (mc *MetadataCache) Get(ctx context.Context, repoName, pkgType, name string) (io.ReadCloser, int64, error) {
 	key := mc.cacheKey(repoName, pkgType, name)
-	content, size, err := mc.storageSvc.GetPackageWithBackend(ctx, repoName, "_meta_cache", key, "", 0)
+	content, _, err := mc.storageSvc.GetPackageWithBackend(ctx, repoName, "_meta_cache", key, "", 0)
 	if err != nil {
 		return nil, 0, err
 	}
+	defer content.Close()
+
+	body, readErr := io.ReadAll(content)
+	if readErr != nil {
+		return nil, 0, readErr
+	}
+
+	actualSize := int64(len(body))
 
 	if entry, ok := mc.entries.Load(key); ok {
 		ce := entry.(*cachedMetadata)
 		if time.Now().Before(ce.expiry) {
-			return content, size, nil
+			return io.NopCloser(bytes.NewReader(body)), actualSize, nil
 		}
-		content.Close()
 		return nil, 0, fmt.Errorf("metadata expired: %s", key)
 	}
 
-	content.Close()
 	return nil, 0, fmt.Errorf("metadata TTL not found: %s", key)
 }
 
 func (mc *MetadataCache) GetStale(ctx context.Context, repoName, pkgType, name string) (io.ReadCloser, int64, error) {
 	key := mc.cacheKey(repoName, pkgType, name)
-	return mc.storageSvc.GetPackageWithBackend(ctx, repoName, "_meta_cache", key, "", 0)
+	content, _, err := mc.storageSvc.GetPackageWithBackend(ctx, repoName, "_meta_cache", key, "", 0)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer content.Close()
+
+	body, readErr := io.ReadAll(content)
+	if readErr != nil {
+		return nil, 0, readErr
+	}
+
+	return io.NopCloser(bytes.NewReader(body)), int64(len(body)), nil
 }
 
 func (mc *MetadataCache) Set(ctx context.Context, repoName, pkgType, name string, content io.Reader, size int64, ttl time.Duration) error {
