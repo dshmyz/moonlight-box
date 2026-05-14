@@ -82,7 +82,7 @@ func (mc *MetadataCache) GetOrFetch(ctx context.Context, repoName, pkgType, name
 		return content, size, nil
 	}
 
-	remoteContent, remoteSize, fetchErr := fetchFn()
+	remoteContent, _, fetchErr := fetchFn()
 	if fetchErr != nil {
 		staleContent, staleSize, staleErr := mc.GetStale(ctx, repoName, pkgType, name)
 		if staleErr == nil {
@@ -98,9 +98,10 @@ func (mc *MetadataCache) GetOrFetch(ctx context.Context, repoName, pkgType, name
 		return nil, 0, readErr
 	}
 
-	if cacheErr := mc.Set(ctx, repoName, pkgType, name, bytes.NewReader(body), remoteSize, ttl); cacheErr != nil {
+	actualSize := int64(len(body))
+	if cacheErr := mc.Set(ctx, repoName, pkgType, name, bytes.NewReader(body), actualSize, ttl); cacheErr != nil {
 		logrus.Warnf("failed to cache metadata %s/%s/%s: %v", repoName, pkgType, name, cacheErr)
 	}
 
-	return io.NopCloser(bytes.NewReader(body)), remoteSize, nil
+	return io.NopCloser(bytes.NewReader(body)), actualSize, nil
 }

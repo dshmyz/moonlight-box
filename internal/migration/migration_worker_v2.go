@@ -70,11 +70,12 @@ func (w *MigrationWorkerV2) loadFailedItems(ctx context.Context, taskID uint, ma
 }
 
 // streamPendingItems 分批加载待处理项并推送到队列，避免一次性加载太多数据
+// 使用游标分页（id > lastID）避免 offset 分页在 consumers 并发更新状态时跳过记录
 func (w *MigrationWorkerV2) streamPendingItems(ctx context.Context, taskID uint, maxRetries int, queue *ComponentQueue) {
 	defer queue.Close()
 
 	const batchSize = 50
-	offset := 0
+	var lastID uint
 	totalLoaded := 0
 
 	for {
@@ -88,7 +89,7 @@ func (w *MigrationWorkerV2) streamPendingItems(ctx context.Context, taskID uint,
 		default:
 		}
 
-		items, err := w.itemRepo.GetPendingItemsWithOffset(taskID, maxRetries, batchSize, offset)
+		items, err := w.itemRepo.GetPendingItemsAfterID(taskID, maxRetries, batchSize, lastID)
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
 				"module":  "migration",
@@ -107,7 +108,7 @@ func (w *MigrationWorkerV2) streamPendingItems(ctx context.Context, taskID uint,
 		}
 
 		totalLoaded += len(items)
-		offset += batchSize
+		lastID = items[len(items)-1].ID
 
 		logrus.WithFields(logrus.Fields{
 			"module":     "migration",

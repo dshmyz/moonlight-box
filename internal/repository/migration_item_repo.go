@@ -97,17 +97,22 @@ func (r *MigrationItemRepository) GetPendingItems(taskID uint, maxRetries int, l
 	return items, err
 }
 
-func (r *MigrationItemRepository) GetPendingItemsWithOffset(taskID uint, maxRetries int, limit int, offset int) ([]model.MigrationItem, error) {
+// GetPendingItemsAfterID 使用游标分页获取待处理项，避免 offset 分页在并发修改状态时跳过记录
+func (r *MigrationItemRepository) GetPendingItemsAfterID(taskID uint, maxRetries int, limit int, afterID uint) ([]model.MigrationItem, error) {
 	var items []model.MigrationItem
-	err := r.db.Where("task_id = ? AND status IN ?", taskID, []model.MigrationItemStatus{
+	query := r.db.Where("task_id = ? AND status IN ?", taskID, []model.MigrationItemStatus{
 		model.MigrationItemPending,
 		model.MigrationItemFailed,
 	}).
 		Where("retry_count < ?", maxRetries).
-		Order("created_at ASC").
-		Limit(limit).
-		Offset(offset).
-		Find(&items).Error
+		Order("id ASC").
+		Limit(limit)
+
+	if afterID > 0 {
+		query = query.Where("id > ?", afterID)
+	}
+
+	err := query.Find(&items).Error
 	return items, err
 }
 

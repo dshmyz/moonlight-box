@@ -271,7 +271,7 @@ func (s *StorageService) buildKey(repoName, pkgType, name, version string) strin
 	version = s.normalizeVersion(pkgType, version)
 
 	if repoName != "" {
-		return filepath.Join(repoName, name, version)
+		return filepath.Join(pkgType, repoName, name, version)
 	}
 
 	switch pkgType {
