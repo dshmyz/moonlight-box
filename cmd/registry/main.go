@@ -216,6 +216,9 @@ func main() {
 	// 创建 PackageCache（5分钟TTL）
 	pkgCache := cache.NewPackageCache(packageRepo, 5*time.Minute)
 
+	// 创建 MetadataCache（元数据本地磁盘缓存，支持 TTL 和 stale-while-revalidate）
+	metaCache := service.NewMetadataCache(storageSvc)
+
 	// 初始化适配器（传入 pkgCache）
 	npmAdapter := adapter.NewNpmAdapter(storageSvc, pkgCache)
 	mavenAdapter := adapter.NewMavenAdapter(storageSvc, pkgCache)
@@ -224,6 +227,15 @@ func main() {
 	genericAdapter := adapter.NewGenericAdapter(storageSvc, pkgCache)
 	yumAdapter := adapter.NewYumAdapter(repoRepo, storageSvc, pkgCache)
 	aptAdapter := adapter.NewAptAdapter(storageSvc, pkgCache)
+
+	// 注入元数据缓存
+	type metaCacher interface{ SetMetadataCache(*service.MetadataCache) }
+	for _, adp := range []metaCacher{
+		npmAdapter, mavenAdapter, pypiAdapter, goAdapter,
+		genericAdapter, yumAdapter, aptAdapter,
+	} {
+		adp.SetMetadataCache(metaCache)
+	}
 
 	// 构建 adapter map 用于 DownloadService
 	adapterMap := map[string]types.Adapter{

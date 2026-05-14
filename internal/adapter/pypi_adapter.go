@@ -212,6 +212,44 @@ func (a *PyPIAdapter) listPackagesHTML() (*types.ContentResult, error) {
 }
 
 func (a *PyPIAdapter) PackageFiles(acceptHeader string, pkgName string, repo *model.Repository) (*types.ContentResult, error) {
+	if a.metaCache != nil && a.fetcher != nil && repo != nil && repo.Type == model.RepoTypeProxy {
+		ttl := time.Duration(repo.CacheTTLSeconds) * time.Second
+		if ttl <= 0 {
+			ttl = 5 * time.Minute
+		}
+
+		contentType := "text/html"
+		if strings.Contains(acceptHeader, "application/json") {
+			contentType = "application/vnd.pypi.simple.v1+json"
+		}
+
+		cacheKey := "simple/" + pkgName
+		if strings.Contains(contentType, "json") {
+			cacheKey = "simple/" + pkgName + "/json"
+		}
+
+		content, size, err := a.metaCache.GetOrFetch(context.Background(), repo.Name, "pypi", cacheKey, ttl, func() (io.ReadCloser, int64, error) {
+			pathInfo, pathErr := a.ParsePath("simple/" + pkgName + "/")
+			if pathErr != nil {
+				return nil, 0, pathErr
+			}
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+			result, fetchErr := a.fetcher.FetchFromRemote(context.Background(), repo, remoteURL)
+			if fetchErr != nil {
+				return nil, 0, fetchErr
+			}
+			return result.Content, result.Size, nil
+		})
+		if err == nil {
+			return &types.ContentResult{
+				StatusCode:  200,
+				ContentType: contentType,
+				Content:     content,
+				Size:        size,
+			}, nil
+		}
+	}
+
 	if strings.Contains(acceptHeader, "application/json") {
 		return a.packageFilesJSON(pkgName, repo)
 	}

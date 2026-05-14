@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/cache"
 	"github.com/moonlight-box/registry/internal/metrics"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
@@ -18,8 +17,6 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-const maxPkgCacheSize = 10000
-
 type DownloadService struct {
 	pkgRepo      *repository.PackageRepository
 	storageSvc   *StorageService
@@ -27,7 +24,6 @@ type DownloadService struct {
 	logRepo      *repository.ProxyDownloadLogRepository
 	logBatcher   *LogBatcher
 	countBatcher *DownloadCountBatcher
-	pkgCache     *cache.LRUCache
 	inflight     singleflight.Group
 }
 
@@ -46,7 +42,6 @@ func NewDownloadService(
 		logRepo:      logRepo,
 		logBatcher:   logBatcher,
 		countBatcher: countBatcher,
-		pkgCache:     cache.NewLRUCache(maxPkgCacheSize),
 	}
 }
 
@@ -106,6 +101,7 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 	type proxyFetchOutcome struct {
 		repoID       uint
 		useStorage   bool
+		fromRemote   bool
 		contentBytes []byte
 		size         int64
 	}
@@ -114,7 +110,7 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 	value, err, _ := s.inflight.Do(key, func() (interface{}, error) {
 		// Double-check storage to avoid redundant remote fetch during race.
 		if _, _, getErr := s.storageSvc.GetPackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, 0); getErr == nil {
-			return &proxyFetchOutcome{repoID: downloadCtx.Repo.ID, useStorage: true}, nil
+			return &proxyFetchOutcome{repoID: downloadCtx.Repo.ID, useStorage: true, fromRemote: false}, nil
 		}
 
 		result, fetchErr := s.fetcher.FetchFromRemote(ctx, downloadCtx.Repo, remoteURL)
@@ -124,14 +120,18 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 		defer result.Content.Close()
 
 		if result.IsLarge {
+			// 大文件：流式直接写入存储
 			storageKey, storeErr := s.storageSvc.StorePackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, result.Content, result.Size, backendID)
+			result.Content.Close()
 			if storeErr != nil {
-				return nil, storeErr
+				logrus.Warnf("failed to store large proxy package %s to local storage: %v", pathInfo.Name, storeErr)
+				// 存储失败，流式内容已关闭无法再读取，返回错误
+				return nil, fmt.Errorf("failed to store large package and content stream closed: %w", storeErr)
 			}
 			if storageKey != "" {
 				s.storePackageFileRecord(ctx, downloadCtx, result.RepoID, storageKey, result.Size, pathInfo.RemotePath)
 			}
-			return &proxyFetchOutcome{repoID: result.RepoID, useStorage: true, size: result.Size}, nil
+			return &proxyFetchOutcome{repoID: result.RepoID, useStorage: true, fromRemote: true, size: result.Size}, nil
 		}
 
 		contentBytes, readErr := io.ReadAll(result.Content)
@@ -142,7 +142,8 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 
 		storageKey, storeErr := s.storageSvc.StorePackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, bytes.NewReader(contentBytes), size, backendID)
 		if storeErr != nil {
-			logrus.Warnf("failed to store proxy package %s: %v", pathInfo.Name, storeErr)
+			logrus.Warnf("failed to store proxy package %s to local storage: %v", pathInfo.Name, storeErr)
+			// 存储失败，保留内存数据兜底返回
 			return &proxyFetchOutcome{
 				repoID:       result.RepoID,
 				useStorage:   false,
@@ -153,7 +154,7 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 		if storageKey != "" {
 			s.storePackageFileRecord(ctx, downloadCtx, result.RepoID, storageKey, size, pathInfo.RemotePath)
 		}
-		return &proxyFetchOutcome{repoID: result.RepoID, useStorage: true, size: size}, nil
+		return &proxyFetchOutcome{repoID: result.RepoID, useStorage: true, fromRemote: true, size: size}, nil
 	})
 	if err != nil {
 		s.recordLog(downloadCtx, 0, time.Since(startTime), false, err)
@@ -167,11 +168,12 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 			s.recordLog(downloadCtx, 0, time.Since(startTime), false, fmt.Errorf("failed to read stored proxy package: %w", getErr))
 			return nil, fmt.Errorf("failed to read stored proxy package: %w", getErr)
 		}
-		s.recordLog(downloadCtx, storedSize, time.Since(startTime), true, nil)
+		s.recordLog(downloadCtx, storedSize, time.Since(startTime), !outcome.fromRemote, nil)
+		s.incrementDownloadCount(downloadCtx)
 		return &types.DownloadResult{
 			Content:   storedContent,
 			Size:      storedSize,
-			FromCache: true,
+			FromCache: !outcome.fromRemote,
 			RepoID:    outcome.repoID,
 			Name:      pathInfo.Name,
 			Version:   pathInfo.Version,
@@ -180,6 +182,7 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 	}
 
 	s.recordLog(downloadCtx, outcome.size, time.Since(startTime), false, nil)
+	s.incrementDownloadCount(downloadCtx)
 	return &types.DownloadResult{
 		Content:   io.NopCloser(bytes.NewReader(outcome.contentBytes)),
 		Size:      outcome.size,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ type MigrationWorkerV2 struct {
 	maxRetries      int
 	batchSize       int
 	targetBackendID uint
+	targetRepoName  string
 }
 
 func NewMigrationWorkerV2(
@@ -100,6 +102,7 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 			"module":      "migration",
 			"task_id":     task.ID,
 			"source_url":  task.SourceURL,
+			"phase":       task.Phase,
 			"concurrency": w.concurrency,
 			"max_retries": w.maxRetries,
 			"batch_size":  w.batchSize,
@@ -120,19 +123,21 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 				"error":            err,
 			}).Warn("Failed to get target repository, using default storage backend")
 		} else {
+			w.targetRepoName = targetRepo.Name
 			if targetRepo.StorageBackendID != nil {
 				w.targetBackendID = *targetRepo.StorageBackendID
 				logrus.WithFields(logrus.Fields{
 					"module":         "migration",
 					"task_id":        task.ID,
 					"target_repo_id": task.TargetRepositoryID,
+					"target_repo":    w.targetRepoName,
 					"backend_id":     w.targetBackendID,
 				}).Info("Using target repository's storage backend (v2)")
 			} else {
 				logrus.WithFields(logrus.Fields{
 					"module":           "migration",
 					"task_id":          task.ID,
-					"target_repo_name": task.TargetRepository,
+					"target_repo_name": w.targetRepoName,
 				}).Info("Target repository has no storage backend configured, using default (v2)")
 			}
 		}
@@ -149,7 +154,6 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 	progressUpdater := NewProgressUpdater(task.ID, w.service.db, w.itemRepo, 2*time.Second)
 
 	if retryOnly {
-		// 只加载失败的项目
 		if err := w.loadFailedItems(ctx, task.ID, task.MaxRetries, queue); err != nil {
 			logrus.WithFields(logrus.Fields{
 				"module":  "migration",
@@ -160,7 +164,6 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 		}
 		queue.Close()
 	} else {
-		// 正常流程：先扫描获取总数并创建记录，再开始迁移
 		var selectedRepos []string
 		if err := json.Unmarshal([]byte(task.SelectedRepos), &selectedRepos); err != nil {
 			logrus.WithFields(logrus.Fields{
@@ -171,24 +174,29 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 			return w.failTask(task.ID, fmt.Sprintf("failed to parse selected repos: %v", err))
 		}
 
-		// 步骤1：先扫描所有仓库，获取组件总数并创建数据库记录
-		// 注意：即使之前扫描过一部分，也会重新扫描，但 BatchCreate 会按 component_id 去重，
-		// 所以已扫描的不会重复插入，未扫描的会继续创建
-		w.service.AddLog(task.ID, "正在扫描组件...")
-		totalScanned := 0
-		for _, repoName := range selectedRepos {
-			count, err := w.scanRepository(ctx, task.ID, client, repoName)
-			if err != nil {
-				w.service.AddLog(task.ID, fmt.Sprintf("扫描 %s 失败: %v", repoName, err))
-				return w.failTask(task.ID, fmt.Sprintf("扫描仓库 %s 失败: %v", repoName, err))
+		if task.Phase == model.PhaseScanning {
+			w.service.AddLog(task.ID, "正在扫描组件...")
+			totalScanned := 0
+			for _, repoName := range selectedRepos {
+				count, err := w.scanRepository(ctx, task.ID, client, repoName)
+				if err != nil {
+					w.service.AddLog(task.ID, fmt.Sprintf("扫描 %s 失败: %v", repoName, err))
+					return w.failTask(task.ID, fmt.Sprintf("扫描仓库 %s 失败: %v", repoName, err))
+				}
+				totalScanned += count
 			}
-			totalScanned += count
+
+			w.service.AddLog(task.ID, fmt.Sprintf("扫描完成，共发现 %d 个组件", totalScanned))
+			w.service.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
+				"total_items": totalScanned,
+				"phase":       model.PhaseScanned,
+			})
+		} else {
+			w.service.AddLog(task.ID, "跳过扫描阶段，直接开始迁移")
 		}
 
-		w.service.AddLog(task.ID, fmt.Sprintf("扫描完成，共发现 %d 个组件", totalScanned))
-		w.service.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Update("total_items", totalScanned)
+		w.service.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Update("phase", model.PhaseMigrating)
 
-		// 步骤2：将所有 pending 项目加入队列开始迁移
 		items, err := w.itemRepo.GetPendingItems(task.ID, task.MaxRetries, 1000000)
 		if err != nil {
 			return w.failTask(task.ID, fmt.Sprintf("获取待处理项目失败: %v", err))
@@ -215,6 +223,8 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 	progressUpdater.Stop()
 
 	w.completeTask(task.ID)
+	w.service.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Update("phase", model.PhaseDone)
+
 	if retryOnly {
 		logrus.WithFields(logrus.Fields{
 			"module":  "migration",
@@ -543,7 +553,7 @@ func (w *MigrationWorkerV2) storeMavenAsset(taskID uint, comp NexusComponent, as
 	storageName := groupArtifactToStorageName(comp.Group, comp.Name)
 	storageVersion := comp.Version + "/" + filepath.Base(asset.Path)
 
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "", "maven", storageName, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), w.targetRepoName, "maven", storageName, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -593,7 +603,7 @@ func (w *MigrationWorkerV2) storeNpmAsset(taskID uint, comp NexusComponent, _ Ne
 	}
 
 	storageVersion := version + "/package.tgz"
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "", "npm", name, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), w.targetRepoName, "npm", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -631,7 +641,7 @@ func (w *MigrationWorkerV2) storePypiAsset(taskID uint, comp NexusComponent, ass
 	}
 
 	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "", "pypi", name, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), w.targetRepoName, "pypi", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -669,7 +679,7 @@ func (w *MigrationWorkerV2) storeGoAsset(taskID uint, comp NexusComponent, asset
 	}
 
 	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "", "go", name, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), w.targetRepoName, "go", name, storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -703,7 +713,7 @@ func (w *MigrationWorkerV2) storeGenericAsset(taskID uint, comp NexusComponent, 
 	}
 
 	storageVersion := filepath.Base(path)
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), "", "generic", filepath.Dir(path), storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), w.targetRepoName, "generic", filepath.Dir(path), storageVersion, reader, size, w.targetBackendID)
 	if err != nil {
 		return err
 	}
@@ -748,4 +758,34 @@ func (w *MigrationWorkerV2) completeTask(taskID uint) {
 func mustGetPasswordV2(task *model.MigrationTask) string {
 	password, _ := task.GetPassword()
 	return password
+}
+
+func getPackaging(path string) string {
+	ext := filepath.Ext(path)
+	switch ext {
+	case ".jar":
+		return "jar"
+	case ".war":
+		return "war"
+	case ".pom":
+		return "pom"
+	case ".ear":
+		return "ear"
+	case ".zip":
+		return "zip"
+	default:
+		return strings.TrimPrefix(ext, ".")
+	}
+}
+
+func groupArtifactToStorageName(group, artifact string) string {
+	return strings.ReplaceAll(group, ".", "/") + "/" + artifact
+}
+
+func marshalMetadata(meta map[string]interface{}) string {
+	if meta == nil {
+		return ""
+	}
+	data, _ := json.Marshal(meta)
+	return string(data)
 }

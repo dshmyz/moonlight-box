@@ -193,16 +193,18 @@ func (a *NpmAdapter) resolveTarballPath(path string) (*types.PackagePathInfo, er
 	}
 
 	filename := parts[len(parts)-1]
-	name := strings.Join(parts[:len(parts)-1], "/")
 
-	version := ""
-	base := strings.TrimSuffix(filename, ".tgz")
-	if idx := strings.LastIndex(base, "-"); idx != -1 {
-		version = base[idx+1:]
+	var name string
+	if idx := strings.Index(path, "/-/"); idx != -1 {
+		name = path[:idx]
+	} else {
+		name = strings.Join(parts[:len(parts)-1], "/")
 	}
 
+	version := extractVersionFromTarball(filename, name)
+
 	storageName := name + "/" + filename
-	remotePath := name + "/-/" + filename
+	remotePath := path
 
 	return &types.PackagePathInfo{
 		Name:           name,
@@ -254,10 +256,16 @@ func (a *NpmAdapter) ParseIntent(path string, method string) *types.RequestInten
 }
 
 // FetchContent 根据意图获取内容
+//
+// 注意：下载请求 (RequestDownload) 由 DownloadService 统一处理，
+// 此处不再处理下载，以免绕过日志记录、本地缓存和下载计数。
 func (a *NpmAdapter) HandleGet(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
 	switch intent.Type {
 	case types.RequestDownload:
-		return a.handleTarballDownload(ctx, repo, intent)
+		return &types.ContentResult{
+			StatusCode: 404,
+			ExtraData:  map[string]interface{}{"message": "download requests are handled by DownloadService"},
+		}, nil
 	case types.RequestMetadata:
 		return a.handleMetadataFetch(ctx, repo, intent)
 	default:
@@ -266,37 +274,6 @@ func (a *NpmAdapter) HandleGet(ctx context.Context, repo *model.Repository, inte
 			ExtraData:  map[string]interface{}{"message": "unknown request type"},
 		}, nil
 	}
-}
-
-// handleTarballDownload 处理 tarball 下载
-func (a *NpmAdapter) handleTarballDownload(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
-	filename := intent.Filename
-
-	// NPM tarball 通常从远程 CDN 获取
-	if a.fetcher != nil && repo != nil {
-		pathInfo := intent.PkgPathInfo
-		if pathInfo == nil {
-			pathInfo, _ = a.ParsePath(intent.Path)
-		}
-		if pathInfo != nil {
-			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-			result, fetchErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
-			if fetchErr == nil && result != nil {
-				return &types.ContentResult{
-					StatusCode:  200,
-					ContentType: "application/octet-stream",
-					Content:     result.Content,
-					Size:        result.Size,
-					Headers:     map[string]string{"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, filename)},
-				}, nil
-			}
-		}
-	}
-
-	return &types.ContentResult{
-		StatusCode: 404,
-		ExtraData:  map[string]interface{}{"message": "tarball not found"},
-	}, nil
 }
 
 // handleMetadataFetch 处理元数据获取
@@ -346,8 +323,43 @@ func (a *NpmAdapter) handleMetadataFetch(ctx context.Context, repo *model.Reposi
 	}
 }
 
-// handleProxyMetadataFetch 处理代理仓库元数据请求（不依赖 gin.Context）
+// handleProxyMetadataFetch 处理代理仓库元数据请求
 func (a *NpmAdapter) handleProxyMetadataFetch(ctx context.Context, repo *model.Repository, name string) (*types.ContentResult, error) {
+	if a.metaCache != nil && a.fetcher != nil {
+		ttl := time.Duration(repo.CacheTTLSeconds) * time.Second
+		if ttl <= 0 {
+			ttl = 5 * time.Minute
+		}
+
+		content, size, err := a.metaCache.GetOrFetch(ctx, repo.Name, "npm", name, ttl, func() (io.ReadCloser, int64, error) {
+			pathInfo, pathErr := a.ParsePath(name)
+			if pathErr != nil {
+				return nil, 0, pathErr
+			}
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+			result, fetchErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
+			if fetchErr != nil {
+				return nil, 0, fetchErr
+			}
+			return result.Content, result.Size, nil
+		})
+		if err == nil {
+			return &types.ContentResult{
+				Content:     content,
+				Size:        size,
+				ContentType: "application/json",
+				StatusCode:  200,
+			}, nil
+		}
+	}
+
+	// Fallback: 无缓存或无 fetcher 时直接远程获取
+	if a.fetcher == nil {
+		return &types.ContentResult{
+			StatusCode: 404,
+			ExtraData:  map[string]interface{}{"message": "package not found"},
+		}, nil
+	}
 	pathInfo, err := a.ParsePath(name)
 	if err != nil {
 		return &types.ContentResult{

@@ -117,6 +117,133 @@ func TestNpmAdapter_ParsePath_NonScopedWithVersion(t *testing.T) {
 	assert.Equal(t, "4.17.1", pathInfo.Version)
 }
 
+func TestNpmAdapter_ParsePath_Tarball_Unscoped(t *testing.T) {
+	adapter, _ := setupNpmAdapter(t)
+
+	pathInfo, err := adapter.ParsePath("express/-/express-4.17.1.tgz")
+	assert.Nil(t, err)
+	assert.Equal(t, "express", pathInfo.Name)
+	assert.Equal(t, "4.17.1", pathInfo.Version)
+	assert.Equal(t, "express-4.17.1.tgz", pathInfo.Filename)
+	assert.Equal(t, "express/express-4.17.1.tgz", pathInfo.StorageName)
+	assert.Equal(t, "express/-/express-4.17.1.tgz", pathInfo.RemotePath)
+}
+
+func TestNpmAdapter_ParsePath_Tarball_Scoped(t *testing.T) {
+	adapter, _ := setupNpmAdapter(t)
+
+	pathInfo, err := adapter.ParsePath("@scope/package/-/package-1.0.0.tgz")
+	assert.Nil(t, err)
+	assert.Equal(t, "@scope/package", pathInfo.Name)
+	assert.Equal(t, "1.0.0", pathInfo.Version)
+	assert.Equal(t, "package-1.0.0.tgz", pathInfo.Filename)
+	assert.Equal(t, "@scope/package/package-1.0.0.tgz", pathInfo.StorageName)
+	assert.Equal(t, "@scope/package/-/package-1.0.0.tgz", pathInfo.RemotePath)
+}
+
+func TestNpmAdapter_ParsePath_Tarball_WithoutDash(t *testing.T) {
+	adapter, _ := setupNpmAdapter(t)
+
+	pathInfo, err := adapter.ParsePath("express/express-4.17.1.tgz")
+	assert.Nil(t, err)
+	assert.Equal(t, "express", pathInfo.Name)
+	assert.Equal(t, "4.17.1", pathInfo.Version)
+	assert.Equal(t, "express-4.17.1.tgz", pathInfo.Filename)
+	assert.Equal(t, "express/express-4.17.1.tgz", pathInfo.StorageName)
+	assert.Equal(t, "express/express-4.17.1.tgz", pathInfo.RemotePath)
+}
+
+func TestNpmAdapter_ParsePath_Tarball_PrereleaseVersion(t *testing.T) {
+	adapter, _ := setupNpmAdapter(t)
+
+	pathInfo, err := adapter.ParsePath("lodash/-/lodash-1.0.0-beta.1.tgz")
+	assert.Nil(t, err)
+	assert.Equal(t, "lodash", pathInfo.Name)
+	assert.Equal(t, "1.0.0-beta.1", pathInfo.Version)
+	assert.Equal(t, "lodash-1.0.0-beta.1.tgz", pathInfo.Filename)
+	assert.Equal(t, "lodash/lodash-1.0.0-beta.1.tgz", pathInfo.StorageName)
+	assert.Equal(t, "lodash/-/lodash-1.0.0-beta.1.tgz", pathInfo.RemotePath)
+}
+
+func TestNpmAdapter_ParsePath_Tarball_ScopedPrereleaseVersion(t *testing.T) {
+	adapter, _ := setupNpmAdapter(t)
+
+	pathInfo, err := adapter.ParsePath("@scope/package/-/package-2.0.0-alpha+sha.digest.tgz")
+	assert.Nil(t, err)
+	assert.Equal(t, "@scope/package", pathInfo.Name)
+	assert.Equal(t, "2.0.0-alpha+sha.digest", pathInfo.Version)
+	assert.Equal(t, "package-2.0.0-alpha+sha.digest.tgz", pathInfo.Filename)
+	assert.Equal(t, "@scope/package/package-2.0.0-alpha+sha.digest.tgz", pathInfo.StorageName)
+	assert.Equal(t, "@scope/package/-/package-2.0.0-alpha+sha.digest.tgz", pathInfo.RemotePath)
+}
+
+func TestNpmAdapter_ParsePath_Tarball_PackageNameWithDashes(t *testing.T) {
+	adapter, _ := setupNpmAdapter(t)
+
+	pathInfo, err := adapter.ParsePath("my-package/-/my-package-3.0.0.tgz")
+	assert.Nil(t, err)
+	assert.Equal(t, "my-package", pathInfo.Name)
+	assert.Equal(t, "3.0.0", pathInfo.Version)
+	assert.Equal(t, "my-package-3.0.0.tgz", pathInfo.Filename)
+	assert.Equal(t, "my-package/my-package-3.0.0.tgz", pathInfo.StorageName)
+	assert.Equal(t, "my-package/-/my-package-3.0.0.tgz", pathInfo.RemotePath)
+}
+
+func TestNpmAdapter_ParsePath_Tarball_MultipleVersions(t *testing.T) {
+	adapter, _ := setupNpmAdapter(t)
+
+	tests := []struct {
+		path    string
+		name    string
+		version string
+	}{
+		{"express/-/express-4.17.1.tgz", "express", "4.17.1"},
+		{"express/-/express-4.0.0.tgz", "express", "4.0.0"},
+		{"express/-/express-3.21.2.tgz", "express", "3.21.2"},
+		{"react/-/react-18.2.0.tgz", "react", "18.2.0"},
+		{"react/-/react-16.8.6.tgz", "react", "16.8.6"},
+		{"@babel/core/-/core-7.24.0.tgz", "@babel/core", "7.24.0"},
+		{"@babel/core/-/core-7.23.9.tgz", "@babel/core", "7.23.9"},
+		{"typescript/-/typescript-5.4.0.tgz", "typescript", "5.4.0"},
+		{"lodash/-/lodash-4.17.21.tgz", "lodash", "4.17.21"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			pathInfo, err := adapter.ParsePath(tt.path)
+			assert.Nil(t, err)
+			assert.Equal(t, tt.name, pathInfo.Name)
+			assert.Equal(t, tt.version, pathInfo.Version)
+			assert.Equal(t, tt.path, pathInfo.RemotePath)
+		})
+	}
+}
+
+func TestExtractVersionFromTarball(t *testing.T) {
+	tests := []struct {
+		filename string
+		pkgName  string
+		want     string
+	}{
+		{"express-4.17.1.tgz", "express", "4.17.1"},
+		{"lodash-4.17.21.tgz", "lodash", "4.17.21"},
+		{"my-package-1.0.0.tgz", "my-package", "1.0.0"},
+		{"lodash-1.0.0-beta.1.tgz", "lodash", "1.0.0-beta.1"},
+		{"package-2.0.0-alpha+sha.digest.tgz", "package", "2.0.0-alpha+sha.digest"},
+		{"package-1.0.0.tgz", "@scope/package", "1.0.0"},
+		{"core-7.24.0.tgz", "@babel/core", "7.24.0"},
+		{"1.0.0.tgz", "unknown", "1.0.0"},
+		{"no-version-pattern.tgz", "something", "no-version-pattern"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.filename, func(t *testing.T) {
+			got := extractVersionFromTarball(tt.filename, tt.pkgName)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestGenerateRevision(t *testing.T) {
 	rev1 := generateRevision()
 	rev2 := generateRevision()
@@ -219,10 +346,10 @@ func TestNpmAdapter_Delete(t *testing.T) {
 	db.Create(pkg)
 
 	version := &model.PackageVersion{
-		PackageID:   pkg.ID,
-		Version:     "1.0.0",
-		Status:      model.StatusPublished,
-		SizeBytes:   1000,
+		PackageID: pkg.ID,
+		Version:   "1.0.0",
+		Status:    model.StatusPublished,
+		SizeBytes: 1000,
 	}
 	db.Create(version)
 

@@ -272,6 +272,56 @@ func (a *MavenAdapter) handleMetadataXML(fullPath string, repo *model.Repository
 	}
 
 	if needRefresh && repo != nil && repo.Type == model.RepoTypeProxy && a.fetcher != nil {
+		if a.metaCache != nil {
+			ttl := time.Duration(repo.CacheTTLSeconds) * time.Second
+			if ttl <= 0 {
+				ttl = 5 * time.Minute
+			}
+
+			cacheContent, _, cacheErr := a.metaCache.GetOrFetch(context.Background(), repo.Name, "maven", name+"/maven-metadata.xml", ttl, func() (io.ReadCloser, int64, error) {
+				pathInfo, pathErr := a.ParsePath(name)
+				if pathErr != nil {
+					return nil, 0, pathErr
+				}
+				remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+				result, fetchErr := a.fetcher.FetchFromRemote(context.Background(), repo, remoteURL)
+				if fetchErr != nil {
+					return nil, 0, fetchErr
+				}
+				return result.Content, result.Size, nil
+			})
+			if cacheErr == nil {
+				body, readErr := io.ReadAll(cacheContent)
+				cacheContent.Close()
+				if readErr == nil {
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								logrus.Errorf("panic in updatePackageMetadata for %s: %v", name, r)
+							}
+						}()
+						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
+						if err := a.updatePackageMetadata(ctx, name, body, repo.ID); err != nil {
+							logrus.Warnf("failed to update package metadata for %s: %v", name, err)
+						}
+					}()
+
+					storageName := groupArtifactToStoragePath(group)
+					a.storageSvc.StorePackageWithBackend(context.Background(), repo.Name, "maven", storageName, "maven-metadata.xml", bytes.NewReader(body), int64(len(body)), 0)
+
+					return &types.ContentResult{
+						StatusCode:  200,
+						ContentType: "application/xml",
+						ExtraData: map[string]interface{}{
+							"xml_body": body,
+						},
+					}, nil
+				}
+			}
+		}
+
+		// Fallback: 直接远程获取（无需缓存）
 		pathInfo, err := a.ParsePath(name)
 		if err != nil {
 			logrus.Warnf("failed to resolve package path for %s: %v", name, err)

@@ -25,6 +25,13 @@ const (
 	MigrationTaskSyncConfig = "sync_config_only"
 )
 
+const (
+	PhaseScanning  = "scanning"
+	PhaseScanned   = "scanned"
+	PhaseMigrating = "migrating"
+	PhaseDone      = "done"
+)
+
 type MigrationTask struct {
 	ID                 uint            `json:"id" gorm:"primaryKey"`
 	SourceType         string          `json:"source_type" gorm:"size:50"`
@@ -32,7 +39,8 @@ type MigrationTask struct {
 	Username           string          `json:"username" gorm:"size:100"`
 	PasswordEncrypted  string          `json:"-" gorm:"column:password_encrypted;type:text"`
 	Status             MigrationStatus `json:"status" gorm:"size:20"`
-	TaskType           string          `json:"task_type" gorm:"size:50;default:full"` // "full" 或 "sync_config_only"
+	TaskType           string          `json:"task_type" gorm:"size:50;default:full"`
+	Phase              string          `json:"phase" gorm:"size:20;default:scanning"`
 	TotalItems         int             `json:"total_items" gorm:"default:0"`
 	ProcessedItems     int             `json:"processed_items" gorm:"default:0"`
 	FailedItems        int             `json:"failed_items" gorm:"default:0"`

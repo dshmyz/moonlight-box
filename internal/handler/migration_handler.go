@@ -279,9 +279,9 @@ func (h *MigrationHandler) GetMigrationStatus(c *gin.Context) {
 	progress := h.service.GetProgress(taskID)
 	resp := gin.H{
 		"task":            task,
-		"processed_items": 0,
-		"failed_items":    0,
-		"total_items":     0,
+		"processed_items": task.ProcessedItems,
+		"failed_items":    task.FailedItems,
+		"total_items":     task.TotalItems,
 		"logs":            []string{},
 	}
 

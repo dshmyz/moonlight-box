@@ -24,23 +24,23 @@ type RepositoryCreator interface {
 }
 
 type MigrationService struct {
-	db              *gorm.DB
-	worker          MigrationWorkerInterface
-	repoCreator     RepositoryCreator
-	tasks           map[uint]*MigrationContext
-	mu              sync.RWMutex
-	nexusClients    map[uint]*NexusClient
+	db           *gorm.DB
+	worker       MigrationWorkerInterface
+	repoCreator  RepositoryCreator
+	tasks        map[uint]*MigrationContext
+	mu           sync.RWMutex
+	nexusClients map[uint]*NexusClient
 
 	// 任务队列相关
-	queue           chan uint
-	maxConcurrent   int
-	runningTasks    int
-	queueMu         sync.Mutex
-	queueStarted    bool
-	
+	queue         chan uint
+	maxConcurrent int
+	runningTasks  int
+	queueMu       sync.Mutex
+	queueStarted  bool
+
 	// 重试任务标识
-	retryTaskIDs    map[uint]bool
-	retryMu         sync.Mutex
+	retryTaskIDs map[uint]bool
+	retryMu      sync.Mutex
 }
 
 type MigrationContext struct {
@@ -71,14 +71,14 @@ func NewMigrationService(db *gorm.DB, worker MigrationWorkerInterface, repoCreat
 		maxConcurrent = MaxConcurrentTasks
 	}
 	s := &MigrationService{
-		db:              db,
-		worker:          worker,
-		repoCreator:     repoCreator,
-		tasks:           make(map[uint]*MigrationContext),
-		nexusClients:    make(map[uint]*NexusClient),
-		queue:           make(chan uint, 100),
-		maxConcurrent:   maxConcurrent,
-		retryTaskIDs:    make(map[uint]bool),
+		db:            db,
+		worker:        worker,
+		repoCreator:   repoCreator,
+		tasks:         make(map[uint]*MigrationContext),
+		nexusClients:  make(map[uint]*NexusClient),
+		queue:         make(chan uint, 100),
+		maxConcurrent: maxConcurrent,
+		retryTaskIDs:  make(map[uint]bool),
 	}
 	s.recoverInterruptedTasks()
 	return s
@@ -116,28 +116,56 @@ func (s *MigrationService) recoverInterruptedTasks() []uint {
 
 	var recoveredTaskIDs []uint
 	for _, task := range runningTasks {
-		// 将 running/queued 状态的任务重置为 queued，等待重新入队
-		s.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
-			"status":        model.MigrationQueued,
-			"started_at":    nil,
-			"error_message": "",
-		})
-
-		// 将 processing 状态的 item 重置为 pending（因为不确定是否真正完成）
-		resetItems := s.db.Model(&model.MigrationItem{}).
-			Where("task_id = ? AND status = ?", task.ID, model.MigrationItemProcessing).
-			Updates(map[string]interface{}{
-				"status":        model.MigrationItemPending,
+		if task.TaskType == model.MigrationTaskSyncConfig {
+			s.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
+				"status":        model.MigrationQueued,
+				"started_at":    nil,
 				"error_message": "",
-				"retry_count":   0,
+			})
+			recoveredTaskIDs = append(recoveredTaskIDs, task.ID)
+			continue
+		}
+
+		switch task.Phase {
+		case model.PhaseScanning:
+			s.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
+				"status":        model.MigrationQueued,
+				"phase":         model.PhaseScanning,
+				"started_at":    nil,
+				"error_message": "",
 			})
 
+		case model.PhaseScanned, model.PhaseMigrating:
+			s.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
+				"status":        model.MigrationQueued,
+				"phase":         model.PhaseMigrating,
+				"started_at":    nil,
+				"error_message": "",
+			})
+
+			s.db.Model(&model.MigrationItem{}).
+				Where("task_id = ? AND status = ?", task.ID, model.MigrationItemProcessing).
+				Updates(map[string]interface{}{
+					"status":        model.MigrationItemPending,
+					"error_message": "",
+					"retry_count":   0,
+				})
+
+		default:
+			s.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
+				"status":        model.MigrationQueued,
+				"phase":         model.PhaseScanning,
+				"started_at":    nil,
+				"error_message": "",
+			})
+		}
+
 		logrus.WithFields(logrus.Fields{
-			"module":      "migration",
-			"task_id":     task.ID,
-			"task_type":   task.TaskType,
-			"source_url":  task.SourceURL,
-			"reset_items": resetItems.RowsAffected,
+			"module":     "migration",
+			"task_id":    task.ID,
+			"task_type":  task.TaskType,
+			"phase":      task.Phase,
+			"source_url": task.SourceURL,
 		}).Info("Task recovered, will be requeued automatically")
 
 		recoveredTaskIDs = append(recoveredTaskIDs, task.ID)
@@ -255,10 +283,10 @@ func (s *MigrationService) runQueuedTask(taskID uint) {
 		s.ClearRetryFlag(taskID)
 		return
 	}
-	
+
 	isRetry := s.IsRetryTask(taskID)
 	defer s.ClearRetryFlag(taskID)
-	
+
 	var execErr error
 	if isRetry {
 		s.AddLog(taskID, "开始重试失败项目")
@@ -266,7 +294,7 @@ func (s *MigrationService) runQueuedTask(taskID uint) {
 	} else {
 		execErr = s.worker.Execute(ctx, task)
 	}
-	
+
 	if execErr != nil {
 		s.AddLog(taskID, "迁移执行出错: "+execErr.Error())
 	}
@@ -376,9 +404,17 @@ func (s *MigrationService) executeSyncConfigTask(taskID uint, task *model.Migrat
 		cacheTTL := 86400
 		storageID := defaultBackendID
 
-		if nr.Type == "proxy" && nr.URL != "" {
-			remoteURL = nr.URL
-			cacheEnabled = true
+		if nr.Type == "proxy" {
+			// 对于代理仓库，需要获取详细信息来获取真正的远程代理地址
+			detail, err := client.GetRepositoryDetail(ctx, nr.Name)
+			if err != nil {
+				s.AddLog(taskID, fmt.Sprintf("获取仓库 %s 详细信息失败: %v", nr.Name, err))
+				continue
+			}
+			if detail.Proxy != nil && detail.Proxy.RemoteURL != "" {
+				remoteURL = detail.Proxy.RemoteURL
+				cacheEnabled = true
+			}
 		}
 
 		if nr.Type == "group" {
@@ -434,6 +470,7 @@ func (s *MigrationService) CreateTask(sourceURL, username, password string, sele
 		Username:           username,
 		Status:             model.MigrationQueued,
 		TaskType:           model.MigrationTaskFull,
+		Phase:              model.PhaseScanning,
 		SelectedRepos:      string(reposJSON),
 		TargetRepositoryID: targetRepoID,
 		TargetRepository:   targetRepoName,
@@ -540,16 +577,16 @@ func (s *MigrationService) RegisterNexusClient(taskID uint, client *NexusClient)
 }
 
 func (s *MigrationService) RetryFailedTask(task *model.MigrationTask) {
-	task.Status = model.MigrationQueued
 	s.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
 		"status":     model.MigrationQueued,
+		"phase":      model.PhaseMigrating,
 		"started_at": nil,
 	})
-	
+
 	s.retryMu.Lock()
 	s.retryTaskIDs[task.ID] = true
 	s.retryMu.Unlock()
-	
+
 	if err := s.EnqueueTask(task.ID); err != nil {
 		s.retryMu.Lock()
 		delete(s.retryTaskIDs, task.ID)
@@ -557,7 +594,7 @@ func (s *MigrationService) RetryFailedTask(task *model.MigrationTask) {
 		s.AddLog(task.ID, "重试任务入队失败: "+err.Error())
 		return
 	}
-	
+
 	s.AddLog(task.ID, "重试任务已加入队列")
 }
 
@@ -576,18 +613,18 @@ func (s *MigrationService) ClearRetryFlag(taskID uint) {
 func (s *MigrationService) ListItems(taskID uint, page, pageSize int) ([]model.MigrationItem, int64, error) {
 	var items []model.MigrationItem
 	var total int64
-	
+
 	query := s.db.Model(&model.MigrationItem{}).Where("task_id = ?", taskID)
-	
+
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
-	
+
 	if page > 0 && pageSize > 0 {
 		offset := (page - 1) * pageSize
 		query = query.Offset(offset).Limit(pageSize)
 	}
-	
+
 	err := query.Order("created_at ASC").Find(&items).Error
 	return items, total, err
 }

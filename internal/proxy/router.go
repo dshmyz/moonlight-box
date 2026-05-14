@@ -58,19 +58,8 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 	cacheKey := fmt.Sprintf("proxy:%s:%s", repo.Name, remoteURL)
 
 	cached, err := r.cache.Get(ctx, cacheKey)
-	if err == nil && cached != nil {
-		if cached.IsNegative {
-			return nil, ErrPackageNotFound
-		}
-		return &RouteResult{
-			Source:     repo.Name,
-			SourceType: "proxy",
-			RepoID:     repo.ID,
-			Content:    io.NopCloser(bytes.NewReader(cached.Content)),
-			Size:       cached.Size,
-			FromCache:  true,
-			CacheTTL:   repo.CacheTTLSeconds,
-		}, nil
+	if err == nil && cached != nil && cached.IsNegative {
+		return nil, ErrPackageNotFound
 	}
 
 	if r.healthCheckSvc != nil && r.healthCheckSvc.ShouldSkipRequest(repo.ID) {
@@ -144,12 +133,6 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 	}
 
 	size := int64(len(body))
-
-	r.cache.Set(ctx, &CacheItem{
-		Key:     cacheKey,
-		Content: body,
-		Size:    size,
-	}, time.Duration(repo.CacheTTLSeconds)*time.Second)
 
 	return &RouteResult{
 		Source:     repo.Name,

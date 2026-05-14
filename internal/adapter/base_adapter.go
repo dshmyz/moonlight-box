@@ -14,9 +14,10 @@ import (
 )
 
 type BaseAdapter struct {
-	storageSvc *service.StorageService
-	fetcher    proxy.ProxyFetcher
-	pkgCache   *cache.PackageCache
+	storageSvc   *service.StorageService
+	fetcher      proxy.ProxyFetcher
+	pkgCache     *cache.PackageCache
+	metaCache    *service.MetadataCache
 }
 
 func NewBaseAdapter(storageSvc *service.StorageService, pkgCache *cache.PackageCache) *BaseAdapter {
@@ -24,6 +25,14 @@ func NewBaseAdapter(storageSvc *service.StorageService, pkgCache *cache.PackageC
 		storageSvc: storageSvc,
 		pkgCache:   pkgCache,
 	}
+}
+
+func (b *BaseAdapter) SetMetadataCache(mc *service.MetadataCache) {
+	b.metaCache = mc
+}
+
+func (b *BaseAdapter) GetMetadataCache() *service.MetadataCache {
+	return b.metaCache
 }
 
 func (b *BaseAdapter) SetFetcher(fetcher proxy.ProxyFetcher) {
