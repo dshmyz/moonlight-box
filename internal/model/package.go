@@ -44,11 +44,11 @@ const (
 
 type Package struct {
 	BaseModel
-	Name           string           `gorm:"not null;uniqueIndex:idx_pkg_name_type" json:"name"`
+	Name           string           `gorm:"not null;uniqueIndex:idx_pkg_repo_name_type,priority:2" json:"name"`
 	DisplayName    string           `gorm:"size:255;index" json:"display_name"`
-	Type           PackageType      `gorm:"not null;uniqueIndex:idx_pkg_name_type" json:"type"`
+	Type           PackageType      `gorm:"not null;uniqueIndex:idx_pkg_repo_name_type,priority:3" json:"type"`
 	Description    string           `gorm:"size:500" json:"description,omitempty"`
-	RepositoryID   uint             `gorm:"index" json:"repository_id"`
+	RepositoryID   uint             `gorm:"index;uniqueIndex:idx_pkg_repo_name_type,priority:1" json:"repository_id"`
 	RepositoryType RepositoryType   `gorm:"default:local;index" json:"repository_type"`
 	RepositoryName string           `gorm:"-" json:"repository_name"`
 	Homepage       string           `gorm:"size:500" json:"homepage,omitempty"`

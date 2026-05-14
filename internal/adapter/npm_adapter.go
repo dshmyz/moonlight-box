@@ -310,10 +310,10 @@ func (a *NpmAdapter) handleMetadataFetch(ctx context.Context, repo *model.Reposi
 		}, nil
 
 	case model.RepoTypeProxy:
-		return a.handleProxyMetadataFetch(ctx, repo, name)
+		return a.handleProxyMetadataFetch(ctx, repositoryFromContext(ctx), name)
 
 	case model.RepoTypeVirtual:
-		return a.handleVirtualMetadataFetch(ctx, repo, name)
+		return a.handleVirtualMetadataFetch(ctx, repositoryFromContext(ctx), name)
 
 	default:
 		return &types.ContentResult{
@@ -432,15 +432,15 @@ func extractVersionFromTarball(filename, pkgName string) string {
 }
 
 func (a *NpmAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
-	return a.BaseAdapter.GetPackageMetadata(ctx, name, model.PackageTypeNPM, NpmType)
+	return a.BaseAdapter.GetRepositoryPackageMetadata(ctx, repositoryFromContext(ctx), name, model.PackageTypeNPM, NpmType)
 }
 
 func (a *NpmAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.GetPackageRepository().DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeNPM)
+	return a.GetPackageRepository().DeleteByRepoNameAndVersionContext(ctx, repositoryID(repositoryFromContext(ctx)), identity.Name, identity.Version, model.PackageTypeNPM)
 }
 
 func (a *NpmAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {
-	return a.GetPackageRepository().ListVersions(name, model.PackageTypeNPM)
+	return a.GetPackageRepository().ListVersionsByRepoContext(ctx, repositoryID(repositoryFromContext(ctx)), name, model.PackageTypeNPM)
 }
 
 func (a *NpmAdapter) syncFromProxy(ctx context.Context, name string, repo *model.Repository) error {
@@ -551,7 +551,7 @@ func (a *NpmAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*type
 		if pkgRepo == nil {
 			return nil, fmt.Errorf("package repository not initialized")
 		}
-		existingPkg, err := pkgRepo.FindByNameAndType(name, model.PackageTypeNPM)
+		existingPkg, err := pkgRepo.FindByRepoNameAndTypeContext(c.Request.Context(), repositoryID(repositoryFromContext(c.Request.Context())), name, model.PackageTypeNPM)
 		if err == nil {
 			for _, ver := range existingPkg.Versions {
 				if ver.Version == metadata.Version {
@@ -604,12 +604,12 @@ func (a *NpmAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) erro
 	}
 
 	if identity.Version == "" {
-		versions, err := a.ListVersions(c.Request.Context(), name)
+		versions, err := a.ListVersions(context.WithValue(c.Request.Context(), "repo", ctx.Repo), name)
 		if err != nil {
 			return err
 		}
 		for _, version := range versions {
-			if err := a.Delete(c.Request.Context(), &PackageIdentity{
+			if err := a.Delete(context.WithValue(c.Request.Context(), "repo", ctx.Repo), &PackageIdentity{
 				Name:    name,
 				Version: version,
 				Type:    NpmType,
@@ -620,7 +620,7 @@ func (a *NpmAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) erro
 		return nil
 	}
 
-	if err := a.Delete(c.Request.Context(), identity); err != nil {
+	if err := a.Delete(context.WithValue(c.Request.Context(), "repo", ctx.Repo), identity); err != nil {
 		return err
 	}
 

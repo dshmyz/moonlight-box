@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/moonlight-box/registry/internal/model"
@@ -23,8 +24,13 @@ func (r *RepositoryRepository) Create(repo *model.Repository) error {
 
 // FindByName 根据名称查找仓库
 func (r *RepositoryRepository) FindByName(name string) (*model.Repository, error) {
+	return r.FindByNameContext(context.Background(), name)
+}
+
+// FindByNameContext 根据名称查找仓库
+func (r *RepositoryRepository) FindByNameContext(ctx context.Context, name string) (*model.Repository, error) {
 	var repo model.Repository
-	err := r.db.Where("name = ?", name).
+	err := r.db.WithContext(ctx).Where("name = ?", name).
 		Preload("Members").
 		Preload("Members.MemberRepo").
 		First(&repo).Error
@@ -36,8 +42,13 @@ func (r *RepositoryRepository) FindByName(name string) (*model.Repository, error
 
 // FindByID 根据ID查找仓库
 func (r *RepositoryRepository) FindByID(id uint) (*model.Repository, error) {
+	return r.FindByIDContext(context.Background(), id)
+}
+
+// FindByIDContext 根据ID查找仓库
+func (r *RepositoryRepository) FindByIDContext(ctx context.Context, id uint) (*model.Repository, error) {
 	var repo model.Repository
-	err := r.db.Preload("Members").
+	err := r.db.WithContext(ctx).Preload("Members").
 		Preload("Members.MemberRepo").
 		First(&repo, id).Error
 	if err != nil {
@@ -48,8 +59,13 @@ func (r *RepositoryRepository) FindByID(id uint) (*model.Repository, error) {
 
 // List 列出仓库，支持过滤
 func (r *RepositoryRepository) List(filter map[string]interface{}) ([]model.Repository, error) {
+	return r.ListContext(context.Background(), filter)
+}
+
+// ListContext 列出仓库，支持过滤
+func (r *RepositoryRepository) ListContext(ctx context.Context, filter map[string]interface{}) ([]model.Repository, error) {
 	var repos []model.Repository
-	query := r.db.Model(&model.Repository{})
+	query := r.db.WithContext(ctx).Model(&model.Repository{})
 
 	if pkgType, ok := filter["package_type"]; ok {
 		query = query.Where("package_type = ?", pkgType)
@@ -89,8 +105,13 @@ func (r *RepositoryRepository) FindByPackageType(pkgType string) ([]model.Reposi
 
 // FindVirtualByPackageType 查找指定包类型的虚拟仓库
 func (r *RepositoryRepository) FindVirtualByPackageType(pkgType string) (*model.Repository, error) {
+	return r.FindVirtualByPackageTypeContext(context.Background(), pkgType)
+}
+
+// FindVirtualByPackageTypeContext 查找指定包类型的虚拟仓库
+func (r *RepositoryRepository) FindVirtualByPackageTypeContext(ctx context.Context, pkgType string) (*model.Repository, error) {
 	var repo model.Repository
-	err := r.db.Where("type = ? AND package_type = ? AND enabled = ?",
+	err := r.db.WithContext(ctx).Where("type = ? AND package_type = ? AND enabled = ?",
 		model.RepoTypeVirtual, pkgType, true).First(&repo).Error
 	if err != nil {
 		return nil, fmt.Errorf("virtual repository not found for package type: %s", pkgType)

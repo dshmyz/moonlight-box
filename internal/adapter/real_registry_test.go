@@ -1,16 +1,16 @@
 package adapter
 
 import (
-	"time"
-	"github.com/moonlight-box/registry/internal/cache"
 	"context"
+	"github.com/moonlight-box/registry/internal/cache"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
-	_ "github.com/mattn/go-sqlite3"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -66,7 +66,6 @@ func TestGoAdapter_Type(t *testing.T) {
 		t.Errorf("expected GoType, got %v", adapter.Type())
 	}
 }
-
 
 func TestGoAdapter_ListVersions_Empty(t *testing.T) {
 	adapter := setupGoAdapter(t)

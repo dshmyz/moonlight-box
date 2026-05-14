@@ -116,6 +116,8 @@ func (s *MigrationService) recoverInterruptedTasks() []uint {
 
 	var recoveredTaskIDs []uint
 	for _, task := range runningTasks {
+		s.resetProcessingItems(task.ID)
+
 		if task.TaskType == model.MigrationTaskSyncConfig {
 			s.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
 				"status":        model.MigrationQueued,
@@ -143,14 +145,6 @@ func (s *MigrationService) recoverInterruptedTasks() []uint {
 				"error_message": "",
 			})
 
-			s.db.Model(&model.MigrationItem{}).
-				Where("task_id = ? AND status = ?", task.ID, model.MigrationItemProcessing).
-				Updates(map[string]interface{}{
-					"status":        model.MigrationItemPending,
-					"error_message": "",
-					"retry_count":   0,
-				})
-
 		default:
 			s.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
 				"status":        model.MigrationQueued,
@@ -172,6 +166,16 @@ func (s *MigrationService) recoverInterruptedTasks() []uint {
 	}
 
 	return recoveredTaskIDs
+}
+
+func (s *MigrationService) resetProcessingItems(taskID uint) {
+	s.db.Model(&model.MigrationItem{}).
+		Where("task_id = ? AND status = ?", taskID, model.MigrationItemProcessing).
+		Updates(map[string]interface{}{
+			"status":        model.MigrationItemPending,
+			"error_message": "",
+			"retry_count":   0,
+		})
 }
 
 // StartQueue 启动任务队列处理器

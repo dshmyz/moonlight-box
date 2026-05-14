@@ -9,7 +9,7 @@ import (
 )
 
 func AutoMigrate() error {
-	return DB.AutoMigrate(
+	if err := DB.AutoMigrate(
 		&model.User{},
 		&model.Role{},
 		&model.Permission{},
@@ -36,7 +36,25 @@ func AutoMigrate() error {
 		&model.MigrationTask{},
 		&model.MigrationItem{},
 		&model.ProxyDownloadLog{},
-	)
+	); err != nil {
+		return err
+	}
+
+	return migratePackageRepositoryIndex()
+}
+
+func migratePackageRepositoryIndex() error {
+	if DB.Migrator().HasIndex(&model.Package{}, "idx_pkg_name_type") {
+		if err := DB.Migrator().DropIndex(&model.Package{}, "idx_pkg_name_type"); err != nil {
+			return err
+		}
+	}
+	if !DB.Migrator().HasIndex(&model.Package{}, "idx_pkg_repo_name_type") {
+		if err := DB.Migrator().CreateIndex(&model.Package{}, "idx_pkg_repo_name_type"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func SeedData() error {

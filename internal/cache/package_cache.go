@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -27,7 +28,11 @@ func NewPackageCache(pkgRepo *repository.PackageRepository, ttl time.Duration) *
 }
 
 func (c *PackageCache) GetByNameAndType(name string, pkgType model.PackageType) (*model.Package, error) {
-	key := c.makeKey(name, pkgType)
+	return c.GetByRepoNameAndType(0, name, pkgType)
+}
+
+func (c *PackageCache) GetByRepoNameAndType(repositoryID uint, name string, pkgType model.PackageType) (*model.Package, error) {
+	key := c.makeRepoKey(repositoryID, name, pkgType)
 
 	if val, ok := c.cache.Get(key); ok {
 		if pkg, ok := val.(*model.Package); ok {
@@ -35,7 +40,7 @@ func (c *PackageCache) GetByNameAndType(name string, pkgType model.PackageType) 
 		}
 	}
 
-	pkg, err := c.pkgRepo.FindByNameAndType(name, pkgType)
+	pkg, err := c.pkgRepo.FindByRepoNameAndTypeContext(context.Background(), repositoryID, name, pkgType)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +71,11 @@ func (c *PackageCache) TTL() time.Duration {
 }
 
 func (c *PackageCache) makeKey(name string, pkgType model.PackageType) string {
-	return fmt.Sprintf("pkg:%s:%s", name, pkgType)
+	return c.makeRepoKey(0, name, pkgType)
+}
+
+func (c *PackageCache) makeRepoKey(repositoryID uint, name string, pkgType model.PackageType) string {
+	return fmt.Sprintf("pkg:%d:%s:%s", repositoryID, name, pkgType)
 }
 
 func (c *PackageCache) GetPackageRepository() *repository.PackageRepository {

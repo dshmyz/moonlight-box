@@ -61,9 +61,10 @@ func (s *DownloadService) Download(ctx context.Context, downloadCtx *types.Downl
 		return nil, fmt.Errorf("invalid download path")
 	}
 
-	if content, size, err := s.storageSvc.GetPackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, pathInfo.StorageVersion, 0); err == nil {
+	backendID := storageBackendID(downloadCtx.Repo)
+	if content, size, err := s.storageSvc.GetPackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, pathInfo.StorageVersion, backendID); err == nil {
 		s.recordLog(downloadCtx, size, time.Since(startTime), true, nil)
-		s.incrementDownloadCount(downloadCtx)
+		s.incrementDownloadCount(ctx, downloadCtx)
 
 		return &types.DownloadResult{
 			Content:   content,
@@ -92,11 +93,7 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 
 	remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(downloadCtx.Repo.RemoteURL, "/"), pathInfo.RemotePath)
 	storageVersion := pathInfo.StorageVersion
-
-	var backendID uint
-	if downloadCtx.Repo.StorageBackendID != nil {
-		backendID = *downloadCtx.Repo.StorageBackendID
-	}
+	backendID := storageBackendID(downloadCtx.Repo)
 
 	type proxyFetchOutcome struct {
 		repoID       uint
@@ -109,7 +106,7 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 	key := fmt.Sprintf("%d|%s|%s|%s", downloadCtx.Repo.ID, downloadCtx.PkgType, pathInfo.StorageName, storageVersion)
 	value, err, _ := s.inflight.Do(key, func() (interface{}, error) {
 		// Double-check storage to avoid redundant remote fetch during race.
-		if _, _, getErr := s.storageSvc.GetPackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, 0); getErr == nil {
+		if _, _, getErr := s.storageSvc.GetPackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, backendID); getErr == nil {
 			return &proxyFetchOutcome{repoID: downloadCtx.Repo.ID, useStorage: true, fromRemote: false}, nil
 		}
 
@@ -163,13 +160,13 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 
 	outcome := value.(*proxyFetchOutcome)
 	if outcome.useStorage {
-		storedContent, storedSize, getErr := s.storageSvc.GetPackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, 0)
+		storedContent, storedSize, getErr := s.storageSvc.GetPackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, backendID)
 		if getErr != nil {
 			s.recordLog(downloadCtx, 0, time.Since(startTime), false, fmt.Errorf("failed to read stored proxy package: %w", getErr))
 			return nil, fmt.Errorf("failed to read stored proxy package: %w", getErr)
 		}
 		s.recordLog(downloadCtx, storedSize, time.Since(startTime), !outcome.fromRemote, nil)
-		s.incrementDownloadCount(downloadCtx)
+		s.incrementDownloadCount(ctx, downloadCtx)
 		return &types.DownloadResult{
 			Content:   storedContent,
 			Size:      storedSize,
@@ -182,7 +179,7 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 	}
 
 	s.recordLog(downloadCtx, outcome.size, time.Since(startTime), false, nil)
-	s.incrementDownloadCount(downloadCtx)
+	s.incrementDownloadCount(ctx, downloadCtx)
 	return &types.DownloadResult{
 		Content:   io.NopCloser(bytes.NewReader(outcome.contentBytes)),
 		Size:      outcome.size,
@@ -194,8 +191,15 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 	}, nil
 }
 
+func storageBackendID(repo *model.Repository) uint {
+	if repo == nil || repo.StorageBackendID == nil {
+		return 0
+	}
+	return *repo.StorageBackendID
+}
+
 func (s *DownloadService) storePackageFileRecord(ctx context.Context, req *types.DownloadContext, repoID uint, storageKey string, size int64, downloadURL string) {
-	pkg, ver, file, dbErr := s.pkgRepo.StorePackageFile(ctx, &model.Package{
+	_, _, _, dbErr := s.pkgRepo.StorePackageFile(ctx, &model.Package{
 		Name:           req.Name,
 		Type:           req.PkgType,
 		RepositoryID:   repoID,
@@ -214,20 +218,6 @@ func (s *DownloadService) storePackageFileRecord(ctx context.Context, req *types
 		logrus.Warnf("failed to store proxy package file to database %s: %v", req.Name, dbErr)
 		return
 	}
-
-	if s.countBatcher == nil {
-		return
-	}
-
-	fileID := uint(0)
-	if file != nil {
-		fileID = file.ID
-	}
-	versionID := uint(0)
-	if ver != nil {
-		versionID = ver.ID
-	}
-	s.countBatcher.Increment(pkg.ID, versionID, fileID, repoID)
 }
 
 func (s *DownloadService) recordLog(req *types.DownloadContext, sizeBytes int64, duration time.Duration, fromCache bool, err error) {
@@ -294,23 +284,23 @@ func (s *DownloadService) recordDownloadMetrics(req *types.DownloadContext, size
 	metrics.RecordDownloadStats(pkgType, source, result, sizeBytes, duration.Seconds())
 }
 
-func (s *DownloadService) incrementDownloadCount(req *types.DownloadContext) {
+func (s *DownloadService) incrementDownloadCount(ctx context.Context, req *types.DownloadContext) {
 	if s.countBatcher == nil {
 		return
 	}
 
-	pkg, err := s.pkgRepo.FindByNameAndType(req.Name, req.PkgType)
+	pkg, err := s.pkgRepo.FindByRepoNameAndTypeContext(ctx, req.Repo.ID, req.Name, req.PkgType)
 	if err != nil {
 		return
 	}
 
-	ver, err := s.pkgRepo.FindVersionByPackageAndVersion(pkg.ID, req.Version)
+	ver, err := s.pkgRepo.FindVersionByPackageAndVersionContext(ctx, pkg.ID, req.Version)
 	if err != nil {
 		s.countBatcher.Increment(pkg.ID, 0, 0, req.Repo.ID)
 		return
 	}
 
-	file, err := s.pkgRepo.FindFileByVersionAndFilename(ver.ID, req.Filename)
+	file, err := s.pkgRepo.FindFileByVersionAndFilenameContext(ctx, ver.ID, req.Filename)
 	if err != nil {
 		s.countBatcher.Increment(pkg.ID, ver.ID, 0, req.Repo.ID)
 		return

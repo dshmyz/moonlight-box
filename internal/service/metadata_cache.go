@@ -64,14 +64,15 @@ func (mc *MetadataCache) Set(ctx context.Context, repoName, pkgType, name string
 		return readErr
 	}
 
-	_, storeErr := mc.storageSvc.StorePackageWithBackend(ctx, repoName, "_meta_cache", key, "", bytes.NewReader(body), size, 0)
+	actualSize := int64(len(body))
+	_, storeErr := mc.storageSvc.StorePackageWithBackend(ctx, repoName, "_meta_cache", key, "", bytes.NewReader(body), actualSize, 0)
 	if storeErr != nil {
 		return storeErr
 	}
 
 	mc.entries.Store(key, &cachedMetadata{
 		expiry: time.Now().Add(ttl),
-		size:   size,
+		size:   actualSize,
 	})
 	return nil
 }

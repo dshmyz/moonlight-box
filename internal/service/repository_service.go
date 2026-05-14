@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/moonlight-box/registry/internal/model"
@@ -63,15 +64,15 @@ func (s *RepositoryService) Create(repo *model.Repository, members []string) err
 			return err
 		}
 
-			if repo.Type == model.RepoTypeVirtual && len(members) > 0 {
-				for i, memberName := range members {
-					var memberRepo model.Repository
-					if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
-						return fmt.Errorf("member repository not found: %s", memberName)
-					}
-					group := model.RepositoryGroup{
-						VirtualRepoID: repo.ID,
-						MemberRepoID:  memberRepo.ID,
+		if repo.Type == model.RepoTypeVirtual && len(members) > 0 {
+			for i, memberName := range members {
+				var memberRepo model.Repository
+				if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
+					return fmt.Errorf("member repository not found: %s", memberName)
+				}
+				group := model.RepositoryGroup{
+					VirtualRepoID: repo.ID,
+					MemberRepoID:  memberRepo.ID,
 					Priority:      i,
 				}
 				if err := tx.Create(&group).Error; err != nil {
@@ -88,12 +89,22 @@ func (s *RepositoryService) Create(repo *model.Repository, members []string) err
 
 // List 列出仓库，支持按条件过滤
 func (s *RepositoryService) List(filter map[string]interface{}) ([]model.Repository, error) {
-	return s.repoRepo.List(filter)
+	return s.ListContext(context.Background(), filter)
+}
+
+// ListContext 列出仓库，支持按条件过滤
+func (s *RepositoryService) ListContext(ctx context.Context, filter map[string]interface{}) ([]model.Repository, error) {
+	return s.repoRepo.ListContext(ctx, filter)
 }
 
 // ListWithHealth 列出仓库并附加健康状态信息
 func (s *RepositoryService) ListWithHealth(filter map[string]interface{}) ([]RepositoryListView, error) {
-	repos, err := s.repoRepo.List(filter)
+	return s.ListWithHealthContext(context.Background(), filter)
+}
+
+// ListWithHealthContext 列出仓库并附加健康状态信息
+func (s *RepositoryService) ListWithHealthContext(ctx context.Context, filter map[string]interface{}) ([]RepositoryListView, error) {
+	repos, err := s.repoRepo.ListContext(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -122,12 +133,22 @@ func (s *RepositoryService) ListWithHealth(filter map[string]interface{}) ([]Rep
 
 // Get 根据名称获取仓库详情
 func (s *RepositoryService) Get(name string) (*model.Repository, error) {
-	return s.repoRepo.FindByName(name)
+	return s.GetContext(context.Background(), name)
+}
+
+// GetContext 根据名称获取仓库详情
+func (s *RepositoryService) GetContext(ctx context.Context, name string) (*model.Repository, error) {
+	return s.repoRepo.FindByNameContext(ctx, name)
 }
 
 // GetByID 根据ID获取仓库详情
 func (s *RepositoryService) GetByID(id uint) (*model.Repository, error) {
-	return s.repoRepo.FindByID(id)
+	return s.GetByIDContext(context.Background(), id)
+}
+
+// GetByIDContext 根据ID获取仓库详情
+func (s *RepositoryService) GetByIDContext(ctx context.Context, id uint) (*model.Repository, error) {
+	return s.repoRepo.FindByIDContext(ctx, id)
 }
 
 // Update 更新仓库信息
@@ -164,14 +185,14 @@ func (s *RepositoryService) Update(name string, updates map[string]interface{}) 
 				return err
 			}
 
-				for i, memberName := range members {
-					var memberRepo model.Repository
-					if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
-						return fmt.Errorf("member repository not found: %s", memberName)
-					}
-					group := model.RepositoryGroup{
-						VirtualRepoID: virtualRepo.ID,
-						MemberRepoID:  memberRepo.ID,
+			for i, memberName := range members {
+				var memberRepo model.Repository
+				if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
+					return fmt.Errorf("member repository not found: %s", memberName)
+				}
+				group := model.RepositoryGroup{
+					VirtualRepoID: virtualRepo.ID,
+					MemberRepoID:  memberRepo.ID,
 					Priority:      i,
 				}
 				if err := tx.Create(&group).Error; err != nil {
@@ -239,9 +260,14 @@ func (s *RepositoryService) RemoveMember(virtualRepoName, memberRepoName string)
 
 // GetMembers 获取虚拟仓库的所有成员
 func (s *RepositoryService) GetMembers(virtualRepoName string) ([]model.RepositoryGroup, error) {
-	virtualRepo, err := s.repoRepo.FindByName(virtualRepoName)
+	return s.GetMembersContext(context.Background(), virtualRepoName)
+}
+
+// GetMembersContext 获取虚拟仓库的所有成员
+func (s *RepositoryService) GetMembersContext(ctx context.Context, virtualRepoName string) ([]model.RepositoryGroup, error) {
+	virtualRepo, err := s.repoRepo.FindByNameContext(ctx, virtualRepoName)
 	if err != nil {
 		return nil, err
 	}
-	return s.groupRepo.GetMembersByVirtualRepo(virtualRepo.ID)
+	return s.groupRepo.GetMembersByVirtualRepoContext(ctx, virtualRepo.ID)
 }

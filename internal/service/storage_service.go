@@ -236,6 +236,23 @@ func (s *StorageService) DeletePackageWithBackend(ctx context.Context, repoName,
 	return backend.Delete(ctx, key)
 }
 
+func (s *StorageService) DeleteStorageKeyWithBackend(ctx context.Context, key string, backendID uint) error {
+	var backend storage.Backend
+	var err error
+
+	if backendID == 0 {
+		backend = s.GetDefaultBackend()
+	} else {
+		backend, err = s.GetBackend(backendID)
+		if err != nil {
+			return err
+		}
+	}
+
+	key = strings.TrimPrefix(key, "/")
+	return backend.Delete(ctx, key)
+}
+
 func (s *StorageService) Exists(ctx context.Context, pkgType, name, version string) (bool, error) {
 	return s.ExistsWithBackend(ctx, "", pkgType, name, version, 0)
 }
@@ -257,6 +274,26 @@ func (s *StorageService) ExistsWithBackend(ctx context.Context, repoName, pkgTyp
 	return backend.Exists(ctx, key)
 }
 
+func (s *StorageService) ListPackageWithBackend(ctx context.Context, repoName, pkgType, name, version string, backendID uint) ([]storage.Entry, error) {
+	var backend storage.Backend
+	var err error
+
+	if backendID == 0 {
+		backend = s.GetDefaultBackend()
+	} else {
+		backend, err = s.GetBackend(backendID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	key := s.buildKey(repoName, pkgType, name, version)
+	if key != "" {
+		key += "/"
+	}
+	return backend.List(ctx, key)
+}
+
 func (s *StorageService) GetContentType(filename string) string {
 	ext := filepath.Ext(filename)
 	contentType := mime.TypeByExtension(ext)
@@ -267,56 +304,23 @@ func (s *StorageService) GetContentType(filename string) string {
 }
 
 func (s *StorageService) buildKey(repoName, pkgType, name, version string) string {
+	pkgType = strings.Trim(strings.TrimPrefix(pkgType, "/"), "/")
+	repoName = strings.Trim(strings.TrimPrefix(repoName, "/"), "/")
 	name = strings.TrimPrefix(name, "/")
-	version = s.normalizeVersion(pkgType, version)
-
-	if repoName != "" {
-		return filepath.Join(pkgType, repoName, name, version)
-	}
-
-	switch pkgType {
-	case "npm":
-		if strings.Contains(name, "@") {
-			parts := strings.SplitN(name, "/", 2)
-			return filepath.Join("npm", parts[0], parts[1], version)
-		}
-		return filepath.Join("npm", name, version)
-
-	case "maven":
-		return filepath.Join("maven2", name, version)
-
-	case "pypi":
-		return filepath.Join("pypi", name, version)
-
-	case "go":
-		return filepath.Join("go", name, version)
-
-	case "nuget":
-		return filepath.Join("nuget", name, version)
-
-	case "yum":
-		return filepath.Join("yum", version)
-
-	case "apt":
-		return filepath.Join("apt", version)
-
-	default:
-		return filepath.Join(pkgType, name, version)
-	}
-}
-
-// normalizeVersion 根据不同包类型规范化版本号
-func (s *StorageService) normalizeVersion(pkgType, version string) string {
 	version = strings.TrimPrefix(version, "/")
 
-	// Go: 版本格式 "@v/filename"
-	// 例如: "@v/v1.8.4.zip"
-	// 符合 Go module proxy 规范
-	if pkgType == "go" && !strings.HasPrefix(version, "@v/") {
-		return "@v/" + version
+	parts := []string{pkgType}
+	if repoName != "" {
+		parts = append(parts, repoName)
+	}
+	if name != "" {
+		parts = append(parts, name)
+	}
+	if version != "" {
+		parts = append(parts, version)
 	}
 
-	return version
+	return filepath.Join(parts...)
 }
 
 // RefreshBackends 从数据库刷新存储后端配置

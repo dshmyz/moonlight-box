@@ -240,15 +240,15 @@ func (a *GenericAdapter) Upload(ctx context.Context, req *UploadRequest) (*Packa
 }
 
 func (a *GenericAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
-	return a.BaseAdapter.GetPackageMetadata(ctx, name, model.PackageTypeGeneric, GenericType)
+	return a.BaseAdapter.GetRepositoryPackageMetadata(ctx, repositoryFromContext(ctx), name, model.PackageTypeGeneric, GenericType)
 }
 
 func (a *GenericAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.GetPackageRepository().DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeGeneric)
+	return a.GetPackageRepository().DeleteByRepoNameAndVersionContext(ctx, repositoryID(repositoryFromContext(ctx)), identity.Name, identity.Version, model.PackageTypeGeneric)
 }
 
 func (a *GenericAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {
-	return a.GetPackageRepository().ListVersions(name, model.PackageTypeGeneric)
+	return a.GetPackageRepository().ListVersionsByRepoContext(ctx, repositoryID(repositoryFromContext(ctx)), name, model.PackageTypeGeneric)
 }
 
 // ParseIntent 解析请求路径为意图
@@ -533,7 +533,7 @@ func (a *GenericAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) 
 		Type:    GenericType,
 	}
 
-	if err := a.Delete(c.Request.Context(), identity); err != nil {
+	if err := a.Delete(context.WithValue(c.Request.Context(), "repo", ctx.Repo), identity); err != nil {
 		return err
 	}
 

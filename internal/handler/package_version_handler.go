@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
@@ -28,7 +29,17 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		return
 	}
 
-	pkg, err := h.pkgRepo.FindByNameAndType(pkgName, model.PackageType(pkgType))
+	var repositoryID uint
+	if repoIDParam := c.Query("repository_id"); repoIDParam != "" {
+		repoID, err := strconv.ParseUint(repoIDParam, 10, 32)
+		if err != nil {
+			response.BadRequest(c, "invalid repository ID", "repository_id must be a positive integer")
+			return
+		}
+		repositoryID = uint(repoID)
+	}
+
+	pkg, err := h.pkgRepo.FindByRepoNameAndTypeContext(c.Request.Context(), repositoryID, pkgName, model.PackageType(pkgType))
 	if err != nil {
 		response.NotFound(c, "package not found")
 		return
@@ -67,14 +78,14 @@ func (h *PackageVersionHandler) DeprecateVersion(c *gin.Context) {
 		req.Reason = "deprecated"
 	}
 
-	ver, pkg, err := findVersionAndPackage(h.pkgRepo, uint(versionID))
+	ver, pkg, err := findVersionAndPackage(c.Request.Context(), h.pkgRepo, uint(versionID))
 	if err != nil {
 		response.NotFound(c, "version not found")
 		return
 	}
 
 	ver.Status = model.StatusDeprecated
-	if err := h.pkgRepo.UpdatePackageVersion(ver); err != nil {
+	if err := h.pkgRepo.UpdatePackageVersionContext(c.Request.Context(), ver); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -94,14 +105,14 @@ func (h *PackageVersionHandler) RestoreVersion(c *gin.Context) {
 		return
 	}
 
-	ver, pkg, err := findVersionAndPackage(h.pkgRepo, uint(versionID))
+	ver, pkg, err := findVersionAndPackage(c.Request.Context(), h.pkgRepo, uint(versionID))
 	if err != nil {
 		response.NotFound(c, "version not found")
 		return
 	}
 
 	ver.Status = model.StatusPublished
-	if err := h.pkgRepo.UpdatePackageVersion(ver); err != nil {
+	if err := h.pkgRepo.UpdatePackageVersionContext(c.Request.Context(), ver); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -127,14 +138,14 @@ func (h *PackageVersionHandler) YankVersion(c *gin.Context) {
 		req.Reason = "yanked"
 	}
 
-	ver, pkg, err := findVersionAndPackage(h.pkgRepo, uint(versionID))
+	ver, pkg, err := findVersionAndPackage(c.Request.Context(), h.pkgRepo, uint(versionID))
 	if err != nil {
 		response.NotFound(c, "version not found")
 		return
 	}
 
 	ver.Status = model.StatusYanked
-	if err := h.pkgRepo.UpdatePackageVersion(ver); err != nil {
+	if err := h.pkgRepo.UpdatePackageVersionContext(c.Request.Context(), ver); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -154,7 +165,7 @@ func (h *PackageVersionHandler) DeleteVersion(c *gin.Context) {
 		return
 	}
 
-	if err := h.pkgRepo.DeleteVersion(uint(versionID)); err != nil {
+	if err := h.pkgRepo.DeleteVersionContext(c.Request.Context(), uint(versionID)); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -162,8 +173,8 @@ func (h *PackageVersionHandler) DeleteVersion(c *gin.Context) {
 	response.NoContent(c)
 }
 
-func findVersionAndPackage(pkgRepo *repository.PackageRepository, versionID uint) (*model.PackageVersion, *model.Package, error) {
-	ver, err := pkgRepo.FindVersionByID(versionID)
+func findVersionAndPackage(ctx context.Context, pkgRepo *repository.PackageRepository, versionID uint) (*model.PackageVersion, *model.Package, error) {
+	ver, err := pkgRepo.FindVersionByIDContext(ctx, versionID)
 	if err != nil {
 		return nil, nil, err
 	}

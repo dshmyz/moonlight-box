@@ -167,7 +167,7 @@ func (a *AptAdapter) ReleaseGPG(c *gin.Context) *types.ContentResult {
 }
 
 func (a *AptAdapter) PackagesFile(c *gin.Context) *types.ContentResult {
-	packages, _, err := a.GetPackageRepository().List(1, 10000, string(model.PackageTypeApt), "")
+	packages, _, err := a.GetPackageRepository().ListContext(c.Request.Context(), 1, 10000, string(model.PackageTypeApt), "")
 	if err != nil {
 		return &types.ContentResult{
 			StatusCode: 500,
@@ -214,7 +214,7 @@ func (a *AptAdapter) PackagesFile(c *gin.Context) *types.ContentResult {
 }
 
 func (a *AptAdapter) PackagesFileGz(c *gin.Context) *types.ContentResult {
-	packages, _, err := a.GetPackageRepository().List(1, 10000, string(model.PackageTypeApt), "")
+	packages, _, err := a.GetPackageRepository().ListContext(c.Request.Context(), 1, 10000, string(model.PackageTypeApt), "")
 	if err != nil {
 		return &types.ContentResult{
 			StatusCode: 500,
@@ -327,15 +327,15 @@ func (a *AptAdapter) DownloadDeb(c *gin.Context, filePath string) *types.Content
 }
 
 func (a *AptAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
-	return a.BaseAdapter.GetPackageMetadata(ctx, name, model.PackageTypeApt, AptType)
+	return a.BaseAdapter.GetRepositoryPackageMetadata(ctx, repositoryFromContext(ctx), name, model.PackageTypeApt, AptType)
 }
 
 func (a *AptAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.GetPackageRepository().DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeApt)
+	return a.GetPackageRepository().DeleteByRepoNameAndVersionContext(ctx, repositoryID(repositoryFromContext(ctx)), identity.Name, identity.Version, model.PackageTypeApt)
 }
 
 func (a *AptAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {
-	return a.GetPackageRepository().ListVersions(name, model.PackageTypeApt)
+	return a.GetPackageRepository().ListVersionsByRepoContext(ctx, repositoryID(repositoryFromContext(ctx)), name, model.PackageTypeApt)
 }
 
 func formatPackageEntry(entry AptPackageEntry) string {
@@ -430,7 +430,7 @@ func (a *AptAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) erro
 		Type:    AptType,
 	}
 
-	if err := a.Delete(c.Request.Context(), identity); err != nil {
+	if err := a.Delete(context.WithValue(c.Request.Context(), "repo", ctx.Repo), identity); err != nil {
 		return err
 	}
 
@@ -529,10 +529,10 @@ func (a *AptAdapter) HandleGet(ctx context.Context, repo *model.Repository, inte
 		if len(parts) >= 6 {
 			fileName := parts[4]
 			if fileName == "Packages" {
-				return a.packagesFile()
+				return a.packagesFile(ctx)
 			}
 			if fileName == "Packages.gz" {
-				return a.packagesFileGz()
+				return a.packagesFileGz(ctx)
 			}
 		}
 	}
@@ -608,8 +608,8 @@ func (a *AptAdapter) releaseGPG() (*types.ContentResult, error) {
 }
 
 // packagesFile 生成 Packages 文件内容（不依赖 gin.Context）
-func (a *AptAdapter) packagesFile() (*types.ContentResult, error) {
-	packages, _, err := a.GetPackageRepository().List(1, 10000, string(model.PackageTypeApt), "")
+func (a *AptAdapter) packagesFile(ctx context.Context) (*types.ContentResult, error) {
+	packages, _, err := a.GetPackageRepository().ListContext(ctx, 1, 10000, string(model.PackageTypeApt), "")
 	if err != nil {
 		return &types.ContentResult{
 			StatusCode: 500,
@@ -656,8 +656,8 @@ func (a *AptAdapter) packagesFile() (*types.ContentResult, error) {
 }
 
 // packagesFileGz 生成 Packages.gz 文件内容（不依赖 gin.Context）
-func (a *AptAdapter) packagesFileGz() (*types.ContentResult, error) {
-	packages, _, err := a.GetPackageRepository().List(1, 10000, string(model.PackageTypeApt), "")
+func (a *AptAdapter) packagesFileGz(ctx context.Context) (*types.ContentResult, error) {
+	packages, _, err := a.GetPackageRepository().ListContext(ctx, 1, 10000, string(model.PackageTypeApt), "")
 	if err != nil {
 		return &types.ContentResult{
 			StatusCode: 500,

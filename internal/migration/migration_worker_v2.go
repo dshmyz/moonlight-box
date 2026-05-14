@@ -1,11 +1,11 @@
 package migration
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,16 +18,20 @@ import (
 )
 
 type MigrationWorkerV2 struct {
-	service         *MigrationService
-	storageSvc      *service.StorageService
-	pkgRepo         *repository.PackageRepository
-	repoRepo        *repository.RepositoryRepository
-	itemRepo        *repository.MigrationItemRepository
-	concurrency     int
-	maxRetries      int
-	batchSize       int
-	targetBackendID uint
-	targetRepoName  string
+	service     *MigrationService
+	storageSvc  *service.StorageService
+	pkgRepo     *repository.PackageRepository
+	repoRepo    *repository.RepositoryRepository
+	itemRepo    *repository.MigrationItemRepository
+	concurrency int
+	maxRetries  int
+	batchSize   int
+}
+
+type migrationTarget struct {
+	repoID    uint
+	repoName  string
+	backendID uint
 }
 
 func NewMigrationWorkerV2(
@@ -154,36 +158,7 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 	client := NewNexusClient(task.SourceURL, task.Username, mustGetPasswordV2(task))
 	w.service.RegisterNexusClient(task.ID, client)
 
-	if task.TargetRepositoryID > 0 && w.repoRepo != nil {
-		targetRepo, err := w.repoRepo.FindByID(task.TargetRepositoryID)
-		if err != nil {
-			logrus.WithFields(logrus.Fields{
-				"module":           "migration",
-				"task_id":          task.ID,
-				"target_repo_id":   task.TargetRepositoryID,
-				"target_repo_name": task.TargetRepository,
-				"error":            err,
-			}).Warn("Failed to get target repository, using default storage backend")
-		} else {
-			w.targetRepoName = targetRepo.Name
-			if targetRepo.StorageBackendID != nil {
-				w.targetBackendID = *targetRepo.StorageBackendID
-				logrus.WithFields(logrus.Fields{
-					"module":         "migration",
-					"task_id":        task.ID,
-					"target_repo_id": task.TargetRepositoryID,
-					"target_repo":    w.targetRepoName,
-					"backend_id":     w.targetBackendID,
-				}).Info("Using target repository's storage backend (v2)")
-			} else {
-				logrus.WithFields(logrus.Fields{
-					"module":           "migration",
-					"task_id":          task.ID,
-					"target_repo_name": w.targetRepoName,
-				}).Info("Target repository has no storage backend configured, using default (v2)")
-			}
-		}
-	}
+	target := w.resolveMigrationTarget(task)
 
 	now := time.Now()
 	startedAt := &now
@@ -250,7 +225,7 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 		consumerWg.Add(1)
 		go func(workerID int) {
 			defer consumerWg.Done()
-			w.consumeComponents(ctx, task.ID, client, queue, progressUpdater, workerID)
+			w.consumeComponents(ctx, task.ID, client, queue, progressUpdater, workerID, target)
 		}(i)
 	}
 
@@ -274,6 +249,55 @@ func (w *MigrationWorkerV2) execute(ctx context.Context, task *model.MigrationTa
 		w.service.AddLog(task.ID, "迁移任务完成")
 	}
 	return nil
+}
+
+func (w *MigrationWorkerV2) resolveMigrationTarget(task *model.MigrationTask) migrationTarget {
+	target := migrationTarget{
+		repoID:   task.TargetRepositoryID,
+		repoName: task.TargetRepository,
+	}
+
+	if task.TargetRepositoryID == 0 || w.repoRepo == nil {
+		if target.repoName == "" {
+			logrus.WithFields(logrus.Fields{
+				"module":  "migration",
+				"task_id": task.ID,
+			}).Warn("Migration task has no target repository; storage keys will use default repository namespace")
+		}
+		return target
+	}
+
+	targetRepo, err := w.repoRepo.FindByID(task.TargetRepositoryID)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":           "migration",
+			"task_id":          task.ID,
+			"target_repo_id":   task.TargetRepositoryID,
+			"target_repo_name": task.TargetRepository,
+			"error":            err,
+		}).Warn("Failed to get target repository, falling back to task target repository name")
+		return target
+	}
+
+	target.repoName = targetRepo.Name
+	if targetRepo.StorageBackendID != nil {
+		target.backendID = *targetRepo.StorageBackendID
+		logrus.WithFields(logrus.Fields{
+			"module":         "migration",
+			"task_id":        task.ID,
+			"target_repo_id": task.TargetRepositoryID,
+			"target_repo":    target.repoName,
+			"backend_id":     target.backendID,
+		}).Info("Using target repository's storage backend (v2)")
+	} else {
+		logrus.WithFields(logrus.Fields{
+			"module":           "migration",
+			"task_id":          task.ID,
+			"target_repo_name": target.repoName,
+		}).Info("Target repository has no storage backend configured, using default (v2)")
+	}
+
+	return target
 }
 
 func (w *MigrationWorkerV2) scanRepository(ctx context.Context, taskID uint, client *NexusClient, repoName string) (int, error) {
@@ -458,6 +482,7 @@ func (w *MigrationWorkerV2) consumeComponents(
 	queue *ComponentQueue,
 	progressUpdater *ProgressUpdater,
 	workerID int,
+	target migrationTarget,
 ) {
 	for {
 		select {
@@ -504,7 +529,7 @@ func (w *MigrationWorkerV2) consumeComponents(
 			Repository: item.Repository,
 		}
 
-		if err := w.migrateComponentWithRetry(ctx, taskID, client, comp, item.ID, item.RetryCount); err != nil {
+		if err := w.migrateComponentWithRetry(ctx, taskID, client, comp, item.ID, item.RetryCount, target); err != nil {
 			logrus.WithFields(logrus.Fields{
 				"module":    "migration",
 				"task_id":   taskID,
@@ -530,34 +555,49 @@ func (w *MigrationWorkerV2) consumeComponents(
 	}
 }
 
-func (w *MigrationWorkerV2) migrateComponentWithRetry(ctx context.Context, taskID uint, client *NexusClient, comp NexusComponent, itemID uint, retryCount int) error {
+func (w *MigrationWorkerV2) migrateComponentWithRetry(ctx context.Context, taskID uint, client *NexusClient, comp NexusComponent, itemID uint, retryCount int, target migrationTarget) error {
 	targetComp, err := client.GetComponentByID(ctx, comp.ID)
 	if err != nil {
 		return fmt.Errorf("failed to get component details: %w", err)
 	}
 
-	return w.migrateComponent(ctx, taskID, client, *targetComp)
+	return w.migrateComponent(ctx, taskID, client, *targetComp, target)
 }
 
-func (w *MigrationWorkerV2) migrateComponent(ctx context.Context, taskID uint, client *NexusClient, comp NexusComponent) error {
+func (w *MigrationWorkerV2) migrateComponent(ctx context.Context, taskID uint, client *NexusClient, comp NexusComponent, target migrationTarget) error {
 	for _, asset := range comp.Assets {
 		if asset.DownloadURL == "" {
 			continue
 		}
 
-		reader, contentType, _, err := client.DownloadAsset(ctx, asset.DownloadURL)
+		reader, contentType, contentLength, err := client.DownloadAsset(ctx, asset.DownloadURL)
 		if err != nil {
 			return fmt.Errorf("download asset failed: %w", err)
 		}
 
-		body, readErr := io.ReadAll(reader)
-		reader.Close()
-		if readErr != nil {
-			return fmt.Errorf("failed to read asset content: %w", readErr)
+		size := contentLength
+		if size < 0 && asset.FileSize > 0 {
+			size = asset.FileSize
 		}
 
-		size := int64(len(body))
-		err = w.storeAsset(taskID, comp, asset, bytes.NewReader(body), size, contentType)
+		assetReader := io.Reader(reader)
+		cleanup := func() { reader.Close() }
+		if size < 0 {
+			tmpFile, tmpSize, tmpErr := spoolReaderToTempFile(reader)
+			reader.Close()
+			if tmpErr != nil {
+				return fmt.Errorf("failed to spool asset with unknown size: %w", tmpErr)
+			}
+			assetReader = tmpFile
+			size = tmpSize
+			cleanup = func() {
+				tmpFile.Close()
+				os.Remove(tmpFile.Name())
+			}
+		}
+
+		err = w.storeAsset(taskID, comp, asset, assetReader, size, contentType, target)
+		cleanup()
 		if err != nil {
 			return fmt.Errorf("store asset failed: %w", err)
 		}
@@ -566,29 +606,50 @@ func (w *MigrationWorkerV2) migrateComponent(ctx context.Context, taskID uint, c
 	return nil
 }
 
-func (w *MigrationWorkerV2) storeAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64, _ string) error {
+func spoolReaderToTempFile(reader io.Reader) (*os.File, int64, error) {
+	tmpFile, err := os.CreateTemp("", "moonlight-migration-*")
+	if err != nil {
+		return nil, 0, err
+	}
+
+	size, copyErr := io.Copy(tmpFile, reader)
+	if copyErr != nil {
+		tmpFile.Close()
+		os.Remove(tmpFile.Name())
+		return nil, 0, copyErr
+	}
+	if _, seekErr := tmpFile.Seek(0, 0); seekErr != nil {
+		tmpFile.Close()
+		os.Remove(tmpFile.Name())
+		return nil, 0, seekErr
+	}
+
+	return tmpFile, size, nil
+}
+
+func (w *MigrationWorkerV2) storeAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64, _ string, target migrationTarget) error {
 	switch comp.Format {
 	case "maven2":
-		return w.storeMavenAsset(taskID, comp, asset, reader, size)
+		return w.storeMavenAsset(taskID, comp, asset, reader, size, target)
 	case "npm":
-		return w.storeNpmAsset(taskID, comp, asset, reader, size)
+		return w.storeNpmAsset(taskID, comp, asset, reader, size, target)
 	case "pypi":
-		return w.storePypiAsset(taskID, comp, asset, reader, size)
+		return w.storePypiAsset(taskID, comp, asset, reader, size, target)
 	case "go":
-		return w.storeGoAsset(taskID, comp, asset, reader, size)
+		return w.storeGoAsset(taskID, comp, asset, reader, size, target)
 	case "raw":
-		return w.storeGenericAsset(taskID, comp, asset, reader, size)
+		return w.storeGenericAsset(taskID, comp, asset, reader, size, target)
 	default:
-		return w.storeGenericAsset(taskID, comp, asset, reader, size)
+		return w.storeGenericAsset(taskID, comp, asset, reader, size, target)
 	}
 }
 
-func (w *MigrationWorkerV2) storeMavenAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
+func (w *MigrationWorkerV2) storeMavenAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64, target migrationTarget) error {
 	packaging := getPackaging(asset.Path)
 	storageName := groupArtifactToStorageName(comp.Group, comp.Name)
 	storageVersion := comp.Version + "/" + filepath.Base(asset.Path)
 
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), w.targetRepoName, "maven", storageName, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "maven", storageName, storageVersion, reader, size, target.backendID)
 	if err != nil {
 		return err
 	}
@@ -601,16 +662,12 @@ func (w *MigrationWorkerV2) storeMavenAsset(taskID uint, comp NexusComponent, as
 		"filename":   filepath.Base(asset.Path),
 	}
 
-	task, _ := w.service.GetTask(taskID)
 	repoType := model.RepoTypeLocal
-	if task != nil && task.TargetRepositoryID > 0 {
-		repoType = model.RepoTypeLocal
-	}
 
 	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:           comp.Group + ":" + comp.Name,
 		Type:           model.PackageTypeMaven,
-		RepositoryID:   task.TargetRepositoryID,
+		RepositoryID:   target.repoID,
 		RepositoryType: repoType,
 		Description:    comp.Name,
 	}, &model.PackageVersion{
@@ -627,7 +684,7 @@ func (w *MigrationWorkerV2) storeMavenAsset(taskID uint, comp NexusComponent, as
 	return err
 }
 
-func (w *MigrationWorkerV2) storeNpmAsset(taskID uint, comp NexusComponent, _ NexusAsset, reader io.Reader, size int64) error {
+func (w *MigrationWorkerV2) storeNpmAsset(taskID uint, comp NexusComponent, _ NexusAsset, reader io.Reader, size int64, target migrationTarget) error {
 	name := comp.Name
 	if comp.Group != "" {
 		name = comp.Group + "/" + comp.Name
@@ -638,18 +695,17 @@ func (w *MigrationWorkerV2) storeNpmAsset(taskID uint, comp NexusComponent, _ Ne
 	}
 
 	storageVersion := version + "/package.tgz"
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), w.targetRepoName, "npm", name, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "npm", name, storageVersion, reader, size, target.backendID)
 	if err != nil {
 		return err
 	}
 
-	task, _ := w.service.GetTask(taskID)
 	repoType := model.RepoTypeLocal
 
 	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:           name,
 		Type:           model.PackageTypeNPM,
-		RepositoryID:   task.TargetRepositoryID,
+		RepositoryID:   target.repoID,
 		RepositoryType: repoType,
 		Description:    name,
 	}, &model.PackageVersion{
@@ -665,7 +721,7 @@ func (w *MigrationWorkerV2) storeNpmAsset(taskID uint, comp NexusComponent, _ Ne
 	return err
 }
 
-func (w *MigrationWorkerV2) storePypiAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
+func (w *MigrationWorkerV2) storePypiAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64, target migrationTarget) error {
 	name := comp.Name
 	if comp.Group != "" {
 		name = comp.Group + "/" + comp.Name
@@ -676,18 +732,17 @@ func (w *MigrationWorkerV2) storePypiAsset(taskID uint, comp NexusComponent, ass
 	}
 
 	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), w.targetRepoName, "pypi", name, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "pypi", name, storageVersion, reader, size, target.backendID)
 	if err != nil {
 		return err
 	}
 
-	task, _ := w.service.GetTask(taskID)
 	repoType := model.RepoTypeLocal
 
 	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:           name,
 		Type:           model.PackageTypePyPI,
-		RepositoryID:   task.TargetRepositoryID,
+		RepositoryID:   target.repoID,
 		RepositoryType: repoType,
 		Description:    name,
 	}, &model.PackageVersion{
@@ -703,7 +758,7 @@ func (w *MigrationWorkerV2) storePypiAsset(taskID uint, comp NexusComponent, ass
 	return err
 }
 
-func (w *MigrationWorkerV2) storeGoAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
+func (w *MigrationWorkerV2) storeGoAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64, target migrationTarget) error {
 	name := comp.Name
 	if comp.Group != "" {
 		name = comp.Group + "/" + comp.Name
@@ -714,18 +769,17 @@ func (w *MigrationWorkerV2) storeGoAsset(taskID uint, comp NexusComponent, asset
 	}
 
 	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), w.targetRepoName, "go", name, storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "go", name, storageVersion, reader, size, target.backendID)
 	if err != nil {
 		return err
 	}
 
-	task, _ := w.service.GetTask(taskID)
 	repoType := model.RepoTypeLocal
 
 	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:           name,
 		Type:           model.PackageTypeGo,
-		RepositoryID:   task.TargetRepositoryID,
+		RepositoryID:   target.repoID,
 		RepositoryType: repoType,
 		Description:    name,
 	}, &model.PackageVersion{
@@ -741,25 +795,24 @@ func (w *MigrationWorkerV2) storeGoAsset(taskID uint, comp NexusComponent, asset
 	return err
 }
 
-func (w *MigrationWorkerV2) storeGenericAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64) error {
+func (w *MigrationWorkerV2) storeGenericAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64, target migrationTarget) error {
 	path := asset.Path
 	if path == "" {
 		path = comp.Name + "/" + filepath.Base(asset.DownloadURL)
 	}
 
 	storageVersion := filepath.Base(path)
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), w.targetRepoName, "generic", filepath.Dir(path), storageVersion, reader, size, w.targetBackendID)
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "generic", filepath.Dir(path), storageVersion, reader, size, target.backendID)
 	if err != nil {
 		return err
 	}
 
-	task, _ := w.service.GetTask(taskID)
 	repoType := model.RepoTypeLocal
 
 	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
 		Name:           path,
 		Type:           model.PackageTypeGeneric,
-		RepositoryID:   task.TargetRepositoryID,
+		RepositoryID:   target.repoID,
 		RepositoryType: repoType,
 		Description:    path,
 	}, &model.PackageVersion{

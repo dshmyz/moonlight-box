@@ -12,6 +12,7 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
+	"github.com/moonlight-box/registry/internal/storage"
 	"github.com/stretchr/testify/assert"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -129,9 +130,9 @@ func TestMavenAdapter_GetMetadata(t *testing.T) {
 	db.Create(pkg)
 
 	version := &model.PackageVersion{
-		PackageID:   pkg.ID,
-		Version:     "1.0.0",
-		Status:      model.StatusPublished,
+		PackageID: pkg.ID,
+		Version:   "1.0.0",
+		Status:    model.StatusPublished,
 	}
 	db.Create(version)
 
@@ -189,9 +190,9 @@ func TestMavenAdapter_Delete(t *testing.T) {
 	db.Create(pkg)
 
 	version := &model.PackageVersion{
-		PackageID:   pkg.ID,
-		Version:     "1.0.0",
-		Status:      model.StatusPublished,
+		PackageID: pkg.ID,
+		Version:   "1.0.0",
+		Status:    model.StatusPublished,
 	}
 	db.Create(version)
 
@@ -301,13 +302,13 @@ func TestMavenAdapter_HandleChecksumRequest(t *testing.T) {
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest("GET", "/maven2/"+tt.path, nil)
 
-				intent := adapter.ParseIntent(tt.path, c.Request.Method)
-				result, err := adapter.HandleGet(c.Request.Context(), repo, intent)
-				assert.Nil(t, err)
-				assert.NotNil(t, result)
-				assert.Equal(t, tt.expected, result.StatusCode)
-			})
-		}
+			intent := adapter.ParseIntent(tt.path, c.Request.Method)
+			result, err := adapter.HandleGet(c.Request.Context(), repo, intent)
+			assert.Nil(t, err)
+			assert.NotNil(t, result)
+			assert.Equal(t, tt.expected, result.StatusCode)
+		})
+	}
 }
 
 func TestIsRelease(t *testing.T) {
@@ -406,4 +407,43 @@ func TestCompareVersions(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestParseMavenSnapshotFilenameWithClassifierAndDashedArtifact(t *testing.T) {
+	artifact, ok := parseMavenSnapshotFilename("my-lib-core-1.2.3-20260514.101112-7-sources.jar", "my-lib-core", "1.2.3-SNAPSHOT")
+	assert.True(t, ok)
+	assert.Equal(t, "jar", artifact.extension)
+	assert.Equal(t, "sources", artifact.classifier)
+	assert.Equal(t, "1.2.3-20260514.101112-7", artifact.value)
+	assert.Equal(t, "20260514101112", artifact.updated)
+	assert.Equal(t, "20260514.101112", artifact.timestamp)
+	assert.Equal(t, 7, artifact.buildNumber)
+}
+
+func TestBuildSnapshotVersionsFromEntriesKeepsLatestPerClassifier(t *testing.T) {
+	entries := []storage.Entry{
+		{Key: "maven/repo/com/acme/my-lib-core/1.2.3-SNAPSHOT/my-lib-core-1.2.3-20260514.101112-7.jar"},
+		{Key: "maven/repo/com/acme/my-lib-core/1.2.3-SNAPSHOT/my-lib-core-1.2.3-20260514.101112-7-sources.jar"},
+		{Key: "maven/repo/com/acme/my-lib-core/1.2.3-SNAPSHOT/my-lib-core-1.2.3-20260514.101112-7-javadoc.jar"},
+		{Key: "maven/repo/com/acme/my-lib-core/1.2.3-SNAPSHOT/my-lib-core-1.2.3-20260514.101112-7.pom"},
+		{Key: "maven/repo/com/acme/my-lib-core/1.2.3-SNAPSHOT/my-lib-core-1.2.3-20260514.111213-8.jar"},
+		{Key: "maven/repo/com/acme/my-lib-core/1.2.3-SNAPSHOT/my-lib-core-1.2.3-20260514.111213-8-sources.jar"},
+	}
+
+	versions, latestTimestamp, latestBuildNumber := buildSnapshotVersionsFromEntries(entries, "my-lib-core", "1.2.3-SNAPSHOT")
+
+	assert.Equal(t, "20260514.111213", latestTimestamp)
+	assert.Equal(t, 8, latestBuildNumber)
+	assert.Len(t, versions, 4)
+
+	byKind := map[string]MavenSnapshotVersion{}
+	for _, version := range versions {
+		byKind[version.Extension+":"+version.Classifier] = version
+	}
+
+	assert.Equal(t, "1.2.3-20260514.111213-8", byKind["jar:"].Value)
+	assert.Equal(t, "1.2.3-20260514.111213-8", byKind["jar:sources"].Value)
+	assert.Equal(t, "1.2.3-20260514.101112-7", byKind["jar:javadoc"].Value)
+	assert.Equal(t, "1.2.3-20260514.101112-7", byKind["pom:"].Value)
+	assert.Equal(t, "20260514111213", byKind["jar:"].Updated)
 }

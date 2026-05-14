@@ -67,7 +67,7 @@ func (h *RepositoryHandler) List(c *gin.Context) {
 		filter["type"] = repoType
 	}
 
-	repos, err := h.svc.ListWithHealth(filter)
+	repos, err := h.svc.ListWithHealthContext(c.Request.Context(), filter)
 	if err != nil {
 		response.InternalError(c, "Failed to list repositories")
 		return
@@ -86,7 +86,7 @@ func (h *RepositoryHandler) List(c *gin.Context) {
 // Get 根据名称获取仓库详情
 func (h *RepositoryHandler) Get(c *gin.Context) {
 	name := c.Param("name")
-	repo, err := h.svc.Get(name)
+	repo, err := h.svc.GetContext(c.Request.Context(), name)
 	if err != nil {
 		response.NotFound(c, "Repository not found")
 		return
@@ -186,7 +186,7 @@ func (h *RepositoryHandler) Delete(c *gin.Context) {
 // GetMembers 获取虚拟仓库的成员列表
 func (h *RepositoryHandler) GetMembers(c *gin.Context) {
 	name := c.Param("name")
-	members, err := h.svc.GetMembers(name)
+	members, err := h.svc.GetMembersContext(c.Request.Context(), name)
 	if err != nil {
 		response.InternalError(c, "Failed to get members")
 		return

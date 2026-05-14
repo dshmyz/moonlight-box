@@ -201,7 +201,7 @@ func (a *GoAdapter) handleVersionInfo(ctx context.Context, module, version strin
 	if pkgRepo == nil {
 		return nil, fmt.Errorf("package repository not available")
 	}
-	pkg, err := pkgRepo.FindByNameAndType(module, model.PackageTypeGo)
+	pkg, err := pkgRepo.FindByRepoNameAndTypeContext(ctx, repositoryID(repo), module, model.PackageTypeGo)
 	if err != nil {
 		if util.IsErr(err, util.ErrPackageNotFound) {
 			if a.fetcher != nil {
@@ -252,7 +252,7 @@ func (a *GoAdapter) handleGoMod(ctx context.Context, module, version string, rep
 	storageVersion := filepath.Join("@v", version+".mod")
 	slog.Info("handleGoMod called", "module", module, "version", version, "storageVersion", storageVersion)
 
-	content, size, err := a.storageSvc.GetPackageWithBackend(ctx, repo.Name, "go", module, storageVersion, 0)
+	content, size, err := a.storageSvc.GetPackageWithBackend(ctx, repo.Name, "go", module, storageVersion, repositoryStorageBackendID(repo))
 	if err == nil {
 		slog.Info("Found cached go.mod", "module", module, "version", version)
 		return &types.ContentResult{
@@ -288,7 +288,7 @@ func (a *GoAdapter) handleGoMod(ctx context.Context, module, version string, rep
 
 func (a *GoAdapter) handleDownloadZip(ctx context.Context, module, version string, repo *model.Repository) (*types.ContentResult, error) {
 	storageVersion := filepath.Join("@v", version+".zip")
-	content, size, err := a.storageSvc.GetPackageWithBackend(ctx, repo.Name, "go", module, storageVersion, 0)
+	content, size, err := a.storageSvc.GetPackageWithBackend(ctx, repo.Name, "go", module, storageVersion, repositoryStorageBackendID(repo))
 	if err == nil {
 		return &types.ContentResult{
 			Content:     content,
@@ -366,7 +366,7 @@ func (a *GoAdapter) handleLatest(ctx context.Context, module string, repo *model
 }
 
 func (a *GoAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
-	return a.BaseAdapter.GetPackageMetadata(ctx, name, model.PackageTypeGo, GoType)
+	return a.BaseAdapter.GetRepositoryPackageMetadata(ctx, repositoryFromContext(ctx), name, model.PackageTypeGo, GoType)
 }
 
 func (a *GoAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
@@ -374,7 +374,7 @@ func (a *GoAdapter) Delete(ctx context.Context, identity *PackageIdentity) error
 	if pkgRepo == nil {
 		return fmt.Errorf("package repository not available")
 	}
-	return pkgRepo.DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeGo)
+	return pkgRepo.DeleteByRepoNameAndVersionContext(ctx, repositoryID(repositoryFromContext(ctx)), identity.Name, identity.Version, model.PackageTypeGo)
 }
 
 func (a *GoAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {
@@ -382,7 +382,7 @@ func (a *GoAdapter) ListVersions(ctx context.Context, name string) ([]string, er
 	if pkgRepo == nil {
 		return nil, fmt.Errorf("package repository not available")
 	}
-	return pkgRepo.ListVersions(name, model.PackageTypeGo)
+	return pkgRepo.ListVersionsByRepoContext(ctx, repositoryID(repositoryFromContext(ctx)), name, model.PackageTypeGo)
 }
 
 // ParseIntent 解析请求路径为意图

@@ -2,13 +2,18 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/adapter"
+	apperr "github.com/moonlight-box/registry/internal/errors"
 	"github.com/moonlight-box/registry/internal/metrics"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
@@ -111,17 +116,21 @@ func (r *RepoRouter) CheckDownloadPermission(c *gin.Context, repo *model.Reposit
 }
 
 func (r *RepoRouter) getRepo(name string) (*model.Repository, error) {
+	return r.getRepoContext(context.Background(), name)
+}
+
+func (r *RepoRouter) getRepoContext(ctx context.Context, name string) (*model.Repository, error) {
 	if r.repoCache != nil {
-		return r.repoCache.GetByName(name)
+		return r.repoCache.GetByNameContext(ctx, name)
 	}
-	return r.repoSvc.Get(name)
+	return r.repoSvc.GetContext(ctx, name)
 }
 
 func (r *RepoRouter) HandleRequest(c *gin.Context) {
 	repoName := c.Param("repoName")
 	path := c.Param("path")
 
-	repo, err := r.getRepo(repoName)
+	repo, err := r.getRepoContext(c.Request.Context(), repoName)
 	if err != nil {
 		response.NotFound(c, "仓库不存在")
 		return
@@ -179,14 +188,14 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 	}
 
 	// 第四步：获取内容 — 下载走 Resolve（含 Local/Proxy/Virtual + 缓存 + 日志），非下载走 FetchContent
-		if intent.Type == types.RequestDownload {
-			if intent.PkgPathInfo == nil {
-				response.NotFound(c, "invalid package path")
-				return
-			}
-			downloadCtx := &types.DownloadContext{
-				Repo:         repo,
-				PkgType:      model.PackageType(pkgType),
+	if intent.Type == types.RequestDownload {
+		if intent.PkgPathInfo == nil {
+			response.NotFound(c, "invalid package path")
+			return
+		}
+		downloadCtx := &types.DownloadContext{
+			Repo:         repo,
+			PkgType:      model.PackageType(pkgType),
 			Name:         intent.Name,
 			Version:      intent.Version,
 			Filename:     intent.Filename,
@@ -194,9 +203,10 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 			ClientIP:     c.ClientIP(),
 			ResolvedPath: intent.PkgPathInfo,
 		}
-		routeResult, err := r.resolver.Resolve(c.Request.Context(), downloadCtx)
+		reqCtx := context.WithValue(c.Request.Context(), "repo", repo)
+		routeResult, err := r.resolver.Resolve(reqCtx, downloadCtx)
 		if err != nil {
-			response.NotFound(c, err.Error())
+			r.writeRepoError(c, repo, intent, err)
 			return
 		}
 		defer routeResult.Content.Close()
@@ -214,12 +224,12 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 		var err error
 		if repo.Type == model.RepoTypeVirtual {
 			// 虚拟仓库没有 RemoteURL 也没有本地包数据，需要遍历成员仓库处理元数据请求
-			contentResult, err = r.resolver.ResolveMetadata(c.Request.Context(), repo, intent, adp)
+			contentResult, err = r.resolver.ResolveMetadata(context.WithValue(c.Request.Context(), "repo", repo), repo, intent, adp)
 		} else {
-			contentResult, err = adp.HandleGet(c.Request.Context(), repo, intent)
+			contentResult, err = adp.HandleGet(context.WithValue(c.Request.Context(), "repo", repo), repo, intent)
 		}
 		if err != nil {
-			response.NotFound(c, err.Error())
+			r.writeRepoError(c, repo, intent, err)
 			return
 		}
 		r.formatContentResponse(c, contentResult)
@@ -278,10 +288,81 @@ func (r *RepoRouter) formatContentResponse(c *gin.Context, result *types.Content
 	c.Status(result.StatusCode)
 }
 
+func (r *RepoRouter) writeRepoError(c *gin.Context, repo *model.Repository, intent *types.RequestIntent, err error) {
+	statusCode, message, category := mapRepoError(err)
+	fields := []any{
+		"status", statusCode,
+		"category", category,
+		"error", err,
+	}
+	if repo != nil {
+		fields = append(fields, "repo", repo.Name, "repo_type", repo.Type, "package_type", repo.PackageType)
+	}
+	if intent != nil {
+		fields = append(fields, "request_type", intent.Type, "package", intent.Name, "version", intent.Version, "filename", intent.Filename)
+	}
+
+	if statusCode >= http.StatusInternalServerError {
+		slog.Error("repository request failed", fields...)
+	} else {
+		slog.Warn("repository request failed", fields...)
+	}
+
+	response.ErrorResponse(c, statusCode, message)
+}
+
+func mapRepoError(err error) (int, string, string) {
+	if err == nil {
+		return http.StatusInternalServerError, "internal server error", "internal"
+	}
+
+	var remoteErr *proxy.RemoteError
+	if errors.As(err, &remoteErr) {
+		switch {
+		case remoteErr.StatusCode == http.StatusNotFound:
+			return http.StatusNotFound, "package not found", "not_found"
+		case remoteErr.StatusCode == http.StatusUnauthorized || remoteErr.StatusCode == http.StatusForbidden:
+			return http.StatusBadGateway, "upstream authentication failed", "upstream_auth"
+		case remoteErr.StatusCode == http.StatusTooManyRequests:
+			return http.StatusTooManyRequests, "upstream rate limited", "upstream_rate_limited"
+		case remoteErr.StatusCode >= http.StatusInternalServerError:
+			return http.StatusBadGateway, "upstream registry error", "upstream"
+		default:
+			return http.StatusBadGateway, "upstream registry request failed", "upstream"
+		}
+	}
+
+	if errors.Is(err, proxy.ErrPackageNotFound) || apperr.IsNotFound(err) || strings.Contains(err.Error(), "package not found") {
+		return http.StatusNotFound, "package not found", "not_found"
+	}
+	if errors.Is(err, context.Canceled) {
+		return 499, "request cancelled", "cancelled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout, "request timeout", "timeout"
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return http.StatusGatewayTimeout, "network timeout", "timeout"
+	}
+	if strings.Contains(err.Error(), "circuit breaker open") {
+		return http.StatusServiceUnavailable, "repository temporarily unavailable", "circuit_breaker"
+	}
+	if strings.Contains(err.Error(), "remote URL cannot be empty") || strings.Contains(err.Error(), "fetcher not configured") {
+		return http.StatusServiceUnavailable, "repository upstream is not configured", "configuration"
+	}
+
+	var appErr *apperr.AppError
+	if errors.As(err, &appErr) {
+		return appErr.Code, appErr.Message, string(appErr.Category)
+	}
+
+	return http.StatusInternalServerError, err.Error(), "internal"
+}
+
 func (r *RepoRouter) HandlePublish(c *gin.Context) {
 	repoName := c.Param("repoName")
 
-	repo, err := r.getRepo(repoName)
+	repo, err := r.getRepoContext(c.Request.Context(), repoName)
 	if err != nil {
 		response.NotFound(c, "仓库不存在")
 		return
@@ -375,6 +456,9 @@ func (r *RepoRouter) HandlePublish(c *gin.Context) {
 		DownloadURL:    publishResult.DownloadURL,
 		RepoName:       repo.Name,
 	}
+	if repo.StorageBackendID != nil {
+		uploadCtx.StorageBackendID = *repo.StorageBackendID
+	}
 
 	uploadResult, err := r.uploadSvc.Upload(c.Request.Context(), uploadCtx)
 	if err != nil {
@@ -430,7 +514,7 @@ func (r *RepoRouter) HandlePublish(c *gin.Context) {
 func (r *RepoRouter) HandleDelete(c *gin.Context) {
 	repoName := c.Param("repoName")
 
-	repo, err := r.getRepo(repoName)
+	repo, err := r.getRepoContext(c.Request.Context(), repoName)
 	if err != nil {
 		response.NotFound(c, "仓库不存在")
 		return

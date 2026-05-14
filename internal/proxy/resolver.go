@@ -154,7 +154,7 @@ func (r *RepoHandler) resolveProxy(ctx context.Context, downloadCtx *types.Downl
 }
 
 func (r *RepoHandler) resolveVirtual(ctx context.Context, downloadCtx *types.DownloadContext) (*RouteResult, error) {
-	members, err := r.getMembers(downloadCtx.Repo.ID)
+	members, err := r.getMembers(ctx, downloadCtx.Repo.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +186,8 @@ func (r *RepoHandler) resolveVirtual(ctx context.Context, downloadCtx *types.Dow
 		go func() {
 			memberCtx := *downloadCtx
 			memberCtx.Repo = &member.MemberRepo
-			res, err := r.Resolve(ctx, &memberCtx)
+			ctxWithRepo := context.WithValue(ctx, "repo", &member.MemberRepo)
+			res, err := r.Resolve(ctxWithRepo, &memberCtx)
 			resultCh <- memberResult{
 				res:        res,
 				err:        err,
@@ -235,7 +236,7 @@ func isPackageNotFoundError(err error) bool {
 // ResolveMetadata 解析虚拟仓库的元数据请求
 // 遍历成员仓库，对每个成员调用 adapter 的 HandleGet，返回第一个成功的结果
 func (r *RepoHandler) ResolveMetadata(ctx context.Context, virtualRepo *model.Repository, intent *types.RequestIntent, adp RepoRequestHandler) (*types.ContentResult, error) {
-	members, err := r.getMembers(virtualRepo.ID)
+	members, err := r.getMembers(ctx, virtualRepo.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +265,8 @@ func (r *RepoHandler) ResolveMetadata(ctx context.Context, virtualRepo *model.Re
 	for _, member := range matchingMembers {
 		member := member
 		go func() {
-			res, err := adp.HandleGet(ctx, &member.MemberRepo, intent)
+			ctxWithRepo := context.WithValue(ctx, "repo", &member.MemberRepo)
+			res, err := adp.HandleGet(ctxWithRepo, &member.MemberRepo, intent)
 			resultCh <- memberResult{
 				res:        res,
 				err:        err,
@@ -303,11 +305,11 @@ func (r *RepoHandler) ResolveMetadata(ctx context.Context, virtualRepo *model.Re
 	return nil, ErrPackageNotFound
 }
 
-func (r *RepoHandler) getMembers(virtualRepoID uint) ([]model.RepositoryGroup, error) {
+func (r *RepoHandler) getMembers(ctx context.Context, virtualRepoID uint) ([]model.RepositoryGroup, error) {
 	if r.repoCache != nil {
-		return r.repoCache.GetMembers(virtualRepoID)
+		return r.repoCache.GetMembersContext(ctx, virtualRepoID)
 	}
-	return r.groupRepo.GetMembersByVirtualRepo(virtualRepoID)
+	return r.groupRepo.GetMembersByVirtualRepoContext(ctx, virtualRepoID)
 }
 
 func (r *RepoHandler) isMemberTypeMatch(repo *model.Repository, pkgType string) bool {

@@ -395,36 +395,20 @@ func (a *YumAdapter) RegenerateMetadata(c *gin.Context) {
 }
 
 func (a *YumAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
-	pkg, err := a.GetPackageRepository().FindByNameAndType(name, model.PackageTypeYum)
+	pkg, err := a.GetPackageRepository().FindByRepoNameAndTypeContext(ctx, repositoryID(repositoryFromContext(ctx)), name, model.PackageTypeYum)
 	if err != nil {
 		return nil, err
 	}
 
-	meta := &PackageMeta{
-		ID:          pkg.ID,
-		Name:        pkg.Name,
-		Type:        YumType,
-		Description: pkg.Description,
-	}
-
-	for _, ver := range pkg.Versions {
-		meta.Versions = append(meta.Versions, VersionInfo{
-			Version:       ver.Version,
-			PublishedAt:   ver.PublishedAt.Format(time.RFC3339),
-			Size:          ver.SizeBytes,
-			DownloadCount: int64(ver.DownloadCount),
-		})
-	}
-
-	return meta, nil
+	return packageMetaFromModel(pkg, YumType), nil
 }
 
 func (a *YumAdapter) Delete(ctx context.Context, identity *PackageIdentity) error {
-	return a.GetPackageRepository().DeleteByNameAndVersion(identity.Name, identity.Version, model.PackageTypeYum)
+	return a.GetPackageRepository().DeleteByRepoNameAndVersionContext(ctx, repositoryID(repositoryFromContext(ctx)), identity.Name, identity.Version, model.PackageTypeYum)
 }
 
 func (a *YumAdapter) ListVersions(ctx context.Context, name string) ([]string, error) {
-	return a.GetPackageRepository().ListVersions(name, model.PackageTypeYum)
+	return a.GetPackageRepository().ListVersionsByRepoContext(ctx, repositoryID(repositoryFromContext(ctx)), name, model.PackageTypeYum)
 }
 
 // ParseIntent 解析请求路径为意图
@@ -621,7 +605,7 @@ func (a *YumAdapter) generateRepomdXML(ctx context.Context, repo string) (string
 }
 
 func (a *YumAdapter) regenerateRepodata(ctx context.Context, repo string) error {
-	packages, _, err := a.GetPackageRepository().List(1, 10000, string(model.PackageTypeYum), "")
+	packages, _, err := a.GetPackageRepository().ListContext(ctx, 1, 10000, string(model.PackageTypeYum), "")
 	if err != nil {
 		return err
 	}
@@ -811,7 +795,7 @@ func (a *YumAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) erro
 		Type:    YumType,
 	}
 
-	if err := a.Delete(c.Request.Context(), identity); err != nil {
+	if err := a.Delete(context.WithValue(c.Request.Context(), "repo", ctx.Repo), identity); err != nil {
 		return err
 	}
 

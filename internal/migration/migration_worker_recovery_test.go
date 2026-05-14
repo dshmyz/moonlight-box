@@ -3,6 +3,9 @@ package migration
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -466,4 +469,51 @@ func TestIntegration_RecoverySkipRescan(t *testing.T) {
 	itemRepo := repository.NewMigrationItemRepository(db)
 	count := itemRepo.CountByTaskID(task.ID)
 	assert.Equal(t, int64(5), count)
+}
+
+func TestResolveMigrationTargetUsesPerTaskRepository(t *testing.T) {
+	db := setupWorkerRecoveryTestDB(t)
+	assert.NoError(t, db.AutoMigrate(&model.Repository{}, &model.RepositoryGroup{}))
+
+	backendA := uint(11)
+	backendB := uint(22)
+	repoA := &model.Repository{Name: "maven-local-a", Type: model.RepoTypeLocal, PackageType: "maven", Enabled: true, StorageBackendID: &backendA}
+	repoB := &model.Repository{Name: "maven-local-b", Type: model.RepoTypeLocal, PackageType: "maven", Enabled: true, StorageBackendID: &backendB}
+	assert.NoError(t, db.Create(repoA).Error)
+	assert.NoError(t, db.Create(repoB).Error)
+
+	worker := NewMigrationWorkerV2(nil, nil, nil, repository.NewRepositoryRepository(db), nil, 1, 1, 1)
+
+	targetA := worker.resolveMigrationTarget(&model.MigrationTask{ID: 1, TargetRepositoryID: repoA.ID, TargetRepository: "stale-a"})
+	targetB := worker.resolveMigrationTarget(&model.MigrationTask{ID: 2, TargetRepositoryID: repoB.ID, TargetRepository: "stale-b"})
+
+	assert.Equal(t, repoA.ID, targetA.repoID)
+	assert.Equal(t, repoA.Name, targetA.repoName)
+	assert.Equal(t, backendA, targetA.backendID)
+	assert.Equal(t, repoB.ID, targetB.repoID)
+	assert.Equal(t, repoB.Name, targetB.repoName)
+	assert.Equal(t, backendB, targetB.backendID)
+}
+
+func TestResolveMigrationTargetFallsBackToTaskRepositoryName(t *testing.T) {
+	db := setupWorkerRecoveryTestDB(t)
+	worker := NewMigrationWorkerV2(nil, nil, nil, repository.NewRepositoryRepository(db), nil, 1, 1, 1)
+
+	target := worker.resolveMigrationTarget(&model.MigrationTask{ID: 1, TargetRepository: "raw-target"})
+
+	assert.Equal(t, uint(0), target.repoID)
+	assert.Equal(t, "raw-target", target.repoName)
+	assert.Equal(t, uint(0), target.backendID)
+}
+
+func TestSpoolReaderToTempFile(t *testing.T) {
+	tmpFile, size, err := spoolReaderToTempFile(strings.NewReader("migration-body"))
+	assert.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	assert.Equal(t, int64(len("migration-body")), size)
+	body, err := io.ReadAll(tmpFile)
+	assert.NoError(t, err)
+	assert.Equal(t, "migration-body", string(body))
 }

@@ -70,7 +70,6 @@ func TestYumAdapter_Type(t *testing.T) {
 	assert.Equal(t, YumType, adapter.Type())
 }
 
-
 func TestYumAdapter_ParsePath(t *testing.T) {
 	adapter, _ := setupYumAdapter(t)
 
@@ -152,9 +151,9 @@ func TestYumAdapter_GetMetadata(t *testing.T) {
 	db.Create(pkg)
 
 	version := &model.PackageVersion{
-		PackageID:   pkg.ID,
-		Version:     "1.20.1",
-		Status:      model.StatusPublished,
+		PackageID: pkg.ID,
+		Version:   "1.20.1",
+		Status:    model.StatusPublished,
 	}
 	db.Create(version)
 
@@ -212,9 +211,9 @@ func TestYumAdapter_Delete(t *testing.T) {
 	db.Create(pkg)
 
 	version := &model.PackageVersion{
-		PackageID:   pkg.ID,
-		Version:     "1.0.0",
-		Status:      model.StatusPublished,
+		PackageID: pkg.ID,
+		Version:   "1.0.0",
+		Status:    model.StatusPublished,
 	}
 	db.Create(version)
 
