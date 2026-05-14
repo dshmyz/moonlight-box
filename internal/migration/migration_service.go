@@ -80,7 +80,6 @@ func NewMigrationService(db *gorm.DB, worker MigrationWorkerInterface, repoCreat
 		maxConcurrent: maxConcurrent,
 		retryTaskIDs:  make(map[uint]bool),
 	}
-	s.recoverInterruptedTasks()
 	return s
 }
 
@@ -102,20 +101,20 @@ func (s *MigrationService) GetQueueStatus() QueueStatus {
 }
 
 func (s *MigrationService) recoverInterruptedTasks() []uint {
-	var runningTasks []model.MigrationTask
-	if err := s.db.Where("status IN (?, ?)", model.MigrationRunning, model.MigrationQueued).Find(&runningTasks).Error; err != nil {
+	var interruptedTasks []model.MigrationTask
+	if err := s.db.Where("status IN (?, ?, ?)", model.MigrationRunning, model.MigrationQueued, model.MigrationPending).Find(&interruptedTasks).Error; err != nil {
 		logrus.WithError(err).Error("Failed to query interrupted migration tasks")
 		return nil
 	}
 
-	if len(runningTasks) == 0 {
+	if len(interruptedTasks) == 0 {
 		return nil
 	}
 
-	logrus.WithField("module", "migration").Infof("Recovering %d interrupted migration tasks", len(runningTasks))
+	logrus.WithField("module", "migration").Infof("Recovering %d interrupted migration tasks", len(interruptedTasks))
 
 	var recoveredTaskIDs []uint
-	for _, task := range runningTasks {
+	for _, task := range interruptedTasks {
 		s.resetProcessingItems(task.ID)
 
 		if task.TaskType == model.MigrationTaskSyncConfig {

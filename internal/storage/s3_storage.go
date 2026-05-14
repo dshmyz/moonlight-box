@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -67,6 +68,23 @@ func (s *S3Storage) resolveKey(key string) string {
 
 func (s *S3Storage) Put(ctx context.Context, key string, reader io.Reader, size int64) error {
 	fullKey := s.resolveKey(key)
+
+	if _, ok := reader.(io.ReadSeeker); !ok {
+		tmpFile, err := os.CreateTemp("", "moonlight-s3-*")
+		if err != nil {
+			return err
+		}
+		defer tmpFile.Close()
+		defer os.Remove(tmpFile.Name())
+
+		if _, err := io.Copy(tmpFile, reader); err != nil {
+			return err
+		}
+		if _, err := tmpFile.Seek(0, 0); err != nil {
+			return err
+		}
+		reader = tmpFile
+	}
 
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:        aws.String(s.bucket),
