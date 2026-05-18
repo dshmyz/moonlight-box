@@ -17,6 +17,7 @@ import (
 	"github.com/moonlight-box/registry/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/mod/modfile"
 )
 
 type GoAdapter struct {
@@ -518,6 +519,34 @@ func decodeGoModulePath(path string) string {
 	return decoded
 }
 
+func buildGoDependenciesFromMod(content []byte) []model.PackageDependency {
+	parsed, err := modfile.Parse("go.mod", content, nil)
+	if err != nil || parsed == nil {
+		return nil
+	}
+
+	deps := make([]model.PackageDependency, 0, len(parsed.Require))
+	seen := make(map[string]struct{}, len(parsed.Require))
+	for _, req := range parsed.Require {
+		if req == nil || req.Mod.Path == "" || req.Mod.Version == "" {
+			continue
+		}
+		key := req.Mod.Path + "|" + req.Mod.Version + "|" + fmt.Sprint(req.Indirect)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		deps = append(deps, model.PackageDependency{
+			DepName:              req.Mod.Path,
+			DepVersionConstraint: req.Mod.Version,
+			DepType:              "direct",
+			PackageType:          string(model.PackageTypeGo),
+			IsOptional:           req.Indirect,
+		})
+	}
+	return deps
+}
+
 func (a *GoAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
@@ -531,13 +560,26 @@ func (a *GoAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*types
 		return nil, fmt.Errorf("missing module name or version")
 	}
 
+	body, err := io.ReadAll(file)
+	if err != nil {
+		file.Close()
+		return nil, fmt.Errorf("failed to read uploaded file: %v", err)
+	}
+	_ = file.Close()
+
+	var deps []model.PackageDependency
+	if strings.HasSuffix(strings.ToLower(header.Filename), ".mod") {
+		deps = buildGoDependenciesFromMod(body)
+	}
+
 	return &types.PublishResult{
 		PackageName: name,
 		Version:     version,
 		Filename:    header.Filename,
-		Content:     file,
+		Content:     bytes.NewReader(body),
 		Size:        header.Size,
 		FileType:    model.FileTypePrimary,
+		Dependencies: deps,
 	}, nil
 }
 

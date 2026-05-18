@@ -7,6 +7,7 @@ import (
 
 	"github.com/moonlight-box/registry/internal/ai"
 	"github.com/moonlight-box/registry/internal/response"
+	"github.com/sirupsen/logrus"
 
 	"github.com/gin-gonic/gin"
 )
@@ -37,7 +38,8 @@ func (h *AIHandler) Chat(c *gin.Context) {
 
 	resp, err := h.aiService.Chat(c.Request.Context(), userID, req.SessionID, req.Message)
 	if err != nil {
-		response.ErrorResponse(c, http.StatusInternalServerError, err.Error())
+		logrus.WithError(err).Warn("AI chat request failed")
+		response.InternalError(c, "AI service temporarily unavailable")
 		return
 	}
 
@@ -85,7 +87,8 @@ func (h *AIHandler) GetAuditLogs(c *gin.Context) {
 func (h *AIHandler) HealthCheck(c *gin.Context) {
 	err := h.aiService.HealthCheck()
 	if err != nil {
-		response.ErrorResponse(c, http.StatusServiceUnavailable, err.Error())
+		logrus.WithError(err).Warn("AI health check failed")
+		response.ErrorResponse(c, http.StatusServiceUnavailable, "AI service is not available")
 		return
 	}
 	response.Success(c, gin.H{"status": "healthy"})
@@ -102,7 +105,8 @@ func (h *AIHandler) StreamChat(c *gin.Context) {
 
 	stream, err := h.aiService.StreamChat(c.Request.Context(), userID, req.SessionID, req.Message)
 	if err != nil {
-		response.ErrorResponse(c, http.StatusInternalServerError, err.Error())
+		logrus.WithError(err).Warn("AI stream chat failed")
+		response.InternalError(c, "AI service temporarily unavailable")
 		return
 	}
 
@@ -113,18 +117,26 @@ func (h *AIHandler) StreamChat(c *gin.Context) {
 
 	for chunk := range stream {
 		if chunk.Error != nil {
-			data, _ := json.Marshal(gin.H{"error": chunk.Error.Error()})
+			data, err := json.Marshal(gin.H{"error": chunk.Error.Error()})
+			if err != nil {
+				logrus.WithError(err).Error("failed to marshal error chunk")
+				return
+			}
 			fmt.Fprintf(c.Writer, "data: %s\n\n", data)
 			c.Writer.Flush()
 			return
 		}
 
-		data, _ := json.Marshal(gin.H{
+		data, err := json.Marshal(gin.H{
 			"session_id": chunk.SessionID,
 			"content":    chunk.Content,
 			"tool_call":  chunk.ToolCall,
 			"done":       chunk.Done,
 		})
+		if err != nil {
+			logrus.WithError(err).Error("failed to marshal stream chunk")
+			return
+		}
 		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
 		c.Writer.Flush()
 	}

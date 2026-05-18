@@ -25,6 +25,7 @@ func setupGoAdapter(t *testing.T) *GoAdapter {
 	db.AutoMigrate(
 		&model.Package{},
 		&model.PackageVersion{},
+		&model.PackageDependency{},
 		&model.Repository{},
 		&model.StorageBackend{},
 	)

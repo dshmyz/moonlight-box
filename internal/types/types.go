@@ -156,6 +156,7 @@ type PublishResult struct {
 	StorageVersion string
 	FileType       model.PackageFileType
 	Metadata       map[string]interface{}
+	Dependencies   []model.PackageDependency
 	DownloadURL    string
 	Response       interface{}
 }

@@ -38,10 +38,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { repositoryApi, type Repository } from '@/api/repository'
-import { ElMessage } from 'element-plus'
 import { normalizePackageType } from '@/constants/package'
 import TypeSidebar from './TypeSidebar.vue'
 import RepoCard from './RepoCard.vue'
+import { copyToClipboard } from '@/utils/clipboard'
 
 const loading = ref(false)
 const repos = ref<Repository[]>([])
@@ -143,13 +143,8 @@ function getConfigCommand(repo: Repository): string {
   }
 }
 
-async function copyText(text: string) {
-  try {
-    await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制到剪贴板')
-  } catch {
-    ElMessage.error('复制失败')
-  }
+function copyText(text: string) {
+  copyToClipboard(text)
 }
 </script>
 

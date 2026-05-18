@@ -147,6 +147,52 @@ func (r *PackageRepository) CreateOrUpdateMetadata(ctx context.Context, pkg *mod
 	return savedPkg, savedVer, nil
 }
 
+// UpsertVersionDependencies 覆盖写入某个版本的依赖列表（先清空再写入）
+func (r *PackageRepository) UpsertVersionDependencies(ctx context.Context, versionID uint, deps []model.PackageDependency) error {
+	if versionID == 0 {
+		return fmt.Errorf("versionID cannot be 0")
+	}
+
+	return retryOnLocked(func() error {
+		return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Where("version_id = ?", versionID).Delete(&model.PackageDependency{}).Error; err != nil {
+				return err
+			}
+
+			if len(deps) == 0 {
+				return nil
+			}
+
+			cleaned := make([]model.PackageDependency, 0, len(deps))
+			seen := make(map[string]struct{}, len(deps))
+			for _, dep := range deps {
+				if dep.DepName == "" || dep.DepVersionConstraint == "" {
+					continue
+				}
+				dep.VersionID = versionID
+				if dep.DepType == "" {
+					dep.DepType = "direct"
+				}
+				if dep.PackageType == "" {
+					dep.PackageType = "generic"
+				}
+
+				key := dep.DepName + "|" + dep.DepVersionConstraint + "|" + dep.DepType + "|" + dep.PackageType
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+				cleaned = append(cleaned, dep)
+			}
+
+			if len(cleaned) == 0 {
+				return nil
+			}
+			return tx.Create(&cleaned).Error
+		})
+	}, 10)
+}
+
 func (r *PackageRepository) FindByNameAndType(name string, pkgType model.PackageType) (*model.Package, error) {
 	return r.FindByRepoNameAndType(0, name, pkgType)
 }
@@ -157,7 +203,7 @@ func (r *PackageRepository) FindByRepoNameAndType(repositoryID uint, name string
 
 func (r *PackageRepository) FindByRepoNameAndTypeContext(ctx context.Context, repositoryID uint, name string, pkgType model.PackageType) (*model.Package, error) {
 	var pkg model.Package
-	query := r.db.WithContext(ctx).Preload("Versions").Preload("Versions.Files").
+	query := r.db.WithContext(ctx).Preload("Versions").Preload("Versions.Files").Preload("Versions.Dependencies").
 		Where("name = ? AND type = ?", name, pkgType)
 	if repositoryID > 0 {
 		query = query.Where("repository_id = ?", repositoryID)

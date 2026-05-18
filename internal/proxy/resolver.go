@@ -252,6 +252,20 @@ func (r *RepoHandler) ResolveMetadata(ctx context.Context, virtualRepo *model.Re
 		return nil, ErrPackageNotFound
 	}
 
+	// 对于列表请求（如 PyPI simple index），优先使用代理成员获取上游完整索引。
+	// 本地成员通常只有少量缓存包，优先代理成员可以避免返回空列表。
+	if intent != nil && intent.Type == types.RequestList {
+		var proxyMembers []model.RepositoryGroup
+		for _, m := range matchingMembers {
+			if m.MemberRepo.Type == model.RepoTypeProxy {
+				proxyMembers = append(proxyMembers, m)
+			}
+		}
+		if len(proxyMembers) > 0 {
+			matchingMembers = proxyMembers
+		}
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 

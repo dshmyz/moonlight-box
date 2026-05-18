@@ -6,7 +6,6 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
+	"github.com/sirupsen/logrus"
 )
 
 type RepoRouter struct {
@@ -75,7 +75,14 @@ func (r *RepoRouter) checkBlock(c *gin.Context, pkgType, pkgName, version string
 
 	result, err := r.blockSvc.IsBlocked(pkgType, pkgName, version)
 	if err != nil {
-		return false
+		logrus.WithFields(logrus.Fields{
+			"module":   "block_rule",
+			"pkg_type": pkgType,
+			"pkg_name": pkgName,
+			"version":  version,
+			"error":    err,
+		}).Error("Block check failed, blocking request for safety (fail-closed)")
+		return true
 	}
 
 	if result.Blocked {
@@ -220,13 +227,24 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 			},
 		})
 	} else {
+		// Build base URL for metadata URL rewriting (npm tarball URLs, etc.)
+		scheme := "http"
+		if c.Request.TLS != nil {
+			scheme = "https"
+		}
+		baseURL := fmt.Sprintf("%s://%s/repo/%s", scheme, c.Request.Host, repoName)
+
 		var contentResult *types.ContentResult
 		var err error
 		if repo.Type == model.RepoTypeVirtual {
 			// 虚拟仓库没有 RemoteURL 也没有本地包数据，需要遍历成员仓库处理元数据请求
-			contentResult, err = r.resolver.ResolveMetadata(context.WithValue(c.Request.Context(), "repo", repo), repo, intent, adp)
+			ctx := context.WithValue(c.Request.Context(), "repo", repo)
+			ctx = context.WithValue(ctx, adapter.BaseURLCtxKey{}, baseURL)
+			contentResult, err = r.resolver.ResolveMetadata(ctx, repo, intent, adp)
 		} else {
-			contentResult, err = adp.HandleGet(context.WithValue(c.Request.Context(), "repo", repo), repo, intent)
+			ctx := context.WithValue(c.Request.Context(), "repo", repo)
+			ctx = context.WithValue(ctx, adapter.BaseURLCtxKey{}, baseURL)
+			contentResult, err = adp.HandleGet(ctx, repo, intent)
 		}
 		if err != nil {
 			r.writeRepoError(c, repo, intent, err)
@@ -303,9 +321,9 @@ func (r *RepoRouter) writeRepoError(c *gin.Context, repo *model.Repository, inte
 	}
 
 	if statusCode >= http.StatusInternalServerError {
-		slog.Error("repository request failed", fields...)
+		logrus.WithFields(slogFields(fields)).Error("repository request failed")
 	} else {
-		slog.Warn("repository request failed", fields...)
+		logrus.WithFields(slogFields(fields)).Warn("repository request failed")
 	}
 
 	response.ErrorResponse(c, statusCode, message)
@@ -356,7 +374,7 @@ func mapRepoError(err error) (int, string, string) {
 		return appErr.Code, appErr.Message, string(appErr.Category)
 	}
 
-	return http.StatusInternalServerError, err.Error(), "internal"
+	return http.StatusInternalServerError, "internal server error", "internal"
 }
 
 func (r *RepoRouter) HandlePublish(c *gin.Context) {
@@ -452,6 +470,7 @@ func (r *RepoRouter) HandlePublish(c *gin.Context) {
 		RepositoryID:   repo.ID,
 		UploadedBy:     c.GetUint("userID"),
 		Metadata:       publishResult.Metadata,
+		Dependencies:   publishResult.Dependencies,
 		FileType:       publishResult.FileType,
 		DownloadURL:    publishResult.DownloadURL,
 		RepoName:       repo.Name,
@@ -585,4 +604,16 @@ func (r *RepoRouter) HandleDelete(c *gin.Context) {
 			0,
 		)
 	}
+}
+
+func slogFields(args []any) logrus.Fields {
+	fields := logrus.Fields{}
+	for i := 0; i < len(args)-1; i += 2 {
+		key, ok := args[i].(string)
+		if !ok {
+			continue
+		}
+		fields[key] = args[i+1]
+	}
+	return fields
 }

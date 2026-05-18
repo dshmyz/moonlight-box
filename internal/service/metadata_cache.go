@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"github.com/moonlight-box/registry/internal/util"
 )
 
 type cachedMetadata struct {
@@ -104,7 +105,12 @@ func (mc *MetadataCache) GetOrFetch(ctx context.Context, repoName, pkgType, name
 	if fetchErr != nil {
 		staleContent, staleSize, staleErr := mc.GetStale(ctx, repoName, pkgType, name)
 		if staleErr == nil {
-			logrus.Warnf("metadata fetch failed for %s/%s/%s, returning stale data: %v", repoName, pkgType, name, fetchErr)
+			util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
+				util.LogKeyModule:  "service",
+				util.LogKeyPkgType: "generic",
+				util.LogKeyPkgName: name,
+				util.LogKeyError:   fetchErr,
+			}).Warn("metadata fetch failed, returning stale data")
 			return staleContent, staleSize, nil
 		}
 		return nil, 0, fetchErr
@@ -118,7 +124,12 @@ func (mc *MetadataCache) GetOrFetch(ctx context.Context, repoName, pkgType, name
 
 	actualSize := int64(len(body))
 	if cacheErr := mc.Set(ctx, repoName, pkgType, name, bytes.NewReader(body), actualSize, ttl); cacheErr != nil {
-		logrus.Warnf("failed to cache metadata %s/%s/%s: %v", repoName, pkgType, name, cacheErr)
+		util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
+			util.LogKeyModule:  "service",
+			util.LogKeyPkgType: "generic",
+			util.LogKeyPkgName: name,
+			util.LogKeyError:   cacheErr,
+		}).Warn("failed to cache metadata")
 	}
 
 	return io.NopCloser(bytes.NewReader(body)), actualSize, nil

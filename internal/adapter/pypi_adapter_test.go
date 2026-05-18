@@ -29,6 +29,7 @@ func setupPyPIAdapter(t *testing.T) (*PyPIAdapter, *gorm.DB) {
 		&model.Package{},
 		&model.PackageVersion{},
 		&model.PackageFile{},
+		&model.PackageDependency{},
 		&model.Repository{},
 		&model.StorageBackend{},
 	)

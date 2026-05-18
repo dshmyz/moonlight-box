@@ -18,6 +18,7 @@ import (
 	"github.com/moonlight-box/registry/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 )
 
 type NpmAdapter struct {
@@ -310,10 +311,10 @@ func (a *NpmAdapter) handleMetadataFetch(ctx context.Context, repo *model.Reposi
 		}, nil
 
 	case model.RepoTypeProxy:
-		return a.handleProxyMetadataFetch(ctx, repositoryFromContext(ctx), name)
+		return a.handleProxyMetadataFetch(ctx, repo, name)
 
 	case model.RepoTypeVirtual:
-		return a.handleVirtualMetadataFetch(ctx, repositoryFromContext(ctx), name)
+		return a.handleVirtualMetadataFetch(ctx, repo, name)
 
 	default:
 		return &types.ContentResult{
@@ -331,7 +332,7 @@ func (a *NpmAdapter) handleProxyMetadataFetch(ctx context.Context, repo *model.R
 			ttl = 5 * time.Minute
 		}
 
-		content, size, err := a.metaCache.GetOrFetch(ctx, repo.Name, "npm", name, ttl, func() (io.ReadCloser, int64, error) {
+		content, _, err := a.metaCache.GetOrFetch(ctx, repo.Name, "npm", name, ttl, func() (io.ReadCloser, int64, error) {
 			pathInfo, pathErr := a.ParsePath(name)
 			if pathErr != nil {
 				return nil, 0, pathErr
@@ -344,9 +345,16 @@ func (a *NpmAdapter) handleProxyMetadataFetch(ctx context.Context, repo *model.R
 			return result.Content, result.Size, nil
 		})
 		if err == nil {
+			// Rewrite upstream tarball URLs to point to this proxy
+			raw, readErr := io.ReadAll(content)
+			if readErr != nil {
+				return nil, readErr
+			}
+			baseURL := BaseURLFromContext(ctx, repo)
+			raw = RewriteNpmTarballURLs(raw, baseURL)
 			return &types.ContentResult{
-				Content:     content,
-				Size:        size,
+				Content:     io.NopCloser(bytes.NewReader(raw)),
+				Size:        int64(len(raw)),
 				ContentType: "application/json",
 				StatusCode:  200,
 			}, nil
@@ -376,9 +384,20 @@ func (a *NpmAdapter) handleProxyMetadataFetch(ctx context.Context, repo *model.R
 		}, nil
 	}
 
+	// Rewrite upstream tarball URLs to point to this proxy
+	defer result.Content.Close()
+	body, readErr := io.ReadAll(result.Content)
+	if readErr != nil {
+		return &types.ContentResult{
+			StatusCode: 500,
+			ExtraData:  map[string]interface{}{"message": "failed to read response"},
+		}, nil
+	}
+	baseURL := BaseURLFromContext(ctx, repo)
+	body = RewriteNpmTarballURLs(body, baseURL)
 	return &types.ContentResult{
-		Content:     result.Content,
-		Size:        result.Size,
+		Content:     io.NopCloser(bytes.NewReader(body)),
+		Size:        int64(len(body)),
 		ContentType: "application/json",
 		StatusCode:  200,
 	}, nil
@@ -476,6 +495,9 @@ func (a *NpmAdapter) syncFromProxy(ctx context.Context, name string, repo *model
 	}
 
 	for version, verInfo := range metadata.Versions {
+		if verInfo == nil {
+			continue
+		}
 		publishedAt := parseTime(metadata.Time[version])
 		versionMeta := marshalMetadata(map[string]interface{}{
 			"version":     version,
@@ -483,7 +505,7 @@ func (a *NpmAdapter) syncFromProxy(ctx context.Context, name string, repo *model
 			"tarball":     verInfo.Dist.Tarball,
 		})
 
-		_, _, err := a.GetPackageRepository().CreateOrUpdateMetadata(ctx, pkg, &model.PackageVersion{
+		_, savedVer, err := a.GetPackageRepository().CreateOrUpdateMetadata(ctx, pkg, &model.PackageVersion{
 			Version:     version,
 			Status:      model.StatusPublished,
 			PublishedAt: publishedAt,
@@ -492,6 +514,7 @@ func (a *NpmAdapter) syncFromProxy(ctx context.Context, name string, repo *model
 		if err != nil {
 			continue
 		}
+		a.enqueueDependencyUpsert(savedVer.ID, buildNpmDependencies(*verInfo))
 	}
 
 	return nil
@@ -510,6 +533,65 @@ func parseTime(s string) time.Time {
 
 func generateRevision() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+func buildNpmDependencies(meta NpmVersionInfo) []model.PackageDependency {
+	deps := make([]model.PackageDependency, 0, len(meta.Dependencies)+len(meta.DevDependencies))
+	seen := make(map[string]struct{}, len(meta.Dependencies)+len(meta.DevDependencies))
+
+	appendDep := func(name string, constraint interface{}, optional bool) {
+		if name == "" {
+			return
+		}
+		version := fmt.Sprint(constraint)
+		if version == "" {
+			return
+		}
+		key := name + "|" + version + "|" + fmt.Sprint(optional)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		deps = append(deps, model.PackageDependency{
+			DepName:              name,
+			DepVersionConstraint: version,
+			DepType:              "direct",
+			PackageType:          string(model.PackageTypeNPM),
+			IsOptional:           optional,
+		})
+	}
+
+	for name, constraint := range meta.Dependencies {
+		appendDep(name, constraint, false)
+	}
+	for name, constraint := range meta.DevDependencies {
+		appendDep(name, constraint, true)
+	}
+
+	return deps
+}
+
+func (a *NpmAdapter) enqueueDependencyUpsert(versionID uint, deps []model.PackageDependency) {
+	if versionID == 0 || len(deps) == 0 {
+		return
+	}
+	pkgRepo := a.GetPackageRepository()
+	if pkgRepo == nil {
+		return
+	}
+
+	cloned := make([]model.PackageDependency, len(deps))
+	copy(cloned, deps)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		if err := pkgRepo.UpsertVersionDependencies(ctx, versionID, cloned); err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"version_id": versionID,
+				"dep_count":  len(cloned),
+			}).Warn("failed to async upsert npm dependencies from metadata sync")
+		}
+	}()
 }
 
 func marshalMetadata(meta map[string]interface{}) string {
@@ -568,6 +650,7 @@ func (a *NpmAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*type
 		Content:     file,
 		Size:        header.Size,
 		FileType:    model.FileTypePrimary,
+		Dependencies: buildNpmDependencies(metadata),
 		Response: &types.NpmPublishResponse{
 			PublishResponse: types.PublishResponse{
 				Success:  true,

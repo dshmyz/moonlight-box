@@ -3,19 +3,129 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"golang.org/x/sync/semaphore"
 	"github.com/moonlight-box/registry/internal/metrics"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/types"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/mod/modfile"
 	"golang.org/x/sync/singleflight"
 )
+
+// PyPI CDN path resolver cache.
+// Maps "filename" -> "hash_prefix1/hash_prefix2/full_hash/filename"
+var (
+	pypiCDNPathCache   = make(map[string]string)
+	pypiCDNPathCacheMu sync.RWMutex
+)
+
+// resolvePyPIRemoteURL resolves a PyPI filename to a full download URL through the configured proxy.
+// Instead of hardcoding files.pythonhosted.org, it queries the upstream simple index via the proxy
+// to find the actual download URL, which respects the configured mirror/proxy for internal networks.
+func resolvePyPIRemoteURL(fetcher proxy.ProxyFetcher, downloadCtx *types.DownloadContext, pathInfo *types.PackagePathInfo) string {
+	filename := pathInfo.Filename
+	if filename == "" {
+		return ""
+	}
+
+	remotePath := pathInfo.RemotePath
+	parts := strings.Split(strings.TrimPrefix(remotePath, "packages/"), "/")
+	if len(parts) > 1 {
+		// Already has hash-prefix directories: construct via RemoteURL
+		baseURL := strings.TrimSuffix(downloadCtx.Repo.RemoteURL, "/")
+		return baseURL + "/" + remotePath
+	}
+
+	// Check cache first
+	pypiCDNPathCacheMu.RLock()
+	if cached, ok := pypiCDNPathCache[filename]; ok {
+		pypiCDNPathCacheMu.RUnlock()
+		return cached
+	}
+	pypiCDNPathCacheMu.RUnlock()
+
+	pkgName := pathInfo.Name
+	if pkgName == "" {
+		pkgName = normalizePyPNameFromFilename(filename)
+	}
+	baseURL := strings.TrimSuffix(downloadCtx.Repo.RemoteURL, "/")
+
+	// Try multiple name variations (PyPI normalizes: hyphens, underscores, dots)
+	nameVariations := []string{pkgName, strings.ReplaceAll(pkgName, "-", "_")}
+
+	for _, tryName := range nameVariations {
+		if tryName == "" {
+			continue
+		}
+		simpleURL := baseURL + "/simple/" + tryName + "/"
+		result, err := fetcher.FetchFromRemote(context.Background(), downloadCtx.Repo, simpleURL)
+		if err != nil {
+			continue
+		}
+		body, readErr := io.ReadAll(result.Content)
+		result.Content.Close()
+		if readErr != nil {
+			continue
+		}
+
+		// Parse HTML to find the filename and extract the download URL
+		pattern := regexp.MustCompile(`href="([^"]*` + regexp.QuoteMeta(filename) + `(?:#[^"]*)?)"`)
+		matches := pattern.FindAllStringSubmatch(string(body), -1)
+		if len(matches) > 0 {
+			href := matches[0][1]
+			urlNoFragment := href
+			if idx := strings.Index(href, "#"); idx != -1 {
+				urlNoFragment = href[:idx]
+			}
+
+			var fullURL string
+			if strings.HasPrefix(urlNoFragment, "http://") || strings.HasPrefix(urlNoFragment, "https://") {
+				// Absolute URL from simple index — use it directly
+				// (internal mirror returns mirror URLs, pypi.org returns files.pythonhosted.org)
+				fullURL = urlNoFragment
+			} else {
+				// Relative URL: resolve against RemoteURL
+				relPath := strings.TrimPrefix(urlNoFragment, "/")
+				fullURL = baseURL + "/" + relPath
+			}
+
+			// Cache the result
+			pypiCDNPathCacheMu.Lock()
+			pypiCDNPathCache[filename] = fullURL
+			pypiCDNPathCacheMu.Unlock()
+
+			return fullURL
+		}
+	}
+
+	// Fallback: try via RemoteURL directly
+	return baseURL + "/packages/" + filename
+}
+
+func normalizePyPNameFromFilename(filename string) string {
+	name := strings.TrimSuffix(filename, ".whl")
+	name = strings.TrimSuffix(name, ".tar.gz")
+	name = strings.TrimSuffix(name, ".zip")
+	// Remove version and platform tags: package-1.0.0-py3-none-any.whl -> package
+	if idx := strings.LastIndex(name, "-"); idx != -1 {
+		// Check if the part after the last dash looks like a version
+		potentialVersion := name[idx+1:]
+		if len(potentialVersion) > 0 && (potentialVersion[0] >= '0' && potentialVersion[0] <= '9') {
+			name = name[:idx]
+		}
+	}
+	return strings.ToLower(strings.ReplaceAll(name, "_", "-"))
+}
 
 type DownloadService struct {
 	pkgRepo      *repository.PackageRepository
@@ -25,6 +135,8 @@ type DownloadService struct {
 	logBatcher   *LogBatcher
 	countBatcher *DownloadCountBatcher
 	inflight     singleflight.Group
+
+	depParseSem *semaphore.Weighted // 限制依赖解析并发数
 }
 
 func NewDownloadService(
@@ -42,6 +154,7 @@ func NewDownloadService(
 		logRepo:      logRepo,
 		logBatcher:   logBatcher,
 		countBatcher: countBatcher,
+		depParseSem:  semaphore.NewWeighted(10), // 最多10个并发依赖解析任务
 	}
 }
 
@@ -91,7 +204,17 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 		return nil, fmt.Errorf("fetcher not configured")
 	}
 
-	remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(downloadCtx.Repo.RemoteURL, "/"), pathInfo.RemotePath)
+	// For PyPI: resolve CDN path from filename via upstream simple index.
+	var remoteURL string
+	if downloadCtx.PkgType == "pypi" {
+		remoteURL = resolvePyPIRemoteURL(s.fetcher, downloadCtx, pathInfo)
+		if remoteURL == "" {
+			s.recordLog(downloadCtx, 0, time.Since(startTime), false, fmt.Errorf("failed to resolve PyPI download URL"))
+			return nil, fmt.Errorf("failed to resolve PyPI download URL for %s", pathInfo.Filename)
+		}
+	} else {
+		remoteURL = fmt.Sprintf("%s/%s", strings.TrimSuffix(downloadCtx.Repo.RemoteURL, "/"), pathInfo.RemotePath)
+	}
 	storageVersion := pathInfo.StorageVersion
 	backendID := storageBackendID(downloadCtx.Repo)
 
@@ -121,7 +244,10 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 			storageKey, storeErr := s.storageSvc.StorePackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, result.Content, result.Size, backendID)
 			result.Content.Close()
 			if storeErr != nil {
-				logrus.Warnf("failed to store large proxy package %s to local storage: %v", pathInfo.Name, storeErr)
+				logrus.WithFields(logrus.Fields{
+					"module": "download", "pkg_type": string(downloadCtx.PkgType), "pkg_name": pathInfo.Name,
+					"pkg_version": pathInfo.Version, "repo": downloadCtx.Repo.Name, "error": storeErr,
+				}).Warn("failed to store large proxy package to local storage")
 				// 存储失败，流式内容已关闭无法再读取，返回错误
 				return nil, fmt.Errorf("failed to store large package and content stream closed: %w", storeErr)
 			}
@@ -139,7 +265,10 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 
 		storageKey, storeErr := s.storageSvc.StorePackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, storageVersion, bytes.NewReader(contentBytes), size, backendID)
 		if storeErr != nil {
-			logrus.Warnf("failed to store proxy package %s to local storage: %v", pathInfo.Name, storeErr)
+			logrus.WithFields(logrus.Fields{
+				"module": "download", "pkg_type": string(downloadCtx.PkgType), "pkg_name": pathInfo.Name,
+				"pkg_version": pathInfo.Version, "repo": downloadCtx.Repo.Name, "error": storeErr,
+			}).Warn("failed to store proxy package to local storage")
 			// 存储失败，保留内存数据兜底返回
 			return &proxyFetchOutcome{
 				repoID:       result.RepoID,
@@ -199,7 +328,7 @@ func storageBackendID(repo *model.Repository) uint {
 }
 
 func (s *DownloadService) storePackageFileRecord(ctx context.Context, req *types.DownloadContext, repoID uint, storageKey string, size int64, downloadURL string) {
-	_, _, _, dbErr := s.pkgRepo.StorePackageFile(ctx, &model.Package{
+	_, ver, _, dbErr := s.pkgRepo.StorePackageFile(ctx, &model.Package{
 		Name:           req.Name,
 		Type:           req.PkgType,
 		RepositoryID:   repoID,
@@ -215,8 +344,193 @@ func (s *DownloadService) storePackageFileRecord(ctx context.Context, req *types
 		DownloadURL: downloadURL,
 	})
 	if dbErr != nil {
-		logrus.Warnf("failed to store proxy package file to database %s: %v", req.Name, dbErr)
+		logrus.WithFields(logrus.Fields{
+			"module": "download", "pkg_type": string(req.PkgType), "pkg_name": req.Name,
+			"pkg_version": req.Version, "repo": req.Repo.Name, "error": dbErr,
+		}).Warn("failed to store proxy package file to database")
 		return
+	}
+
+	// Maven POM 代理下载后，异步解析并入库依赖
+	if req.PkgType == model.PackageTypeMaven && strings.HasSuffix(strings.ToLower(req.Filename), ".pom") {
+		go func() {
+			if err := s.depParseSem.Acquire(context.Background(), 1); err != nil {
+				logrus.WithFields(logrus.Fields{
+					"module": "download", "pkg_name": req.Name, "pkg_version": req.Version,
+					"repo": req.Repo.Name, "error": err,
+				}).Warn("failed to acquire dep parse semaphore")
+				return
+			}
+			defer s.depParseSem.Release(1)
+			s.asyncUpsertMavenDeps(req, ver.ID)
+		}()
+	}
+	if req.PkgType == model.PackageTypeGo && strings.HasSuffix(strings.ToLower(req.Filename), ".mod") {
+		go func() {
+			if err := s.depParseSem.Acquire(context.Background(), 1); err != nil {
+				logrus.WithFields(logrus.Fields{
+					"module": "download", "pkg_name": req.Name, "pkg_version": req.Version,
+					"repo": req.Repo.Name, "error": err,
+				}).Warn("failed to acquire dep parse semaphore")
+				return
+			}
+			defer s.depParseSem.Release(1)
+			s.asyncUpsertGoDeps(req, ver.ID)
+		}()
+	}
+}
+
+type mavenPOMForDeps struct {
+	XMLName      xml.Name            `xml:"project"`
+	Dependencies []mavenDepForUpload `xml:"dependencies>dependency"`
+}
+
+type mavenDepForUpload struct {
+	GroupID    string `xml:"groupId"`
+	ArtifactID string `xml:"artifactId"`
+	Version    string `xml:"version"`
+	Scope      string `xml:"scope"`
+}
+
+func (s *DownloadService) asyncUpsertMavenDeps(req *types.DownloadContext, versionID uint) {
+	if versionID == 0 || req == nil || req.Repo == nil {
+		return
+	}
+	if req.ResolvedPath == nil {
+		return
+	}
+	bg, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	content, _, err := s.storageSvc.GetPackageWithBackend(
+		bg,
+		req.Repo.Name,
+		string(req.PkgType),
+		req.ResolvedPath.StorageName,
+		req.ResolvedPath.StorageVersion,
+		storageBackendID(req.Repo),
+	)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module": "dep_parse", "pkg_type": "maven", "pkg_name": req.Name,
+			"pkg_version": req.Version, "repo": req.Repo.Name, "error": err,
+		}).Warn("failed to load pom content for dependency parse")
+		return
+	}
+	defer content.Close()
+
+	body, err := io.ReadAll(content)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module": "dep_parse", "pkg_type": "maven", "pkg_name": req.Name,
+			"pkg_version": req.Version, "repo": req.Repo.Name, "error": err,
+		}).Warn("failed to read pom content for dependency parse")
+		return
+	}
+
+	var pom mavenPOMForDeps
+	if err := xml.Unmarshal(body, &pom); err != nil {
+		return
+	}
+
+	deps := make([]model.PackageDependency, 0, len(pom.Dependencies))
+	seen := make(map[string]struct{}, len(pom.Dependencies))
+	for _, dep := range pom.Dependencies {
+		if dep.GroupID == "" || dep.ArtifactID == "" || dep.Version == "" {
+			continue
+		}
+		depName := dep.GroupID + ":" + dep.ArtifactID
+		key := depName + "|" + dep.Version + "|" + dep.Scope
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		deps = append(deps, model.PackageDependency{
+			DepName:              depName,
+			DepVersionConstraint: dep.Version,
+			DepType:              "direct",
+			PackageType:          string(model.PackageTypeMaven),
+			IsOptional:           dep.Scope == "test" || dep.Scope == "provided",
+		})
+	}
+
+	if len(deps) == 0 {
+		return
+	}
+	if err := s.pkgRepo.UpsertVersionDependencies(bg, versionID, deps); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module": "dep_parse", "pkg_type": "maven", "pkg_name": req.Name,
+			"pkg_version": req.Version, "repo": req.Repo.Name, "dep_count": len(deps), "error": err,
+		}).Warn("failed to upsert maven dependencies")
+	}
+}
+
+func (s *DownloadService) asyncUpsertGoDeps(req *types.DownloadContext, versionID uint) {
+	if versionID == 0 || req == nil || req.Repo == nil || req.ResolvedPath == nil {
+		return
+	}
+	bg, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	content, _, err := s.storageSvc.GetPackageWithBackend(
+		bg,
+		req.Repo.Name,
+		string(req.PkgType),
+		req.ResolvedPath.StorageName,
+		req.ResolvedPath.StorageVersion,
+		storageBackendID(req.Repo),
+	)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module": "dep_parse", "pkg_type": "go", "pkg_name": req.Name,
+			"pkg_version": req.Version, "repo": req.Repo.Name, "error": err,
+		}).Warn("failed to load go.mod content for dependency parse")
+		return
+	}
+	defer content.Close()
+
+	body, err := io.ReadAll(content)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module": "dep_parse", "pkg_type": "go", "pkg_name": req.Name,
+			"pkg_version": req.Version, "repo": req.Repo.Name, "error": err,
+		}).Warn("failed to read go.mod content for dependency parse")
+		return
+	}
+
+	parsed, err := modfile.Parse("go.mod", body, nil)
+	if err != nil || parsed == nil {
+		return
+	}
+
+	deps := make([]model.PackageDependency, 0, len(parsed.Require))
+	seen := make(map[string]struct{}, len(parsed.Require))
+	for _, reqDep := range parsed.Require {
+		if reqDep == nil || reqDep.Mod.Path == "" || reqDep.Mod.Version == "" {
+			continue
+		}
+		key := reqDep.Mod.Path + "|" + reqDep.Mod.Version + "|" + fmt.Sprint(reqDep.Indirect)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		deps = append(deps, model.PackageDependency{
+			DepName:              reqDep.Mod.Path,
+			DepVersionConstraint: reqDep.Mod.Version,
+			DepType:              "direct",
+			PackageType:          string(model.PackageTypeGo),
+			IsOptional:           reqDep.Indirect,
+		})
+	}
+
+	if len(deps) == 0 {
+		return
+	}
+	if err := s.pkgRepo.UpsertVersionDependencies(bg, versionID, deps); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module": "dep_parse", "pkg_type": "go", "pkg_name": req.Name,
+			"pkg_version": req.Version, "repo": req.Repo.Name, "dep_count": len(deps), "error": err,
+		}).Warn("failed to upsert go dependencies")
 	}
 }
 

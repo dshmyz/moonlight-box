@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -40,14 +41,35 @@ func (s *LocalStorage) Init(basePath string) error {
 	return os.MkdirAll(basePath, 0755)
 }
 
+var errPathTraversal = errors.New("path traversal detected")
+
 func (s *LocalStorage) resolvePath(key string) string {
 	key = filepath.Clean(key)
 	key = strings.TrimPrefix(key, "/")
 	return filepath.Join(s.basePath, key)
 }
 
-func (s *LocalStorage) Put(ctx context.Context, key string, reader io.Reader, size int64) error {
+func (s *LocalStorage) resolvePathSafe(key string) (string, error) {
 	fullPath := s.resolvePath(key)
+	absPath, err := filepath.Abs(fullPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve absolute path: %w", err)
+	}
+	absBase, err := filepath.Abs(s.basePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve base path: %w", err)
+	}
+	if !strings.HasPrefix(absPath, absBase+string(os.PathSeparator)) && absPath != absBase {
+		return "", errPathTraversal
+	}
+	return absPath, nil
+}
+
+func (s *LocalStorage) Put(ctx context.Context, key string, reader io.Reader, size int64) error {
+	fullPath, err := s.resolvePathSafe(key)
+	if err != nil {
+		return err
+	}
 	dir := filepath.Dir(fullPath)
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -75,7 +97,10 @@ func (s *LocalStorage) Put(ctx context.Context, key string, reader io.Reader, si
 }
 
 func (s *LocalStorage) Get(ctx context.Context, key string) (io.ReadCloser, error) {
-	fullPath := s.resolvePath(key)
+	fullPath, err := s.resolvePathSafe(key)
+	if err != nil {
+		return nil, err
+	}
 
 	info, err := os.Stat(fullPath)
 	if err != nil {
@@ -101,7 +126,10 @@ func (s *LocalStorage) Get(ctx context.Context, key string) (io.ReadCloser, erro
 }
 
 func (s *LocalStorage) Delete(ctx context.Context, key string) error {
-	fullPath := s.resolvePath(key)
+	fullPath, err := s.resolvePathSafe(key)
+	if err != nil {
+		return err
+	}
 
 	if err := os.Remove(fullPath); err != nil {
 		if os.IsNotExist(err) {
@@ -132,8 +160,11 @@ func (s *LocalStorage) removeEmptyDirs(dir string) {
 }
 
 func (s *LocalStorage) Exists(ctx context.Context, key string) (bool, error) {
-	fullPath := s.resolvePath(key)
-	_, err := os.Stat(fullPath)
+	fullPath, err := s.resolvePathSafe(key)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(fullPath)
 	if err == nil {
 		return true, nil
 	}
@@ -144,7 +175,10 @@ func (s *LocalStorage) Exists(ctx context.Context, key string) (bool, error) {
 }
 
 func (s *LocalStorage) Size(ctx context.Context, key string) (int64, error) {
-	fullPath := s.resolvePath(key)
+	fullPath, err := s.resolvePathSafe(key)
+	if err != nil {
+		return 0, err
+	}
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -159,7 +193,10 @@ func (s *LocalStorage) Size(ctx context.Context, key string) (int64, error) {
 }
 
 func (s *LocalStorage) List(ctx context.Context, prefix string) ([]Entry, error) {
-	dirPath := s.resolvePath(prefix)
+	dirPath, err := s.resolvePathSafe(prefix)
+	if err != nil {
+		return nil, err
+	}
 
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {

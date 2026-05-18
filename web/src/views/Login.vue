@@ -134,8 +134,7 @@ const form = reactive({
 
 onMounted(async () => {
   try {
-    const res = await casAuthApi.getCASConfig()
-    const data = res as any
+    const data = await casAuthApi.getCASConfig()
     casEnabled.value = data?.enabled ?? false
   } catch {
     casEnabled.value = false
@@ -154,8 +153,9 @@ async function handleCASCallback(ticket: string) {
     ElMessage.success('CAS 登录成功')
     const redirect = (route.query.redirect as string) || '/admin/dashboard'
     router.push(redirect)
-  } catch (error: any) {
-    ElMessage.error(error.message || 'CAS 登录失败')
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : 'CAS 登录失败'
+    ElMessage.error(msg)
     router.push({ path: '/login', query: { redirect: route.query.redirect } })
   } finally {
     loading.value = false
@@ -199,8 +199,9 @@ async function handleLogin() {
     ElMessage.success('登录成功')
     const redirect = (route.query.redirect as string) || '/admin/dashboard'
     router.push(redirect)
-  } catch (error: any) {
-    ElMessage.error(error.message || '登录失败')
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : '登录失败'
+    ElMessage.error(msg)
   } finally {
     loading.value = false
   }

@@ -68,8 +68,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { CopyDocument } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
 import { publicRepoApi, type RepoConfigResponse } from '@/api/public'
+import { copyToClipboard } from '@/utils/clipboard'
 
 const route = useRoute()
 const router = useRouter()
@@ -124,13 +124,8 @@ async function loadRepoConfig() {
   }
 }
 
-async function copyText(text: string) {
-  try {
-    await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制到剪贴板')
-  } catch {
-    ElMessage.error('复制失败')
-  }
+function copyText(text: string) {
+  copyToClipboard(text)
 }
 
 function goBack() {

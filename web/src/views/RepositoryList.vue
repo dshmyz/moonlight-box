@@ -47,6 +47,34 @@
     </div>
 
     <div class="content-panel" v-loading="loading">
+      <div class="panel-filter-bar">
+        <div class="filter-left">
+          <i class="fa-solid fa-code filter-icon"></i>
+          <span class="filter-label">语言类型</span>
+          <el-select
+            v-model="packageTypeFilter"
+            placeholder="全部语言"
+            clearable
+            class="filter-select"
+            @change="loadRepos"
+          >
+            <el-option label="全部" value="" />
+            <el-option v-for="pt in packageTypeOptions" :key="pt.value" :label="pt.label" :value="pt.value" />
+          </el-select>
+          <el-tag
+            v-if="packageTypeFilter"
+            class="filter-tag"
+            size="small"
+            closable
+            @close="clearFilter"
+          >
+            {{ packageTypeFilter }}
+          </el-tag>
+        </div>
+        <div class="filter-right">
+          <span class="result-count">{{ filteredRepos.length }} 个仓库</span>
+        </div>
+      </div>
       <el-tabs v-model="activeTab" class="type-tabs">
         <el-tab-pane v-for="tab in tabOptions" :key="tab.name" :label="tab.label" :name="tab.name">
           <div class="tab-content">
@@ -160,6 +188,7 @@ import { ElMessage } from 'element-plus'
 import { repositoryApi, type Repository, type RepositoryWithHealth } from '@/api/repository'
 import RepositoryFormDialog from '@/components/repository/RepositoryFormDialog.vue'
 import { confirm, success, error } from '@/utils/message'
+import { PACKAGE_TYPE_OPTIONS } from '@/constants/package'
 
 interface LocalRepository extends RepositoryWithHealth {
   syncing?: boolean
@@ -167,6 +196,7 @@ interface LocalRepository extends RepositoryWithHealth {
 
 const loading = ref(false)
 const activeTab = ref('all')
+const packageTypeFilter = ref('')
 const showDialog = ref(false)
 const editingRepo = ref<Repository | null>(null)
 const repos = ref<LocalRepository[]>([])
@@ -177,6 +207,8 @@ const tabOptions = [
   { name: 'proxy', label: 'Proxy' },
   { name: 'virtual', label: 'Virtual' },
 ]
+
+const packageTypeOptions = PACKAGE_TYPE_OPTIONS
 
 const localCount = computed(() => repos.value.filter(r => r.type === 'local').length)
 const proxyCount = computed(() => repos.value.filter(r => r.type === 'proxy').length)
@@ -231,13 +263,22 @@ const getHealthTooltip = (row: LocalRepository) => {
 const loadRepos = async () => {
   loading.value = true
   try {
-    const res = await repositoryApi.list()
+    const params: { package_type?: string } = {}
+    if (packageTypeFilter.value) {
+      params.package_type = packageTypeFilter.value
+    }
+    const res = await repositoryApi.list(params)
     repos.value = res || []
     loading.value = false
   } catch (err) {
     ElMessage.error('加载仓库列表失败')
     loading.value = false
   }
+}
+
+const clearFilter = () => {
+  packageTypeFilter.value = ''
+  loadRepos()
 }
 
 const openCreateDialog = () => {
@@ -441,6 +482,78 @@ onMounted(loadRepos)
   border: 1px solid rgba(0, 0, 0, 0.06);
   overflow: hidden;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+}
+
+.panel-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.filter-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.filter-icon {
+  color: #6366f1;
+  font-size: 15px;
+}
+
+.filter-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #475569;
+  white-space: nowrap;
+}
+
+.filter-select {
+  width: 150px;
+  border-radius: 10px;
+}
+
+.filter-select :deep(.el-input__wrapper) {
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px #e2e8f0;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.filter-select :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px #cbd5e1;
+}
+
+.filter-select :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 1px #6366f1, 0 0 0 3px rgba(99, 102, 241, 0.1);
+}
+
+.filter-tag {
+  border-radius: 8px;
+  background: linear-gradient(135deg, #ede9fe 0%, #e0e7ff 100%);
+  color: #6366f1;
+  border: none;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.filter-tag :deep(.el-tag__close) {
+  color: #6366f1;
+}
+
+.filter-tag :deep(.el-tag__close:hover) {
+  background: rgba(99, 102, 241, 0.15);
+}
+
+.filter-right {
+  margin-left: auto;
+}
+
+.result-count {
+  font-size: 13px;
+  color: #94a3b8;
+  font-weight: 500;
 }
 
 .type-tabs {

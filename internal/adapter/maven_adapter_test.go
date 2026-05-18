@@ -29,6 +29,7 @@ func setupMavenAdapter(t *testing.T) (*MavenAdapter, *gorm.DB) {
 		&model.Package{},
 		&model.PackageVersion{},
 		&model.PackageFile{},
+		&model.PackageDependency{},
 		&model.Repository{},
 		&model.StorageBackend{},
 	)

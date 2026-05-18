@@ -201,6 +201,11 @@ import { ref, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, type TabsPaneContext } from 'element-plus'
 import { securityApi, type SecurityStats, type Vulnerability, type ScanResult } from '@/api/security'
+import { formatDate } from '@/utils/format'
+import { useTableRowHover } from '@/composables/useTableRowHover'
+import { PACKAGE_TYPE_OPTIONS } from '@/constants/package'
+
+const { tableRowClass, handleRowEnter, handleRowLeave } = useTableRowHover()
 
 const activeTab = ref('vulnerabilities')
 const loading = ref(false)
@@ -215,7 +220,6 @@ const scanPageSize = ref(20)
 const scanTotal = ref(0)
 const filterSeverity = ref('')
 const filterPkgType = ref('')
-const hoveredRow = ref<number | null>(null)
 
 const severityOptions = [
   { label: '严重', value: 'critical' },
@@ -224,12 +228,7 @@ const severityOptions = [
   { label: '低危', value: 'low' },
 ]
 
-const pkgTypeOptions = [
-  { label: 'npm', value: 'npm' },
-  { label: 'maven', value: 'maven' },
-  { label: 'pypi', value: 'pypi' },
-  { label: 'go', value: 'go' },
-]
+const pkgTypeOptions = PACKAGE_TYPE_OPTIONS
 
 function severityLabel(s: string): string {
   const map: Record<string, string> = { critical: '严重', high: '高危', medium: '中危', low: '低危' }
@@ -239,23 +238,6 @@ function severityLabel(s: string): string {
 function scanStatusLabel(s: string): string {
   const map: Record<string, string> = { completed: '已完成', scanning: '扫描中', failed: '失败', pending: '待扫描' }
   return map[s] || s
-}
-
-function formatDate(d: string): string {
-  if (!d) return '-'
-  return new Date(d).toLocaleString('zh-CN')
-}
-
-const tableRowClass = ({ rowIndex }: { rowIndex: number }) => {
-  return hoveredRow.value === rowIndex ? 'row-hovered' : ''
-}
-
-const handleRowEnter = ({ rowIndex }: { rowIndex: number }) => {
-  hoveredRow.value = rowIndex
-}
-
-const handleRowLeave = () => {
-  hoveredRow.value = null
 }
 
 async function loadStats() {

@@ -187,18 +187,21 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import request from '@/api/request'
+import { userApi, type UserItem, type RoleItem } from '@/api/user'
 import { ElMessage } from 'element-plus'
+import { useTableRowHover } from '@/composables/useTableRowHover'
+import { formatDate } from '@/utils/format'
+
+const { tableRowClass, handleRowEnter, handleRowLeave } = useTableRowHover()
 
 const loading = ref(false)
-const users = ref<any[]>([])
-const allRoles = ref<any[]>([])
+const users = ref<UserItem[]>([])
+const allRoles = ref<RoleItem[]>([])
 const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 const keyword = ref('')
 const filterActive = ref<string | null>(null)
-const hoveredRow = ref<number | null>(null)
 
 const activeOptions = [
   { label: '启用', value: 'true' },
@@ -209,42 +212,24 @@ const createVisible = ref(false)
 const createForm = ref({ username: '', password: '', display_name: '', email: '' })
 
 const roleVisible = ref(false)
-const currentUser = ref<any>(null)
+const currentUser = ref<UserItem | null>(null)
 const selectedRoles = ref<number[]>([])
 
 const passwordVisible = ref(false)
 const passwordForm = ref({ password: '', confirmPassword: '' })
 
-function tableRowClass({ rowIndex }: { rowIndex: number }) {
-  return rowIndex === hoveredRow.value ? 'row-hovered' : ''
-}
-
-function handleRowEnter({ rowIndex }: { rowIndex: number }) {
-  hoveredRow.value = rowIndex
-}
-
-function handleRowLeave() {
-  hoveredRow.value = null
-}
-
-function formatDate(d: string): string {
-  if (!d) return '-'
-  return new Date(d).toLocaleString('zh-CN')
-}
-
 async function loadUsers() {
   loading.value = true
   try {
-    const params: Record<string, any> = { page: page.value, page_size: pageSize.value }
+    const params: Record<string, unknown> = { page: page.value, page_size: pageSize.value }
     if (keyword.value) params.keyword = keyword.value
     if (filterActive.value !== null) params.is_active = filterActive.value === 'true'
 
-    const res = await request.get('/users', { params })
-    const data = res as any
+    const data = await userApi.list(params)
     users.value = data?.items || []
     total.value = data?.pagination?.total || 0
-  } catch (e: any) {
-    console.error(e)
+  } catch {
+    ElMessage.error('加载用户列表失败')
   } finally {
     loading.value = false
   }
@@ -252,10 +237,9 @@ async function loadUsers() {
 
 async function loadRoles() {
   try {
-    const res = await request.get('/roles')
-    allRoles.value = (res as any) || []
-  } catch (e: any) {
-    console.error(e)
+    allRoles.value = await userApi.getRoles()
+  } catch {
+    ElMessage.error('加载角色列表失败')
   }
 }
 
@@ -270,45 +254,53 @@ function showCreateDialog() {
 }
 
 async function createUser() {
+  if (!createForm.value.username || !createForm.value.password) {
+    ElMessage.error('用户名和密码不能为空')
+    return
+  }
+  if (createForm.value.password.length < 6) {
+    ElMessage.error('密码长度至少为6位')
+    return
+  }
   try {
-    await request.post('/users', createForm.value)
+    await userApi.create(createForm.value)
     ElMessage.success('用户创建成功')
     createVisible.value = false
     loadUsers()
-  } catch (e: any) {
+  } catch {
     ElMessage.error('创建用户失败')
   }
 }
 
-function showRoleDialog(user: any) {
+function showRoleDialog(user: UserItem) {
   currentUser.value = user
-  selectedRoles.value = (user.roles || []).map((r: any) => r.id)
+  selectedRoles.value = (user.roles || []).map((r) => r.id)
   roleVisible.value = true
 }
 
 async function assignRoles() {
   if (!currentUser.value) return
   try {
-    await request.put(`/users/${currentUser.value.id}/roles`, { role_ids: selectedRoles.value })
+    await userApi.assignRoles(currentUser.value.id, selectedRoles.value)
     ElMessage.success('角色分配成功')
     roleVisible.value = false
     loadUsers()
-  } catch (e: any) {
+  } catch {
     ElMessage.error('角色分配失败')
   }
 }
 
-async function toggleActive(user: any) {
+async function toggleActive(user: UserItem) {
   try {
-    await request.put(`/users/${user.id}/status`, { is_active: !user.is_active })
+    await userApi.toggleStatus(user.id, !user.is_active)
     ElMessage.success('状态更新成功')
     loadUsers()
-  } catch (e: any) {
+  } catch {
     ElMessage.error('状态更新失败')
   }
 }
 
-function showPasswordDialog(user: any) {
+function showPasswordDialog(user: UserItem) {
   currentUser.value = user
   passwordForm.value = { password: '', confirmPassword: '' }
   passwordVisible.value = true
@@ -328,10 +320,10 @@ async function resetPassword() {
   }
 
   try {
-    await request.put(`/users/${currentUser.value.id}/password`, { password: passwordForm.value.password })
+    await userApi.resetPassword(currentUser.value.id, passwordForm.value.password)
     ElMessage.success('密码重置成功')
     passwordVisible.value = false
-  } catch (e: any) {
+  } catch {
     ElMessage.error('密码重置失败')
   }
 }

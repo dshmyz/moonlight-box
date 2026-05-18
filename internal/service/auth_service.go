@@ -23,7 +23,7 @@ type AuthService struct {
 
 type LoginRequest struct {
 	Username string `json:"username" binding:"required,min=3,max=50"`
-	Password string `json:"password" binding:"required,min=6"`
+	Password string `json:"password" binding:"required,min=8"`
 }
 
 type AuthResponse struct {
@@ -91,7 +91,15 @@ func (s *AuthService) Login(req *LoginRequest) (*AuthResponse, error) {
 		return nil, errors.New("account is disabled")
 	}
 
-	roles, _ := s.roleRepo.GetUserRoles(user.ID)
+	roles, err := s.roleRepo.GetUserRoles(user.ID)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":  "auth",
+			"user_id": user.ID,
+			"error":   err,
+		}).Warn("Failed to get user roles during login, proceeding with empty roles")
+		roles = nil
+	}
 	roleNames := make([]string, len(roles))
 	for i, role := range roles {
 		roleNames[i] = role.Name
@@ -116,7 +124,6 @@ func (s *AuthService) Login(req *LoginRequest) (*AuthResponse, error) {
 		}).Error("Failed to generate refresh token")
 		return nil, err
 	}
-
 	s.userRepo.UpdateLastLogin(user.ID)
 
 	logrus.WithFields(logrus.Fields{
@@ -240,7 +247,15 @@ func (s *AuthService) RefreshToken(refreshTokenString string) (*AuthResponse, er
 }
 
 func (s *AuthService) CreateUser(username, password, email string) (*model.UserDTO, error) {
-	existing, _ := s.userRepo.FindByUsername(username)
+	existing, err := s.userRepo.FindByUsername(username)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":   "auth",
+			"username": username,
+			"error":    err,
+		}).Error("Create user failed: database error while checking username")
+		return nil, err
+	}
 	if existing != nil {
 		logrus.WithFields(logrus.Fields{
 			"module":   "auth",

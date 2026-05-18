@@ -7,6 +7,7 @@
       v-for="(msg, index) in messages"
       :key="index"
       :message="msg"
+      @optimize="handleOptimize"
     />
   </div>
 </template>
@@ -20,6 +21,9 @@ interface Props {
 }
 
 const props = defineProps<Props>()
+const emit = defineEmits<{
+  (e: 'optimize', pkgName: string, pkgType?: string): void
+}>()
 const listRef = ref<HTMLElement>()
 
 watch(() => props.messages.length, async () => {
@@ -28,6 +32,10 @@ watch(() => props.messages.length, async () => {
     listRef.value.scrollTop = listRef.value.scrollHeight
   }
 })
+
+const handleOptimize = (pkgName: string, pkgType?: string) => {
+  emit('optimize', pkgName, pkgType)
+}
 </script>
 
 <style scoped>

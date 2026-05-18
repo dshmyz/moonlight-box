@@ -49,9 +49,19 @@ export const getVersionStatusLabel = (status: string): string => {
 }
 
 export function normalizePackageType(type: string): string {
-  if (type === 'maven2') return 'maven'
-  return type
+	if (type === 'maven2') return 'maven'
+	return type
 }
+
+export const PACKAGE_TYPE_OPTIONS = [
+  { value: 'npm', label: 'npm' },
+  { value: 'maven', label: 'Maven' },
+  { value: 'pypi', label: 'PyPI' },
+  { value: 'go', label: 'Go' },
+  { value: 'yum', label: 'Yum' },
+  { value: 'apt', label: 'Apt' },
+  { value: 'generic', label: 'Generic' },
+] as const
 
 export function formatPackageName(name: string, pkgType: string): string {
   if (!name) return ''

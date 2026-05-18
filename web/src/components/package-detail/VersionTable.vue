@@ -143,10 +143,11 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 import { formatNumber, formatSize, formatDate } from '@/utils/format'
 import { getVersionStatusColor, getVersionStatusLabel } from '@/constants/package'
+import { copyToClipboard } from '@/utils/clipboard'
 import type { PackageVersion, PackageFile } from '@/api/package'
 
 const props = defineProps<{
@@ -217,14 +218,9 @@ function handleDelete(row: PackageVersion) {
   }).catch(() => {})
 }
 
-async function copyChecksum(checksum: string) {
+function copyChecksum(checksum: string) {
   if (!checksum) return
-  try {
-    await navigator.clipboard.writeText(checksum)
-    ElMessage.success('校验和已复制')
-  } catch {
-    ElMessage.error('复制失败')
-  }
+  copyToClipboard(checksum, '校验和已复制')
 }
 
 function handleFileDownload(row: PackageVersion, file: PackageFile) {

@@ -45,7 +45,10 @@
       @select="handleSuggestionSelect"
     />
     
-    <MessageList :messages="messages" />
+    <MessageList
+      :messages="messages"
+      @optimize="handleOptimizeRequest"
+    />
     
     <!-- 加载状态指示器 -->
     <div v-if="loading" class="loading-indicator">
@@ -193,6 +196,12 @@ const handleSend = async (message: string) => {
 
 const handleSuggestionSelect = (suggestion: string) => {
   handleSend(suggestion)
+}
+
+const handleOptimizeRequest = (pkgName: string, pkgType?: string) => {
+  const typeHint = pkgType ? `，包类型为 ${pkgType}` : ''
+  const prompt = `请对依赖包 ${pkgName}${typeHint} 进行依赖优化分析，重点包括版本冲突、安全风险、可升级建议，并给出可执行的整改步骤。`
+  handleSend(prompt)
 }
 
 const handleClearSession = async () => {

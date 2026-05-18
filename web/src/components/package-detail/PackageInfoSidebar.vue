@@ -54,9 +54,9 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ElMessage } from 'element-plus'
 import { formatNumber, formatSize, formatDate } from '@/utils/format'
 import { getPackageTypeColor, getPackageTypeLabel, normalizePackageType, getVersionStatusColor, getVersionStatusLabel } from '@/constants/package'
+import { copyToClipboard } from '@/utils/clipboard'
 import type { PackageVersion } from '@/api/package'
 
 const props = defineProps<{
@@ -105,14 +105,9 @@ const configCommand = computed(() => {
   }
 })
 
-async function copyText(text: string) {
+function copyText(text: string) {
   if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制到剪贴板')
-  } catch {
-    ElMessage.error('复制失败')
-  }
+  copyToClipboard(text)
 }
 </script>
 

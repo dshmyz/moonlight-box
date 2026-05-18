@@ -25,6 +25,69 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func parsePyPIDepName(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if idx := strings.Index(raw, ";"); idx >= 0 {
+		raw = strings.TrimSpace(raw[:idx])
+	}
+	if idx := strings.Index(raw, "("); idx >= 0 {
+		raw = strings.TrimSpace(raw[:idx])
+	}
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func parsePyPIDepConstraint(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if idx := strings.Index(raw, ";"); idx >= 0 {
+		raw = strings.TrimSpace(raw[:idx])
+	}
+	if idx := strings.Index(raw, "("); idx >= 0 {
+		end := strings.Index(raw[idx:], ")")
+		if end > 0 {
+			return strings.TrimSpace(raw[idx+1 : idx+end])
+		}
+	}
+	fields := strings.Fields(raw)
+	if len(fields) >= 2 {
+		return strings.Join(fields[1:], " ")
+	}
+	return "*"
+}
+
+func buildPyPIDependencies(requireLines []string) []model.PackageDependency {
+	deps := make([]model.PackageDependency, 0, len(requireLines))
+	seen := make(map[string]struct{}, len(requireLines))
+	for _, line := range requireLines {
+		name := parsePyPIDepName(line)
+		if name == "" {
+			continue
+		}
+		constraint := parsePyPIDepConstraint(line)
+		key := name + "|" + constraint
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		deps = append(deps, model.PackageDependency{
+			DepName:              name,
+			DepVersionConstraint: constraint,
+			DepType:              "direct",
+			PackageType:          string(model.PackageTypePyPI),
+		})
+	}
+	return deps
+}
+
 func looksLikeJSON(body []byte) bool {
 	trimmed := strings.TrimSpace(string(body))
 	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
@@ -151,11 +214,64 @@ func (a *PyPIAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 	return nil, fmt.Errorf("invalid pypi path: %s", path)
 }
 
-func (a *PyPIAdapter) ListPackages(ctx context.Context, acceptHeader string) (*types.ContentResult, error) {
+// ListPackages 列出包列表。根据仓库类型返回不同结果：
+// - local: 仅本地缓存的包
+// - proxy: 代理上游的完整索引
+// - virtual: 调用方应合并成员结果，此处返回本地数据
+func (a *PyPIAdapter) ListPackages(ctx context.Context, repo *model.Repository, acceptHeader string) (*types.ContentResult, error) {
+	if repo != nil && repo.Type == model.RepoTypeProxy {
+		return a.listPackagesFromUpstream(ctx, repo, acceptHeader)
+	}
+	// local 和 virtual 成员走本地数据库
 	if strings.Contains(acceptHeader, "application/vnd.pypi.simple") || strings.Contains(acceptHeader, "application/json") {
 		return a.listPackagesJSON(ctx)
 	}
 	return a.listPackagesHTML(ctx)
+}
+
+// listPackagesFromUpstream 从代理上游获取完整的 simple index
+func (a *PyPIAdapter) listPackagesFromUpstream(ctx context.Context, repo *model.Repository, acceptHeader string) (*types.ContentResult, error) {
+	if a.fetcher == nil {
+		// 没有 fetcher 时回退到本地
+		if strings.Contains(acceptHeader, "application/vnd.pypi.simple") || strings.Contains(acceptHeader, "application/json") {
+			return a.listPackagesJSON(ctx)
+		}
+		return a.listPackagesHTML(ctx)
+	}
+
+	contentType := "text/html"
+	if strings.Contains(acceptHeader, "application/json") {
+		contentType = "application/vnd.pypi.simple.v1+json"
+	} else if strings.Contains(acceptHeader, "application/vnd.pypi.simple") {
+		contentType = acceptHeader
+	}
+
+	remoteURL := strings.TrimSuffix(repo.RemoteURL, "/") + "/simple/"
+	result, err := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
+	if err != nil {
+		// 上游获取失败时回退到本地
+		if strings.Contains(acceptHeader, "application/vnd.pypi.simple") || strings.Contains(acceptHeader, "application/json") {
+			return a.listPackagesJSON(ctx)
+		}
+		return a.listPackagesHTML(ctx)
+	}
+	defer result.Content.Close()
+	body, readErr := io.ReadAll(result.Content)
+	if readErr != nil {
+		return nil, readErr
+	}
+
+	// 重写上游 HTML 中的下载链接
+	if strings.HasPrefix(contentType, "text/html") {
+		body = RewritePyPIHTML(body, repo)
+	}
+
+	return &types.ContentResult{
+		StatusCode:  200,
+		ContentType: contentType,
+		Content:     io.NopCloser(bytes.NewReader(body)),
+		Size:        int64(len(body)),
+	}, nil
 }
 
 func (a *PyPIAdapter) listPackagesJSON(ctx context.Context) (*types.ContentResult, error) {
@@ -228,7 +344,7 @@ func (a *PyPIAdapter) PackageFiles(ctx context.Context, acceptHeader string, pkg
 			cacheKey = "simple/" + pkgName + "/json"
 		}
 
-		content, size, err := a.metaCache.GetOrFetch(context.Background(), repo.Name, "pypi", cacheKey, ttl, func() (io.ReadCloser, int64, error) {
+		content, _, err := a.metaCache.GetOrFetch(context.Background(), repo.Name, "pypi", cacheKey, ttl, func() (io.ReadCloser, int64, error) {
 			pathInfo, pathErr := a.ParsePath("simple/" + pkgName + "/")
 			if pathErr != nil {
 				return nil, 0, pathErr
@@ -241,11 +357,21 @@ func (a *PyPIAdapter) PackageFiles(ctx context.Context, acceptHeader string, pkg
 			return result.Content, result.Size, nil
 		})
 		if err == nil {
+			// Rewrite upstream URLs to point to this proxy
+			raw, readErr := io.ReadAll(content)
+			if readErr != nil {
+				return nil, readErr
+			}
+			if strings.HasPrefix(contentType, "text/html") {
+				raw = RewritePyPIHTML(raw, repo)
+			} else {
+				raw = RewritePyPIJSON(raw, repo)
+			}
 			return &types.ContentResult{
 				StatusCode:  200,
 				ContentType: contentType,
-				Content:     content,
-				Size:        size,
+				Content:     io.NopCloser(bytes.NewReader(raw)),
+				Size:        int64(len(raw)),
 			}, nil
 		}
 	}
@@ -268,6 +394,7 @@ func (a *PyPIAdapter) packageFilesJSON(ctx context.Context, pkgName string, repo
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
 					if readErr == nil {
+						body = RewritePyPIJSON(body, repo)
 						return &types.ContentResult{
 							StatusCode:  200,
 							ContentType: "application/vnd.pypi.simple.v1+json",
@@ -318,6 +445,7 @@ func (a *PyPIAdapter) packageFilesHTML(ctx context.Context, pkgName string, repo
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
 					if readErr == nil {
+						body = RewritePyPIHTML(body, repo)
 						return &types.ContentResult{
 							StatusCode:  200,
 							ContentType: "text/html",
@@ -668,7 +796,7 @@ func (a *PyPIAdapter) HandleGet(ctx context.Context, repo *model.Repository, int
 	}
 
 	if intent.Type == types.RequestList {
-		return a.ListPackages(ctx, accept)
+		return a.ListPackages(ctx, repo, accept)
 	}
 
 	if strings.HasPrefix(intent.Path, "simple/") {
@@ -759,6 +887,12 @@ func (a *PyPIAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*typ
 		return nil, fmt.Errorf("failed to parse package name from filename: %s", header.Filename)
 	}
 
+	requiresDist := c.PostFormArray("requires_dist")
+	if len(requiresDist) == 0 {
+		requiresDist = c.PostFormArray("requires")
+	}
+	dependencies := buildPyPIDependencies(requiresDist)
+
 	return &types.PublishResult{
 		PackageName: name,
 		Version:     version,
@@ -766,6 +900,7 @@ func (a *PyPIAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*typ
 		Content:     file,
 		Size:        header.Size,
 		FileType:    model.FileTypePrimary,
+		Dependencies: dependencies,
 		Response: &types.PypiPublishResponse{
 			PublishResponse: types.PublishResponse{
 				Success:  true,

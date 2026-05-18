@@ -1,0 +1,1 @@
+const t=r=>r==null?"0":r>=1e6?(r/1e6).toFixed(1)+"M":r>=1e3?(r/1e3).toFixed(1)+"K":r.toString(),e=r=>r?new Date(r).toLocaleString("zh-CN"):"-",i=r=>r==null?"-":r>=1073741824?`${(r/1073741824).toFixed(1)} GB`:r>=1048576?`${(r/1048576).toFixed(1)} MB`:r>=1024?`${(r/1024).toFixed(1)} KB`:`${r} B`;export{i as a,t as b,e as f};

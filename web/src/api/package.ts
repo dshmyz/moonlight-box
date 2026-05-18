@@ -54,6 +54,15 @@ export interface PackageVersion {
   checksum_sha256?: string
   checksum_md5?: string
   files?: PackageFile[]
+  dependencies?: Array<{
+    id: number
+    version_id: number
+    dep_name: string
+    dep_version_constraint: string
+    dep_type: string
+    package_type: string
+    is_optional: boolean
+  }>
   files_downloaded?: boolean
 }
 

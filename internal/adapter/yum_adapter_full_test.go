@@ -29,6 +29,7 @@ func setupYumAdapter(t *testing.T) (*YumAdapter, *gorm.DB) {
 		&model.Package{},
 		&model.PackageVersion{},
 		&model.PackageFile{},
+		&model.PackageDependency{},
 		&model.Repository{},
 		&model.StorageBackend{},
 	)

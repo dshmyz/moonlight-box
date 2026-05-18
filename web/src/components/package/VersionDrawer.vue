@@ -71,6 +71,7 @@ import { ElMessage } from 'element-plus'
 import { packageApi, type PackageVersion } from '@/api/package'
 import { formatDate, formatNumber, formatSize } from '@/utils/format'
 import { getVersionStatusColor, getVersionStatusLabel } from '@/constants/package'
+import { copyToClipboard } from '@/utils/clipboard'
 
 const props = defineProps<{
   modelValue: boolean
@@ -113,14 +114,9 @@ function handleClose() {
   visible.value = false
 }
 
-async function copyChecksum(checksum: string) {
+function copyChecksum(checksum: string) {
   if (!checksum) return
-  try {
-    await navigator.clipboard.writeText(checksum)
-    ElMessage.success('已复制 SHA256')
-  } catch {
-    ElMessage.error('复制失败')
-  }
+  copyToClipboard(checksum, '已复制 SHA256')
 }
 </script>
 

@@ -54,12 +54,13 @@ func main() {
 		return
 	}
 
+	// 加载配置（先加载配置，再初始化日志）
+	// 使用临时日志记录配置加载过程
 	logrus.WithFields(logrus.Fields{
 		"version":    version,
 		"build_time": buildTime,
 	}).Info("Moonlight Registry starting")
 
-	// 加载配置
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
@@ -74,7 +75,24 @@ func main() {
 		}
 	}
 
-	logrus.WithFields(logrus.Fields{
+	// 初始化日志系统（使用配置中的日志设置）
+	// 注意：日志初始化必须在数据库初始化之前
+	{
+		// 转换配置格式
+		// 注意：如果日志配置变更，需要同步更新此处
+		_ = util.InitLogger(&util.LoggerConfig{
+			Level:            cfg.Logging.Level,
+			Format:           cfg.Logging.Format,
+			Output:           cfg.Logging.Output,
+			EnableSplitFiles: cfg.Logging.EnableSplitFiles,
+			SqlLogFile:       cfg.Logging.SqlLogFile,
+			ErrorLogFile:     cfg.Logging.ErrorLogFile,
+			AccessLogFile:    cfg.Logging.AccessLogFile,
+			LogRetentionDays: cfg.Logging.LogRetentionDays,
+		})
+	}
+
+	util.WithFields(logrus.Fields{
 		"server_port": cfg.Server.Port,
 		"db_driver":   cfg.Database.Driver,
 		"storage":     cfg.Storage.Backend,
@@ -82,7 +100,16 @@ func main() {
 	}).Info("Configuration loaded")
 
 	// 初始化日志
-	if err := util.InitLogger(&cfg.Logging); err != nil {
+	if err := util.InitLogger(&util.LoggerConfig{
+		Level:            cfg.Logging.Level,
+		Format:           cfg.Logging.Format,
+		Output:           cfg.Logging.Output,
+		EnableSplitFiles: cfg.Logging.EnableSplitFiles,
+		SqlLogFile:       cfg.Logging.SqlLogFile,
+		ErrorLogFile:     cfg.Logging.ErrorLogFile,
+		AccessLogFile:    cfg.Logging.AccessLogFile,
+		LogRetentionDays: cfg.Logging.LogRetentionDays,
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
 		os.Exit(1)
 	}
@@ -441,6 +468,10 @@ func main() {
 		codeGenTool := tools.NewCodeGenTool()
 		codeGenTool.SetContext(toolContext)
 		aiService.RegisterTool(codeGenTool, []string{})
+		// 依赖优化分析工具 - 所有用户可用
+		depOptimizerTool := tools.NewDependencyOptimizerTool()
+		depOptimizerTool.SetContext(toolContext)
+		aiService.RegisterTool(depOptimizerTool, []string{})
 
 		// 创建AI处理器
 		aiHandler = handler.NewAIHandler(aiService)

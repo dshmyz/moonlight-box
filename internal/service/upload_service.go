@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/util"
+	"github.com/sirupsen/logrus"
 )
 
 type UploadService struct {
@@ -37,6 +39,7 @@ type UploadContext struct {
 	RepositoryID     uint
 	UploadedBy       uint
 	Metadata         map[string]interface{}
+	Dependencies     []model.PackageDependency
 	FileType         model.PackageFileType
 	DownloadURL      string
 	RepoName         string
@@ -102,6 +105,22 @@ func (s *UploadService) Upload(ctx context.Context, uc *UploadContext) (*UploadR
 		return nil, fmt.Errorf("failed to store package metadata: %w", err)
 	}
 
+	if len(uc.Dependencies) > 0 {
+		versionID := ver.ID
+		deps := make([]model.PackageDependency, len(uc.Dependencies))
+		copy(deps, uc.Dependencies)
+		go func() {
+			bg, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			if depErr := s.pkgRepo.UpsertVersionDependencies(bg, versionID, deps); depErr != nil {
+				logrus.WithError(depErr).WithFields(logrus.Fields{
+					"version_id": versionID,
+					"dep_count":  len(deps),
+				}).Warn("failed to async upsert package dependencies")
+			}
+		}()
+	}
+
 	return &UploadResult{
 		PackageID:      pkg.ID,
 		VersionID:      ver.ID,
@@ -149,7 +168,11 @@ func marshalMetadata(meta map[string]interface{}) string {
 	if meta == nil {
 		return ""
 	}
-	data, _ := json.Marshal(meta)
+	data, err := json.Marshal(meta)
+	if err != nil {
+		logrus.WithError(err).Warn("failed to marshal package metadata, returning empty")
+		return ""
+	}
 	return string(data)
 }
 

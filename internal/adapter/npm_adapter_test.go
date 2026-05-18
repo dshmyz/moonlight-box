@@ -30,6 +30,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		&model.Package{},
 		&model.PackageVersion{},
 		&model.PackageFile{},
+		&model.PackageDependency{},
 		&model.Repository{},
 		&model.StorageBackend{},
 	)

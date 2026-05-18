@@ -7,6 +7,7 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/sirupsen/logrus"
+	"github.com/moonlight-box/registry/internal/util"
 )
 
 type LogBatcher struct {
@@ -79,9 +80,17 @@ func (b *LogBatcher) flush() {
 	}
 
 	if err := b.logRepo.BatchCreate(logs); err != nil {
-		logrus.Errorf("failed to batch create proxy download logs: %v", err)
+		util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
+			util.LogKeyModule:  "service",
+			util.LogKeyPkgType: "go",
+			util.LogKeyError:   err,
+		}).Error("failed to batch create proxy download logs")
 	} else {
-		logrus.Debugf("batch created %d proxy download logs", len(logs))
+		util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
+			util.LogKeyModule:  "service",
+			util.LogKeyPkgType: "go",
+			"count":            len(logs),
+		}).Debug("batch created proxy download logs")
 	}
 }
 

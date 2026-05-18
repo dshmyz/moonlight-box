@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div v-if="isAvailable">
     <!-- 悬浮按钮 -->
     <el-button
       class="ai-float-button"
@@ -53,12 +53,23 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { ChatDotRound } from '@element-plus/icons-vue'
 import ChatWindow from './ChatWindow.vue'
+import { aiApi } from '@/api/ai'
 
 const visible = ref(false)
 const isMaximized = ref(false)
+const isAvailable = ref(false)
+
+onMounted(async () => {
+  try {
+    await aiApi.healthCheck()
+    isAvailable.value = true
+  } catch {
+    isAvailable.value = false
+  }
+})
 
 const handleClose = (done: () => void) => {
   isMaximized.value = false

@@ -458,6 +458,21 @@ func (a *YumAdapter) ParseIntent(path string, method string) *types.RequestInten
 func (a *YumAdapter) HandleGet(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
 	path := strings.TrimPrefix(intent.Path, "/")
 
+	// Proxy repo: fetch all content from remote upstream
+	if repo.Type == model.RepoTypeProxy && a.fetcher != nil {
+		remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), path)
+		result, err := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
+		if err != nil {
+			return nil, err
+		}
+		return &types.ContentResult{
+			Content:     result.Content,
+			Size:        result.Size,
+			ContentType: a.storageSvc.GetContentType(path),
+			StatusCode:  200,
+		}, nil
+	}
+
 	if strings.HasPrefix(path, "repodata/") {
 		filePath := strings.TrimPrefix(path, "repodata/")
 		return a.repoDataFile(ctx, repo.Name, filePath)
