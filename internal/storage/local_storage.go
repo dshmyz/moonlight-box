@@ -229,3 +229,57 @@ func (s *LocalStorage) Close() error {
 func (s *LocalStorage) BasePath() string {
 	return s.basePath
 }
+
+func (s *LocalStorage) Browse(ctx context.Context, path string) ([]BrowseEntry, error) {
+	cleanPath := strings.TrimPrefix(path, "/")
+	cleanPath = strings.TrimSuffix(cleanPath, "/")
+
+	fullPath, err := s.resolvePathSafe(cleanPath)
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []BrowseEntry{}, nil
+		}
+		return nil, err
+	}
+
+	if !info.IsDir() {
+		return nil, fmt.Errorf("not a directory: %s", path)
+	}
+
+	entries, err := os.ReadDir(fullPath)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]BrowseEntry, 0, len(entries))
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		entryPath := filepath.Join(cleanPath, entry.Name())
+		if cleanPath == "" || cleanPath == "/" {
+			entryPath = entry.Name()
+		}
+
+		result = append(result, BrowseEntry{
+			Name:    entry.Name(),
+			Path:    entryPath,
+			IsDir:   entry.IsDir(),
+			Size:    info.Size(),
+			ModTime: info.ModTime().Format("2006-01-02 15:04:05"),
+		})
+	}
+
+	return result, nil
+}
+
+func (s *LocalStorage) ResolvePathSafe(key string) (string, error) {
+	return s.resolvePathSafe(key)
+}
