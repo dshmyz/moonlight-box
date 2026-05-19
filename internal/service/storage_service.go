@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/storage"
 	"github.com/sirupsen/logrus"
@@ -202,14 +203,15 @@ func (s *StorageService) GetPackageWithBackend(ctx context.Context, repoName, pk
 
 	key := s.buildKey(repoName, pkgType, name, version)
 
-	size, err := backend.Size(ctx, key)
-	if err != nil {
-		return nil, 0, err
+	size, sizeErr := backend.Size(ctx, key)
+
+	reader, getErr := backend.Get(ctx, key)
+	if getErr != nil {
+		return nil, 0, getErr
 	}
 
-	reader, err := backend.Get(ctx, key)
-	if err != nil {
-		return nil, 0, err
+	if sizeErr != nil {
+		return reader, -1, nil
 	}
 
 	return reader, size, nil
@@ -320,7 +322,7 @@ func (s *StorageService) buildKey(repoName, pkgType, name, version string) strin
 		parts = append(parts, version)
 	}
 
-	return filepath.Join(parts...)
+	return strings.Join(parts, "/")
 }
 
 // RefreshBackends 从数据库刷新存储后端配置
@@ -353,4 +355,11 @@ func (s *StorageService) RefreshBackends() error {
 	s.defaultBackend = defaultBackend
 
 	return nil
+}
+
+func (s *StorageService) ListBackends() ([]model.StorageBackend, error) {
+	if s.storageBackendRepo == nil {
+		return nil, fmt.Errorf("storage backend repository not available")
+	}
+	return s.storageBackendRepo.List()
 }

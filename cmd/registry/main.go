@@ -402,7 +402,7 @@ func main() {
 	systemInfoHandler := handler.NewSystemInfoHandler(version, buildTime, gitCommit, time.Now().Unix())
 
 	// 初始化文件浏览服务
-	fileBrowseHandler := handler.NewFileBrowseHandler(cfg.Storage.Local.BasePath)
+	fileBrowseHandler := handler.NewFileBrowseHandler(storageSvc)
 
 	// 初始化迁移 worker（先传 nil 作为 service）
 	migrationWorker := migration.NewMigrationWorkerV2(nil, storageSvc, packageRepo, repoRepo, migrationItemRepo, 5, 3, 50)
