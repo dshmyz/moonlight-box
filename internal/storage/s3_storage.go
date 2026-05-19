@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -147,7 +148,7 @@ func (s *S3Storage) Size(ctx context.Context, key string) (int64, error) {
 	}
 
 	if resp.ContentLength == nil {
-		return 0, nil
+		return 0, fmt.Errorf("S3 HeadObject returned nil ContentLength for key: %s", fullKey)
 	}
 	return *resp.ContentLength, nil
 }
@@ -192,4 +193,103 @@ func (s *S3Storage) Close() error {
 
 func (s *S3Storage) BasePath() string {
 	return s.basePath
+}
+
+func (s *S3Storage) Browse(ctx context.Context, path string) ([]BrowseEntry, error) {
+	cleanPath := strings.TrimPrefix(path, "/")
+	cleanPath = strings.TrimSuffix(cleanPath, "/")
+
+	var prefix string
+	if cleanPath == "" {
+		prefix = s.basePath
+	} else {
+		if s.basePath != "" {
+			prefix = s.basePath + "/" + cleanPath
+		} else {
+			prefix = cleanPath
+		}
+	}
+
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+
+	resp, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:    aws.String(s.bucket),
+		Prefix:    aws.String(prefix),
+		Delimiter: aws.String("/"),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]BrowseEntry, 0, len(resp.CommonPrefixes)+len(resp.Contents))
+
+	for _, cp := range resp.CommonPrefixes {
+		p := *cp.Prefix
+		var name string
+		if s.basePath != "" {
+			name = strings.TrimPrefix(p, s.basePath+"/")
+		} else {
+			name = p
+		}
+		name = strings.TrimSuffix(name, "/")
+
+		var entryPath string
+		if cleanPath == "" {
+			entryPath = name
+		} else {
+			entryPath = cleanPath + "/" + name
+		}
+
+		result = append(result, BrowseEntry{
+			Name:    name,
+			Path:    entryPath,
+			IsDir:   true,
+			Size:    0,
+			ModTime: "-",
+		})
+	}
+
+	for _, obj := range resp.Contents {
+		key := *obj.Key
+		if key == prefix {
+			continue
+		}
+
+		var name string
+		if s.basePath != "" {
+			name = strings.TrimPrefix(key, s.basePath+"/")
+		} else {
+			name = key
+		}
+		name = strings.TrimPrefix(name, cleanPath+"/")
+
+		var entryPath string
+		if cleanPath == "" {
+			entryPath = name
+		} else {
+			entryPath = cleanPath + "/" + name
+		}
+
+		modTime := "-"
+		if obj.LastModified != nil {
+			modTime = obj.LastModified.Format("2006-01-02 15:04:05")
+		}
+
+		var size int64
+		if obj.Size != nil {
+			size = *obj.Size
+		}
+
+		result = append(result, BrowseEntry{
+			Name:    name,
+			Path:    entryPath,
+			IsDir:   false,
+			Size:    size,
+			ModTime: modTime,
+		})
+	}
+
+	return result, nil
 }
