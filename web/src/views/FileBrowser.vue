@@ -10,10 +10,30 @@
           <p class="header-subtitle">浏览和管理存储中的文件</p>
         </div>
       </div>
-      <el-button class="refresh-btn" @click="refresh">
-        <i class="fa-solid fa-refresh"></i>
-        <span>刷新</span>
-      </el-button>
+      <div class="header-actions">
+        <el-select
+          v-model="currentBackendId"
+          class="backend-select"
+          @change="handleBackendChange"
+        >
+          <el-option
+            v-for="backend in backends"
+            :key="backend.id"
+            :label="backend.name"
+            :value="backend.id"
+          >
+            <div class="backend-option">
+              <i :class="getBackendIcon(backend.type)" class="backend-option-icon"></i>
+              <span>{{ backend.name }}</span>
+              <el-tag v-if="backend.is_default" size="small" type="warning" class="backend-default-tag">默认</el-tag>
+            </div>
+          </el-option>
+        </el-select>
+        <el-button class="refresh-btn" @click="refresh">
+          <i class="fa-solid fa-refresh"></i>
+          <span>刷新</span>
+        </el-button>
+      </div>
     </header>
 
     <div class="content-panel" v-loading="loading">
@@ -105,7 +125,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { fileApi } from '@/api/file'
+import { fileApi, StorageBackendOption } from '@/api/file'
 
 interface FileInfo {
   name: string
@@ -118,6 +138,8 @@ interface FileInfo {
 const loading = ref(false)
 const currentPath = ref('/')
 const files = ref<FileInfo[]>([])
+const currentBackendId = ref(0)
+const backends = ref<StorageBackendOption[]>([])
 
 const pathSegments = computed(() => {
   if (currentPath.value === '/' || currentPath.value === '') {
@@ -126,10 +148,37 @@ const pathSegments = computed(() => {
   return currentPath.value.split('/').filter(Boolean)
 })
 
+const getBackendIcon = (type: string) => {
+  const icons: Record<string, string> = {
+    local: 'fa-solid fa-folder',
+    s3: 'fa-solid fa-cloud',
+    obs: 'fa-solid fa-cloud',
+  }
+  return icons[type] || 'fa-solid fa-box'
+}
+
+const loadBackends = async () => {
+  try {
+    const data = await fileApi.getBackends()
+    backends.value = data || []
+    const defaultBackend = backends.value.find(b => b.is_default)
+    if (defaultBackend) {
+      currentBackendId.value = defaultBackend.id
+    }
+  } catch {
+    ElMessage.error('加载存储后端列表失败')
+  }
+}
+
+const handleBackendChange = () => {
+  currentPath.value = '/'
+  loadDirectory('/')
+}
+
 const loadDirectory = async (path: string) => {
   loading.value = true
   try {
-    const response = await fileApi.browse(path)
+    const response = await fileApi.browse(path, currentBackendId.value)
     files.value = response.files || []
     currentPath.value = path
   } catch (error: any) {
@@ -173,7 +222,7 @@ const formatSize = (bytes: number) => {
 
 const downloadFile = async (row: FileInfo) => {
   try {
-    const blob = await fileApi.download(row.path) as unknown as Blob
+    const blob = await fileApi.download(row.path, currentBackendId.value) as unknown as Blob
     const url = window.URL.createObjectURL(new Blob([blob]))
     const link = document.createElement('a')
     link.href = url
@@ -188,7 +237,8 @@ const downloadFile = async (row: FileInfo) => {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  await loadBackends()
   loadDirectory('/')
 })
 </script>
@@ -410,5 +460,30 @@ onMounted(() => {
   gap: 6px;
   font-size: 12px;
   color: #9ca3af;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.backend-select {
+  width: 180px;
+}
+
+.backend-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.backend-option-icon {
+  font-size: 14px;
+  color: #6b7280;
+}
+
+.backend-default-tag {
+  margin-left: 4px;
 }
 </style>
