@@ -1,40 +1,59 @@
 package handler
 
 import (
-	"github.com/moonlight-box/registry/internal/response"
-	"os"
+	"fmt"
+	"io"
+	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/moonlight-box/registry/internal/response"
+	"github.com/moonlight-box/registry/internal/service"
+	"github.com/moonlight-box/registry/internal/storage"
 )
 
 type FileBrowseHandler struct {
-	basePath string
+	storageSvc *service.StorageService
 }
 
-func NewFileBrowseHandler(basePath string) *FileBrowseHandler {
-	return &FileBrowseHandler{
-		basePath: filepath.Clean(basePath),
-	}
-}
-
-type FileInfo struct {
-	Name    string `json:"name"`
-	Path    string `json:"path"`
-	IsDir   bool   `json:"is_dir"`
-	Size    int64  `json:"size"`
-	ModTime string `json:"mod_time"`
+func NewFileBrowseHandler(storageSvc *service.StorageService) *FileBrowseHandler {
+	return &FileBrowseHandler{storageSvc: storageSvc}
 }
 
 type DirectoryInfo struct {
-	Path   string     `json:"path"`
-	Files  []FileInfo `json:"files"`
-	Total  int        `json:"total"`
-	IsRoot bool       `json:"is_root"`
+	Path   string                `json:"path"`
+	Files  []storage.BrowseEntry `json:"files"`
+	Total  int                   `json:"total"`
+	IsRoot bool                  `json:"is_root"`
+}
+
+func (h *FileBrowseHandler) getBackend(c *gin.Context) (storage.Backend, uint, error) {
+	backendIDStr := c.Query("backend_id")
+	if backendIDStr == "" || backendIDStr == "0" {
+		return h.storageSvc.GetDefaultBackend(), 0, nil
+	}
+
+	backendID, err := strconv.ParseUint(backendIDStr, 10, 32)
+	if err != nil {
+		return nil, 0, fmt.Errorf("invalid backend_id: %s", backendIDStr)
+	}
+
+	backend, err := h.storageSvc.GetBackend(uint(backendID))
+	if err != nil {
+		return nil, 0, err
+	}
+	return backend, uint(backendID), nil
 }
 
 func (h *FileBrowseHandler) ListDirectory(c *gin.Context) {
+	backend, _, err := h.getBackend(c)
+	if err != nil {
+		response.BadRequest(c, "invalid backend", err.Error())
+		return
+	}
+
 	relativePath := c.Query("path")
 	if relativePath == "" {
 		relativePath = "/"
@@ -43,53 +62,10 @@ func (h *FileBrowseHandler) ListDirectory(c *gin.Context) {
 	relativePath = strings.TrimPrefix(relativePath, "/")
 	relativePath = strings.TrimSuffix(relativePath, "/")
 
-	fullPath := filepath.Join(h.basePath, relativePath)
-
-	if !strings.HasPrefix(fullPath, h.basePath) {
-		response.BadRequest(c, "invalid path", "path is outside base directory")
-		return
-	}
-
-	info, err := os.Stat(fullPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			response.NotFound(c, "directory not found")
-			return
-		}
-		response.InternalError(c, err.Error())
-		return
-	}
-
-	if !info.IsDir() {
-		response.BadRequest(c, "not a directory", "specified path is not a directory")
-		return
-	}
-
-	entries, err := os.ReadDir(fullPath)
+	files, err := backend.Browse(c.Request.Context(), relativePath)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
-	}
-
-	files := make([]FileInfo, 0, len(entries))
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-
-		filePath := filepath.Join(relativePath, entry.Name())
-		if relativePath == "" || relativePath == "/" {
-			filePath = entry.Name()
-		}
-
-		files = append(files, FileInfo{
-			Name:    entry.Name(),
-			Path:    filePath,
-			IsDir:   entry.IsDir(),
-			Size:    info.Size(),
-			ModTime: info.ModTime().Format("2006-01-02 15:04:05"),
-		})
 	}
 
 	result := DirectoryInfo{
@@ -103,6 +79,12 @@ func (h *FileBrowseHandler) ListDirectory(c *gin.Context) {
 }
 
 func (h *FileBrowseHandler) GetFileStats(c *gin.Context) {
+	backend, _, err := h.getBackend(c)
+	if err != nil {
+		response.BadRequest(c, "invalid backend", err.Error())
+		return
+	}
+
 	relativePath := c.Query("path")
 	if relativePath == "" {
 		response.BadRequest(c, "missing path", "path parameter is required")
@@ -110,16 +92,10 @@ func (h *FileBrowseHandler) GetFileStats(c *gin.Context) {
 	}
 
 	relativePath = strings.TrimPrefix(relativePath, "/")
-	fullPath := filepath.Join(h.basePath, relativePath)
 
-	if !strings.HasPrefix(fullPath, h.basePath) {
-		response.BadRequest(c, "invalid path", "path is outside base directory")
-		return
-	}
-
-	info, err := os.Stat(fullPath)
+	files, err := backend.Browse(c.Request.Context(), filepath.Dir(relativePath))
 	if err != nil {
-		if os.IsNotExist(err) {
+		if strings.Contains(err.Error(), "not found") {
 			response.NotFound(c, "file not found")
 			return
 		}
@@ -127,18 +103,60 @@ func (h *FileBrowseHandler) GetFileStats(c *gin.Context) {
 		return
 	}
 
-	result := FileInfo{
-		Name:    info.Name(),
-		Path:    relativePath,
-		IsDir:   info.IsDir(),
-		Size:    info.Size(),
-		ModTime: info.ModTime().Format("2006-01-02 15:04:05"),
+	fileName := filepath.Base(relativePath)
+	for _, f := range files {
+		if f.Name == fileName {
+			response.Success(c, f)
+			return
+		}
 	}
 
-	response.Success(c, result)
+	response.NotFound(c, "file not found")
+}
+
+type BackendOption struct {
+	ID        uint   `json:"id"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	IsDefault bool   `json:"is_default"`
+}
+
+func (h *FileBrowseHandler) ListBackends(c *gin.Context) {
+	backends, err := h.storageSvc.ListBackends()
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	options := make([]BackendOption, 0, len(backends)+1)
+
+	defaultBackend := h.storageSvc.GetDefaultBackend()
+	options = append(options, BackendOption{
+		ID:        0,
+		Name:      "默认存储",
+		Type:      defaultBackend.Name(),
+		IsDefault: true,
+	})
+
+	for _, b := range backends {
+		options = append(options, BackendOption{
+			ID:        b.ID,
+			Name:      b.Name,
+			Type:      string(b.Type),
+			IsDefault: b.IsDefault,
+		})
+	}
+
+	response.Success(c, options)
 }
 
 func (h *FileBrowseHandler) DownloadFile(c *gin.Context) {
+	backend, _, err := h.getBackend(c)
+	if err != nil {
+		response.BadRequest(c, "invalid backend", err.Error())
+		return
+	}
+
 	relativePath := c.Query("path")
 	if relativePath == "" {
 		response.BadRequest(c, "missing path", "path parameter is required")
@@ -146,16 +164,34 @@ func (h *FileBrowseHandler) DownloadFile(c *gin.Context) {
 	}
 
 	relativePath = strings.TrimPrefix(relativePath, "/")
-	fullPath := filepath.Join(h.basePath, relativePath)
 
-	if !strings.HasPrefix(fullPath, h.basePath) {
-		response.BadRequest(c, "invalid path", "path is outside base directory")
+	if backend.Name() == "local" {
+		localBackend := backend.(*storage.LocalStorage)
+		fullPath, err := localBackend.ResolvePathSafe(relativePath)
+		if err != nil {
+			response.BadRequest(c, "invalid path", err.Error())
+			return
+		}
+
+		info, err := filepath.Abs(fullPath)
+		if err != nil {
+			response.InternalError(c, err.Error())
+			return
+		}
+
+		basePath := localBackend.BasePath()
+		if !strings.HasPrefix(info, basePath) {
+			response.BadRequest(c, "invalid path", "path is outside base directory")
+			return
+		}
+
+		c.FileAttachment(fullPath, filepath.Base(fullPath))
 		return
 	}
 
-	info, err := os.Stat(fullPath)
+	size, err := backend.Size(c.Request.Context(), relativePath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "NotFound") {
 			response.NotFound(c, "file not found")
 			return
 		}
@@ -163,10 +199,23 @@ func (h *FileBrowseHandler) DownloadFile(c *gin.Context) {
 		return
 	}
 
-	if info.IsDir() {
-		response.BadRequest(c, "not a file", "specified path is a directory")
+	reader, err := backend.Get(c.Request.Context(), relativePath)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "NotFound") {
+			response.NotFound(c, "file not found")
+			return
+		}
+		response.InternalError(c, err.Error())
 		return
 	}
+	defer reader.Close()
 
-	c.FileAttachment(fullPath, info.Name())
+	fileName := filepath.Base(relativePath)
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileName))
+	c.Header("Content-Type", "application/octet-stream")
+	if size > 0 {
+		c.Header("Content-Length", strconv.FormatInt(size, 10))
+	}
+	c.Status(http.StatusOK)
+	io.Copy(c.Writer, reader)
 }
