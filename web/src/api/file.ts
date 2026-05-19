@@ -15,22 +15,33 @@ export interface DownloadResponse {
   data: Blob
 }
 
+export interface StorageBackendOption {
+  id: number
+  name: string
+  type: string
+  is_default: boolean
+}
+
 export const fileApi = {
-  browse(path: string = '/') {
+  getBackends() {
+    return request.get<StorageBackendOption[]>('/files/backends')
+  },
+
+  browse(path: string = '/', backendId: number = 0) {
     return request.get<BrowseResponse>('/files/browse', {
-      params: { path }
+      params: { path, backend_id: backendId || undefined }
     })
   },
 
-  stats(path: string) {
+  stats(path: string, backendId: number = 0) {
     return request.get('/files/stats', {
-      params: { path }
+      params: { path, backend_id: backendId || undefined }
     })
   },
 
-  download(path: string) {
+  download(path: string, backendId: number = 0) {
     return request.get<DownloadResponse>('/files/download', {
-      params: { path },
+      params: { path, backend_id: backendId || undefined },
       responseType: 'blob'
     })
   },
