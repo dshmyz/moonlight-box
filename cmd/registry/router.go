@@ -135,6 +135,7 @@ func (ctx *RouterContext) setupPackagePublicRoutes(api *gin.RouterGroup) {
 	api.GET("/packages/search", ctx.Handlers.Search.Search)
 	api.GET("/packages/:type/versions", ctx.Handlers.PackageVersion.ListVersions)
 	api.GET("/public/repo/:name", ctx.Handlers.PublicRepo.GetRepoConfig)
+	api.GET("/public/repositories", ctx.Handlers.PublicRepo.List)
 }
 
 func (ctx *RouterContext) setupAuthPublicRoutes(api *gin.RouterGroup) {
@@ -374,6 +375,7 @@ func (ctx *RouterContext) setupAuditRoutes(protected *gin.RouterGroup) {
 	protected.POST("/packages/versions/:id/restore", ctx.requirePermission("npm", "write"), ctx.Handlers.PackageVersion.RestoreVersion)
 	protected.POST("/packages/versions/:id/yank", ctx.requirePermission("npm", "write"), ctx.Handlers.PackageVersion.YankVersion)
 	protected.DELETE("/packages/versions/:id", ctx.requirePermission("npm", "delete"), ctx.Handlers.PackageVersion.DeleteVersion)
+	protected.DELETE("/packages/:id", ctx.requirePermission("package", "delete"), ctx.Handlers.PackageVersion.DeletePackage)
 }
 
 func (ctx *RouterContext) setupBackupRoutes(protected *gin.RouterGroup) {
@@ -425,6 +427,7 @@ func (ctx *RouterContext) setupSystemRoutes(protected *gin.RouterGroup) {
 	files := protected.Group("/files")
 	files.Use(ctx.requirePermission("system", "admin"))
 	{
+		files.GET("/backends", ctx.Handlers.FileBrowse.ListBackends)
 		files.GET("/browse", ctx.Handlers.FileBrowse.ListDirectory)
 		files.GET("/stats", ctx.Handlers.FileBrowse.GetFileStats)
 		files.GET("/download", ctx.Handlers.FileBrowse.DownloadFile)
@@ -498,7 +501,7 @@ func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.Reposi
 	authMw := middleware.Auth(ctx.AuthSvc)
 	permMw := ctx.requirePermission
 
-	repoGroup := r.Group("/repo/:repoName")
+	repoGroup := r.Group("/repository/:repoName")
 	{
 		repoGroup.GET("/*path", repoRouter.HandleRequest)
 
