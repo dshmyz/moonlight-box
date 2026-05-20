@@ -33,9 +33,8 @@ dev:
 
 # 嵌入前端到二进制
 embed-web:
-	cd web && npm run build
 	rm -rf cmd/registry/dist
-	cp -r web/dist cmd/registry/dist
+	cd web && npm run build
 
 # 生成 Swagger 文档（从代码注释生成 openapi.json）
 swagger:
