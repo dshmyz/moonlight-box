@@ -2,6 +2,7 @@ import request from './request'
 import axios from 'axios'
 
 export interface BrowseResponse {
+  path: string
   files: Array<{
     name: string
     path: string
@@ -9,6 +10,8 @@ export interface BrowseResponse {
     size: number
     mod_time: string
   }>
+  total: number
+  is_root: boolean
 }
 
 export interface DownloadResponse {

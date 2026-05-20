@@ -112,7 +112,7 @@ TEST_JAR_A="/tmp/group-test-artifact-a-$$-1.0.0.jar"
 echo "Repository A artifact content - $(date)" > "$TEST_JAR_A"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-    "$BASE_URL/repo/$REPO_A_NAME/com/test/group-artifact-a/1.0.0/group-artifact-a-1.0.0.jar" \
+    "$BASE_URL/repository/$REPO_A_NAME/com/test/group-artifact-a/1.0.0/group-artifact-a-1.0.0.jar" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/octet-stream" \
     --data-binary @"$TEST_JAR_A")
@@ -134,7 +134,7 @@ TEST_JAR_B="/tmp/group-test-artifact-b-$$-1.0.0.jar"
 echo "Repository B artifact content - $(date)" > "$TEST_JAR_B"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-    "$BASE_URL/repo/$REPO_B_NAME/com/test/group-artifact-b/1.0.0/group-artifact-b-1.0.0.jar" \
+    "$BASE_URL/repository/$REPO_B_NAME/com/test/group-artifact-b/1.0.0/group-artifact-b-1.0.0.jar" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/octet-stream" \
     --data-binary @"$TEST_JAR_B")
@@ -179,7 +179,7 @@ echo "  测试 6: 通过仓库组下载仓库 A 的制品"
 echo "════════════════════════════════════════"
 
 HTTP_CODE=$(curl -s -o /tmp/group-download-a.jar -w "%{http_code}" \
-    "$BASE_URL/repo/$GROUP_NAME/com/test/group-artifact-a/1.0.0/group-artifact-a-1.0.0.jar")
+    "$BASE_URL/repository/$GROUP_NAME/com/test/group-artifact-a/1.0.0/group-artifact-a-1.0.0.jar")
 
 if [ "$HTTP_CODE" = "200" ]; then
     pass "通过仓库组下载仓库 A 制品成功 (HTTP 200)"
@@ -206,7 +206,7 @@ echo "  测试 7: 通过仓库组下载仓库 B 的制品"
 echo "════════════════════════════════════════"
 
 HTTP_CODE=$(curl -s -o /tmp/group-download-b.jar -w "%{http_code}" \
-    "$BASE_URL/repo/$GROUP_NAME/com/test/group-artifact-b/1.0.0/group-artifact-b-1.0.0.jar")
+    "$BASE_URL/repository/$GROUP_NAME/com/test/group-artifact-b/1.0.0/group-artifact-b-1.0.0.jar")
 
 if [ "$HTTP_CODE" = "200" ]; then
     pass "通过仓库组下载仓库 B 制品成功 (HTTP 200)"
@@ -236,7 +236,7 @@ TEST_SHARED_JAR="/tmp/group-test-shared-$$-1.0.0.jar"
 echo "Shared artifact in both repos - $(date)" > "$TEST_SHARED_JAR"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-    "$BASE_URL/repo/$REPO_A_NAME/com/test/shared-artifact/1.0.0/shared-artifact-1.0.0.jar" \
+    "$BASE_URL/repository/$REPO_A_NAME/com/test/shared-artifact/1.0.0/shared-artifact-1.0.0.jar" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/octet-stream" \
     --data-binary @"$TEST_SHARED_JAR")
@@ -245,7 +245,7 @@ if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
     pass "仓库 A 共享制品上传成功"
     
     HTTP_CODE_B=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-        "$BASE_URL/repo/$REPO_B_NAME/com/test/shared-artifact/1.0.0/shared-artifact-1.0.0.jar" \
+        "$BASE_URL/repository/$REPO_B_NAME/com/test/shared-artifact/1.0.0/shared-artifact-1.0.0.jar" \
         -H "Authorization: Bearer $TOKEN" \
         -H "Content-Type: application/octet-stream" \
         --data-binary @"$TEST_SHARED_JAR")
@@ -254,7 +254,7 @@ if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
         pass "仓库 B 共享制品上传成功"
         
         HTTP_CODE_GROUP=$(curl -s -o /tmp/group-download-shared.jar -w "%{http_code}" \
-            "$BASE_URL/repo/$GROUP_NAME/com/test/shared-artifact/1.0.0/shared-artifact-1.0.0.jar")
+            "$BASE_URL/repository/$GROUP_NAME/com/test/shared-artifact/1.0.0/shared-artifact-1.0.0.jar")
         
         if [ "$HTTP_CODE_GROUP" = "200" ]; then
             pass "通过仓库组下载共享制品成功"
@@ -282,7 +282,7 @@ echo "  测试 9: 验证仓库组包含不存在的制品"
 echo "════════════════════════════════════════"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    "$BASE_URL/repo/$GROUP_NAME/com/test/nonexistent/1.0.0/nonexistent-1.0.0.jar")
+    "$BASE_URL/repository/$GROUP_NAME/com/test/nonexistent/1.0.0/nonexistent-1.0.0.jar")
 
 if [ "$HTTP_CODE" = "404" ]; then
     pass "仓库组中不存在的制品返回 404 (符合预期)"

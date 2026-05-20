@@ -1,7 +1,7 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "Moonlight Registry API",
+    "title": "Moonlight Box API",
     "description": "制品仓库管理系统 API 文档，支持 npm、maven、pypi、go、yum、apt 等多种包类型的代理、缓存和管理。",
     "version": "1.0.0"
   },

@@ -3,10 +3,11 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
-	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,6 +20,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"golang.org/x/mod/modfile"
 )
+
+// goVersionInfo 包含版本和时间信息，用于 Go proxy 协议
+type goVersionInfo struct {
+	Version string
+	Time   time.Time
+}
 
 type GoAdapter struct {
 	*BaseAdapter
@@ -37,6 +44,11 @@ func NewGoAdapter(
 func (a *GoAdapter) Type() PackageType { return GoType }
 
 func (a *GoAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
+	// 路径安全验证：检测路径遍历攻击
+	if strings.Contains(path, "..") {
+		return nil, fmt.Errorf("invalid go module path: path traversal not allowed")
+	}
+
 	// 处理元数据请求：name/@v/list
 	if strings.HasSuffix(path, "/@v/list") {
 		name := strings.TrimSuffix(path, "/@v/list")
@@ -46,6 +58,17 @@ func (a *GoAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 			Filename:    "list",
 			StorageName: name,
 			RemotePath:  name + "/@v/list",
+		}, nil
+	}
+
+	if strings.HasSuffix(path, "/@latest") {
+		name := strings.TrimSuffix(path, "/@latest")
+		return &types.PackagePathInfo{
+			Name:        name,
+			Version:     "",
+			Filename:    "latest",
+			StorageName: name,
+			RemotePath:  name + "/@latest",
 		}, nil
 	}
 
@@ -111,6 +134,11 @@ func (a *GoAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 }
 
 func (a *GoAdapter) goProxyHandler(ctx context.Context, fullPath string, repo *model.Repository) (*types.ContentResult, error) {
+	// 路径安全验证：检测路径遍历攻击
+	if strings.Contains(fullPath, "..") {
+		return nil, fmt.Errorf("invalid path: path traversal not allowed")
+	}
+
 	atIdx := strings.Index(fullPath, "/@v/")
 	if atIdx == -1 {
 		atIdx = strings.Index(fullPath, "/@latest")
@@ -127,7 +155,7 @@ func (a *GoAdapter) goProxyHandler(ctx context.Context, fullPath string, repo *m
 	}
 
 	if remaining == "@v/list" {
-		return a.handleListVersions(ctx, module, repo)
+		return a.handleListVersions(ctx, module, repo, nil)
 	}
 
 	if strings.HasPrefix(remaining, "@v/") {
@@ -155,9 +183,11 @@ func (a *GoAdapter) goProxyHandler(ctx context.Context, fullPath string, repo *m
 	return nil, fmt.Errorf("invalid path")
 }
 
-func (a *GoAdapter) handleListVersions(ctx context.Context, module string, repo *model.Repository) (*types.ContentResult, error) {
-	versions, err := a.ListVersions(ctx, module)
+func (a *GoAdapter) handleListVersions(ctx context.Context, module string, repo *model.Repository, reqHeaders map[string]string) (*types.ContentResult, error) {
+	// 获取带时间信息的版本列表
+	versionsWithTime, err := a.ListVersionsWithTime(ctx, module)
 	if err != nil {
+		// 如果本地没有，尝试从上游获取
 		if a.fetcher != nil {
 			result, resolveErr := func() (*types.RouteResult, error) {
 				pathInfo, err := a.ParsePath(module + "/@v/list")
@@ -175,11 +205,19 @@ func (a *GoAdapter) handleListVersions(ctx context.Context, module string, repo 
 					if len(remoteVersions) > 0 {
 						a.syncVersionsToLocal(ctx, module, remoteVersions, result.RepoID)
 						content := strings.Join(remoteVersions, "\n") + "\n"
+						// 生成 ETag 基于内容
+						etag := util.GenerateETag([]byte(content))
+						headers := map[string]string{
+							"ETag":          etag,
+							"Content-Type":  "text/plain",
+							"Cache-Control": "public, max-age=300",
+						}
 						return &types.ContentResult{
 							Content:     io.NopCloser(strings.NewReader(content)),
 							Size:        int64(len(content)),
 							ContentType: "text/plain",
 							StatusCode:  200,
+							Headers:     headers,
 						}, nil
 					}
 				}
@@ -188,12 +226,40 @@ func (a *GoAdapter) handleListVersions(ctx context.Context, module string, repo 
 		return nil, fmt.Errorf("module not found")
 	}
 
+	// 按时间升序排序（Go proxy 协议要求按时间排序）
+	sort.Slice(versionsWithTime, func(i, j int) bool {
+		return versionsWithTime[i].Time.Before(versionsWithTime[j].Time)
+	})
+
+	// 提取版本字符串列表
+	versions := make([]string, len(versionsWithTime))
+	for i, v := range versionsWithTime {
+		versions[i] = v.Version
+	}
+
 	content := strings.Join(versions, "\n") + "\n"
+	// 生成 ETag 基于内容
+	etag := util.GenerateETag([]byte(content))
+
+	// 检查 If-None-Match 头，如果匹配则返回 304
+	if result, matched := util.CheckIfNotModified(reqHeaders, etag); matched {
+		return &types.ContentResult{
+			StatusCode: result.StatusCode,
+			Headers:    result.Headers,
+		}, nil
+	}
+
+	headers := map[string]string{
+		"ETag":          etag,
+		"Content-Type":  "text/plain",
+		"Cache-Control": "public, max-age=300",
+	}
 	return &types.ContentResult{
 		Content:     io.NopCloser(strings.NewReader(content)),
 		Size:        int64(len(content)),
 		ContentType: "text/plain",
 		StatusCode:  200,
+		Headers:     headers,
 	}, nil
 }
 
@@ -218,11 +284,17 @@ func (a *GoAdapter) handleVersionInfo(ctx context.Context, module, version strin
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
 					if readErr == nil {
+						// 生成 ETag
+						etag := util.GenerateETag(body)
 						return &types.ContentResult{
 							Content:     io.NopCloser(bytes.NewReader(body)),
 							Size:        int64(len(body)),
 							ContentType: "application/json",
 							StatusCode:  200,
+							Headers: map[string]string{
+								"ETag":          etag,
+								"Cache-Control":  "public, max-age=300",
+							},
 						}, nil
 					}
 				}
@@ -239,9 +311,16 @@ func (a *GoAdapter) handleVersionInfo(ctx context.Context, module, version strin
 				"Time":    ver.PublishedAt.Format(time.RFC3339),
 				"Origin":  map[string]interface{}{"VCS": "unknown", "URL": "", "Hash": ""},
 			}
+			// 序列化 info 生成 ETag
+			infoBytes, _ := json.Marshal(info)
+			etag := util.GenerateETag(infoBytes)
 			return &types.ContentResult{
 				ExtraData:  info,
 				StatusCode: 200,
+				Headers: map[string]string{
+					"ETag":          etag,
+					"Cache-Control":  "public, max-age=300",
+				},
 			}, nil
 		}
 	}
@@ -250,17 +329,28 @@ func (a *GoAdapter) handleVersionInfo(ctx context.Context, module, version strin
 }
 
 func (a *GoAdapter) handleGoMod(ctx context.Context, module, version string, repo *model.Repository) (*types.ContentResult, error) {
-	storageVersion := filepath.Join("@v", version+".mod")
+	storageVersion := "@v/" + version + ".mod"
 	slog.Info("handleGoMod called", "module", module, "version", version, "storageVersion", storageVersion)
 
-	content, size, err := a.storageSvc.GetPackageWithBackend(ctx, repo.Name, "go", module, storageVersion, repositoryStorageBackendID(repo))
+	content, _, err := a.storageSvc.GetPackageWithBackend(ctx, repo.Name, "go", module, storageVersion, repositoryStorageBackendID(repo))
 	if err == nil {
 		slog.Info("Found cached go.mod", "module", module, "version", version)
+		// 读取内容用于计算 ETag
+		body, readErr := io.ReadAll(content)
+		content.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("failed to read cached go.mod: %v", readErr)
+		}
+		etag := util.GenerateETag(body)
 		return &types.ContentResult{
-			Content:     content,
-			Size:        size,
+			Content:     io.NopCloser(bytes.NewReader(body)),
+			Size:        int64(len(body)),
 			ContentType: "text/plain",
 			StatusCode:  200,
+			Headers: map[string]string{
+				"ETag":          etag,
+				"Cache-Control": "public, max-age=86400",
+			},
 		}, nil
 	}
 
@@ -273,12 +363,21 @@ func (a *GoAdapter) handleGoMod(ctx context.Context, module, version string, rep
 			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
 			result, fetchErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
 			if fetchErr == nil && result != nil {
-				return &types.ContentResult{
-					Content:     result.Content,
-					Size:        result.Size,
-					ContentType: "text/plain",
-					StatusCode:  200,
-				}, nil
+				defer result.Content.Close()
+				body, readErr := io.ReadAll(result.Content)
+				if readErr == nil {
+					etag := util.GenerateETag(body)
+					return &types.ContentResult{
+						Content:     io.NopCloser(bytes.NewReader(body)),
+						Size:        int64(len(body)),
+						ContentType: "text/plain",
+						StatusCode:  200,
+						Headers: map[string]string{
+							"ETag":          etag,
+							"Cache-Control": "public, max-age=86400",
+						},
+					}, nil
+				}
 			}
 			slog.Info("Failed to fetch go.mod from remote", "module", module, "version", version, "remotePath", remotePath, "error", fetchErr)
 		}
@@ -288,18 +387,26 @@ func (a *GoAdapter) handleGoMod(ctx context.Context, module, version string, rep
 }
 
 func (a *GoAdapter) handleDownloadZip(ctx context.Context, module, version string, repo *model.Repository) (*types.ContentResult, error) {
-	storageVersion := filepath.Join("@v", version+".zip")
-	content, size, err := a.storageSvc.GetPackageWithBackend(ctx, repo.Name, "go", module, storageVersion, repositoryStorageBackendID(repo))
+	storageVersion := "@v/" + version + ".zip"
+	content, _, err := a.storageSvc.GetPackageWithBackend(ctx, repo.Name, "go", module, storageVersion, repositoryStorageBackendID(repo))
 	if err == nil {
-		return &types.ContentResult{
-			Content:     content,
-			Size:        size,
-			ContentType: "application/zip",
-			StatusCode:  200,
-			Headers: map[string]string{
-				"Content-Disposition": fmt.Sprintf(`attachment; filename="%s.zip"`, version),
-			},
-		}, nil
+		// 读取内容用于计算 ETag
+		body, readErr := io.ReadAll(content)
+		content.Close()
+		if readErr == nil {
+			etag := util.GenerateETag(body)
+			return &types.ContentResult{
+				Content:     io.NopCloser(bytes.NewReader(body)),
+				Size:        int64(len(body)),
+				ContentType: "application/zip",
+				StatusCode:  200,
+				Headers: map[string]string{
+					"Content-Disposition": fmt.Sprintf(`attachment; filename="%s.zip"`, version),
+					"ETag":                etag,
+					"Cache-Control":        "public, max-age=86400",
+				},
+			}, nil
+		}
 	}
 
 	if a.fetcher != nil {
@@ -310,15 +417,22 @@ func (a *GoAdapter) handleDownloadZip(ctx context.Context, module, version strin
 			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
 			result, fetchErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
 			if fetchErr == nil && result != nil {
-				return &types.ContentResult{
-					Content:     result.Content,
-					Size:        result.Size,
-					ContentType: "application/zip",
-					StatusCode:  200,
-					Headers: map[string]string{
-						"Content-Disposition": fmt.Sprintf(`attachment; filename="%s.zip"`, version),
-					},
-				}, nil
+				defer result.Content.Close()
+				body, readErr := io.ReadAll(result.Content)
+				if readErr == nil {
+					etag := util.GenerateETag(body)
+					return &types.ContentResult{
+						Content:     io.NopCloser(bytes.NewReader(body)),
+						Size:        int64(len(body)),
+						ContentType: "application/zip",
+						StatusCode:  200,
+						Headers: map[string]string{
+							"Content-Disposition": fmt.Sprintf(`attachment; filename="%s.zip"`, version),
+							"ETag":                etag,
+							"Cache-Control":        "public, max-age=86400",
+						},
+					}, nil
+				}
 			}
 			slog.Info("Failed to fetch zip from remote", "module", module, "version", version, "error", fetchErr)
 		}
@@ -328,8 +442,10 @@ func (a *GoAdapter) handleDownloadZip(ctx context.Context, module, version strin
 }
 
 func (a *GoAdapter) handleLatest(ctx context.Context, module string, repo *model.Repository) (*types.ContentResult, error) {
-	versions, err := a.ListVersions(ctx, module)
-	if err != nil || len(versions) == 0 {
+	// 获取带时间信息的版本列表
+	versionsWithTime, err := a.ListVersionsWithTime(ctx, module)
+	if err != nil || len(versionsWithTime) == 0 {
+		// 如果本地没有，尝试从上游获取
 		if a.fetcher != nil {
 			result, resolveErr := func() (*types.RouteResult, error) {
 				pathInfo, err := a.ParsePath(module + "/@latest")
@@ -343,11 +459,16 @@ func (a *GoAdapter) handleLatest(ctx context.Context, module string, repo *model
 				defer result.Content.Close()
 				body, readErr := io.ReadAll(result.Content)
 				if readErr == nil {
+					etag := util.GenerateETag(body)
 					return &types.ContentResult{
 						Content:     io.NopCloser(bytes.NewReader(body)),
 						Size:        int64(len(body)),
 						ContentType: "application/json",
 						StatusCode:  200,
+						Headers: map[string]string{
+							"ETag":          etag,
+							"Cache-Control": "public, max-age=300",
+						},
 					}, nil
 				}
 			}
@@ -355,14 +476,26 @@ func (a *GoAdapter) handleLatest(ctx context.Context, module string, repo *model
 		return nil, fmt.Errorf("module not found")
 	}
 
-	latest := versions[len(versions)-1]
+	// 按时间排序，取最新版本
+	sort.Slice(versionsWithTime, func(i, j int) bool {
+		return versionsWithTime[i].Time.After(versionsWithTime[j].Time)
+	})
+	latest := versionsWithTime[0]
+
 	latestInfo := map[string]interface{}{
-		"Version": latest,
-		"Time":    time.Now().UTC().Format(time.RFC3339),
+		"Version": latest.Version,
+		"Time":    latest.Time.UTC().Format(time.RFC3339),
 	}
+	// 序列化生成 ETag
+	infoBytes, _ := json.Marshal(latestInfo)
+	etag := util.GenerateETag(infoBytes)
 	return &types.ContentResult{
 		ExtraData:  latestInfo,
 		StatusCode: 200,
+		Headers: map[string]string{
+			"ETag":          etag,
+			"Cache-Control": "public, max-age=300",
+		},
 	}, nil
 }
 
@@ -384,6 +517,40 @@ func (a *GoAdapter) ListVersions(ctx context.Context, name string) ([]string, er
 		return nil, fmt.Errorf("package repository not available")
 	}
 	return pkgRepo.ListVersionsByRepoContext(ctx, repositoryID(repositoryFromContext(ctx)), name, model.PackageTypeGo)
+}
+
+// ListVersionsWithTime 返回带发布时间信息的版本列表，用于 Go proxy 协议
+func (a *GoAdapter) ListVersionsWithTime(ctx context.Context, name string) ([]goVersionInfo, error) {
+	pkgRepo := a.GetPackageRepository()
+	if pkgRepo == nil {
+		return nil, fmt.Errorf("package repository not available")
+	}
+
+	repo := repositoryFromContext(ctx)
+	repoID := repositoryID(repo)
+	var pkg model.Package
+	query := pkgRepo.DB().WithContext(ctx).Where("name = ? AND type = ?", name, model.PackageTypeGo)
+	if repoID > 0 {
+		query = query.Where("repository_id = ?", repoID)
+	}
+	result := query.First(&pkg)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+
+	var pkgVersions []model.PackageVersion
+	if err := pkgRepo.DB().WithContext(ctx).Where("package_id = ?", pkg.ID).Find(&pkgVersions).Error; err != nil {
+		return nil, err
+	}
+
+	versions := make([]goVersionInfo, 0, len(pkgVersions))
+	for _, v := range pkgVersions {
+		versions = append(versions, goVersionInfo{
+			Version: v.Version,
+			Time:    v.PublishedAt,
+		})
+	}
+	return versions, nil
 }
 
 // ParseIntent 解析请求路径为意图
@@ -443,9 +610,18 @@ func (a *GoAdapter) HandleGet(ctx context.Context, repo *model.Repository, inten
 	version := intent.Version
 	filename := intent.Filename
 
+	// 提取请求头用于缓存协商
+	reqHeaders := make(map[string]string)
+	if v, ok := intent.Extra["If-None-Match"].(string); ok {
+		reqHeaders["If-None-Match"] = v
+	}
+	if v, ok := intent.Extra["If-Modified-Since"].(string); ok {
+		reqHeaders["If-Modified-Since"] = v
+	}
+
 	switch intent.Type {
 	case types.RequestList:
-		return a.handleListVersions(ctx, name, repo)
+		return a.handleListVersions(ctx, name, repo, reqHeaders)
 	case types.RequestMetadata:
 		if filename == "latest" {
 			return a.handleLatest(ctx, name, repo)
@@ -573,12 +749,12 @@ func (a *GoAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*types
 	}
 
 	return &types.PublishResult{
-		PackageName: name,
-		Version:     version,
-		Filename:    header.Filename,
-		Content:     bytes.NewReader(body),
-		Size:        header.Size,
-		FileType:    model.FileTypePrimary,
+		PackageName:  name,
+		Version:      version,
+		Filename:     header.Filename,
+		Content:      bytes.NewReader(body),
+		Size:         header.Size,
+		FileType:     model.FileTypePrimary,
 		Dependencies: deps,
 	}, nil
 }

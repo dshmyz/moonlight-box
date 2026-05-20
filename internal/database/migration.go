@@ -521,6 +521,7 @@ func insertPackage(repo *model.Repository, userID uint, pkgType model.PackageTyp
 			SizeBytes:      int64(100000 + i*50000),
 			ChecksumSHA256: fmt.Sprintf("sha256-%s-%d", name, i),
 			PublishedBy:    userID,
+			License:        license, // 版本级许可证
 		}
 
 		if err := DB.Create(&version).Error; err != nil {

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
 	"github.com/moonlight-box/registry/internal/types"
+	"github.com/moonlight-box/registry/internal/util"
 	"github.com/sirupsen/logrus"
 )
 
@@ -132,7 +134,37 @@ func NewMavenAdapter(args ...interface{}) *MavenAdapter {
 
 func (a *MavenAdapter) Type() PackageType { return MavenType }
 
+// validateMavenPath 验证 Maven 路径安全性
+func validateMavenPath(path string) error {
+	// 检测路径遍历攻击
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("path traversal detected")
+	}
+
+	// 检测 Windows 绝对路径
+	if strings.Contains(path, ":\\") || strings.HasPrefix(path, "\\") {
+		return fmt.Errorf("absolute paths not allowed")
+	}
+
+	// 检测 URL 编码的路径遍历
+	if strings.Contains(path, "%2e%2e") || strings.Contains(path, "%252e") {
+		return fmt.Errorf("encoded path traversal detected")
+	}
+
+	// 检测 null 字符
+	if strings.Contains(path, "\x00") {
+		return fmt.Errorf("null characters not allowed")
+	}
+
+	return nil
+}
+
 func (a *MavenAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
+	// 路径安全验证
+	if err := validateMavenPath(path); err != nil {
+		return nil, err
+	}
+
 	// 处理 groupId:artifactId 格式（元数据请求）
 	if strings.Contains(path, ":") && !strings.Contains(path, "/") {
 		parts := strings.Split(path, ":")
@@ -201,17 +233,8 @@ func (a *MavenAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 		groupPath := strings.Join(parts[:len(parts)-3], "/")
 		storageName := groupPath + "/" + artifactId
 
+		// 统一使用 version + "/" + filename 作为存储路径，避免路径不一致
 		storageVersion := version + "/" + filename
-		if strings.HasSuffix(version, "-SNAPSHOT") {
-			baseVersion := strings.TrimSuffix(version, "-SNAPSHOT")
-			if strings.Contains(filename, baseVersion) {
-				idx := strings.Index(filename, baseVersion)
-				if idx != -1 {
-					actualVersion := strings.TrimSuffix(filename[idx:], filepath.Ext(filename))
-					storageVersion = version + "/" + actualVersion + "/" + filename
-				}
-			}
-		}
 
 		remotePath := groupPath + "/" + artifactId + "/" + version + "/" + filename
 
@@ -314,25 +337,34 @@ func (a *MavenAdapter) handleMetadataXML(ctx context.Context, fullPath string, r
 					storageName := groupArtifactToStoragePath(group)
 					a.storageSvc.StorePackageWithBackend(context.Background(), repo.Name, "maven", storageName, "maven-metadata.xml", bytes.NewReader(body), int64(len(body)), repositoryStorageBackendID(repo))
 
+					// 生成 ETag
+					etag := util.GenerateETag(body)
+
 					return &types.ContentResult{
 						StatusCode:  200,
 						ContentType: "application/xml",
 						ExtraData: map[string]interface{}{
 							"xml_body": body,
 						},
+						Headers: map[string]string{
+							"ETag":          etag,
+							"Cache-Control": "public, max-age=300",
+						},
 					}, nil
 				}
 			}
 		}
+	}
 
-		// Fallback: 直接远程获取（无需缓存）
+	// Fallback: 直接远程获取（无需缓存）
+	if a.fetcher != nil {
 		pathInfo, err := a.ParsePath(name)
 		if err != nil {
 			logrus.Warnf("failed to resolve package path for %s: %v", name, err)
 		} else {
 			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-			ctx := context.Background()
-			result, resolveErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
+			remoteCtx := context.Background()
+			result, resolveErr := a.fetcher.FetchFromRemote(remoteCtx, repo, remoteURL)
 			if resolveErr == nil && result != nil {
 				defer result.Content.Close()
 				body, readErr := io.ReadAll(result.Content)
@@ -356,11 +388,18 @@ func (a *MavenAdapter) handleMetadataXML(ctx context.Context, fullPath string, r
 						_ = storageKey
 					}
 
+					// 生成 ETag
+					etag := util.GenerateETag(body)
+
 					return &types.ContentResult{
 						StatusCode:  200,
 						ContentType: "application/xml",
 						ExtraData: map[string]interface{}{
 							"xml_body": body,
+						},
+						Headers: map[string]string{
+							"ETag":          etag,
+							"Cache-Control": "public, max-age=300",
 						},
 					}, nil
 				}
@@ -601,7 +640,7 @@ type mavenSnapshotArtifact struct {
 	buildNumber int
 }
 
-var mavenSnapshotBuildPattern = regexp.MustCompile(`^(\d{8}\.\d{6})-(\d+)(?:-([^.]?.*?))?\.([^.]+)$`)
+var mavenSnapshotBuildPattern = regexp.MustCompile(`^(\d{8}\.\d{6})-(\d+)(?:-([^-]+))?\.([^.]+)$`)
 
 func buildSnapshotVersionsFromEntries(entries []storage.Entry, artifactID, snapshotVersion string) ([]MavenSnapshotVersion, string, int) {
 	latestByKind := make(map[string]mavenSnapshotArtifact)
@@ -672,7 +711,11 @@ func parseMavenSnapshotFilename(filename, artifactID, snapshotVersion string) (m
 		return mavenSnapshotArtifact{}, false
 	}
 
+	// 构建完整的 SNAPSHOT 版本值
 	value := baseVersion + "-" + timestamp + "-" + buildNumberStr
+	if classifier != "" {
+		value += "-" + classifier
+	}
 	updated := strings.ReplaceAll(timestamp, ".", "")
 
 	return mavenSnapshotArtifact{
@@ -683,6 +726,123 @@ func parseMavenSnapshotFilename(filename, artifactID, snapshotVersion string) (m
 		timestamp:   timestamp,
 		buildNumber: buildNumber,
 	}, true
+}
+
+// resolveSnapshotVersion 将 SNAPSHOT 版本解析为具体的 timestamp-buildNumber 版本
+// 例如: 1.0-SNAPSHOT -> 1.0-20250119.001234-5
+func (a *MavenAdapter) resolveSnapshotVersion(ctx context.Context, name, version, groupID, artifactID string, repo *model.Repository) (string, error) {
+	// 如果不是 SNAPSHOT 版本，直接返回
+	if !strings.HasSuffix(version, "-SNAPSHOT") {
+		return version, nil
+	}
+
+	// 先尝试从数据库获取
+	pkg, err := a.GetPackageRepository().FindByRepoNameAndTypeContext(ctx, repositoryID(repo), name, model.PackageTypeMaven)
+	if err == nil && pkg != nil {
+		for _, v := range pkg.Versions {
+			if v.Version == version {
+				var meta map[string]interface{}
+				if v.Metadata != "" {
+					if err := json.Unmarshal([]byte(v.Metadata), &meta); err == nil {
+						if timestamp, ok := meta["snapshotTimestamp"].(string); ok {
+							if buildNumber, ok := meta["snapshotBuildNumber"].(float64); ok {
+								baseVersion := strings.TrimSuffix(version, "-SNAPSHOT")
+								resolved := fmt.Sprintf("%s-%s-%d", baseVersion, timestamp, int(buildNumber))
+								logrus.Infof("Resolved SNAPSHOT from DB: %s -> %s", version, resolved)
+								return resolved, nil
+							}
+						}
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// 从存储扫描获取最新的 SNAPSHOT 版本
+	metadata, err := a.generateSnapshotMetadataForChecksum(name, version, groupID, artifactID, repo)
+	if err == nil && metadata.Versioning.Snapshot != nil {
+		baseVersion := strings.TrimSuffix(version, "-SNAPSHOT")
+		resolved := fmt.Sprintf("%s-%s-%d", baseVersion, metadata.Versioning.Snapshot.Timestamp, metadata.Versioning.Snapshot.BuildNumber)
+		logrus.Infof("Resolved SNAPSHOT from storage: %s -> %s", version, resolved)
+		return resolved, nil
+	}
+
+	// Proxy 模式下：从上游远程仓库获取最新的 SNAPSHOT 元数据
+	if a.fetcher != nil && repo != nil && repo.Type == model.RepoTypeProxy {
+		resolved, fetchErr := a.fetchSnapshotVersionFromRemote(ctx, name, version, groupID, artifactID, repo)
+		if fetchErr == nil && resolved != "" {
+			logrus.Infof("Resolved SNAPSHOT from remote: %s -> %s", version, resolved)
+			return resolved, nil
+		}
+		logrus.Warnf("Failed to resolve SNAPSHOT from remote: %v", fetchErr)
+	}
+
+	return version, nil
+}
+
+// fetchSnapshotVersionFromRemote 从上游 Maven 仓库获取 SNAPSHOT 的最新 timestamp-buildNumber
+func (a *MavenAdapter) fetchSnapshotVersionFromRemote(ctx context.Context, name, version, groupID, artifactID string, repo *model.Repository) (string, error) {
+	// 构建 maven-metadata.xml 的远程 URL
+	// 格式: https://repo1.maven.org/maven2/com/example/lib/1.0-SNAPSHOT/maven-metadata.xml
+	storagePath := strings.ReplaceAll(groupID, ".", "/") + "/" + artifactID + "/" + version + "/maven-metadata.xml"
+	remoteURL := strings.TrimSuffix(repo.RemoteURL, "/") + "/" + storagePath
+
+	logrus.Infof("Fetching SNAPSHOT metadata from remote: %s", remoteURL)
+
+	result, err := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch SNAPSHOT metadata: %w", err)
+	}
+	defer result.Content.Close()
+
+	body, readErr := io.ReadAll(result.Content)
+	if readErr != nil {
+		return "", fmt.Errorf("failed to read SNAPSHOT metadata: %w", readErr)
+	}
+
+	// 解析 maven-metadata.xml
+	var metadata MavenMetadata
+	if parseErr := xml.Unmarshal(body, &metadata); parseErr != nil {
+		return "", fmt.Errorf("failed to parse SNAPSHOT metadata: %w", parseErr)
+	}
+
+	if metadata.Versioning.Snapshot == nil || metadata.Versioning.Snapshot.Timestamp == "" {
+		return "", fmt.Errorf("no snapshot timestamp in metadata")
+	}
+
+	baseVersion := strings.TrimSuffix(version, "-SNAPSHOT")
+	resolved := fmt.Sprintf("%s-%s-%d", baseVersion, metadata.Versioning.Snapshot.Timestamp, metadata.Versioning.Snapshot.BuildNumber)
+	return resolved, nil
+}
+
+// resolveSnapshotFilename 解析带 classifier 的 SNAPSHOT 文件名
+// 例如: lib-1.0-SNAPSHOT-sources.jar -> lib-1.0-20250119.001234-5-sources.jar
+// 例如: lib-1.0-SNAPSHOT.jar -> lib-1.0-20250119.001234-5.jar
+func resolveSnapshotFilename(filename, resolvedVersion, artifactID string) (string, string) {
+	// 去掉 -SNAPSHOT 后缀
+	baseVersion := strings.TrimSuffix(resolvedVersion, "-SNAPSHOT")
+
+	// 尝试提取 classifier
+	// 匹配 pattern: artifactID-baseVersion[-classifier].extension
+	snapshotPattern := regexp.MustCompile(`^(` + regexp.QuoteMeta(artifactID) + `-(.+?))(?:-([^-]+))?(\.[^.]+)$`)
+	matches := snapshotPattern.FindStringSubmatch(filename)
+
+	if matches != nil {
+		// 匹配成功，替换版本部分
+		newBase := artifactID + "-" + baseVersion
+		classifier := matches[3]
+		extension := matches[4]
+
+		if classifier != "" {
+			return newBase + "-" + classifier + extension, classifier
+		}
+		return newBase + extension, ""
+	}
+
+	// 备选方案：简单替换
+	newFilename := strings.Replace(filename, "-SNAPSHOT", "", 1)
+	return newFilename, ""
 }
 
 func compareSnapshotBuild(timestamp string, buildNumber int, otherTimestamp string, otherBuildNumber int) int {
@@ -804,49 +964,69 @@ func (a *MavenAdapter) handleDownloadArtifact(fullPath string, repo *model.Repos
 	filename := parts[len(parts)-1]
 	groupArtifact := strings.Join(parts[:len(parts)-2], "/")
 	pkgName := groupArtifactToName(groupArtifact)
+	artifactID := parts[len(parts)-3]
+	groupID := strings.ReplaceAll(groupArtifact, "/", ".")
 
 	logrus.Infof("Parsed: version=%s, filename=%s, groupArtifact=%s, pkgName=%s", version, filename, groupArtifact, pkgName)
 
-	var storageVersion string
+	// SNAPSHOT 版本重写：将 1.0-SNAPSHOT 转换为 1.0-timestamp-buildNumber
+	var resolvedVersion string
+	var resolvedFilename string
 	isSnapshot := strings.HasSuffix(version, "-SNAPSHOT")
 
 	if isSnapshot {
-		baseVersion := strings.TrimSuffix(version, "-SNAPSHOT")
-		if strings.Contains(filename, baseVersion) {
-			idx := strings.Index(filename, baseVersion)
-			if idx != -1 {
-				actualVersion := strings.TrimSuffix(filename[idx:], filepath.Ext(filename))
-				storageVersion = version + "/" + actualVersion + "/" + filename
-				logrus.Infof("SNAPSHOT file: actualVersion=%s, storageVersion=%s", actualVersion, storageVersion)
-			} else {
-				storageVersion = version + "/" + filename
-			}
-		} else {
-			storageVersion = version + "/" + filename
-		}
+		// 解析 SNAPSHOT 版本
+		resolvedVersion, _ = a.resolveSnapshotVersion(context.Background(), pkgName, version, groupID, artifactID, repo)
+		// 解析带 classifier 的文件名
+		resolvedFilename, _ = resolveSnapshotFilename(filename, resolvedVersion, artifactID)
+		logrus.Infof("SNAPSHOT resolved: version %s -> %s, filename %s -> %s", version, resolvedVersion, filename, resolvedFilename)
 	} else {
-		storageVersion = version + "/" + filename
+		resolvedVersion = version
+		resolvedFilename = filename
 	}
 
+	// 使用解析后的版本和文件名构建存储路径
+	storageVersion := resolvedVersion + "/" + resolvedFilename
+
 	storageNames := a.getStorageNamesForGroupArtifact(groupArtifact, parts)
-	logrus.Infof("Maven download: looking for %s in storage names=%v, version=%s", pkgName, storageNames, storageVersion)
+	logrus.Infof("Maven download: looking for %s in storage names=%v, version=%s, filename=%s", pkgName, storageNames, storageVersion, resolvedFilename)
 	content, size, _, err := a.findPackageInStorage(context.Background(), repo.Name, "maven", storageNames, storageVersion, repositoryStorageBackendID(repo))
 
 	if err == nil {
 		logrus.Infof("Maven cache hit: found %s in storage, size=%d", pkgName, size)
 
-		contentType := a.storageSvc.GetContentType(filename)
+		// 读取内容用于计算 ETag
+		body, readErr := io.ReadAll(content)
+		content.Close()
+		if readErr != nil {
+			return &types.ContentResult{
+				StatusCode: 500,
+				ExtraData:   map[string]interface{}{"error": "failed to read content"},
+			}, nil
+		}
+
+		// 生成 ETag（基于内容 SHA256）
+		etag := util.GenerateETag(body)
+		lastModified := time.Now().UTC().Format(time.RFC1123)
+
+		contentType := a.storageSvc.GetContentType(resolvedFilename)
+		// 响应头中使用客户端请求的原始文件名
+		returnFilename := filename
 		return &types.ContentResult{
 			StatusCode:  200,
 			ContentType: contentType,
-			Content:     content,
-			Size:        size,
+			Content:     io.NopCloser(bytes.NewReader(body)),
+			Size:        int64(len(body)),
 			Headers: map[string]string{
-				"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, filename),
+				"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, returnFilename),
+				"ETag":                etag,
+				"Last-Modified":       lastModified,
+				"Cache-Control":       "public, max-age=86400",
 			},
 		}, nil
 	}
 
+	// 本地存储未命中，尝试代理
 	if a.fetcher != nil && repo != nil && repo.Type == model.RepoTypeProxy {
 		logrus.Infof("Maven proxy: fetching from remote for %s, version=%s, filename=%s", pkgName, version, filename)
 		pathInfo, err := a.ParsePath(pkgName + ":" + version + "/" + filename)
@@ -860,6 +1040,55 @@ func (a *MavenAdapter) handleDownloadArtifact(fullPath string, repo *model.Repos
 			if fetchErr == nil && result != nil {
 				logrus.Infof("Maven proxy: successfully fetched %s from remote, size=%d", pkgName, result.Size)
 				contentType := a.storageSvc.GetContentType(filename)
+
+				// 如果是 SNAPSHOT，代理下载后存储时使用解析后的文件名
+				if isSnapshot && resolvedFilename != filename {
+					logrus.Infof("Storing SNAPSHOT artifact with resolved filename: %s -> %s", filename, resolvedFilename)
+					// 读取内容并存储为解析后的文件名
+					body, readErr := io.ReadAll(result.Content)
+					result.Content.Close()
+					if readErr == nil {
+						// 存储解析后的文件
+						reader := bytes.NewReader(body)
+						_, storeErr := a.storageSvc.StorePackageWithBackend(context.Background(), repo.Name, "maven", groupArtifact, resolvedFilename, reader, int64(len(body)), repositoryStorageBackendID(repo))
+						if storeErr != nil {
+							logrus.Warnf("Failed to store SNAPSHOT artifact: %v", storeErr)
+						}
+						// 生成 ETag
+						etag := util.GenerateETag(body)
+						// 返回内容
+						return &types.ContentResult{
+							StatusCode:  200,
+							ContentType: contentType,
+							Content:     io.NopCloser(bytes.NewReader(body)),
+							Size:        int64(len(body)),
+							Headers: map[string]string{
+								"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, filename),
+								"ETag":               etag,
+								"Cache-Control":       "public, max-age=86400",
+							},
+						}, nil
+					}
+				}
+
+				// 读取代理内容并计算 ETag
+				body, readErr := io.ReadAll(result.Content)
+				result.Content.Close()
+				if readErr == nil {
+					etag := util.GenerateETag(body)
+					return &types.ContentResult{
+						StatusCode:  200,
+						ContentType: contentType,
+						Content:     io.NopCloser(bytes.NewReader(body)),
+						Size:        int64(len(body)),
+						Headers: map[string]string{
+							"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, filename),
+							"ETag":               etag,
+							"Cache-Control":       "public, max-age=86400",
+						},
+					}, nil
+				}
+
 				return &types.ContentResult{
 					StatusCode:  200,
 					ContentType: contentType,
@@ -917,24 +1146,29 @@ func (a *MavenAdapter) handleChecksumRequest(fullPath string, repo *model.Reposi
 
 	groupArtifact := strings.Join(parts[:len(parts)-2], "/")
 	version := parts[len(parts)-2]
+	artifactID := parts[len(parts)-3]
+	groupID := strings.ReplaceAll(groupArtifact, "/", ".")
+	pkgName := groupArtifactToName(groupArtifact)
 
 	logrus.Infof("GroupArtifact: %s, version: %s", groupArtifact, version)
 
-	storageName := groupArtifactToStoragePath(groupArtifact)
-	var storageVersion string
+	// SNAPSHOT 版本重写
+	var resolvedVersion string
+	var resolvedFilename string
 	isSnapshot := strings.HasSuffix(version, "-SNAPSHOT")
 
 	if isSnapshot {
-		if strings.Contains(actualFilename, strings.TrimSuffix(version, "-SNAPSHOT")) {
-			actualVersion := strings.TrimSuffix(actualFilename, filepath.Ext(actualFilename))
-			storageVersion = version + "/" + actualVersion + "/" + actualFilename
-			logrus.Infof("SNAPSHOT checksum file: actualVersion=%s, storageVersion=%s", actualVersion, storageVersion)
-		} else {
-			storageVersion = version + "/" + actualFilename
-		}
+		resolvedVersion, _ = a.resolveSnapshotVersion(context.Background(), pkgName, version, groupID, artifactID, repo)
+		resolvedFilename, _ = resolveSnapshotFilename(actualFilename, resolvedVersion, artifactID)
+		logrus.Infof("SNAPSHOT checksum resolved: version %s -> %s, filename %s -> %s", version, resolvedVersion, actualFilename, resolvedFilename)
 	} else {
-		storageVersion = version + "/" + actualFilename
+		resolvedVersion = version
+		resolvedFilename = actualFilename
 	}
+
+	storageName := groupArtifactToStoragePath(groupArtifact)
+	// 统一使用 version + "/" + filename 作为存储路径，与 ParsePath 保持一致
+	storageVersion := resolvedVersion + "/" + resolvedFilename
 
 	logrus.Infof("Looking for file in storage: storageName=%s, storageVersion=%s", storageName, storageVersion)
 
@@ -942,10 +1176,8 @@ func (a *MavenAdapter) handleChecksumRequest(fullPath string, repo *model.Reposi
 
 	if err != nil {
 		if a.fetcher != nil && repo != nil && repo.Type == model.RepoTypeProxy {
-			groupPath := strings.ReplaceAll(strings.Join(parts[:len(parts)-2], "."), ".", "/")
-			artifactID := parts[len(parts)-2]
-			remotePath := groupPath + "/" + artifactID + "/" + strings.Join(parts[len(parts)-2:], "/")
-			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), remotePath)
+			// 使用原始路径构建远程 URL（包含 groupId/artifactId/version/filename.sha1）
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), fullPath)
 			result, fetchErr := a.fetcher.FetchFromRemote(context.Background(), repo, remoteURL)
 			if fetchErr == nil && result != nil {
 				defer result.Content.Close()
@@ -972,11 +1204,13 @@ func (a *MavenAdapter) handleChecksumRequest(fullPath string, repo *model.Reposi
 	body, _ := io.ReadAll(content)
 	checksum := calculateChecksum(body, checksumType)
 
+	// 返回的文件名使用客户端请求的原始文件名
+	returnFilename := actualFilename
 	return &types.ContentResult{
 		StatusCode:  200,
 		ContentType: "text/plain",
 		ExtraData: map[string]interface{}{
-			"checksum_string": fmt.Sprintf("%s  %s", checksum, actualFilename),
+			"checksum_string": fmt.Sprintf("%s  %s", checksum, returnFilename),
 		},
 	}, nil
 }
@@ -1147,6 +1381,121 @@ func (a *MavenAdapter) handleMetadataChecksum(ctx context.Context, fullPath stri
 	}, nil
 }
 
+// handleGPGSignature 处理 GPG 签名文件 (.asc) 请求
+func (a *MavenAdapter) handleGPGSignature(fullPath string, repo *model.Repository) (*types.ContentResult, error) {
+	logrus.Infof("handleGPGSignature called: fullPath=%s", fullPath)
+
+	// GPG 签名文件路径对应其源文件的路径
+	// 例如: com/example/lib/1.0/mylib-1.0.jar.asc 对应 com/example/lib/1.0/mylib-1.0.jar
+	actualFilename := strings.TrimSuffix(fullPath, ".asc")
+	parts := strings.Split(actualFilename, "/")
+
+	if len(parts) < 4 {
+		return &types.ContentResult{
+			StatusCode: 404,
+			ExtraData:   map[string]interface{}{"error": "GPG signature not found"},
+		}, nil
+	}
+
+	filename := parts[len(parts)-1]
+	version := parts[len(parts)-2]
+	groupArtifact := strings.Join(parts[:len(parts)-2], "/")
+	artifactID := parts[len(parts)-3]
+	groupID := strings.ReplaceAll(groupArtifact, "/", ".")
+	pkgName := groupArtifactToName(groupArtifact)
+
+	// SNAPSHOT 版本重写
+	var resolvedVersion string
+	var resolvedFilename string
+	isSnapshot := strings.HasSuffix(version, "-SNAPSHOT")
+
+	if isSnapshot {
+		resolvedVersion, _ = a.resolveSnapshotVersion(context.Background(), pkgName, version, groupID, artifactID, repo)
+		resolvedFilename, _ = resolveSnapshotFilename(filename, resolvedVersion, artifactID)
+		logrus.Infof("SNAPSHOT GPG resolved: version %s -> %s, filename %s -> %s", version, resolvedVersion, filename, resolvedFilename)
+	} else {
+		resolvedVersion = version
+		resolvedFilename = filename
+	}
+
+	// 统一使用 version + "/" + filename 作为存储路径
+	storageVersion := resolvedVersion + "/" + resolvedFilename
+	storageName := groupArtifactToStoragePath(groupArtifact)
+
+	logrus.Infof("GPG signature: looking for %s in storage names=%v, version=%s", filename, storageName, storageVersion)
+
+	// 尝试从本地存储获取
+	content, _, _, err := a.findPackageInStorage(context.Background(), repo.Name, "maven", []string{storageName}, storageVersion, repositoryStorageBackendID(repo))
+
+	if err == nil {
+		defer content.Close()
+		body, readErr := io.ReadAll(content)
+		if readErr == nil {
+			// 生成 ETag
+			etag := util.GenerateETag(body)
+			lastModified := time.Now().UTC().Format(time.RFC1123)
+
+			return &types.ContentResult{
+				StatusCode:  200,
+				ContentType: "application/pgp-signature",
+				Content:     io.NopCloser(bytes.NewReader(body)),
+				Size:        int64(len(body)),
+				Headers: map[string]string{
+					"Content-Disposition": fmt.Sprintf(`attachment; filename="%s.asc"`, filename),
+					"ETag":               etag,
+					"Last-Modified":      lastModified,
+					"Cache-Control":      "public, max-age=86400",
+				},
+			}, nil
+		}
+	}
+
+	// 代理到远程仓库
+	if a.fetcher != nil && repo != nil && repo.Type == model.RepoTypeProxy {
+		pkgName := groupArtifactToName(groupArtifact)
+		pathInfo, pathErr := a.ParsePath(pkgName + ":" + version + "/" + filename)
+		var fetchErr error
+		if pathErr != nil {
+			logrus.Warnf("failed to resolve package path for GPG: %v", pathErr)
+			fetchErr = pathErr
+		} else {
+			remoteURL := fmt.Sprintf("%s/%s.asc", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+			result, resultErr := a.fetcher.FetchFromRemote(context.Background(), repo, remoteURL)
+			if resultErr != nil {
+				fetchErr = resultErr
+			} else if result != nil {
+				defer result.Content.Close()
+				body, readErr := io.ReadAll(result.Content)
+				if readErr == nil {
+					etag := util.GenerateETag(body)
+					lastModified := time.Now().UTC().Format(time.RFC1123)
+
+					return &types.ContentResult{
+						StatusCode:  200,
+						ContentType: "application/pgp-signature",
+						Content:     io.NopCloser(bytes.NewReader(body)),
+						Size:        int64(len(body)),
+						Headers: map[string]string{
+							"Content-Disposition": fmt.Sprintf(`attachment; filename="%s.asc"`, filename),
+							"ETag":               etag,
+							"Last-Modified":      lastModified,
+							"Cache-Control":      "public, max-age=86400",
+						},
+					}, nil
+				}
+			}
+		}
+		if fetchErr != nil {
+			logrus.Warnf("Maven proxy: failed to fetch GPG signature %s from remote: %v", fullPath, fetchErr)
+		}
+	}
+
+	return &types.ContentResult{
+		StatusCode: 404,
+		ExtraData:   map[string]interface{}{"error": "GPG signature not found"},
+	}, nil
+}
+
 func (a *MavenAdapter) generateIndex(packages []model.Package, repoName string) *MavenPackageIndex {
 	index := &MavenPackageIndex{
 		Repository:  repoName,
@@ -1237,10 +1586,32 @@ func (a *MavenAdapter) Delete(ctx context.Context, identity *PackageIdentity) er
 	if repo != nil {
 		repoName = repo.Name
 	}
-	entries, err := a.storageSvc.ListPackageWithBackend(ctx, repoName, "maven", storageName, identity.Version, repositoryStorageBackendID(repo))
-	if err == nil {
+	backendID := repositoryStorageBackendID(repo)
+
+	logrus.Infof("Maven delete: attempting to delete package=%s, version=%s, storageName=%s, repo=%s",
+		identity.Name, identity.Version, storageName, repoName)
+
+	entries, err := a.storageSvc.ListPackageWithBackend(ctx, repoName, "maven", storageName, identity.Version, backendID)
+	if err != nil {
+		logrus.Warnf("Maven delete: failed to list storage entries: %v", err)
+	} else {
+		logrus.Infof("Maven delete: found %d storage entries to delete", len(entries))
 		for _, entry := range entries {
-			_ = a.storageSvc.DeleteStorageKeyWithBackend(ctx, entry.Key, repositoryStorageBackendID(repo))
+			if delErr := a.storageSvc.DeleteStorageKeyWithBackend(ctx, entry.Key, backendID); delErr != nil {
+				logrus.Errorf("Maven delete: failed to delete storage key %s: %v", entry.Key, delErr)
+			} else {
+				logrus.Infof("Maven delete: successfully deleted storage key %s", entry.Key)
+			}
+		}
+	}
+
+	if len(entries) == 0 {
+		logrus.Warnf("Maven delete: no storage entries found, attempting direct path deletion")
+		directKey := fmt.Sprintf("maven/%s/%s/%s/%s", repoName, storageName, identity.Version, identity.Version+".jar")
+		if delErr := a.storageSvc.DeleteStorageKeyWithBackend(ctx, directKey, backendID); delErr != nil {
+			logrus.Warnf("Maven delete: direct path deletion also failed: %v", delErr)
+		} else {
+			logrus.Infof("Maven delete: successfully deleted using direct path %s", directKey)
 		}
 	}
 
@@ -1281,6 +1652,16 @@ func (a *MavenAdapter) ParseIntent(path string, method string) *types.RequestInt
 		}
 	}
 
+	// GPG 签名文件 (.asc)
+	if strings.HasSuffix(path, ".asc") {
+		return &types.RequestIntent{
+			Type:     types.RequestGPG,
+			Path:     path,
+			Filename: filepath.Base(path),
+			Extra:    make(map[string]interface{}),
+		}
+	}
+
 	pathInfo, err := a.ParsePath(path)
 	intent := &types.RequestIntent{
 		Type:        types.RequestDownload,
@@ -1307,6 +1688,8 @@ func (a *MavenAdapter) HandleGet(ctx context.Context, repo *model.Repository, in
 		return a.handleMetadataXML(ctx, intent.Path, repo)
 	case types.RequestChecksum:
 		return a.handleChecksumRequest(intent.Path, repo)
+	case types.RequestGPG:
+		return a.handleGPGSignature(intent.Path, repo)
 	case types.RequestDownload:
 		return a.handleDownloadArtifact(intent.Path, repo)
 	default:
@@ -1364,7 +1747,69 @@ func containsDigit(s string) bool {
 }
 
 func compareVersions(v1, v2 string) int {
-	return strings.Compare(v1, v2)
+	// Maven 版本比较：按点号和连字符分段，数字段按数值比较，非数字段按字典序比较
+	// SNAPSHOT 版本低于对应的 release 版本
+	s1 := mavenVersionSegments(v1)
+	s2 := mavenVersionSegments(v2)
+
+	for i := 0; i < len(s1) && i < len(s2); i++ {
+		if s1[i] == s2[i] {
+			continue
+		}
+		// SNAPSHOT 段低于同级的 release 段
+		if s1[i] == "SNAPSHOT" {
+			return -1
+		}
+		if s2[i] == "SNAPSHOT" {
+			return 1
+		}
+		// 尝试数值比较
+		n1, err1 := strconv.Atoi(s1[i])
+		n2, err2 := strconv.Atoi(s2[i])
+		if err1 == nil && err2 == nil {
+			if n1 < n2 {
+				return -1
+			}
+			return 1
+		}
+		// 混合情况：数字 < 字母
+		if err1 == nil {
+			return -1
+		}
+		if err2 == nil {
+			return 1
+		}
+		// 都是字符串，按字典序
+		if s1[i] < s2[i] {
+			return -1
+		}
+		return 1
+	}
+	// 较短的版本较低，除非短版本以 SNAPSHOT 结尾
+	if len(s1) < len(s2) {
+		return -1
+	}
+	if len(s1) > len(s2) {
+		return 1
+	}
+	return 0
+}
+
+// mavenVersionSegments 将 Maven 版本字符串拆分为可比较的段
+// 例如 "1.2.3-SNAPSHOT" → ["1", "2", "3", "SNAPSHOT"]
+// "2.0.0-RC1" → ["2", "0", "0", "RC1"]
+func mavenVersionSegments(v string) []string {
+	// 将点号和连字符都作为分隔符
+	v = strings.ReplaceAll(v, "-", ".")
+	parts := strings.Split(v, ".")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 func generateSnapshotTimestamp() (string, int) {
@@ -1406,7 +1851,7 @@ func (a *MavenAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*ty
 
 	storageVersion := joinVersionFilename(version, filename)
 
-	// 构建标准 Maven 下载路径：/repo/{repo}/{groupId}/{artifactId}/{version}/{filename}
+	// 构建标准 Maven 下载路径：/repository/{repo}/{groupId}/{artifactId}/{version}/{filename}
 	// groupId 用斜杠分隔：com.google.guava -> com/google/guava
 	groupPath := strings.ReplaceAll(groupID, ".", "/")
 	downloadURL := "/" + groupPath + "/" + artifactID + "/" + version + "/" + filename

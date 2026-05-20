@@ -1,5 +1,16 @@
 import request from './request'
 
+export interface PublicRepoListItem {
+  name: string
+  display_name: string
+  description: string
+  type: 'local' | 'proxy' | 'virtual'
+  package_type: string
+  enabled: boolean
+  remote_url?: string
+  registry_url: string
+}
+
 export interface RepoConfigResponse {
   name: string
   display_name: string
@@ -20,6 +31,10 @@ export interface ConfigStep {
 }
 
 export const publicRepoApi = {
+  list(params?: { package_type?: string; type?: string }) {
+    return request.get<PublicRepoListItem[]>('/public/repositories', { params })
+  },
+
   getRepoConfig(name: string) {
     return request.get<RepoConfigResponse>(`/public/repo/${name}`)
   },

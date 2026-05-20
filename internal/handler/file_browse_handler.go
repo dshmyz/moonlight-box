@@ -72,7 +72,7 @@ func (h *FileBrowseHandler) ListDirectory(c *gin.Context) {
 		Path:   relativePath,
 		Files:  files,
 		Total:  len(files),
-		IsRoot: relativePath == "" || relativePath == "/",
+		IsRoot: relativePath == "",
 	}
 
 	response.Success(c, result)
@@ -122,11 +122,7 @@ type BackendOption struct {
 }
 
 func (h *FileBrowseHandler) ListBackends(c *gin.Context) {
-	backends, err := h.storageSvc.ListBackends()
-	if err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
+	backends, _ := h.storageSvc.ListBackends()
 
 	options := make([]BackendOption, 0, len(backends)+1)
 
@@ -139,15 +135,26 @@ func (h *FileBrowseHandler) ListBackends(c *gin.Context) {
 	})
 
 	for _, b := range backends {
+		// 排除默认后端（已以ID=0展示）和不可用的后端
+		if b.IsDefault || !b.IsActive {
+			continue
+		}
 		options = append(options, BackendOption{
 			ID:        b.ID,
 			Name:      b.Name,
 			Type:      string(b.Type),
-			IsDefault: b.IsDefault,
+			IsDefault: false,
 		})
 	}
 
 	response.Success(c, options)
+}
+
+// localPathResolver 定义本地文件后端的能力接口，
+// 用于安全地检测后端是否支持本地文件路径优化下载。
+type localPathResolver interface {
+	ResolvePathSafe(key string) (string, error)
+	BasePath() string
 }
 
 func (h *FileBrowseHandler) DownloadFile(c *gin.Context) {
@@ -165,23 +172,11 @@ func (h *FileBrowseHandler) DownloadFile(c *gin.Context) {
 
 	relativePath = strings.TrimPrefix(relativePath, "/")
 
-	if backend.Name() == "local" {
-		localBackend := backend.(*storage.LocalStorage)
-		fullPath, err := localBackend.ResolvePathSafe(relativePath)
+	// 优先使用本地文件路径优化下载（gin.FileAttachment）
+	if resolver, ok := backend.(localPathResolver); ok {
+		fullPath, err := resolver.ResolvePathSafe(relativePath)
 		if err != nil {
 			response.BadRequest(c, "invalid path", err.Error())
-			return
-		}
-
-		info, err := filepath.Abs(fullPath)
-		if err != nil {
-			response.InternalError(c, err.Error())
-			return
-		}
-
-		basePath := localBackend.BasePath()
-		if !strings.HasPrefix(info, basePath) {
-			response.BadRequest(c, "invalid path", "path is outside base directory")
 			return
 		}
 

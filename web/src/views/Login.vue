@@ -25,7 +25,7 @@
             <circle cx="32" cy="14" r="1" fill="#c4b5fd" opacity="0.6"/>
             <circle cx="28" cy="30" r="1.2" fill="#c4b5fd" opacity="0.4"/>
           </svg>
-          <h1 class="logo-title">Moonlight Registry</h1>
+          <h1 class="logo-title">Moonlight Box</h1>
           <p class="logo-subtitle">企业级组件仓库管理平台</p>
         </div>
 

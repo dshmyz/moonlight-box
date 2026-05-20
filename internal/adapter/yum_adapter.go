@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,13 +21,51 @@ import (
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
+	"github.com/moonlight-box/registry/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 )
 
 type YumAdapter struct {
 	*BaseAdapter
 	repoRepo *repository.RepositoryRepository
+}
+
+// 路径遍历防护：检查路径是否包含危险字符或路径遍历
+func validateYumPath(path string) error {
+	// 检查空路径
+	if path == "" {
+		return fmt.Errorf("invalid yum path: empty path")
+	}
+
+	// 检查路径遍历攻击
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("invalid yum path: path traversal not allowed")
+	}
+
+	// 检查危险字符
+	dangerousPatterns := []string{
+		"~", "$", "`", "|", ";", "&", "(", ")", "<", ">", "\n", "\r", "\x00",
+	}
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(path, pattern) {
+			return fmt.Errorf("invalid yum path: dangerous character not allowed")
+		}
+	}
+
+	// 检查绝对路径
+	if strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "/repos/") {
+		return fmt.Errorf("invalid yum path: absolute path not allowed")
+	}
+
+	return nil
+}
+
+// isValidRPMFilename 验证 RPM 文件名格式
+func isValidRPMFilename(filename string) bool {
+	matched, _ := regexp.MatchString(`^[a-zA-Z0-9][a-zA-Z0-9._-]*\.rpm$`, filename)
+	return matched
 }
 
 type RepoMD struct {
@@ -123,6 +162,46 @@ type YumDependency struct {
 	Pre   bool   `xml:"pre,attr,omitempty"`
 }
 
+// FilelistsData filelists.xml.gz 结构
+type FilelistsData struct {
+	XMLName xml.Name           `xml:"filelists"`
+	Xmlns   string             `xml:"xmlns,attr"`
+	Packages []FilelistsPackage `xml:"package"`
+}
+
+type FilelistsPackage struct {
+	Name     string            `xml:"name,attr"`
+	Arch     string            `xml:"arch,attr"`
+	Version  YumVersion        `xml:"version"`
+	Files    []FilelistsFile   `xml:"file"`
+}
+
+type FilelistsFile struct {
+	Type string `xml:"type,attr"`
+	Name string `xml:",chardata"`
+}
+
+// OtherData other.xml.gz 结构
+type OtherData struct {
+	XMLName xml.Name          `xml:"otherdata"`
+	Xmlns   string            `xml:"xmlns,attr"`
+	Packages []OtherPackage   `xml:"package"`
+}
+
+type OtherPackage struct {
+	Name     string   `xml:"name,attr"`
+	Arch     string   `xml:"arch,attr"`
+	Version  YumVersion `xml:"version"`
+	Changelogs []Changelog `xml:"changelog"`
+}
+
+type Changelog struct {
+	Date  int64  `xml:"date,attr"`
+	Author string `xml:"author,attr"`
+	Version string `xml:"version,attr"`
+	Text  string `xml:",chardata"`
+}
+
 func NewYumAdapter(args ...interface{}) *YumAdapter {
 	var repoRepo *repository.RepositoryRepository
 	var storageSvc *service.StorageService
@@ -173,6 +252,12 @@ func (a *YumAdapter) Type() PackageType { return YumType }
 
 func (a *YumAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 	path = strings.Trim(path, "/")
+
+	// 路径遍历防护
+	if err := validateYumPath(path); err != nil {
+		return nil, err
+	}
+
 	if path == "" {
 		return nil, fmt.Errorf("invalid yum path: empty path")
 	}
@@ -205,12 +290,23 @@ func (a *YumAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 }
 
 func (a *YumAdapter) resolveRpmPath(path string) (*types.PackagePathInfo, error) {
+	// 路径遍历防护
+	if err := validateYumPath(path); err != nil {
+		return nil, err
+	}
+
 	parts := strings.Split(path, "/")
 	if len(parts) < 2 {
 		return nil, fmt.Errorf("invalid yum rpm path: %s", path)
 	}
 
 	filename := parts[len(parts)-1]
+
+	// 验证 RPM 文件名格式
+	if !isValidRPMFilename(filename) {
+		return nil, fmt.Errorf("invalid rpm filename: %s", filename)
+	}
+
 	name := strings.TrimSuffix(filename, ".rpm")
 	version := ""
 
@@ -253,6 +349,14 @@ func (a *YumAdapter) RepoMetadata(c *gin.Context, repo string) *types.ContentRes
 }
 
 func (a *YumAdapter) RepoDataFile(c *gin.Context, repo string, filePath string) *types.ContentResult {
+	// 路径遍历防护
+	if err := validateYumPath(filePath); err != nil {
+		return &types.ContentResult{
+			StatusCode: 400,
+			ExtraData:  map[string]interface{}{"message": err.Error()},
+		}
+	}
+
 	storageKey := fmt.Sprintf("repos/%s/repodata/%s", repo, filePath)
 
 	backend := a.storageSvc.GetDefaultBackend()
@@ -264,6 +368,27 @@ func (a *YumAdapter) RepoDataFile(c *gin.Context, repo string, filePath string) 
 		if strings.HasSuffix(filePath, ".gz") {
 			contentType = "application/gzip"
 		}
+
+		// 读取内容用于计算 ETag
+		body, readErr := io.ReadAll(content)
+		if readErr == nil {
+			etag := util.GenerateETag(body)
+			lastModified := time.Now().UTC().Format(time.RFC1123)
+
+			return &types.ContentResult{
+				Content:     io.NopCloser(bytes.NewReader(body)),
+				Size:        int64(len(body)),
+				ContentType: contentType,
+				StatusCode:  200,
+				Headers: map[string]string{
+					"ETag":          etag,
+					"Last-Modified": lastModified,
+					"Cache-Control": "public, max-age=86400",
+				},
+			}
+		}
+
+		// 回退：如果无法读取内容
 		return &types.ContentResult{
 			Content:     content,
 			Size:        size,
@@ -279,6 +404,14 @@ func (a *YumAdapter) RepoDataFile(c *gin.Context, repo string, filePath string) 
 }
 
 func (a *YumAdapter) DownloadRPM(c *gin.Context, repoName string, filePath string) *types.ContentResult {
+	// 路径遍历防护
+	if err := validateYumPath(filePath); err != nil {
+		return &types.ContentResult{
+			StatusCode: 400,
+			ExtraData:  map[string]interface{}{"message": err.Error()},
+		}
+	}
+
 	storageKey := fmt.Sprintf("repos/%s/Packages/%s", repoName, filePath)
 
 	backend := a.storageSvc.GetDefaultBackend()
@@ -291,22 +424,30 @@ func (a *YumAdapter) DownloadRPM(c *gin.Context, repoName string, filePath strin
 	}
 	defer content.Close()
 
-	size, err := backend.Size(c.Request.Context(), storageKey)
-	if err != nil {
+	// 读取内容用于计算 ETag
+	body, readErr := io.ReadAll(content)
+	if readErr != nil {
 		return &types.ContentResult{
-			StatusCode: 404,
-			ExtraData:  map[string]interface{}{"message": "RPM not found"},
+			StatusCode: 500,
+			ExtraData:  map[string]interface{}{"message": "failed to read content"},
 		}
 	}
+
+	// 生成 ETag（基于内容 SHA256）
+	etag := util.GenerateETag(body)
+	lastModified := time.Now().UTC().Format(time.RFC1123)
 
 	filename := filepath.Base(filePath)
 	headers := map[string]string{
 		"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, filename),
+		"ETag":                etag,
+		"Last-Modified":       lastModified,
+		"Cache-Control":       "public, max-age=86400",
 	}
 
 	return &types.ContentResult{
-		Content:     content,
-		Size:        size,
+		Content:     io.NopCloser(bytes.NewReader(body)),
+		Size:        int64(len(body)),
 		ContentType: "application/x-rpm",
 		StatusCode:  200,
 		Headers:     headers,
@@ -458,6 +599,12 @@ func (a *YumAdapter) ParseIntent(path string, method string) *types.RequestInten
 func (a *YumAdapter) HandleGet(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
 	path := strings.TrimPrefix(intent.Path, "/")
 
+	// 提取请求头用于缓存协商
+	reqHeaders := make(map[string]string)
+	if v, ok := intent.Extra["If-None-Match"].(string); ok {
+		reqHeaders["If-None-Match"] = v
+	}
+
 	// Proxy repo: fetch all content from remote upstream
 	if repo.Type == model.RepoTypeProxy && a.fetcher != nil {
 		remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), path)
@@ -475,12 +622,12 @@ func (a *YumAdapter) HandleGet(ctx context.Context, repo *model.Repository, inte
 
 	if strings.HasPrefix(path, "repodata/") {
 		filePath := strings.TrimPrefix(path, "repodata/")
-		return a.repoDataFile(ctx, repo.Name, filePath)
+		return a.repoDataFile(ctx, repo.Name, filePath, reqHeaders)
 	}
 
 	if strings.HasPrefix(path, "Packages/") {
 		filePath := strings.TrimPrefix(path, "Packages/")
-		return a.downloadRPM(ctx, repo.Name, filePath)
+		return a.downloadRPM(ctx, repo.Name, filePath, reqHeaders)
 	}
 
 	// Generic storage access
@@ -507,7 +654,15 @@ func (a *YumAdapter) HandleGet(ctx context.Context, repo *model.Repository, inte
 }
 
 // repoDataFile 获取 repodata 文件（不依赖 gin.Context）
-func (a *YumAdapter) repoDataFile(ctx context.Context, repo string, filePath string) (*types.ContentResult, error) {
+func (a *YumAdapter) repoDataFile(ctx context.Context, repo string, filePath string, reqHeaders map[string]string) (*types.ContentResult, error) {
+	// 路径遍历防护
+	if err := validateYumPath(filePath); err != nil {
+		return &types.ContentResult{
+			StatusCode: 400,
+			ExtraData:  map[string]interface{}{"message": err.Error()},
+		}, nil
+	}
+
 	storageKey := fmt.Sprintf("repos/%s/repodata/%s", repo, filePath)
 
 	backend := a.storageSvc.GetDefaultBackend()
@@ -519,6 +674,35 @@ func (a *YumAdapter) repoDataFile(ctx context.Context, repo string, filePath str
 		if strings.HasSuffix(filePath, ".gz") {
 			contentType = "application/gzip"
 		}
+
+		// 读取内容用于计算 ETag
+		body, readErr := io.ReadAll(content)
+		if readErr == nil {
+			etag := util.GenerateETag(body)
+			lastModified := time.Now().UTC().Format(time.RFC1123)
+
+			// 检查 If-None-Match 头，如果匹配则返回 304
+			if result, matched := util.CheckIfNotModified(reqHeaders, etag); matched {
+				return &types.ContentResult{
+					StatusCode: result.StatusCode,
+					Headers:    result.Headers,
+				}, nil
+			}
+
+			return &types.ContentResult{
+				Content:     io.NopCloser(bytes.NewReader(body)),
+				Size:        int64(len(body)),
+				ContentType: contentType,
+				StatusCode:  200,
+				Headers: map[string]string{
+					"ETag":          etag,
+					"Last-Modified": lastModified,
+					"Cache-Control": "public, max-age=86400",
+				},
+			}, nil
+		}
+
+		// 回退
 		return &types.ContentResult{
 			Content:     content,
 			Size:        size,
@@ -534,7 +718,15 @@ func (a *YumAdapter) repoDataFile(ctx context.Context, repo string, filePath str
 }
 
 // downloadRPM 下载 RPM 文件（不依赖 gin.Context）
-func (a *YumAdapter) downloadRPM(ctx context.Context, repoName string, filePath string) (*types.ContentResult, error) {
+func (a *YumAdapter) downloadRPM(ctx context.Context, repoName string, filePath string, reqHeaders map[string]string) (*types.ContentResult, error) {
+	// 路径遍历防护
+	if err := validateYumPath(filePath); err != nil {
+		return &types.ContentResult{
+			StatusCode: 400,
+			ExtraData:  map[string]interface{}{"message": err.Error()},
+		}, nil
+	}
+
 	storageKey := fmt.Sprintf("repos/%s/Packages/%s", repoName, filePath)
 
 	backend := a.storageSvc.GetDefaultBackend()
@@ -547,22 +739,38 @@ func (a *YumAdapter) downloadRPM(ctx context.Context, repoName string, filePath 
 	}
 	defer content.Close()
 
-	size, err := backend.Size(ctx, storageKey)
-	if err != nil {
+	// 读取内容用于计算 ETag
+	body, readErr := io.ReadAll(content)
+	if readErr != nil {
 		return &types.ContentResult{
-			StatusCode: 404,
-			ExtraData:  map[string]interface{}{"message": "RPM not found"},
+			StatusCode: 500,
+			ExtraData:  map[string]interface{}{"message": "failed to read content"},
+		}, nil
+	}
+
+	// 生成 ETag
+	etag := util.GenerateETag(body)
+	lastModified := time.Now().UTC().Format(time.RFC1123)
+
+	// 检查 If-None-Match 头，如果匹配则返回 304
+	if result, matched := util.CheckIfNotModified(reqHeaders, etag); matched {
+		return &types.ContentResult{
+			StatusCode: result.StatusCode,
+			Headers:    result.Headers,
 		}, nil
 	}
 
 	filename := filepath.Base(filePath)
 	headers := map[string]string{
 		"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, filename),
+		"ETag":                etag,
+		"Last-Modified":       lastModified,
+		"Cache-Control":       "public, max-age=86400",
 	}
 
 	return &types.ContentResult{
-		Content:     content,
-		Size:        size,
+		Content:     io.NopCloser(bytes.NewReader(body)),
+		Size:        int64(len(body)),
 		ContentType: "application/x-rpm",
 		StatusCode:  200,
 		Headers:     headers,
@@ -584,17 +792,71 @@ func (a *YumAdapter) generateRepomdXML(ctx context.Context, repo string) (string
 
 	for _, entry := range entries {
 		if strings.Contains(entry.Key, "primary.xml") {
+			// 读取文件计算 checksum
+			content, err := backend.Get(ctx, entry.Key)
+			if err == nil {
+				defer content.Close()
+				body, readErr := io.ReadAll(content)
+				if readErr == nil {
+					hash := sha256.Sum256(body)
+					checksum := hex.EncodeToString(hash[:])
+					repomd.Data = append(repomd.Data, RepoMDData{
+						Type: "primary",
+						Checksum: Checksum{
+							Type:  "sha256",
+							Value: checksum,
+						},
+						OpenChecksum: Checksum{
+							Type:  "sha256",
+							Value: checksum,
+						},
+						Location: RepoMDLocation{
+							Href: fmt.Sprintf("repodata/%s", filepath.Base(entry.Key)),
+						},
+						Size:     int64(len(body)),
+						OpenSize: int64(len(body)),
+					})
+					continue
+				}
+			}
+			// 回退：没有 checksum
 			repomd.Data = append(repomd.Data, RepoMDData{
 				Type: "primary",
 				Checksum: Checksum{
 					Type:  "sha256",
-					Value: "placeholder",
+					Value: "",
 				},
 				Location: RepoMDLocation{
 					Href: fmt.Sprintf("repodata/%s", filepath.Base(entry.Key)),
 				},
 			})
 		} else if strings.Contains(entry.Key, "filelists.xml") {
+			content, err := backend.Get(ctx, entry.Key)
+			if err == nil {
+				defer content.Close()
+				body, readErr := io.ReadAll(content)
+				if readErr == nil {
+					hash := sha256.Sum256(body)
+					checksum := hex.EncodeToString(hash[:])
+					repomd.Data = append(repomd.Data, RepoMDData{
+						Type: "filelists",
+						Checksum: Checksum{
+							Type:  "sha256",
+							Value: checksum,
+						},
+						OpenChecksum: Checksum{
+							Type:  "sha256",
+							Value: checksum,
+						},
+						Location: RepoMDLocation{
+							Href: fmt.Sprintf("repodata/%s", filepath.Base(entry.Key)),
+						},
+						Size:     int64(len(body)),
+						OpenSize: int64(len(body)),
+					})
+					continue
+				}
+			}
 			repomd.Data = append(repomd.Data, RepoMDData{
 				Type: "filelists",
 				Location: RepoMDLocation{
@@ -602,6 +864,32 @@ func (a *YumAdapter) generateRepomdXML(ctx context.Context, repo string) (string
 				},
 			})
 		} else if strings.Contains(entry.Key, "other.xml") {
+			content, err := backend.Get(ctx, entry.Key)
+			if err == nil {
+				defer content.Close()
+				body, readErr := io.ReadAll(content)
+				if readErr == nil {
+					hash := sha256.Sum256(body)
+					checksum := hex.EncodeToString(hash[:])
+					repomd.Data = append(repomd.Data, RepoMDData{
+						Type: "other",
+						Checksum: Checksum{
+							Type:  "sha256",
+							Value: checksum,
+						},
+						OpenChecksum: Checksum{
+							Type:  "sha256",
+							Value: checksum,
+						},
+						Location: RepoMDLocation{
+							Href: fmt.Sprintf("repodata/%s", filepath.Base(entry.Key)),
+						},
+						Size:     int64(len(body)),
+						OpenSize: int64(len(body)),
+					})
+					continue
+				}
+			}
 			repomd.Data = append(repomd.Data, RepoMDData{
 				Type: "other",
 				Location: RepoMDLocation{
@@ -626,10 +914,15 @@ func (a *YumAdapter) regenerateRepodata(ctx context.Context, repo string) error 
 	}
 
 	var yumPkgs []YumPackage
+	var filelistsPkgs []FilelistsPackage
+	var otherPkgs []OtherPackage
+
 	for _, pkg := range packages {
 		for _, ver := range pkg.Versions {
+			meta := unmarshalMetadata(ver.Metadata)
+
 			release := ""
-			if meta := unmarshalMetadata(ver.Metadata); meta != nil {
+			if meta != nil {
 				if r, ok := meta["release"].(string); ok {
 					release = r
 				}
@@ -640,26 +933,85 @@ func (a *YumAdapter) regenerateRepodata(ctx context.Context, repo string) error 
 				version = version + "-" + release
 			}
 
+			// 完整的版本号 (EVR: Epoch-Version-Release)
+			epoch := "0"
+			if meta != nil {
+				if e, ok := meta["epoch"].(string); ok && e != "" {
+					epoch = e
+				}
+			}
+
 			arch := "x86_64"
-			if meta := unmarshalMetadata(ver.Metadata); meta != nil {
+			if meta != nil {
 				if a, ok := meta["arch"].(string); ok {
 					arch = a
 				}
 			}
 
-			yumPkgs = append(yumPkgs, YumPackage{
+			// 构建完整的 RPM 文件名: name-version-release.arch.rpm
+			rpmFilename := fmt.Sprintf("%s-%s.%s.rpm", pkg.Name, version, arch)
+
+			// 读取 RPM 内容计算 checksum
+			storageKey := fmt.Sprintf("repos/%s/Packages/%s/%s", repo, arch, rpmFilename)
+			backend := a.storageSvc.GetDefaultBackend()
+			content, err := backend.Get(ctx, storageKey)
+			var rpmChecksum string
+			var rpmSize int64 = ver.SizeBytes
+			if err == nil {
+				defer content.Close()
+				body, readErr := io.ReadAll(content)
+				if readErr == nil {
+					hash := sha256.Sum256(body)
+					rpmChecksum = hex.EncodeToString(hash[:])
+					rpmSize = int64(len(body))
+				}
+			}
+
+			// primary.xml
+			yumPkg := YumPackage{
 				Type:    "rpm",
 				Name:    pkg.Name,
 				Arch:    arch,
-				Version: YumVersion{Ver: version},
-				Size:    YumSize{Package: ver.SizeBytes},
-				Location: YumLocation{
-					Href: fmt.Sprintf("Packages/%s", ver.Version),
+				Version: YumVersion{Epoch: epoch, Ver: ver.Version, Rel: release},
+				Checksum: YumChecksum{
+					Type: "sha256",
+					Hash: rpmChecksum,
 				},
-			})
+				Size: YumSize{Package: rpmSize},
+				Location: YumLocation{
+					// 使用完整的 RPM 文件名
+					Href: fmt.Sprintf("Packages/%s/%s", arch, rpmFilename),
+				},
+			}
+			yumPkgs = append(yumPkgs, yumPkg)
+
+			// filelists.xml
+			filelistsPkg := FilelistsPackage{
+				Name:    pkg.Name,
+				Arch:    arch,
+				Version: YumVersion{Epoch: epoch, Ver: ver.Version, Rel: release},
+			}
+			filelistsPkgs = append(filelistsPkgs, filelistsPkg)
+
+			// other.xml (changelog)
+			otherPkg := OtherPackage{
+				Name:    pkg.Name,
+				Arch:    arch,
+				Version: YumVersion{Epoch: epoch, Ver: ver.Version, Rel: release},
+				Changelogs: []Changelog{
+					{
+						Date:    time.Now().Unix(),
+						Author:  "packager",
+						Version: ver.Version,
+						Text:    fmt.Sprintf("Package %s-%s released", pkg.Name, version),
+					},
+				},
+			}
+			otherPkgs = append(otherPkgs, otherPkg)
 		}
 	}
 
+	// 生成 primary.xml.gz
 	primaryData := PrimaryData{
 		Xmlns:    "http://linux.duke.edu/metadata/repo",
 		XmlnsRpm: "http://linux.duke.edu/metadata/rpm",
@@ -671,25 +1023,89 @@ func (a *YumAdapter) regenerateRepodata(ctx context.Context, repo string) error 
 		return err
 	}
 
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	if _, err := gz.Write(primaryXML); err != nil {
-		return err
-	}
-	if err := gz.Close(); err != nil {
+	primaryBuf, err := compressXML(primaryXML)
+	if err != nil {
 		return err
 	}
 
-	checksum := sha256.Sum256(buf.Bytes())
-	primaryFilename := fmt.Sprintf("%s-primary.xml.gz", hex.EncodeToString(checksum[:8]))
+	primaryChecksum := sha256.Sum256(primaryBuf)
+	primaryFilename := fmt.Sprintf("%s-primary.xml.gz", hex.EncodeToString(primaryChecksum[:8]))
+	primaryChecksumValue := hex.EncodeToString(primaryChecksum[:])
 
 	backend := a.storageSvc.GetDefaultBackend()
 	repodataDir := fmt.Sprintf("repos/%s/repodata/", repo)
-	if err := backend.Put(ctx, repodataDir+primaryFilename, bytes.NewReader(buf.Bytes()), int64(buf.Len())); err != nil {
+	if err := backend.Put(ctx, repodataDir+primaryFilename, bytes.NewReader(primaryBuf), int64(len(primaryBuf))); err != nil {
 		return err
 	}
 
+	logrus.Infof("Generated primary.xml.gz: %s, checksum: %s", primaryFilename, primaryChecksumValue)
+
+	// 生成 filelists.xml.gz
+	filelistsData := FilelistsData{
+		Xmlns:   "http://linux.duke.edu/metadata/filelists",
+		Packages: filelistsPkgs,
+	}
+
+	filelistsXML, err := xml.MarshalIndent(filelistsData, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	filelistsBuf, err := compressXML(filelistsXML)
+	if err != nil {
+		return err
+	}
+
+	filelistsChecksum := sha256.Sum256(filelistsBuf)
+	filelistsFilename := fmt.Sprintf("%s-filelists.xml.gz", hex.EncodeToString(filelistsChecksum[:8]))
+	filelistsChecksumValue := hex.EncodeToString(filelistsChecksum[:])
+
+	if err := backend.Put(ctx, repodataDir+filelistsFilename, bytes.NewReader(filelistsBuf), int64(len(filelistsBuf))); err != nil {
+		return err
+	}
+
+	logrus.Infof("Generated filelists.xml.gz: %s, checksum: %s", filelistsFilename, filelistsChecksumValue)
+
+	// 生成 other.xml.gz
+	otherData := OtherData{
+		Xmlns:   "http://linux.duke.edu/metadata/other",
+		Packages: otherPkgs,
+	}
+
+	otherXML, err := xml.MarshalIndent(otherData, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	otherBuf, err := compressXML(otherXML)
+	if err != nil {
+		return err
+	}
+
+	otherChecksum := sha256.Sum256(otherBuf)
+	otherFilename := fmt.Sprintf("%s-other.xml.gz", hex.EncodeToString(otherChecksum[:8]))
+	otherChecksumValue := hex.EncodeToString(otherChecksum[:])
+
+	if err := backend.Put(ctx, repodataDir+otherFilename, bytes.NewReader(otherBuf), int64(len(otherBuf))); err != nil {
+		return err
+	}
+
+	logrus.Infof("Generated other.xml.gz: %s, checksum: %s", otherFilename, otherChecksumValue)
+
 	return nil
+}
+
+// compressXML gzip 压缩 XML 数据
+func compressXML(xmlData []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(xmlData); err != nil {
+		return nil, err
+	}
+	if err := gz.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func detectRpmArch(filename string) string {

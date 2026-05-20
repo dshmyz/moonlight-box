@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/semaphore"
 	"github.com/moonlight-box/registry/internal/metrics"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
@@ -19,15 +18,24 @@ import (
 	"github.com/moonlight-box/registry/internal/types"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
 )
 
 // PyPI CDN path resolver cache.
 // Maps "filename" -> "hash_prefix1/hash_prefix2/full_hash/filename"
 var (
-	pypiCDNPathCache   = make(map[string]string)
+	pypiCDNPathCache   = make(map[string]pypiCDNCacheEntry)
 	pypiCDNPathCacheMu sync.RWMutex
+	pypiCDNCacheMax    = 50000
 )
+
+type pypiCDNCacheEntry struct {
+	url      string
+	expireAt time.Time
+}
+
+const pypiCDNCacheTTL = 1 * time.Hour
 
 // resolvePyPIRemoteURL resolves a PyPI filename to a full download URL through the configured proxy.
 // Instead of hardcoding files.pythonhosted.org, it queries the upstream simple index via the proxy
@@ -48,11 +56,11 @@ func resolvePyPIRemoteURL(fetcher proxy.ProxyFetcher, downloadCtx *types.Downloa
 
 	// Check cache first
 	pypiCDNPathCacheMu.RLock()
-	if cached, ok := pypiCDNPathCache[filename]; ok {
-		pypiCDNPathCacheMu.RUnlock()
-		return cached
-	}
+	entry, ok := pypiCDNPathCache[filename]
 	pypiCDNPathCacheMu.RUnlock()
+	if ok && time.Now().Before(entry.expireAt) {
+		return entry.url
+	}
 
 	pkgName := pathInfo.Name
 	if pkgName == "" {
@@ -101,7 +109,16 @@ func resolvePyPIRemoteURL(fetcher proxy.ProxyFetcher, downloadCtx *types.Downloa
 
 			// Cache the result
 			pypiCDNPathCacheMu.Lock()
-			pypiCDNPathCache[filename] = fullURL
+			if len(pypiCDNPathCache) >= pypiCDNCacheMax {
+				// Evict expired entries
+				now := time.Now()
+				for k, v := range pypiCDNPathCache {
+					if now.After(v.expireAt) {
+						delete(pypiCDNPathCache, k)
+					}
+				}
+			}
+			pypiCDNPathCache[filename] = pypiCDNCacheEntry{url: fullURL, expireAt: time.Now().Add(pypiCDNCacheTTL)}
 			pypiCDNPathCacheMu.Unlock()
 
 			return fullURL
@@ -175,18 +192,20 @@ func (s *DownloadService) Download(ctx context.Context, downloadCtx *types.Downl
 	}
 
 	backendID := storageBackendID(downloadCtx.Repo)
+	contentType := resolveDownloadContentType(downloadCtx.PkgType, pathInfo.Filename)
 	if content, size, err := s.storageSvc.GetPackageWithBackend(ctx, downloadCtx.Repo.Name, string(downloadCtx.PkgType), pathInfo.StorageName, pathInfo.StorageVersion, backendID); err == nil {
 		s.recordLog(downloadCtx, size, time.Since(startTime), true, nil)
 		s.incrementDownloadCount(ctx, downloadCtx)
 
 		return &types.DownloadResult{
-			Content:   content,
-			Size:      size,
-			FromCache: true,
-			RepoID:    downloadCtx.Repo.ID,
-			Name:      pathInfo.Name,
-			Version:   pathInfo.Version,
-			Filename:  pathInfo.Filename,
+			Content:     content,
+			Size:        size,
+			FromCache:   true,
+			RepoID:      downloadCtx.Repo.ID,
+			Name:        pathInfo.Name,
+			Version:     pathInfo.Version,
+			Filename:    pathInfo.Filename,
+			ContentType: contentType,
 		}, nil
 	}
 
@@ -203,6 +222,8 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 		s.recordLog(downloadCtx, 0, time.Since(startTime), false, fmt.Errorf("fetcher not configured"))
 		return nil, fmt.Errorf("fetcher not configured")
 	}
+
+	contentType := resolveDownloadContentType(downloadCtx.PkgType, pathInfo.Filename)
 
 	// For PyPI: resolve CDN path from filename via upstream simple index.
 	var remoteURL string
@@ -297,27 +318,74 @@ func (s *DownloadService) downloadFromProxy(ctx context.Context, downloadCtx *ty
 		s.recordLog(downloadCtx, storedSize, time.Since(startTime), !outcome.fromRemote, nil)
 		s.incrementDownloadCount(ctx, downloadCtx)
 		return &types.DownloadResult{
-			Content:   storedContent,
-			Size:      storedSize,
-			FromCache: !outcome.fromRemote,
-			RepoID:    outcome.repoID,
-			Name:      pathInfo.Name,
-			Version:   pathInfo.Version,
-			Filename:  pathInfo.Filename,
+			Content:     storedContent,
+			Size:        storedSize,
+			FromCache:   !outcome.fromRemote,
+			RepoID:      outcome.repoID,
+			Name:        pathInfo.Name,
+			Version:     pathInfo.Version,
+			Filename:    pathInfo.Filename,
+			ContentType: contentType,
 		}, nil
 	}
 
 	s.recordLog(downloadCtx, outcome.size, time.Since(startTime), false, nil)
 	s.incrementDownloadCount(ctx, downloadCtx)
 	return &types.DownloadResult{
-		Content:   io.NopCloser(bytes.NewReader(outcome.contentBytes)),
-		Size:      outcome.size,
-		FromCache: false,
-		RepoID:    outcome.repoID,
-		Name:      pathInfo.Name,
-		Version:   pathInfo.Version,
-		Filename:  pathInfo.Filename,
+		Content:     io.NopCloser(bytes.NewReader(outcome.contentBytes)),
+		Size:        outcome.size,
+		FromCache:   false,
+		RepoID:      outcome.repoID,
+		Name:        pathInfo.Name,
+		Version:     pathInfo.Version,
+		Filename:    pathInfo.Filename,
+		ContentType: contentType,
 	}, nil
+}
+
+func resolveDownloadContentType(pkgType model.PackageType, filename string) string {
+	switch pkgType {
+	case model.PackageTypeGo:
+		if strings.HasSuffix(filename, ".info") {
+			return "application/json"
+		}
+		if strings.HasSuffix(filename, ".mod") {
+			return "text/plain; charset=utf-8"
+		}
+		if strings.HasSuffix(filename, ".zip") {
+			return "application/zip"
+		}
+		return "application/octet-stream"
+	case model.PackageTypeMaven:
+		ext := strings.ToLower(filename)
+		if strings.HasSuffix(ext, ".pom") || strings.HasSuffix(ext, ".xml") {
+			return "application/xml"
+		}
+		if strings.HasSuffix(ext, ".jar") {
+			return "application/java-archive"
+		}
+		if strings.HasSuffix(ext, ".war") {
+			return "application/java-archive"
+		}
+		if strings.HasSuffix(ext, ".aar") {
+			return "application/java-archive"
+		}
+		if strings.HasSuffix(ext, ".sha1") || strings.HasSuffix(ext, ".sha256") || strings.HasSuffix(ext, ".md5") {
+			return "text/plain"
+		}
+		return "application/octet-stream"
+	case model.PackageTypePyPI:
+		ext := strings.ToLower(filename)
+		if strings.HasSuffix(ext, ".whl") {
+			return "application/octet-stream"
+		}
+		if strings.HasSuffix(ext, ".tar.gz") || strings.HasSuffix(ext, ".tgz") {
+			return "application/gzip"
+		}
+		return "application/octet-stream"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func storageBackendID(repo *model.Repository) uint {

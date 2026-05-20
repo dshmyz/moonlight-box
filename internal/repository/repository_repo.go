@@ -76,7 +76,9 @@ func (r *RepositoryRepository) ListContext(ctx context.Context, filter map[strin
 	if enabled, ok := filter["enabled"]; ok {
 		query = query.Where("enabled = ?", enabled)
 	}
-
+	if publicVisible, ok := filter["public_visible"]; ok {
+		query = query.Where("public_visible = ?", publicVisible)
+	}
 	err := query.Order("created_at DESC").Find(&repos).Error
 	return repos, err
 }

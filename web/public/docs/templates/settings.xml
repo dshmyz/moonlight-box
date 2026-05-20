@@ -13,7 +13,7 @@
     <mirror>
       <id>moonlight</id>
       <mirrorOf>central</mirrorOf>
-      <url>https://your-moonlight-domain/repo/maven-virtual/</url>
+      <url>https://your-moonlight-domain/repository/maven-virtual/</url>
     </mirror>
   </mirrors>
 </settings>

@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +26,53 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// PyPI 路径遍历防护：检查路径是否包含危险字符或路径遍历
+func validatePyPIPath(path string) error {
+	// 检查空路径
+	if path == "" {
+		return fmt.Errorf("invalid pypi path: empty path")
+	}
+
+	// 检查路径遍历攻击
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("invalid pypi path: path traversal not allowed")
+	}
+
+	// 检查危险字符
+	dangerousPatterns := []string{
+		"~", "$", "`", "|", ";", "&", "(", ")", "<", ">", "\n", "\r", "\x00",
+	}
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(path, pattern) {
+			return fmt.Errorf("invalid pypi path: dangerous character not allowed")
+		}
+	}
+
+	return nil
+}
+
+// isValidWheelFilename 验证 wheel 文件名格式 (PEP 427)
+func isValidWheelFilename(filename string) bool {
+	// Wheel filename: {distribution}-{version}(-{build tag})?-{python tag}-{abi tag}-{platform tag}.whl
+	// 示例: my_package-1.0-py3-none-any.whl
+	wheelPattern := regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*-[A-Za-z0-9_.-]+-py[0-9]+-[a-z]+-[a-z0-9_]+(-[A-Za-z0-9_]+)?\.whl$`)
+	return wheelPattern.MatchString(filename)
+}
+
+// isValidSdistFilename 验证 source distribution 文件名格式 (PEP 625)
+func isValidSdistFilename(filename string) bool {
+	// Source distribution: {distribution}-{version}.tar.gz / .tar.bz2 / .zip
+	sdistPattern := regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*-[A-Za-z0-9_.-]+\.(tar\.gz|tar\.bz2|zip)$`)
+	return sdistPattern.MatchString(filename)
+}
+
+// isValidPyPIFilename 验证 PyPI 包文件名格式
+func isValidPyPIFilename(filename string) bool {
+	return isValidWheelFilename(filename) || isValidSdistFilename(filename)
+}
+
+var pypiNameExtractRe = regexp.MustCompile(`-\d+.*$`)
 
 func parsePyPIDepName(raw string) string {
 	raw = strings.TrimSpace(raw)
@@ -147,6 +196,12 @@ func (a *PyPIAdapter) Type() PackageType { return PyPIType }
 
 func (a *PyPIAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 	path = strings.Trim(path, "/")
+
+	// 路径遍历防护
+	if err := validatePyPIPath(path); err != nil {
+		return nil, err
+	}
+
 	if path == "" {
 		return nil, fmt.Errorf("invalid pypi path: empty path")
 	}
@@ -175,9 +230,15 @@ func (a *PyPIAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 
 	if parts[0] == "packages" {
 		filename := parts[len(parts)-1]
+
+		// 验证包文件名格式
+		if !isValidPyPIFilename(filename) {
+			return nil, fmt.Errorf("invalid pypi package filename: %s", filename)
+		}
+
 		name := strings.TrimSuffix(filename, ".whl")
 		name = strings.TrimSuffix(name, ".tar.gz")
-		name = regexp.MustCompile(`-\d+.*$`).ReplaceAllString(name, "")
+		name = pypiNameExtractRe.ReplaceAllString(name, "")
 
 		return &types.PackagePathInfo{
 			Name:           name,
@@ -212,6 +273,32 @@ func (a *PyPIAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 	}
 
 	return nil, fmt.Errorf("invalid pypi path: %s", path)
+}
+
+// pypiBaseURLFromContext returns the base URL for PyPI package file download links.
+// It first checks the context for a virtual repo base URL, then falls back to the member repo name.
+func pypiBaseURLFromContext(ctx context.Context, repo *model.Repository) string {
+	if baseURL := BaseURLFromContext(ctx, nil); baseURL != "" {
+		return baseURL + "/packages/"
+	}
+	if repo != nil {
+		return fmt.Sprintf("/repository/%s/packages/", repo.Name)
+	}
+	return "/packages/"
+}
+
+// pypiSimplePrefixFromContext returns the URL prefix for PyPI simple index links.
+func pypiSimplePrefixFromContext(ctx context.Context) string {
+	if baseURL := BaseURLFromContext(ctx, nil); baseURL != "" {
+		return baseURL + "/pypi/simple/"
+	}
+	// Extract repo name from context if available
+	if repoVal := ctx.Value("repo"); repoVal != nil {
+		if repo, ok := repoVal.(*model.Repository); ok {
+			return fmt.Sprintf("/repository/%s/pypi/simple/", repo.Name)
+		}
+	}
+	return "/pypi/simple/"
 }
 
 // ListPackages 列出包列表。根据仓库类型返回不同结果：
@@ -263,7 +350,8 @@ func (a *PyPIAdapter) listPackagesFromUpstream(ctx context.Context, repo *model.
 
 	// 重写上游 HTML 中的下载链接
 	if strings.HasPrefix(contentType, "text/html") {
-		body = RewritePyPIHTML(body, repo)
+		baseURL := pypiBaseURLFromContext(ctx, repo)
+		body = RewritePyPIHTML(body, baseURL)
 	}
 
 	return &types.ContentResult{
@@ -285,11 +373,14 @@ func (a *PyPIAdapter) listPackagesJSON(ctx context.Context) (*types.ContentResul
 		URL  string `json:"url"`
 	}
 
+	// Build simple index prefix from context (virtual repo) or use default
+	simplePrefix := pypiSimplePrefixFromContext(ctx)
+
 	result := make([]project, len(packages))
 	for i, pkg := range packages {
 		result[i] = project{
 			Name: normalizePackageName(pkg.Name),
-			URL:  fmt.Sprintf("/pypi/simple/%s/", normalizePackageName(pkg.Name)),
+			URL:  simplePrefix + normalizePackageName(pkg.Name) + "/",
 		}
 	}
 
@@ -306,12 +397,16 @@ func (a *PyPIAdapter) listPackagesHTML(ctx context.Context) (*types.ContentResul
 		return nil, err
 	}
 
+	// Build simple index prefix from context (virtual repo) or use default
+	simplePrefix := pypiSimplePrefixFromContext(ctx)
+
 	var sb strings.Builder
 	sb.Grow(100 + len(packages)*80)
 	sb.WriteString("<!DOCTYPE html>\n<html><head><title>Simple Index</title></head><body>\n")
 	for _, pkg := range packages {
 		normalized := normalizePackageName(pkg.Name)
-		sb.WriteString(`<a href="/pypi/simple/`)
+		sb.WriteString(`<a href="`)
+		sb.WriteString(simplePrefix)
 		sb.WriteString(normalized)
 		sb.WriteString(`/">`)
 		sb.WriteString(normalized)
@@ -344,13 +439,13 @@ func (a *PyPIAdapter) PackageFiles(ctx context.Context, acceptHeader string, pkg
 			cacheKey = "simple/" + pkgName + "/json"
 		}
 
-		content, _, err := a.metaCache.GetOrFetch(context.Background(), repo.Name, "pypi", cacheKey, ttl, func() (io.ReadCloser, int64, error) {
+		content, _, err := a.metaCache.GetOrFetch(ctx, repo.Name, "pypi", cacheKey, ttl, func() (io.ReadCloser, int64, error) {
 			pathInfo, pathErr := a.ParsePath("simple/" + pkgName + "/")
 			if pathErr != nil {
 				return nil, 0, pathErr
 			}
 			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-			result, fetchErr := a.fetcher.FetchFromRemote(context.Background(), repo, remoteURL)
+			result, fetchErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
 			if fetchErr != nil {
 				return nil, 0, fetchErr
 			}
@@ -363,9 +458,9 @@ func (a *PyPIAdapter) PackageFiles(ctx context.Context, acceptHeader string, pkg
 				return nil, readErr
 			}
 			if strings.HasPrefix(contentType, "text/html") {
-				raw = RewritePyPIHTML(raw, repo)
+				raw = RewritePyPIHTML(raw, pypiBaseURLFromContext(ctx, repo))
 			} else {
-				raw = RewritePyPIJSON(raw, repo)
+				raw = RewritePyPIJSON(raw, pypiBaseURLFromContext(ctx, repo))
 			}
 			return &types.ContentResult{
 				StatusCode:  200,
@@ -389,12 +484,12 @@ func (a *PyPIAdapter) packageFilesJSON(ctx context.Context, pkgName string, repo
 			if a.fetcher != nil && repo != nil {
 				pathInfo, _ := a.ParsePath("simple/" + pkgName + "/")
 				remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-				result, resolveErr := a.fetcher.FetchFromRemote(context.Background(), repo, remoteURL)
+				result, resolveErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
 				if resolveErr == nil && result != nil {
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
 					if readErr == nil {
-						body = RewritePyPIJSON(body, repo)
+						body = RewritePyPIJSON(body, pypiBaseURLFromContext(ctx, repo))
 						return &types.ContentResult{
 							StatusCode:  200,
 							ContentType: "application/vnd.pypi.simple.v1+json",
@@ -409,26 +504,60 @@ func (a *PyPIAdapter) packageFilesJSON(ctx context.Context, pkgName string, repo
 		return nil, err
 	}
 
+	// 按 PEP 691 格式构建文件列表
 	type file struct {
-		URL      string `json:"url"`
-		Filename string `json:"filename"`
+		URL         string `json:"url"`
+		Filename    string `json:"filename"`
+		Hashes      map[string]string `json:"hashes,omitempty"`
+		Size        int64  `json:"size,omitempty"`
+		UploadTime  string `json:"upload-time,omitempty"`
+		Packagetype string `json:"packagetype,omitempty"`
 	}
 
 	files := make([]file, 0)
+	pkgBaseURL := pypiBaseURLFromContext(ctx, repo)
 	for _, ver := range pkg.Versions {
-		files = append(files, file{
-			URL:      fmt.Sprintf("/pypi/packages/%s", filepath.Base(ver.Version)),
-			Filename: filepath.Base(ver.Version),
-		})
+		for _, f := range ver.Files {
+			if f.Filename == "" {
+				continue
+			}
+			hashes := make(map[string]string)
+			if f.ChecksumSHA256 != "" {
+				hashes["sha256"] = f.ChecksumSHA256
+			}
+			if f.ChecksumMD5 != "" {
+				hashes["md5"] = f.ChecksumMD5
+			}
+
+			files = append(files, file{
+				URL:         pkgBaseURL + f.Filename,
+				Filename:    f.Filename,
+				Hashes:     hashes,
+				Size:        f.SizeBytes,
+				UploadTime:  ver.PublishedAt.Format("2006-01-02T15:04:05"),
+			})
+		}
 	}
+
+	responseJSON, _ := json.Marshal(gin.H{
+		"meta": gin.H{
+			"api-version": "1.0",
+		},
+		"files": files,
+	})
+	hash := sha256.Sum256(responseJSON)
+	etag := fmt.Sprintf(`"%x"`, hash)
+	lastModified := time.Now().UTC().Format(time.RFC1123)
 
 	return &types.ContentResult{
 		StatusCode: 200,
-		ExtraData: gin.H{
-			"files": files,
-			"meta": gin.H{
-				"api-version": "1.0",
-			},
+		ContentType: "application/vnd.pypi.simple.v1+json",
+		Content:     io.NopCloser(bytes.NewReader(responseJSON)),
+		Size:        int64(len(responseJSON)),
+		Headers: map[string]string{
+			"ETag":          etag,
+			"Last-Modified": lastModified,
+			"Cache-Control": "public, max-age=86400",
 		},
 	}, nil
 }
@@ -440,12 +569,12 @@ func (a *PyPIAdapter) packageFilesHTML(ctx context.Context, pkgName string, repo
 			if a.fetcher != nil && repo != nil {
 				pathInfo, _ := a.ParsePath("simple/" + pkgName + "/")
 				remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-				result, resolveErr := a.fetcher.FetchFromRemote(context.Background(), repo, remoteURL)
+				result, resolveErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
 				if resolveErr == nil && result != nil {
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
 					if readErr == nil {
-						body = RewritePyPIHTML(body, repo)
+						body = RewritePyPIHTML(body, pypiBaseURLFromContext(ctx, repo))
 						return &types.ContentResult{
 							StatusCode:  200,
 							ContentType: "text/html",
@@ -475,7 +604,9 @@ func (a *PyPIAdapter) packageFilesHTML(ctx context.Context, pkgName string, repo
 			if filename == "" {
 				continue
 			}
-			sb.WriteString(`<a href="/pypi/packages/`)
+			baseURL := pypiBaseURLFromContext(ctx, repo)
+			sb.WriteString(`<a href="`)
+			sb.WriteString(baseURL)
 			sb.WriteString(filename)
 			sb.WriteString(`">`)
 			sb.WriteString(filename)
@@ -484,16 +615,33 @@ func (a *PyPIAdapter) packageFilesHTML(ctx context.Context, pkgName string, repo
 	}
 	sb.WriteString("</body></html>")
 
+	content := sb.String()
+
+	// 计算 ETag
+	hash := sha256.Sum256([]byte(content))
+	etag := fmt.Sprintf(`"%x"`, hash)
+	lastModified := time.Now().UTC().Format(time.RFC1123)
+
 	return &types.ContentResult{
 		StatusCode:  200,
 		ContentType: "text/html",
-		Content:     io.NopCloser(strings.NewReader(sb.String())),
-		Size:        int64(sb.Len()),
+		Content:     io.NopCloser(strings.NewReader(content)),
+		Size:        int64(len(content)),
+		Headers: map[string]string{
+			"ETag":          etag,
+			"Last-Modified": lastModified,
+			"Cache-Control": "public, max-age=86400",
+		},
 	}, nil
 }
 
 func (a *PyPIAdapter) DownloadPackage(filename string, repo *model.Repository, ctx context.Context) (*types.ContentResult, error) {
 	slog.Info("DownloadPackage called", "filename", filename)
+
+	// 路径遍历防护
+	if err := validatePyPIPath(filename); err != nil {
+		return nil, fmt.Errorf("invalid filename: %v", err)
+	}
 
 	if strings.HasSuffix(filename, ".sha256") {
 		return a.handleChecksumRequest(filename, repo, ctx)
@@ -506,19 +654,37 @@ func (a *PyPIAdapter) DownloadPackage(filename string, repo *model.Repository, c
 		return nil, fmt.Errorf("invalid filename: unable to parse package name from filename")
 	}
 
-	content, size, err := a.storageSvc.GetPackageWithBackend(ctx, repo.Name, "pypi", name, actualFilename, repositoryStorageBackendID(repo))
+	content, _, err := a.storageSvc.GetPackageWithBackend(ctx, repo.Name, "pypi", name, actualFilename, repositoryStorageBackendID(repo))
 	if err == nil {
+		defer content.Close()
+
+		// 读取内容用于计算 ETag
+		body, readErr := io.ReadAll(content)
+		if readErr != nil {
+			return nil, fmt.Errorf("failed to read content: %v", readErr)
+		}
+
+		// 生成 ETag（基于内容 SHA256）
+		hash := sha256.Sum256(body)
+		etag := fmt.Sprintf(`"%x"`, hash)
+		lastModified := time.Now().UTC().Format(time.RFC1123)
+
 		contentType := a.storageSvc.GetContentType(actualFilename)
 		return &types.ContentResult{
 			StatusCode:  200,
 			ContentType: contentType,
-			Content:     content,
-			Size:        size,
-			Headers:     map[string]string{"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, actualFilename)},
+			Content:     io.NopCloser(bytes.NewReader(body)),
+			Size:        int64(len(body)),
+			Headers: map[string]string{
+				"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, actualFilename),
+				"ETag":               etag,
+				"Last-Modified":      lastModified,
+				"Cache-Control":      "public, max-age=86400",
+			},
 		}, nil
 	}
 
-	if a.fetcher != nil && repo != nil && repo.Type == "proxy" {
+	if a.fetcher != nil && repo != nil && repo.Type == model.RepoTypeProxy {
 		slog.Info("PyPI proxy: fetching from remote", "filename", actualFilename, "name", name)
 		pathInfo, pathErr := a.ParsePath("packages/" + actualFilename)
 		if pathErr != nil {
@@ -529,6 +695,30 @@ func (a *PyPIAdapter) DownloadPackage(filename string, repo *model.Repository, c
 			result, fetchErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
 			if fetchErr == nil && result != nil {
 				slog.Info("PyPI proxy: successfully fetched from remote", "filename", actualFilename, "size", result.Size)
+
+				// 读取内容用于计算 ETag
+				body, readErr := io.ReadAll(result.Content)
+				result.Content.Close()
+				if readErr == nil {
+					hash := sha256.Sum256(body)
+					etag := fmt.Sprintf(`"%x"`, hash)
+					lastModified := time.Now().UTC().Format(time.RFC1123)
+
+					contentType := a.storageSvc.GetContentType(actualFilename)
+					return &types.ContentResult{
+						StatusCode:  200,
+						ContentType: contentType,
+						Content:     io.NopCloser(bytes.NewReader(body)),
+						Size:        int64(len(body)),
+						Headers: map[string]string{
+							"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, actualFilename),
+							"ETag":               etag,
+							"Last-Modified":      lastModified,
+							"Cache-Control":      "public, max-age=86400",
+						},
+					}, nil
+				}
+
 				contentType := a.storageSvc.GetContentType(actualFilename)
 				return &types.ContentResult{
 					StatusCode:  200,
@@ -546,6 +736,11 @@ func (a *PyPIAdapter) DownloadPackage(filename string, repo *model.Repository, c
 }
 
 func (a *PyPIAdapter) handleChecksumRequest(filename string, repo *model.Repository, ctx context.Context) (*types.ContentResult, error) {
+	// 路径遍历防护
+	if err := validatePyPIPath(filename); err != nil {
+		return nil, fmt.Errorf("invalid filename: %v", err)
+	}
+
 	// 移除 .sha256 后缀获取实际文件名
 	actualFilename := strings.TrimSuffix(filename, ".sha256")
 
@@ -557,6 +752,7 @@ func (a *PyPIAdapter) handleChecksumRequest(filename string, repo *model.Reposit
 
 	// 获取第一个匹配的文件
 	file := files[0]
+	var checksum string
 	if file.ChecksumSHA256 == "" {
 		// 如果数据库中没有校验和，尝试从存储中读取文件并计算
 		name, _ := parseWheelFilename(actualFilename)
@@ -577,23 +773,27 @@ func (a *PyPIAdapter) handleChecksumRequest(filename string, repo *model.Reposit
 		}
 
 		hash := sha256.Sum256(body)
-		checksum := hex.EncodeToString(hash[:])
-
-		// 返回校验和
-		return &types.ContentResult{
-			StatusCode:  200,
-			ContentType: "text/plain",
-			Content:     io.NopCloser(bytes.NewReader([]byte(checksum))),
-			Size:        int64(len(checksum)),
-		}, nil
+		checksum = hex.EncodeToString(hash[:])
+	} else {
+		checksum = file.ChecksumSHA256
 	}
 
-	// 返回数据库中的校验和
+	// 生成 ETag
+	hash := sha256.Sum256([]byte(checksum))
+	etag := fmt.Sprintf(`"%x"`, hash)
+	lastModified := time.Now().UTC().Format(time.RFC1123)
+
+	// 返回校验和
 	return &types.ContentResult{
 		StatusCode:  200,
 		ContentType: "text/plain",
-		Content:     io.NopCloser(bytes.NewReader([]byte(file.ChecksumSHA256))),
-		Size:        int64(len(file.ChecksumSHA256)),
+		Content:     io.NopCloser(bytes.NewReader([]byte(checksum))),
+		Size:        int64(len(checksum)),
+		Headers: map[string]string{
+			"ETag":          etag,
+			"Last-Modified": lastModified,
+			"Cache-Control": "public, max-age=86400",
+		},
 	}, nil
 }
 
@@ -666,45 +866,157 @@ func (a *PyPIAdapter) JSONAPI(pkgName string, version string, repo *model.Reposi
 		return nil, err
 	}
 
-	var versionInfo *model.PackageVersion
+	// 构建完整的 releases 字段（符合 PEP 658 规范）
+	// releases 是一个字典，键是版本号，值是该版本的所有文件列表
+	type urlInfo struct {
+		URL           string `json:"url"`
+		Filename      string `json:"filename"`
+		MD5           string `json:"md5_digest,omitempty"`
+		SHA256        string `json:"sha256_digest,omitempty"`
+		Size          int64  `json:"size"`
+		Packagetype   string `json:"packagetype,omitempty"`
+		PythonVersion string `json:"python_version,omitempty"`
+	}
+
+	// 按版本号分组文件
+	releases := make(map[string][]urlInfo)
+	var latestVersion string
+	var latestInfo *model.PackageVersion
+	pkgBaseURL := pypiBaseURLFromContext(ctx, repo)
+
 	for _, ver := range pkg.Versions {
-		if ver.Version == version {
-			v := ver
-			versionInfo = &v
-			break
+		if version != "" && ver.Version != version {
+			continue
+		}
+
+		files := make([]urlInfo, 0, len(ver.Files))
+		for _, f := range ver.Files {
+			if f.Filename == "" {
+				continue
+			}
+			files = append(files, urlInfo{
+				URL:      pkgBaseURL + f.Filename,
+				Filename: f.Filename,
+				MD5:      f.ChecksumMD5,
+				SHA256:   f.ChecksumSHA256,
+				Size:     f.SizeBytes,
+			})
+		}
+
+		// 如果版本没有文件，至少添加一个条目指向包版本
+		if len(files) == 0 {
+			files = append(files, urlInfo{
+				URL:      pkgBaseURL + ver.Version,
+				Filename: ver.Version,
+				Size:     ver.SizeBytes,
+				MD5:      ver.ChecksumMD5,
+				SHA256:   ver.ChecksumSHA256,
+			})
+		}
+
+		releases[ver.Version] = files
+
+		// 追踪最新版本
+		if latestInfo == nil || pypiCompareVersions(ver.Version, latestInfo.Version) > 0 {
+			latestInfo = &model.PackageVersion{}
+			*latestInfo = ver
+			latestVersion = ver.Version
 		}
 	}
 
-	if versionInfo == nil {
+	if version != "" && latestInfo == nil {
 		return nil, fmt.Errorf("version not found")
 	}
 
-	type urlInfo struct {
-		URL      string `json:"url"`
-		Filename string `json:"filename"`
-		MD5      string `json:"md5_digest,omitempty"`
-		SHA256   string `json:"sha256_digest,omitempty"`
-		Size     int64  `json:"size"`
+	// 构建 info 字段
+	infoVersion := version
+	if infoVersion == "" {
+		infoVersion = latestVersion
 	}
 
 	return &types.ContentResult{
 		StatusCode: 200,
 		ExtraData: gin.H{
 			"info": gin.H{
-				"name":    pkg.Name,
-				"version": version,
-				"summary": pkg.Description,
+				"name":               pkg.Name,
+				"version":            infoVersion,
+				"summary":            pkg.Description,
+				"description":        pkg.Description,
+				"classifiers":        []string{},
+				"author":             "",
+				"author_email":       "",
+				"maintainer":         "",
+				"maintainer_email":   "",
+				"home_page":          "",
+				"license":            "",
+				"project_urls":       gin.H{},
+				"requires_python":    nil,
+				"requires_dist":      []string{},
+				"provides_dist":      []string{},
+				"obsoletes_dist":     []string{},
+				"requires_external":    []string{},
+				"upload_time":          latestInfo.PublishedAt.Format("2006-01-02T15:04:05"),
+				"upload_time_iso_8601": latestInfo.PublishedAt.Format(time.RFC3339),
+				"bugtrack_url":         nil,
+				"docs_url":             nil,
 			},
-			"releases": gin.H{
-				version: []urlInfo{{
-					URL:    fmt.Sprintf("/pypi/packages/%s", versionInfo.Version),
-					Size:   versionInfo.SizeBytes,
-					MD5:    versionInfo.ChecksumMD5,
-					SHA256: versionInfo.ChecksumSHA256,
-				}},
-			},
+			"releases":      releases,
+			"urls":           releases[infoVersion],
+			"last_serial":    pkg.ID,
+			"_cache_sha256":  "",
 		},
 	}, nil
+}
+
+// pypiCompareVersions 比较两个语义版本号
+// 返回正数 if v1 > v2, 负数 if v1 < v2, 0 if equal
+func pypiCompareVersions(v1, v2 string) int {
+	// 清理版本号（移除 v 前缀等）
+	v1 = strings.TrimPrefix(v1, "v")
+	v2 = strings.TrimPrefix(v2, "v")
+
+	// 分割主版本号
+	parts1 := strings.Split(v1, ".")
+	parts2 := strings.Split(v2, ".")
+
+	maxLen := len(parts1)
+	if len(parts2) > maxLen {
+		maxLen = len(parts2)
+	}
+
+	for i := 0; i < maxLen; i++ {
+		var num1, num2 int64 = 0, 0
+
+		if i < len(parts1) {
+			// 分离数字部分和预发布标识符
+			numStr1 := parts1[i]
+			if idx := strings.IndexFunc(parts1[i], func(c rune) bool {
+				return c < '0' || c > '9'
+			}); idx > 0 {
+				numStr1 = parts1[i][:idx]
+			}
+			num1, _ = strconv.ParseInt(numStr1, 10, 64)
+		}
+
+		if i < len(parts2) {
+			numStr2 := parts2[i]
+			if idx := strings.IndexFunc(parts2[i], func(c rune) bool {
+				return c < '0' || c > '9'
+			}); idx > 0 {
+				numStr2 = parts2[i][:idx]
+			}
+			num2, _ = strconv.ParseInt(numStr2, 10, 64)
+		}
+
+		if num1 != num2 {
+			if num1 > num2 {
+				return 1
+			}
+			return -1
+		}
+	}
+
+	return 0
 }
 
 func (a *PyPIAdapter) UploadPackage(c *gin.Context) {
@@ -764,11 +1076,14 @@ func (a *PyPIAdapter) ParseIntent(path string, method string) *types.RequestInte
 
 	if strings.Contains(intent.Path, "/json") {
 		rest := strings.TrimPrefix(intent.Path, "pypi/")
+		rest = strings.TrimSuffix(rest, "/json")
 		parts := strings.Split(rest, "/")
-		if len(parts) >= 2 {
+		if len(parts) >= 1 {
 			intent.Type = types.RequestMetadata
 			intent.Name = parts[0]
-			if len(parts) >= 3 {
+			// pypi/foo/json → Name=foo, no version
+			// pypi/foo/1.0.0/json → Name=foo, Version=1.0.0
+			if len(parts) >= 2 {
 				intent.Version = parts[1]
 			}
 			return intent
@@ -811,10 +1126,13 @@ func (a *PyPIAdapter) HandleGet(ctx context.Context, repo *model.Repository, int
 
 	if strings.Contains(intent.Path, "/json") {
 		rest := strings.TrimPrefix(intent.Path, "pypi/")
+		rest = strings.TrimSuffix(rest, "/json")
 		parts := strings.Split(rest, "/")
-		if len(parts) >= 2 {
+		if len(parts) >= 1 {
 			version := ""
-			if len(parts) >= 3 {
+			// pypi/foo/json → Name=foo, no version
+			// pypi/foo/1.0.0/json → Name=foo, Version=1.0.0
+			if len(parts) >= 2 {
 				version = parts[1]
 			}
 			return a.JSONAPI(parts[0], version, repo, ctx)
@@ -936,3 +1254,316 @@ func (a *PyPIAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) err
 
 	return nil
 }
+
+// MergeMetadata implements the MetadataMerger interface for virtual repository support.
+// It merges PyPI metadata from multiple member repositories:
+// - RequestList: merges package name lists from HTML/JSON simple index
+// - RequestMetadata: merges file lists per package
+func (a *PyPIAdapter) MergeMetadata(ctx context.Context, results []*types.ContentResult, intent *types.RequestIntent) (*types.ContentResult, error) {
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no results to merge")
+	}
+
+	switch intent.Type {
+	case types.RequestList:
+		return a.mergeSimpleIndexList(ctx, results, intent)
+	case types.RequestMetadata:
+		return a.mergePackageFilesList(ctx, results, intent)
+	default:
+		return results[0], nil
+	}
+}
+
+// mergeSimpleIndexList merges simple index page lists from multiple members.
+func (a *PyPIAdapter) mergeSimpleIndexList(ctx context.Context, results []*types.ContentResult, intent *types.RequestIntent) (*types.ContentResult, error) {
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no results to merge")
+	}
+
+	contentType := results[0].ContentType
+	if strings.Contains(contentType, "json") {
+		return a.mergeSimpleIndexJSON(ctx, results)
+	}
+	return a.mergeSimpleIndexHTML(ctx, results)
+}
+
+// mergeSimpleIndexHTML merges HTML simple index pages.
+func (a *PyPIAdapter) mergeSimpleIndexHTML(ctx context.Context, results []*types.ContentResult) (*types.ContentResult, error) {
+	seen := make(map[string]struct{})
+	var links []string
+
+	for _, res := range results {
+		if res.Content == nil {
+			continue
+		}
+		body, err := io.ReadAll(res.Content)
+		res.Content.Close()
+		if err != nil {
+			continue
+		}
+		for _, match := range pypiSimpleLinkRe.FindAllSubmatch(body, -1) {
+			if len(match) >= 2 {
+				name := string(match[1])
+				normalized := normalizePackageName(name)
+				if _, exists := seen[normalized]; !exists {
+					seen[normalized] = struct{}{}
+					links = append(links, normalized)
+				}
+			}
+		}
+	}
+
+	if len(links) == 0 {
+		return results[0], nil
+	}
+
+	prefix := pypiSimplePrefixFromContext(ctx)
+	var sb strings.Builder
+	sb.Grow(100 + len(links)*80)
+	sb.WriteString("<!DOCTYPE html>\n<html><head><title>Simple Index</title></head><body>\n")
+	for _, name := range links {
+		sb.WriteString(`<a href="`)
+		sb.WriteString(prefix)
+		sb.WriteString(name)
+		sb.WriteString(`/">`)
+		sb.WriteString(name)
+		sb.WriteString(`</a><br>` + "\n")
+	}
+	sb.WriteString("</body></html>")
+
+	content := sb.String()
+	hash := sha256.Sum256([]byte(content))
+	etag := fmt.Sprintf(`"%x"`, hash)
+
+	return &types.ContentResult{
+		StatusCode:  200,
+		ContentType: "text/html",
+		Content:     io.NopCloser(strings.NewReader(content)),
+		Size:        int64(len(content)),
+		Headers: map[string]string{
+			"ETag":          etag,
+			"Cache-Control": "public, max-age=60",
+		},
+	}, nil
+}
+
+// mergeSimpleIndexJSON merges JSON simple index pages.
+func (a *PyPIAdapter) mergeSimpleIndexJSON(ctx context.Context, results []*types.ContentResult) (*types.ContentResult, error) {
+	seen := make(map[string]struct{})
+	type project struct {
+		Name string `json:"name"`
+		URL  string `json:"url"`
+	}
+	var projects []project
+
+	prefix := pypiSimplePrefixFromContext(ctx)
+
+	for _, res := range results {
+		if res.Content == nil && res.ExtraData == nil {
+			continue
+		}
+		if res.ExtraData != nil {
+			if projList, ok := res.ExtraData["projects"]; ok {
+				if arr, ok := projList.([]interface{}); ok {
+					for _, item := range arr {
+						if m, ok := item.(map[string]interface{}); ok {
+							if name, ok := m["name"].(string); ok {
+								normalized := normalizePackageName(name)
+								if _, exists := seen[normalized]; !exists {
+									seen[normalized] = struct{}{}
+									projects = append(projects, project{
+										Name: normalized,
+										URL:  prefix + normalized + "/",
+									})
+								}
+							}
+						}
+					}
+				}
+			}
+			continue
+		}
+		if res.Content == nil {
+			continue
+		}
+		body, err := io.ReadAll(res.Content)
+		res.Content.Close()
+		if err != nil {
+			continue
+		}
+		var parsed struct {
+			Projects []struct {
+				Name string `json:"name"`
+			} `json:"projects"`
+		}
+		if json.Unmarshal(body, &parsed) == nil {
+			for _, p := range parsed.Projects {
+				normalized := normalizePackageName(p.Name)
+				if _, exists := seen[normalized]; !exists {
+					seen[normalized] = struct{}{}
+					projects = append(projects, project{
+						Name: normalized,
+						URL:  prefix + normalized + "/",
+					})
+				}
+			}
+		}
+	}
+
+	if len(projects) == 0 {
+		return results[0], nil
+	}
+
+	resultJSON, _ := json.Marshal(gin.H{"projects": projects})
+
+	return &types.ContentResult{
+		StatusCode:  200,
+		ContentType: "application/json",
+		Content:     io.NopCloser(bytes.NewReader(resultJSON)),
+		Size:        int64(len(resultJSON)),
+		Headers: map[string]string{
+			"Cache-Control": "public, max-age=60",
+		},
+	}, nil
+}
+
+// mergePackageFilesList merges file lists for a specific package from multiple members.
+func (a *PyPIAdapter) mergePackageFilesList(ctx context.Context, results []*types.ContentResult, intent *types.RequestIntent) (*types.ContentResult, error) {
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no results to merge")
+	}
+
+	contentType := results[0].ContentType
+	if strings.Contains(contentType, "json") {
+		return a.mergePackageFilesJSON(ctx, results)
+	}
+	return a.mergePackageFilesHTML(ctx, results)
+}
+
+// mergePackageFilesHTML merges HTML package file listings.
+func (a *PyPIAdapter) mergePackageFilesHTML(ctx context.Context, results []*types.ContentResult) (*types.ContentResult, error) {
+	seen := make(map[string]struct{})
+	var links []string
+
+	for _, res := range results {
+		if res.Content == nil {
+			continue
+		}
+		body, err := io.ReadAll(res.Content)
+		res.Content.Close()
+		if err != nil {
+			continue
+		}
+		for _, match := range pypiFileLinkRe.FindAllSubmatch(body, -1) {
+			if len(match) >= 2 {
+				href := string(match[1])
+				if idx := strings.LastIndex(href, "/"); idx != -1 {
+					href = href[idx+1:]
+				}
+				if _, exists := seen[href]; !exists {
+					seen[href] = struct{}{}
+					links = append(links, href)
+				}
+			}
+		}
+	}
+
+	if len(links) == 0 {
+		return results[0], nil
+	}
+
+	baseURL := pypiBaseURLFromContext(ctx, nil)
+
+	var sb strings.Builder
+	sb.WriteString("<!DOCTYPE html>\n<html><head><title>Links</title></head><body>\n")
+
+	for _, filename := range links {
+		sb.WriteString(`<a href="`)
+		sb.WriteString(baseURL)
+		sb.WriteString(filename)
+		sb.WriteString(`">`)
+		sb.WriteString(filename)
+		sb.WriteString(`</a><br>` + "\n")
+	}
+	sb.WriteString("</body></html>")
+
+	content := sb.String()
+	hash := sha256.Sum256([]byte(content))
+	etag := fmt.Sprintf(`"%x"`, hash)
+
+	return &types.ContentResult{
+		StatusCode:  200,
+		ContentType: "text/html",
+		Content:     io.NopCloser(strings.NewReader(content)),
+		Size:        int64(len(content)),
+		Headers: map[string]string{
+			"ETag":          etag,
+			"Last-Modified": time.Now().UTC().Format(http.TimeFormat),
+			"Cache-Control": "public, max-age=60",
+		},
+	}, nil
+}
+
+// mergePackageFilesJSON merges PEP 691 JSON package file listings.
+func (a *PyPIAdapter) mergePackageFilesJSON(ctx context.Context, results []*types.ContentResult) (*types.ContentResult, error) {
+	seen := make(map[string]struct{})
+	type fileEntry struct {
+		URL         string            `json:"url"`
+		Filename    string            `json:"filename"`
+		Hashes      map[string]string `json:"hashes,omitempty"`
+		Size        int64             `json:"size,omitempty"`
+		UploadTime  string            `json:"upload-time,omitempty"`
+		Packagetype string            `json:"packagetype,omitempty"`
+	}
+	var files []fileEntry
+
+	for _, res := range results {
+		if res.Content == nil {
+			continue
+		}
+		body, err := io.ReadAll(res.Content)
+		res.Content.Close()
+		if err != nil {
+			continue
+		}
+		var parsed struct {
+			Files []fileEntry `json:"files"`
+		}
+		if json.Unmarshal(body, &parsed) != nil {
+			var bareFiles []fileEntry
+			if json.Unmarshal(body, &bareFiles) == nil {
+				parsed.Files = bareFiles
+			}
+		}
+		for _, f := range parsed.Files {
+			if _, exists := seen[f.Filename]; !exists {
+				seen[f.Filename] = struct{}{}
+				files = append(files, f)
+			}
+		}
+	}
+
+	if len(files) == 0 {
+		return results[0], nil
+	}
+
+	resultJSON, _ := json.Marshal(map[string]interface{}{
+		"meta": map[string]string{
+			"api-version": "1.0",
+		},
+		"files": files,
+	})
+
+	return &types.ContentResult{
+		StatusCode:  200,
+		ContentType: "application/vnd.pypi.simple.v1+json",
+		Content:     io.NopCloser(bytes.NewReader(resultJSON)),
+		Size:        int64(len(resultJSON)),
+		Headers: map[string]string{
+			"Cache-Control": "public, max-age=60",
+		},
+	}, nil
+}
+
+var pypiSimpleLinkRe = regexp.MustCompile(`<a\s+href="[^"]*simple/([^/]+)/">`)
+var pypiFileLinkRe = regexp.MustCompile(`<a\s+href="([^"]+)">`)

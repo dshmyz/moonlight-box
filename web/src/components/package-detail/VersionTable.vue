@@ -3,7 +3,13 @@
     <template #header>
       <div class="card-header">
         <span class="card-title">版本列表</span>
-        <span class="version-count">共 {{ versions.length }} 个版本</span>
+        <div class="header-actions">
+          <el-radio-group v-model="cacheFilter" size="small" class="cache-filter">
+            <el-radio-button value="all">全部 ({{ versions.length }})</el-radio-button>
+            <el-radio-button value="cached">已缓存 ({{ cachedCount }})</el-radio-button>
+            <el-radio-button value="uncached">未缓存 ({{ uncachedCount }})</el-radio-button>
+          </el-radio-group>
+        </div>
       </div>
     </template>
 
@@ -128,11 +134,11 @@
       </el-table-column>
     </el-table>
 
-    <div v-if="versions.length > pageSize" class="pagination-wrapper">
+    <div v-if="filteredVersions.length > pageSize" class="pagination-wrapper">
       <el-pagination
         v-model:current-page="currentPage"
         :page-size="pageSize"
-        :total="versions.length"
+        :total="filteredVersions.length"
         layout="prev, pager, next"
         small
         background
@@ -142,7 +148,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 import { formatNumber, formatSize, formatDate } from '@/utils/format'
@@ -167,10 +173,44 @@ const emit = defineEmits<{
 
 const pageSize = 10
 const currentPage = ref(1)
+const cacheFilter = ref<'all' | 'cached' | 'uncached'>('all')
+
+// 筛选变化时重置页码
+watch(cacheFilter, () => {
+  currentPage.value = 1
+})
+
+// 统计已缓存/未缓存数量
+const cachedCount = computed(() => props.versions.filter(v => v.files_downloaded).length)
+const uncachedCount = computed(() => props.versions.filter(v => !v.files_downloaded).length)
+
+// 按缓存状态排序，已缓存优先，同时保持发布时间倒序
+const sortedVersions = computed(() => {
+  return [...props.versions].sort((a, b) => {
+    // 已缓存的排前面
+    if (a.files_downloaded !== b.files_downloaded) {
+      return a.files_downloaded ? -1 : 1
+    }
+    // 同状态按发布时间倒序
+    return new Date(b.published_at).getTime() - new Date(a.published_at).getTime()
+  })
+})
+
+// 根据筛选条件过滤版本
+const filteredVersions = computed(() => {
+  switch (cacheFilter.value) {
+    case 'cached':
+      return sortedVersions.value.filter(v => v.files_downloaded)
+    case 'uncached':
+      return sortedVersions.value.filter(v => !v.files_downloaded)
+    default:
+      return sortedVersions.value
+  }
+})
 
 const pagedVersions = computed(() => {
   const start = (currentPage.value - 1) * pageSize
-  return props.versions.slice(start, start + pageSize)
+  return filteredVersions.value.slice(start, start + pageSize)
 })
 
 function handleRowClick(row: PackageVersion) {
@@ -242,24 +282,48 @@ function handleFileDownload(row: PackageVersion, file: PackageFile) {
 .card-title {
   font-size: 16px;
   font-weight: 600;
-  color: #303133;
+  color: var(--lunar-silver);
 }
 
 .version-count {
   font-size: 13px;
-  color: #909399;
+  color: var(--lunar-silver-dim);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cache-filter {
+  --el-radio-button-checked-bg-color: var(--lunar-accent);
+  --el-radio-button-checked-border-color: var(--lunar-accent);
+}
+
+.cache-filter :deep(.el-radio-button__inner) {
+  background: var(--lunar-bg-glass);
+  border-color: var(--lunar-border);
+  color: var(--lunar-silver-muted);
+}
+
+.cache-filter :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
+  background: var(--lunar-gradient-btn);
+  border-color: var(--lunar-accent);
+  color: var(--lunar-bg-deep);
+  box-shadow: none;
 }
 
 .version-text {
   font-weight: 500;
-  color: #303133;
+  color: var(--lunar-silver);
   font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   font-size: 13px;
   transition: color 0.2s;
 }
 
 .version-selected {
-  color: #409eff;
+  color: var(--lunar-accent);
 }
 
 .latest-tag {
@@ -289,26 +353,26 @@ function handleFileDownload(row: PackageVersion, file: PackageFile) {
 }
 
 .cache-status-tag--uncached {
-  background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
-  color: #64748b;
+  background: var(--lunar-bg-glass);
+  color: var(--lunar-silver-dim);
 }
 
 .size-text,
 .downloads-text {
-  color: #606266;
+  color: var(--lunar-silver-muted);
   font-size: 13px;
 }
 
 .checksum-text {
   font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   font-size: 12px;
-  color: #909399;
+  color: var(--lunar-silver-dim);
   cursor: pointer;
   transition: color 0.2s;
 }
 
 .checksum-text:hover {
-  color: #409eff;
+  color: var(--lunar-accent);
 }
 
 .files-list {
@@ -325,11 +389,11 @@ function handleFileDownload(row: PackageVersion, file: PackageFile) {
 
 .file-size {
   font-size: 12px;
-  color: #909399;
+  color: var(--lunar-silver-dim);
 }
 
 .no-files {
-  color: #c0c4cc;
+  color: var(--lunar-silver-dim);
 }
 
 .action-buttons {

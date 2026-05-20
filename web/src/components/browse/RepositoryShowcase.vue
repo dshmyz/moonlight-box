@@ -10,25 +10,27 @@
         />
 
         <div class="repo-panel">
-          <template v-for="group in groupedRepos" :key="group.type">
-            <div v-show="activeType === group.type" class="repo-group">
-              <div class="group-header">
-                <span class="group-icon" :style="{ background: group.color }"><i :class="group.icon"></i></span>
-                <span class="group-name">{{ group.label }} 仓库</span>
-                <span class="group-count">{{ group.repos.length }} 个</span>
-              </div>
+          <KeepAlive>
+            <template v-for="group in groupedRepos" :key="group.type">
+              <div v-if="activeType === group.type" class="repo-group">
+                <div class="group-header">
+                  <span class="group-icon" :style="{ background: group.color }"><i :class="group.icon"></i></span>
+                  <span class="group-name">{{ group.label }} 仓库</span>
+                  <span class="group-count">{{ group.repos.length }} 个</span>
+                </div>
 
-              <div class="repo-list">
-                <RepoCard
-                  v-for="repo in group.repos"
-                  :key="repo.name"
-                  :repo="repo"
-                  :config-command="getConfigCommand(repo)"
-                  @copy="copyText"
-                />
+                <div class="repo-list">
+                  <RepoCard
+                    v-for="repo in group.repos"
+                    :key="repo.name"
+                    :repo="repo"
+                    :config-command="repo.configCommand"
+                    @copy="copyText"
+                  />
+                </div>
               </div>
-            </div>
-          </template>
+            </template>
+          </KeepAlive>
         </div>
       </div>
     </div>
@@ -37,22 +39,26 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { repositoryApi, type Repository } from '@/api/repository'
+import { publicRepoApi, type PublicRepoListItem } from '@/api/public'
 import { normalizePackageType } from '@/constants/package'
 import TypeSidebar from './TypeSidebar.vue'
 import RepoCard from './RepoCard.vue'
 import { copyToClipboard } from '@/utils/clipboard'
 
 const loading = ref(false)
-const repos = ref<Repository[]>([])
+const repos = ref<PublicRepoListItem[]>([])
 const activeType = ref('')
+
+interface RepoWithConfig extends PublicRepoListItem {
+  configCommand: string
+}
 
 interface RepoGroup {
   type: string
   label: string
   icon: string
   color: string
-  repos: Repository[]
+  repos: RepoWithConfig[]
 }
 
 const GROUP_CONFIG: Record<string, { label: string; icon: string; color: string }> = {
@@ -67,12 +73,36 @@ const GROUP_CONFIG: Record<string, { label: string; icon: string; color: string 
 
 const GROUP_ORDER = ['npm', 'maven', 'pypi', 'go', 'yum', 'apt', 'generic']
 
+function getConfigCommand(repo: PublicRepoListItem): string {
+  const url = repo.registry_url
+  const type = normalizePackageType(repo.package_type)
+  switch (type) {
+    case 'npm':
+      return `npm config set registry ${url}`
+    case 'pypi':
+      return `pip config set global.index-url ${url}`
+    case 'maven':
+      return url
+    case 'go':
+      return `GOPROXY=${url} go mod tidy`
+    case 'yum':
+      return `sudo yum-config-manager --add-repo ${url}repodata/repomd.xml`
+    case 'apt':
+      return `deb [trusted=yes] ${url} ./`
+    default:
+      return url
+  }
+}
+
 const groupedRepos = computed<RepoGroup[]>(() => {
-  const groups: Record<string, Repository[]> = {}
+  const groups: Record<string, RepoWithConfig[]> = {}
   for (const repo of repos.value) {
     const key = normalizePackageType(repo.package_type) || 'generic'
     if (!groups[key]) groups[key] = []
-    groups[key].push(repo)
+    groups[key].push({
+      ...repo,
+      configCommand: getConfigCommand(repo)
+    })
   }
 
   return Object.entries(groups)
@@ -96,7 +126,7 @@ const sidebarGroups = computed(() => {
 onMounted(async () => {
   loading.value = true
   try {
-    const res = await repositoryApi.list()
+    const res = await publicRepoApi.list()
     const list = res || []
     repos.value = list
   } catch {
@@ -108,40 +138,6 @@ onMounted(async () => {
     loading.value = false
   }
 })
-
-function getRegistryUrl(repo: Repository): string {
-  const base = `${window.location.origin}/repo/${repo.name}`
-  const type = normalizePackageType(repo.package_type)
-  switch (type) {
-    case 'npm':
-      return `${base}/`
-    case 'pypi':
-      return `${base}/simple`
-    default:
-      return `${base}/`
-  }
-}
-
-function getConfigCommand(repo: Repository): string {
-  const url = getRegistryUrl(repo)
-  const type = normalizePackageType(repo.package_type)
-  switch (type) {
-    case 'npm':
-      return `npm config set registry ${url}`
-    case 'pypi':
-      return `pip config set global.index-url ${url}`
-    case 'maven':
-      return url
-    case 'go':
-      return `GOPROXY=${url} go mod tidy`
-    case 'yum':
-      return `sudo yum-config-manager --add-repo ${url}repodata/repomd.xml`
-    case 'apt':
-      return `deb [trusted=yes] ${url} ./`
-    default:
-      return url
-  }
-}
 
 function copyText(text: string) {
   copyToClipboard(text)
@@ -179,7 +175,7 @@ function copyText(text: string) {
   gap: 8px;
   margin-bottom: 12px;
   padding-bottom: 8px;
-  border-bottom: 1px solid #ebeef5;
+  border-bottom: 1px solid var(--lunar-border);
 }
 
 .group-icon {
@@ -192,19 +188,18 @@ function copyText(text: string) {
   color: #fff;
   font-size: 12px;
   font-weight: 700;
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   flex-shrink: 0;
 }
 
 .group-name {
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
+  color: var(--lunar-silver);
 }
 
 .group-count {
   font-size: 12px;
-  color: #909399;
+  color: var(--lunar-silver-dim);
 }
 
 .repo-list {

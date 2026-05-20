@@ -17,6 +17,59 @@ func NewPublicRepoHandler(repoSvc *service.RepositoryService) *PublicRepoHandler
 	return &PublicRepoHandler{repoSvc: repoSvc}
 }
 
+type PublicRepoListItem struct {
+	Name        string               `json:"name"`
+	DisplayName string               `json:"display_name"`
+	Description string               `json:"description"`
+	Type        model.RepositoryType `json:"type"`
+	PackageType string               `json:"package_type"`
+	Enabled     bool                 `json:"enabled"`
+	RemoteURL   string               `json:"remote_url,omitempty"`
+	RegistryURL string               `json:"registry_url"`
+}
+
+func (h *PublicRepoHandler) List(c *gin.Context) {
+	filter := map[string]interface{}{
+		"public_visible": true,
+		"enabled":        true,
+	}
+	if pkgType := c.Query("package_type"); pkgType != "" {
+		filter["package_type"] = pkgType
+	}
+	if repoType := c.Query("type"); repoType != "" {
+		filter["type"] = repoType
+	}
+
+	repos, err := h.repoSvc.ListContext(c.Request.Context(), filter)
+	if err != nil {
+		response.InternalError(c, "Failed to list public repositories")
+		return
+	}
+
+	scheme := "http"
+	if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	host := c.Request.Host
+	baseURL := fmt.Sprintf("%s://%s", scheme, host)
+
+	items := make([]PublicRepoListItem, len(repos))
+	for i, repo := range repos {
+		items[i] = PublicRepoListItem{
+			Name:        repo.Name,
+			DisplayName: repo.DisplayName,
+			Description: repo.Description,
+			Type:        repo.Type,
+			PackageType: repo.PackageType,
+			Enabled:     repo.Enabled,
+			RemoteURL:   repo.RemoteURL,
+			RegistryURL: buildRegistryURL(baseURL, &repo),
+		}
+	}
+
+	response.Success(c, items)
+}
+
 type RepoConfigResponse struct {
 	Name        string               `json:"name"`
 	DisplayName string               `json:"display_name"`
@@ -76,7 +129,7 @@ func (h *PublicRepoHandler) GetRepoConfig(c *gin.Context) {
 }
 
 func buildRegistryURL(baseURL string, repo *model.Repository) string {
-	return fmt.Sprintf("%s/repo/%s/", baseURL, repo.Name)
+	return fmt.Sprintf("%s/repository/%s/", baseURL, repo.Name)
 }
 
 func buildConfigGuide(baseURL string, repo *model.Repository) []ConfigStep {
@@ -234,7 +287,13 @@ gpgcheck=0`, repo.Name, repo.DisplayName, registryURL),
 			{
 				Title:       "上传文件（需认证）",
 				Description: "使用 curl 上传",
-				Command:     fmt.Sprintf(`curl -X POST %supload -H "Authorization: Bearer <token>" -F "file=@<local-file>"`, registryURL),
+				Command:     fmt.Sprintf(`curl -X PUT %s<file-path> -H "Authorization: Bearer <token>" --data-binary @<local-file>`, registryURL),
+				Language:    "bash",
+			},
+			{
+				Title:       "浏览目录",
+				Description: "在浏览器中查看文件列表",
+				Command:     registryURL,
 				Language:    "bash",
 			},
 		}

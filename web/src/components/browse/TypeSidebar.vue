@@ -7,7 +7,7 @@
       :class="{ 'type-active': activeType === group.type }"
       @click="$emit('update:activeType', group.type)"
     >
-      <span class="type-icon" :style="{ background: group.color }">{{ group.icon }}</span>
+      <span class="type-icon" :style="{ background: group.color }"><i :class="group.icon"></i></span>
       <span class="type-label">{{ group.label }}</span>
       <span class="type-count">{{ group.count }}</span>
     </div>
@@ -29,8 +29,9 @@ defineEmits<{
 .type-sidebar {
   width: 160px;
   flex-shrink: 0;
-  background: #fafafa;
-  border-radius: 8px;
+  background: var(--lunar-bg-card);
+  border: 1px solid var(--lunar-border);
+  border-radius: 10px;
   padding: 8px;
   display: flex;
   flex-direction: column;
@@ -50,12 +51,12 @@ defineEmits<{
 }
 
 .type-item:hover {
-  background: #f0f2f5;
+  background: var(--lunar-bg-glass);
 }
 
 .type-active {
-  background: #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  background: rgba(196, 181, 253, 0.12);
+  border: 1px solid var(--lunar-border-hover);
 }
 
 .type-icon {
@@ -68,21 +69,20 @@ defineEmits<{
   color: #fff;
   font-size: 12px;
   font-weight: 700;
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   flex-shrink: 0;
 }
 
 .type-label {
   font-size: 14px;
   font-weight: 500;
-  color: #303133;
+  color: var(--lunar-silver);
   flex: 1;
 }
 
 .type-count {
   font-size: 12px;
-  color: #909399;
-  background: #fff;
+  color: var(--lunar-silver-dim);
+  background: var(--lunar-bg-glass);
   padding: 2px 6px;
   border-radius: 10px;
   min-width: 20px;
@@ -90,6 +90,7 @@ defineEmits<{
 }
 
 .type-active .type-count {
-  background: #f5f7fa;
+  background: rgba(196, 181, 253, 0.15);
+  color: var(--lunar-accent);
 }
 </style>

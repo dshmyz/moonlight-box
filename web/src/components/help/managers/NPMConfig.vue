@@ -62,7 +62,7 @@
             <div class="step-number">2</div>
             <div class="step-content">
               <h5>设置认证信息</h5>
-              <code-block :code="`npm config set //${host}/repo/npm-virtual/:_authToken YOUR_TOKEN_HERE`" />
+              <code-block :code="`npm config set //${host}/repository/npm-virtual/:_authToken YOUR_TOKEN_HERE`" />
             </div>
           </div>
 
@@ -124,7 +124,7 @@
         </el-collapse-item>
 
         <el-collapse-item title="如何删除已发布的包" name="unpublish">
-          <code-block code="npm unpublish package-name@1.0.0 --registry=http://your-registry/repo/npm-local/" />
+          <code-block code="npm unpublish package-name@1.0.0 --registry=http://your-registry/repository/npm-local/" />
           <el-alert type="warning" :closable="false">
             需要相应权限才能删除包
           </el-alert>
@@ -139,7 +139,7 @@ import { computed } from 'vue'
 import CodeBlock from '@/components/help/CodeBlock.vue'
 
 const registryUrl = computed(() => {
-  return `${window.location.origin}/repo/npm-virtual/`
+  return `${window.location.origin}/repository/npm-virtual/`
 })
 
 const host = computed(() => {
@@ -151,10 +151,10 @@ const npmrcContent = computed(() => {
 registry=${registryUrl.value}
 
 # 认证信息
-//${host.value}/repo/npm-virtual/:_authToken=YOUR_TOKEN_HERE
+//${host.value}/repository/npm-virtual/:_authToken=YOUR_TOKEN_HERE
 
 # 作用域包配置（可选）
-# @mycompany:registry=${window.location.origin}/repo/npm-local/`
+# @mycompany:registry=${window.location.origin}/repository/npm-local/`
 })
 
 const packageJsonContent = computed(() => {

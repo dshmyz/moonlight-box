@@ -93,11 +93,12 @@
         </div>
         <el-pagination
           v-model:current-page="page"
-          :page-size="pageSize"
+          v-model:page-size="pageSize"
           :total="total"
           :page-sizes="[20, 50, 100]"
           layout="sizes, prev, pager, next"
           @current-change="handlePageChange"
+          @size-change="handleSizeChange"
         />
       </div>
     </div>
@@ -166,6 +167,11 @@ async function loadLogs() {
 
 function handlePageChange(p: number) {
   page.value = p
+  loadLogs()
+}
+
+function handleSizeChange() {
+  page.value = 1
   loadLogs()
 }
 

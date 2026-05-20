@@ -14,6 +14,7 @@ export interface Repository {
   type: 'local' | 'proxy' | 'virtual'
   package_type: string
   enabled: boolean
+  public_visible?: boolean
   remote_url?: string
   auth_type?: string
   auth_config?: string

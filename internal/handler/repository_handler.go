@@ -32,7 +32,7 @@ func fillRepositoryURL(repo *model.Repository, scheme string, host string) {
 	if repo == nil || repo.Name == "" {
 		return
 	}
-	repo.URL = fmt.Sprintf("%s://%s/repo/%s/", scheme, host, repo.Name)
+	repo.URL = fmt.Sprintf("%s://%s/repository/%s/", scheme, host, repo.Name)
 }
 
 // fillRepositoryURLs 为仓库列表填充访问URL

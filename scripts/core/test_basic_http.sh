@@ -70,7 +70,7 @@ echo "Test JAR content - $(date)" > "$TEST_JAR"
 jar cf "$TEST_JAR" -C /tmp "$(basename "$TEST_JAR")" 2>/dev/null || echo "JAR test file" > "$TEST_JAR"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-    "$BASE_URL/repo/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar" \
+    "$BASE_URL/repository/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/octet-stream" \
     --data-binary @"$TEST_JAR")
@@ -82,7 +82,7 @@ else
 fi
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-    "$BASE_URL/repo/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.pom" \
+    "$BASE_URL/repository/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.pom" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/xml" \
     --data-binary @"$TEST_POM")
@@ -102,7 +102,7 @@ echo "════════════════════════�
 
 DOWNLOADED_JAR="/tmp/downloaded-test-artifact-$$-1.0.0.jar"
 HTTP_CODE=$(curl -s -o "$DOWNLOADED_JAR" -w "%{http_code}" \
-    "$BASE_URL/repo/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar")
+    "$BASE_URL/repository/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar")
 
 if [ "$HTTP_CODE" = "200" ]; then
     pass "Maven JAR 下载成功 (HTTP 200)"
@@ -124,7 +124,7 @@ echo "  测试 3: Maven 校验和文件"
 echo "════════════════════════════════════════"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    "$BASE_URL/repo/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar.sha1")
+    "$BASE_URL/repository/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar.sha1")
 
 if [ "$HTTP_CODE" = "200" ]; then
     pass "Maven SHA1 校验和文件可访问 (HTTP 200)"
@@ -133,7 +133,7 @@ else
 fi
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    "$BASE_URL/repo/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar.md5")
+    "$BASE_URL/repository/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar.md5")
 
 if [ "$HTTP_CODE" = "200" ]; then
     pass "Maven MD5 校验和文件可访问 (HTTP 200)"
@@ -147,7 +147,7 @@ echo "  测试 4: Maven 删除制品 (DELETE)"
 echo "════════════════════════════════════════"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-    "$BASE_URL/repo/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar" \
+    "$BASE_URL/repository/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar" \
     -H "Authorization: Bearer $TOKEN")
 
 if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
@@ -157,7 +157,7 @@ else
 fi
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    "$BASE_URL/repo/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar")
+    "$BASE_URL/repository/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar")
 
 if [ "$HTTP_CODE" = "404" ]; then
     pass "删除后再次下载返回 404 (符合预期)"

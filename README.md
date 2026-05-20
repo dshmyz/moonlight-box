@@ -12,8 +12,8 @@
 
 ### 核心功能
 
-- **多协议支持：** 内置 npm、Maven、PyPI、Go Modules、NuGet、YUM、APT 等主流包仓库适配器
-- **智能代理路由：** 支持本地仓库与远程仓库的智能路由，自动回源与缓存加速
+- **多协议支持：** 内置 npm、Maven、PyPI、Go Modules、YUM、APT、Generic 等主流包仓库适配器
+- **智能代理路由：** 支持本地仓库、代理仓库、虚拟仓库的智能路由，自动回源与缓存加速
 - **仓库分组：** 支持虚拟仓库组，聚合多个托管仓库，简化客户端配置
 - **多存储后端：** 支持本地文件系统与 Amazon S3 对象存储
 
@@ -55,7 +55,7 @@
 
 ### 环境要求
 
-- Go >= 1.26
+- Go >= 1.24
 - Node.js >= 20（前端构建）
 - SQLite 或 PostgreSQL
 
@@ -109,49 +109,103 @@ cp configs/config.example.yaml configs/config.yaml
 
 ## 架构设计
 
-### 核心模块
+### 系统架构图
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Moonlight Box                         │
-├─────────────────────────────────────────────────────────────┤
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
-│  │  Adapter  │  │  Proxy   │  │   AI     │  │ Security │   │
-│  │  Layer    │  │  Router  │  │ Service  │  │  Scanner │   │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘   │
-│         │              │             │             │        │
-│  ┌──────┴──────────────┴─────────────┴─────────────┴──────┐ │
-│  │                  Core Services                          │ │
-│  │  (Auth / RBAC / Cache / Storage / Migration)           │ │
-│  └────────────────────────────────────────────────────────┘ │
-│                            │                                │
-│  ┌─────────────────────────┴──────────────────────────────┐ │
-│  │              Data Layer                                 │ │
-│  │  (SQLite / PostgreSQL)  +  (Local FS / S3)            │ │
-│  └────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Moonlight Box                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
+│  │   Handler   │  │   Proxy     │  │     AI      │  │   Security  │        │
+│  │    Layer    │  │   Router    │  │   Service   │  │   Scanner   │        │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘        │
+│         │                │                │                │               │
+│  ┌──────┴────────────────┴────────────────┴────────────────┴──────┐        │
+│  │                        Service Layer                            │        │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐          │        │
+│  │  │  Auth    │ │  Repo    │ │ Storage  │ │ Migration│          │        │
+│  │  │ Service  │ │ Service  │ │ Service  │ │ Service  │          │        │
+│  │  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘          │        │
+│  │       └─────────────┴─────────────┴─────────────┘              │        │
+│  └───────────────────────────┬────────────────────────────────────┘        │
+│                              │                                              │
+│  ┌───────────────────────────┴────────────────────────────────────┐        │
+│  │                      Repository Layer                           │        │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐          │        │
+│  │  │ Package  │ │   Repo   │ │   User   │ │  Audit   │          │        │
+│  │  │   Repo   │ │   Repo   │ │   Repo   │ │   Repo   │          │        │
+│  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘          │        │
+│  └───────────────────────────┬────────────────────────────────────┘        │
+│                              │                                              │
+│  ┌───────────────────────────┴────────────────────────────────────┐        │
+│  │                      Adapter Layer                              │        │
+│  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐        │        │
+│  │  │  npm   │ │ Maven  │ │ PyPI   │ │  Go    │ │  Yum   │ ...    │        │
+│  │  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘        │        │
+│  └────────────────────────────────────────────────────────────────┘        │
+│                              │                                              │
+│  ┌───────────────────────────┴────────────────────────────────────┐        │
+│  │                        Data Layer                               │        │
+│  │  ┌──────────────────┐              ┌──────────────────┐        │        │
+│  │  │ SQLite/PostgreSQL│              │ Local FS / S3    │        │        │
+│  │  └──────────────────┘              └──────────────────┘        │        │
+│  └────────────────────────────────────────────────────────────────┘        │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 适配器架构
+### 分层架构说明
 
-系统通过 Adapter 接口统一不同包仓库的协议差异：
+| 层级 | 职责 | 对应目录 |
+|------|------|----------|
+| **Presentation** | HTTP 请求处理、路由、参数校验 | `handler/`, `middleware/` |
+| **Business Logic** | 业务规则、流程编排 | `service/`, `proxy/` |
+| **Data Access** | 数据库操作、事务管理 | `repository/` |
+| **Domain** | 领域模型、值对象 | `model/`, `types/` |
+| **Infrastructure** | 存储、缓存、外部服务 | `storage/`, `cache/`, `adapter/` |
 
-- **npm 适配器：** 支持 npm registry 协议
-- **Maven 适配器：** 支持 Maven 仓库协议
-- **PyPI 适配器：** 支持 Python Package Index 协议
-- **Go Modules 适配器：** 支持 Go 模块代理协议
-- **NuGet 适配器：** 支持 NuGet OData 协议
-- **YUM/APT 适配器：** 支持 Linux 包管理器协议
-- **通用适配器：** 支持自定义包格式
+### 核心设计模式
 
-### 代理路由
+- **适配器模式**：统一不同包仓库协议差异，支持 npm、Maven、PyPI、Go、YUM、APT、Generic
+- **策略模式**：根据仓库类型（Local/Proxy/Virtual）选择不同解析策略
+- **工厂模式**：存储后端（Local/S3）动态创建
+- **熔断器模式**：远程仓库健康检查与熔断保护
+- **模板方法**：BaseAdapter 定义通用流程，子类实现特定逻辑
+
+### 请求处理流程
+
+```
+Client Request
+      ↓
+┌─────────────┐
+│   Router    │ → 路由匹配
+└──────┬──────┘
+       ↓
+┌─────────────┐
+│   Handler   │ → 参数解析、权限校验
+└──────┬──────┘
+       ↓
+┌─────────────┐
+│   Service   │ → 业务逻辑处理
+└──────┬──────┘
+       ↓
+┌─────────────┐
+│  Repository │ → 数据持久化
+└──────┬──────┘
+       ↓
+┌─────────────┐
+│   Storage   │ → 文件存储
+└─────────────┘
+```
+
+### 代理路由机制
 
 Proxy Router 负责将包请求智能路由到正确的来源：
 
-1. **本地优先：** 优先从本地仓库查找
-2. **代理回源：** 本地未命中时自动从配置的远程仓库拉取
-3. **缓存加速：** 拉取结果自动缓存，减少重复请求
-4. **健康检查：** 定期检测远程仓库可用性
+1. **本地优先**：优先从本地仓库查找
+2. **代理回源**：本地未命中时自动从配置的远程仓库拉取
+3. **缓存加速**：拉取结果自动缓存，减少重复请求
+4. **健康检查**：定期检测远程仓库可用性，熔断不可用源
+5. **虚拟仓库**：支持聚合多个仓库，按优先级遍历
 
 ## AI 助手
 
@@ -170,10 +224,10 @@ Proxy Router 负责将包请求智能路由到正确的来源：
 ```yaml
 ai:
   enabled: true
-  provider: "chatglm"  # chatglm, qwen, custom
+  provider: "openai"  # openai, chatglm, qwen, custom
   base_url: "http://localhost:8000/v1"
   api_key: "your-api-key"
-  model: "chatglm3-6b"
+  model: "gpt-4"
 ```
 
 ## 开发指南
@@ -209,43 +263,90 @@ make embed-web
 ### 项目结构
 
 ```
+moonlight-box/
 ├── cmd/registry/          # 主程序入口
+│   ├── main.go           # 启动入口
+│   ├── router.go         # 路由配置
+│   └── frontend.go       # 前端静态文件服务
 ├── configs/               # 配置文件
-├── internal/
-│   ├── adapter/           # 包仓库适配器层
-│   ├── ai/                # AI 服务
+├── internal/              # 核心业务代码
+│   ├── adapter/           # 包类型适配器（npm/maven/pypi等）
+│   ├── ai/                # AI 功能模块
+│   ├── cache/             # 缓存系统
 │   ├── config/            # 配置管理
-│   ├── database/          # 数据库初始化与迁移
+│   ├── constants/         # 常量定义
+│   ├── database/          # 数据库连接
+│   ├── errors/            # 错误定义
 │   ├── handler/           # HTTP 处理器
-│   ├── middleware/        # 中间件（鉴权、日志、限流等）
-│   ├── migration/         # 数据迁移服务
-│   ├── model/             # 数据模型
-│   ├── proxy/             # 代理路由与缓存
+│   ├── middleware/        # Gin 中间件
+│   ├── migration/         # 数据迁移
+│   ├── model/             # 数据模型（GORM）
+│   ├── proxy/             # 代理下载逻辑
 │   ├── repository/        # 数据访问层
-│   ├── response/          # 统一响应格式
-│   └── service/           # 业务服务层
+│   ├── response/          # 统一响应封装
+│   ├── service/           # 业务逻辑层
+│   ├── storage/           # 存储后端抽象
+│   ├── types/             # 类型定义/接口
+│   ├── util/              # 工具函数
+│   └── version/           # 版本解析
 ├── web/                   # 前端项目（Vue 3 + TypeScript）
+├── docs/                  # 文档
+├── scripts/               # 脚本
 └── Makefile
 ```
 
 ### 添加新的包适配器
 
-实现 `Adapter` 接口即可添加新的包类型支持：
+实现 `types.Adapter` 接口即可添加新的包类型支持：
 
 ```go
 type Adapter interface {
     Type() types.PackageType
-    RoutePrefix() string
-    RegisterRoutes(r *gin.RouterGroup, ...)
-    ParsePackagePath(path string) (*types.PackageIdentity, error)
-    Upload(ctx context.Context, req *types.UploadRequest) (*types.PackageVersionResult, error)
-    Download(ctx context.Context, identity *types.PackageIdentity) (*types.PackageContent, error)
-    GetMetadata(ctx context.Context, name string) (*types.PackageMeta, error)
-    Delete(ctx context.Context, identity *types.PackageIdentity) error
-    ListVersions(ctx context.Context, name string) ([]string, error)
+    ParseIntent(path string, method string) *types.RequestIntent
+    HandleGet(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error)
+    HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error)
+    HandleDelete(c *gin.Context, ctx *types.DeleteContext) error
+    ParsePath(path string) (*types.PackagePathInfo, error)
 }
 ```
+
+### 依赖注入
+
+系统使用显式依赖注入模式，在 `cmd/registry/router.go` 中集中管理：
+
+```go
+type RouterContext struct {
+    Config       *config.Config
+    AuthSvc      *service.AuthService
+    RepoSvc      *service.RepositoryService
+    // ...
+}
+```
+
+## 技术栈
+
+- **后端**：Go 1.24 + Gin + GORM
+- **前端**：Vue 3 + TypeScript + Vite
+- **数据库**：SQLite / PostgreSQL
+- **存储**：Local Filesystem / Amazon S3
+- **缓存**：内存缓存 + Redis（可选）
+- **监控**：Prometheus + Grafana
+- **日志**：Logrus
+
+## 贡献指南
+
+欢迎提交 Issue 和 Pull Request！
+
+1. Fork 本仓库
+2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
+3. 提交更改 (`git commit -m 'Add amazing feature'`)
+4. 推送到分支 (`git push origin feature/amazing-feature`)
+5. 创建 Pull Request
 
 ## 许可证
 
 [MIT](./LICENSE)
+
+## 致谢
+
+感谢所有为本项目做出贡献的开发者！

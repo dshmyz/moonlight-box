@@ -359,7 +359,7 @@ func (s *StorageService) RefreshBackends() error {
 
 func (s *StorageService) ListBackends() ([]model.StorageBackend, error) {
 	if s.storageBackendRepo == nil {
-		return nil, fmt.Errorf("storage backend repository not available")
+		return []model.StorageBackend{}, nil
 	}
 	return s.storageBackendRepo.List()
 }

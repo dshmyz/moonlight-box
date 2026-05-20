@@ -173,6 +173,23 @@ func (h *PackageVersionHandler) DeleteVersion(c *gin.Context) {
 	response.NoContent(c)
 }
 
+func (h *PackageVersionHandler) DeletePackage(c *gin.Context) {
+	packageID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid package ID", "package ID must be a positive integer")
+		return
+	}
+
+	if err := h.pkgRepo.DeletePackageByIDContext(c.Request.Context(), uint(packageID)); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{
+		"message": "package deleted",
+	})
+}
+
 func findVersionAndPackage(ctx context.Context, pkgRepo *repository.PackageRepository, versionID uint) (*model.PackageVersion, *model.Package, error) {
 	ver, err := pkgRepo.FindVersionByIDContext(ctx, versionID)
 	if err != nil {

@@ -22,6 +22,7 @@ internal/adapter/yum/1
 
 # Test binary
 *.test
+.bytro
 
 # Output
 *.out

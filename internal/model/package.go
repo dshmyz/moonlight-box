@@ -66,6 +66,7 @@ type PackageVersion struct {
 	PublishedAt    time.Time           `gorm:"autoCreateTime" json:"published_at"`
 	PublishedBy    uint                `json:"published_by"`
 	Metadata       string              `gorm:"type:text" json:"metadata,omitempty"`
+	License        string              `gorm:"size:100;index" json:"license,omitempty"`
 	DownloadCount  int64               `gorm:"default:0" json:"download_count"`
 	SizeBytes      int64               `gorm:"default:0" json:"size_bytes"`
 	ChecksumMD5    string              `gorm:"size:32" json:"checksum_md5,omitempty"`

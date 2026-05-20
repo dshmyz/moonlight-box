@@ -180,7 +180,7 @@ test_get_package_metadata() {
     log_info "测试 4: 获取公共 npm 包元数据..."
     
     # 先通过代理仓库获取包，确保代理工作正常
-    RESPONSE=$(curl -s -w "\n%{http_code}" "${REGISTRY_URL}/repo/${PROXY_REPO_NAME}/lodash")
+    RESPONSE=$(curl -s -w "\n%{http_code}" "${REGISTRY_URL}/repository/${PROXY_REPO_NAME}/lodash")
     HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
     BODY=$(echo "$RESPONSE" | sed '$d')
     

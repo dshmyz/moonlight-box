@@ -14,6 +14,7 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
+	"github.com/moonlight-box/registry/internal/types"
 	"github.com/moonlight-box/registry/internal/util"
 	"github.com/stretchr/testify/assert"
 	"gorm.io/driver/sqlite"
@@ -98,6 +99,25 @@ func TestNpmAdapter_ParsePath_ScopedWithVersion(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, "@scope/package", pathInfo.Name)
 	assert.Equal(t, "1.0.0", pathInfo.Version)
+}
+
+func TestNpmAdapter_ParseIntent_ScopedDistTags(t *testing.T) {
+	adapter, _ := setupNpmAdapter(t)
+
+	intent := adapter.ParseIntent("-/package/@scope/package/dist-tags", "GET")
+
+	assert.Equal(t, types.RequestDistTags, intent.Type)
+	assert.Equal(t, "@scope/package", intent.Name)
+}
+
+func TestNpmAdapter_ParseIntent_ScopedDistTagUpdate(t *testing.T) {
+	adapter, _ := setupNpmAdapter(t)
+
+	intent := adapter.ParseIntent("-/package/@scope/package/dist-tags/latest", "PUT")
+
+	assert.Equal(t, types.RequestDistTagUpdate, intent.Type)
+	assert.Equal(t, "@scope/package", intent.Name)
+	assert.Equal(t, "latest", intent.Extra["tag"])
 }
 
 func TestNpmAdapter_ParsePath_NonScoped(t *testing.T) {

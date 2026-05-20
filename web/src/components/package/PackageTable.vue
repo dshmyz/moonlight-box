@@ -51,7 +51,7 @@
         <span class="update-time">{{ formatDate(row.updated_at) }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="操作" width="200" fixed="right">
+    <el-table-column label="操作" width="260" fixed="right">
       <template #default="{ row }">
         <div class="action-buttons">
           <el-button class="btn-view-versions" size="small" @click="$emit('view-versions', row)">
@@ -59,6 +59,9 @@
           </el-button>
           <el-button class="btn-view-detail" size="small" type="primary" @click="$emit('view-detail', row)">
             详情
+          </el-button>
+          <el-button class="btn-delete" size="small" type="danger" @click="$emit('delete-package', row)">
+            删除
           </el-button>
         </div>
       </template>
@@ -79,6 +82,7 @@ defineProps<{
 defineEmits<{
   'view-versions': [pkg: Package]
   'view-detail': [pkg: Package]
+  'delete-package': [pkg: Package]
 }>()
 
 const hoveredRow = ref<number | null>(null)
@@ -271,5 +275,21 @@ const handleRowLeave = () => {
 .btn-view-detail:hover {
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+}
+
+.btn-delete {
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  border: none;
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+  transition: all 0.2s ease;
+}
+
+.btn-delete:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
 }
 </style>

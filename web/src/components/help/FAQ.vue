@@ -125,9 +125,9 @@ const categories = [
         question: '如何发布作用域包？',
         answer: `
           <p>配置作用域仓库：</p>
-          <pre><code>@mycompany:registry=http://your-registry/repo/npm-local/</code></pre>
+          <pre><code>@mycompany:registry=http://your-registry/repository/npm-local/</code></pre>
           <p>或使用命令行：</p>
-          <pre><code>npm publish --registry=http://your-registry/repo/npm-local/</code></pre>
+          <pre><code>npm publish --registry=http://your-registry/repository/npm-local/</code></pre>
         `
       }
     ]

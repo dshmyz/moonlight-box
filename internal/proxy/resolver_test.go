@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -494,6 +496,200 @@ func TestResolveMetadata_WithCache(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.Equal(t, 200, result.StatusCode)
+}
+
+// ===== MergeMetadata integration tests =====
+
+// mockMergerAdapter is a mock that implements both RepoRequestHandler and MetadataMerger.
+type mockMergerAdapter struct {
+	mockMetadataAdapter
+	mergeFn func(ctx context.Context, results []*types.ContentResult, intent *types.RequestIntent) (*types.ContentResult, error)
+}
+
+func (m *mockMergerAdapter) MergeMetadata(ctx context.Context, results []*types.ContentResult, intent *types.RequestIntent) (*types.ContentResult, error) {
+	if m.mergeFn != nil {
+		return m.mergeFn(ctx, results, intent)
+	}
+	return nil, fmt.Errorf("MergeMetadata not implemented")
+}
+
+func TestResolveMetadata_WithMergeSupport(t *testing.T) {
+	db := setupTestDB(t)
+	virtualRepo := createVirtualRepoWithMembers(t, db, "pypi-virtual", "pypi", []string{"pypi-local", "pypi-proxy-cn", "pypi-proxy-official"})
+
+	groupRepo := repository.NewGroupRepository(db)
+	repoRepo := repository.NewRepositoryRepository(db)
+	handler := NewRepoHandler(repoRepo, groupRepo, nil)
+
+	var mergedResults []*types.ContentResult
+	adp := &mockMergerAdapter{
+		mockMetadataAdapter: mockMetadataAdapter{pkgType: types.PyPIType},
+		mergeFn: func(ctx context.Context, results []*types.ContentResult, intent *types.RequestIntent) (*types.ContentResult, error) {
+			mergedResults = results
+			// Merge: concatenate all content bodies
+			var allContent []byte
+			for _, r := range results {
+				if r.Content != nil {
+					body, err := io.ReadAll(r.Content)
+					if err != nil {
+						continue
+					}
+					allContent = append(allContent, body...)
+				}
+			}
+			return &types.ContentResult{
+				StatusCode:  200,
+				ContentType: "text/html",
+				Content:     io.NopCloser(bytes.NewReader(allContent)),
+				Size:        int64(len(allContent)),
+			}, nil
+		},
+	}
+
+	// Each member returns different content
+	adp.handleGetFn = func(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
+		content := fmt.Sprintf("data-from-%s\n", repo.Name)
+		return &types.ContentResult{
+			StatusCode:  200,
+			ContentType: "text/html",
+			Content:     io.NopCloser(strings.NewReader(content)),
+			Size:        int64(len(content)),
+		}, nil
+	}
+
+	intent := &types.RequestIntent{Type: types.RequestMetadata, Name: "requests", Path: "simple/requests/"}
+
+	result, err := handler.ResolveMetadata(context.Background(), virtualRepo, intent, adp)
+	assert.NoError(t, err)
+	assert.NotNil(t, result)
+	assert.Equal(t, 200, result.StatusCode)
+
+	// Verify that merge was called with all 3 member results
+	assert.Len(t, mergedResults, 3, "should collect all 3 member results for merging")
+
+	// Verify merged content contains data from all members
+	body, _ := io.ReadAll(result.Content)
+	bodyStr := string(body)
+	assert.Contains(t, bodyStr, "data-from-pypi-local")
+	assert.Contains(t, bodyStr, "data-from-pypi-proxy-cn")
+	assert.Contains(t, bodyStr, "data-from-pypi-proxy-official")
+}
+
+func TestResolveMetadata_WithMergeSupport_PartialFailure(t *testing.T) {
+	db := setupTestDB(t)
+	virtualRepo := createVirtualRepoWithMembers(t, db, "pypi-virtual", "pypi", []string{"pypi-local", "pypi-proxy-cn"})
+
+	groupRepo := repository.NewGroupRepository(db)
+	repoRepo := repository.NewRepositoryRepository(db)
+	handler := NewRepoHandler(repoRepo, groupRepo, nil)
+
+	var mergedResults []*types.ContentResult
+	adp := &mockMergerAdapter{
+		mockMetadataAdapter: mockMetadataAdapter{pkgType: types.PyPIType},
+		mergeFn: func(ctx context.Context, results []*types.ContentResult, intent *types.RequestIntent) (*types.ContentResult, error) {
+			mergedResults = results
+			return &types.ContentResult{
+				StatusCode:  200,
+				ContentType: "text/html",
+				Content:     io.NopCloser(strings.NewReader("merged")),
+			}, nil
+		},
+	}
+
+	adp.handleGetFn = func(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
+		switch repo.Name {
+		case "pypi-local":
+			// This member fails
+			return nil, fmt.Errorf("connection refused")
+		case "pypi-proxy-cn":
+			return &types.ContentResult{
+				StatusCode:  200,
+				ContentType: "text/html",
+				Content:     io.NopCloser(strings.NewReader("data-from-proxy")),
+			}, nil
+		}
+		return nil, fmt.Errorf("unexpected repo")
+	}
+
+	intent := &types.RequestIntent{Type: types.RequestMetadata, Name: "requests", Path: "simple/requests/"}
+
+	result, err := handler.ResolveMetadata(context.Background(), virtualRepo, intent, adp)
+	assert.NoError(t, err)
+	assert.NotNil(t, result)
+	assert.Equal(t, 200, result.StatusCode)
+
+	// Only 1 successful result should be passed to merge
+	assert.Len(t, mergedResults, 1, "should only pass 1 successful result (other failed)")
+}
+
+func TestResolveMetadata_NoMergeSupport_FirstWins(t *testing.T) {
+	db := setupTestDB(t)
+	virtualRepo := createVirtualRepoWithMembers(t, db, "npm-virtual", "npm", []string{"npm-local", "npm-proxy-cn"})
+
+	groupRepo := repository.NewGroupRepository(db)
+	repoRepo := repository.NewRepositoryRepository(db)
+	handler := NewRepoHandler(repoRepo, groupRepo, nil)
+
+	var callCount int32
+	adp := &mockMetadataAdapter{
+		pkgType: types.NpmType,
+		handleGetFn: func(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
+			count := atomic.AddInt32(&callCount, 1)
+			content := fmt.Sprintf("from-%s-count%d", repo.Name, count)
+			return &types.ContentResult{
+				StatusCode:  200,
+				ContentType: "application/json",
+				Content:     io.NopCloser(strings.NewReader(content)),
+			}, nil
+		},
+	}
+
+	intent := &types.RequestIntent{Type: types.RequestMetadata, Name: "lodash", Path: "lodash"}
+
+	result, err := handler.ResolveMetadata(context.Background(), virtualRepo, intent, adp)
+	assert.NoError(t, err)
+	assert.NotNil(t, result)
+
+	// Without merge support, should return first success immediately
+	// May call both goroutines but should return the first completed result
+	body, _ := io.ReadAll(result.Content)
+	assert.NotEmpty(t, string(body))
+}
+
+func TestResolveMetadata_MergeFails_FallbackToFirst(t *testing.T) {
+	db := setupTestDB(t)
+	virtualRepo := createVirtualRepoWithMembers(t, db, "pypi-virtual", "pypi", []string{"pypi-local", "pypi-proxy-cn"})
+
+	groupRepo := repository.NewGroupRepository(db)
+	repoRepo := repository.NewRepositoryRepository(db)
+	handler := NewRepoHandler(repoRepo, groupRepo, nil)
+
+	adp := &mockMergerAdapter{
+		mockMetadataAdapter: mockMetadataAdapter{pkgType: types.PyPIType},
+		mergeFn: func(ctx context.Context, results []*types.ContentResult, intent *types.RequestIntent) (*types.ContentResult, error) {
+			// Merge fails
+			return nil, fmt.Errorf("merge error: incompatible formats")
+		},
+	}
+
+	adp.handleGetFn = func(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
+		content := fmt.Sprintf("data-from-%s", repo.Name)
+		return &types.ContentResult{
+			StatusCode:  200,
+			ContentType: "text/html",
+			Content:     io.NopCloser(strings.NewReader(content)),
+		}, nil
+	}
+
+	intent := &types.RequestIntent{Type: types.RequestMetadata, Name: "requests", Path: "simple/requests/"}
+
+	// Should fall back to first successful result when merge fails
+	result, err := handler.ResolveMetadata(context.Background(), virtualRepo, intent, adp)
+	assert.NoError(t, err)
+	assert.NotNil(t, result)
+	assert.Equal(t, 200, result.StatusCode)
+	// Content should be the first result (not nil)
+	assert.NotNil(t, result.Content)
 }
 
 func TestResolveMetadata_GetMembersError(t *testing.T) {

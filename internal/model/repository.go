@@ -14,6 +14,7 @@ type Repository struct {
 	Type             RepositoryType `json:"type" gorm:"size:20;index:idx_repo_type_pkg"`
 	PackageType      string         `json:"package_type" gorm:"size:50;index:idx_repo_type_pkg"`
 	Enabled          bool           `json:"enabled" gorm:"default:true;index"`
+	PublicVisible    bool           `json:"public_visible" gorm:"default:true;index"`
 	StorageBackendID *uint          `json:"storage_backend_id,omitempty"`
 
 	RemoteURL     string `json:"remote_url,omitempty"`

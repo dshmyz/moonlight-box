@@ -24,12 +24,15 @@ const (
 type RequestType string
 
 const (
-	RequestDownload RequestType = "download"
-	RequestMetadata RequestType = "metadata"
-	RequestList     RequestType = "list"
-	RequestChecksum RequestType = "checksum"
-	RequestDelete   RequestType = "delete"
-	RequestUnknown  RequestType = "unknown"
+	RequestDownload   RequestType = "download"
+	RequestMetadata   RequestType = "metadata"
+	RequestList       RequestType = "list"
+	RequestChecksum   RequestType = "checksum"
+	RequestGPG        RequestType = "gpg"
+	RequestDelete     RequestType = "delete"
+	RequestUnknown    RequestType = "unknown"
+	RequestDistTags   RequestType = "dist-tags"   // npm dist-tags 查询
+	RequestDistTagUpdate RequestType = "dist-tag-update" // npm dist-tag 更新
 )
 
 // RequestIntent 表示 adapter 解析出的请求意图
@@ -187,4 +190,5 @@ type RouteResult struct {
 	Name       string        // 包名称
 	Version    string        // 包版本
 	Filename   string        // 文件名
+	ContentType string       // 内容类型（如 application/json, text/plain, application/zip 等）
 }

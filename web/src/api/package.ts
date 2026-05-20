@@ -96,4 +96,8 @@ export const packageApi = {
   deleteVersion(versionId: number) {
     return request.delete(`/packages/versions/${versionId}`)
   },
+
+  deletePackage(packageId: number) {
+    return request.delete(`/packages/${packageId}`)
+  },
 }

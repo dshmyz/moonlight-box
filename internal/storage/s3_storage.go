@@ -156,32 +156,42 @@ func (s *S3Storage) Size(ctx context.Context, key string) (int64, error) {
 func (s *S3Storage) List(ctx context.Context, prefix string) ([]Entry, error) {
 	fullPrefix := s.resolveKey(prefix)
 
-	resp, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-		Bucket:    aws.String(s.bucket),
-		Prefix:    aws.String(fullPrefix),
-		Delimiter: aws.String("/"),
-	})
-	if err != nil {
-		return nil, err
-	}
+	result := make([]Entry, 0)
+	var continuationToken *string
 
-	result := make([]Entry, 0, len(resp.Contents)+len(resp.CommonPrefixes))
-
-	for _, obj := range resp.Contents {
-		key := strings.TrimPrefix(*obj.Key, s.basePath+"/")
-		result = append(result, Entry{
-			Key:   key,
-			IsDir: false,
-			Size:  *obj.Size,
+	for {
+		resp, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            aws.String(s.bucket),
+			Prefix:            aws.String(fullPrefix),
+			Delimiter:         aws.String("/"),
+			ContinuationToken: continuationToken,
 		})
-	}
+		if err != nil {
+			return nil, err
+		}
 
-	for _, cp := range resp.CommonPrefixes {
-		key := strings.TrimPrefix(*cp.Prefix, s.basePath+"/")
-		result = append(result, Entry{
-			Key:   key,
-			IsDir: true,
-		})
+		for _, obj := range resp.Contents {
+			key := strings.TrimPrefix(*obj.Key, s.basePath+"/")
+			result = append(result, Entry{
+				Key:   key,
+				IsDir: false,
+				Size:  *obj.Size,
+			})
+		}
+
+		for _, cp := range resp.CommonPrefixes {
+			key := strings.TrimPrefix(*cp.Prefix, s.basePath+"/")
+			result = append(result, Entry{
+				Key:   key,
+				IsDir: true,
+			})
+		}
+
+		// 检查是否还有更多结果需要获取
+		if resp.IsTruncated == nil || !*resp.IsTruncated {
+			break
+		}
+		continuationToken = resp.NextContinuationToken
 	}
 
 	return result, nil
@@ -214,81 +224,90 @@ func (s *S3Storage) Browse(ctx context.Context, path string) ([]BrowseEntry, err
 		prefix += "/"
 	}
 
-	resp, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-		Bucket:    aws.String(s.bucket),
-		Prefix:    aws.String(prefix),
-		Delimiter: aws.String("/"),
-	})
-	if err != nil {
-		return nil, err
-	}
+	result := make([]BrowseEntry, 0)
 
-	result := make([]BrowseEntry, 0, len(resp.CommonPrefixes)+len(resp.Contents))
-
-	for _, cp := range resp.CommonPrefixes {
-		p := *cp.Prefix
-		var name string
-		if s.basePath != "" {
-			name = strings.TrimPrefix(p, s.basePath+"/")
-		} else {
-			name = p
-		}
-		name = strings.TrimSuffix(name, "/")
-
-		var entryPath string
-		if cleanPath == "" {
-			entryPath = name
-		} else {
-			entryPath = cleanPath + "/" + name
-		}
-
-		result = append(result, BrowseEntry{
-			Name:    name,
-			Path:    entryPath,
-			IsDir:   true,
-			Size:    0,
-			ModTime: "-",
+	var continuationToken *string
+	for {
+		resp, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            aws.String(s.bucket),
+			Prefix:            aws.String(prefix),
+			Delimiter:         aws.String("/"),
+			ContinuationToken: continuationToken,
 		})
-	}
-
-	for _, obj := range resp.Contents {
-		key := *obj.Key
-		if key == prefix {
-			continue
+		if err != nil {
+			return nil, err
 		}
 
-		var name string
-		if s.basePath != "" {
-			name = strings.TrimPrefix(key, s.basePath+"/")
-		} else {
-			name = key
-		}
-		name = strings.TrimPrefix(name, cleanPath+"/")
+		for _, cp := range resp.CommonPrefixes {
+			p := *cp.Prefix
+			var name string
+			if s.basePath != "" {
+				name = strings.TrimPrefix(p, s.basePath+"/")
+			} else {
+				name = p
+			}
+			name = strings.TrimSuffix(name, "/")
 
-		var entryPath string
-		if cleanPath == "" {
-			entryPath = name
-		} else {
-			entryPath = cleanPath + "/" + name
+			var entryPath string
+			if cleanPath == "" {
+				entryPath = name
+			} else {
+				entryPath = cleanPath + "/" + name
+			}
+
+			result = append(result, BrowseEntry{
+				Name:    name,
+				Path:    entryPath,
+				IsDir:   true,
+				Size:    0,
+				ModTime: "-",
+			})
 		}
 
-		modTime := "-"
-		if obj.LastModified != nil {
-			modTime = obj.LastModified.Format("2006-01-02 15:04:05")
+		for _, obj := range resp.Contents {
+			key := *obj.Key
+			if key == prefix {
+				continue
+			}
+
+			var name string
+			if s.basePath != "" {
+				name = strings.TrimPrefix(key, s.basePath+"/")
+			} else {
+				name = key
+			}
+			name = strings.TrimPrefix(name, cleanPath+"/")
+
+			var entryPath string
+			if cleanPath == "" {
+				entryPath = name
+			} else {
+				entryPath = cleanPath + "/" + name
+			}
+
+			modTime := "-"
+			if obj.LastModified != nil {
+				modTime = obj.LastModified.Format("2006-01-02 15:04:05")
+			}
+
+			var size int64
+			if obj.Size != nil {
+				size = *obj.Size
+			}
+
+			result = append(result, BrowseEntry{
+				Name:    name,
+				Path:    entryPath,
+				IsDir:   false,
+				Size:    size,
+				ModTime: modTime,
+			})
 		}
 
-		var size int64
-		if obj.Size != nil {
-			size = *obj.Size
+		if resp.IsTruncated == nil || !*resp.IsTruncated {
+			break
 		}
-
-		result = append(result, BrowseEntry{
-			Name:    name,
-			Path:    entryPath,
-			IsDir:   false,
-			Size:    size,
-			ModTime: modTime,
-		})
+		continuationToken = resp.NextContinuationToken
 	}
 
 	return result, nil

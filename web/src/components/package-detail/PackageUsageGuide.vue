@@ -234,7 +234,7 @@ function copyCommand(text: string) {
 .card-title {
   font-size: 16px;
   font-weight: 600;
-  color: #303133;
+  color: var(--lunar-silver);
 }
 
 .version-tag {
@@ -252,7 +252,7 @@ function copyCommand(text: string) {
 .section-title {
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
+  color: var(--lunar-silver);
   margin: 0 0 12px;
 }
 
@@ -266,7 +266,7 @@ function copyCommand(text: string) {
 
 .command-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--lunar-silver-dim);
   margin-bottom: 4px;
 }
 
@@ -274,7 +274,8 @@ function copyCommand(text: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: #f5f7fa;
+  background: var(--lunar-bg-glass);
+  border: 1px solid var(--lunar-border);
   border-radius: 6px;
   padding: 8px 12px;
   gap: 8px;
@@ -283,14 +284,15 @@ function copyCommand(text: string) {
 .command-row code {
   font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   font-size: 13px;
-  color: #303133;
+  color: var(--lunar-silver);
   word-break: break-all;
   flex: 1;
 }
 
 .code-block {
   position: relative;
-  background: #1e1e1e;
+  background: var(--lunar-bg-surface);
+  border: 1px solid var(--lunar-border);
   border-radius: 6px;
   padding: 12px 40px 12px 16px;
   overflow-x: auto;
@@ -303,7 +305,7 @@ function copyCommand(text: string) {
 .code-block code {
   font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   font-size: 13px;
-  color: #d4d4d4;
+  color: var(--lunar-silver-muted);
   line-height: 1.6;
   white-space: pre;
 }
@@ -312,10 +314,10 @@ function copyCommand(text: string) {
   position: absolute;
   top: 8px;
   right: 8px;
-  color: #909399 !important;
+  color: var(--lunar-silver-dim) !important;
 }
 
 .copy-btn:hover {
-  color: #d4d4d4 !important;
+  color: var(--lunar-accent) !important;
 }
 </style>

@@ -176,6 +176,22 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 		return
 	}
 
+	// 注入 HTTP 请求头到 intent.Extra，供适配器使用
+	// PyPI: Accept 头决定返回 HTML 还是 PEP 691 JSON
+	// Go: If-None-Match / If-Modified-Since 用于缓存协商
+	if intent.Extra == nil {
+		intent.Extra = make(map[string]interface{})
+	}
+	if accept := c.GetHeader("Accept"); accept != "" {
+		intent.Extra["accept"] = accept
+	}
+	if ifNoneMatch := c.GetHeader("If-None-Match"); ifNoneMatch != "" {
+		intent.Extra["If-None-Match"] = ifNoneMatch
+	}
+	if ifModifiedSince := c.GetHeader("If-Modified-Since"); ifModifiedSince != "" {
+		intent.Extra["If-Modified-Since"] = ifModifiedSince
+	}
+
 	// 第二步：阻断检查（对下载和元数据请求都检查）
 	if r.blockSvc != nil {
 		blockName := intent.Name
@@ -217,14 +233,20 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 			return
 		}
 		defer routeResult.Content.Close()
+		contentType := routeResult.ContentType
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		headers := map[string]string{}
+		if shouldSetContentDisposition(model.PackageType(pkgType), intent.Filename) {
+			headers["Content-Disposition"] = fmt.Sprintf(`attachment; filename="%s"`, intent.Filename)
+		}
 		r.formatContentResponse(c, &types.ContentResult{
 			Content:     routeResult.Content,
 			Size:        routeResult.Size,
-			ContentType: "application/octet-stream",
+			ContentType: contentType,
 			StatusCode:  200,
-			Headers: map[string]string{
-				"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, intent.Filename),
-			},
+			Headers:     headers,
 		})
 	} else {
 		// Build base URL for metadata URL rewriting (npm tarball URLs, etc.)
@@ -232,7 +254,7 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 		if c.Request.TLS != nil {
 			scheme = "https"
 		}
-		baseURL := fmt.Sprintf("%s://%s/repo/%s", scheme, c.Request.Host, repoName)
+		baseURL := fmt.Sprintf("%s://%s/repository/%s", scheme, c.Request.Host, repoName)
 
 		var contentResult *types.ContentResult
 		var err error
@@ -255,7 +277,7 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 
 	// 审计日志（下载请求）
 	if intent.Type == types.RequestDownload && r.auditSvc != nil {
-		r.auditSvc.LogWithStatus(c.Request.Context(), nil, model.ActionPackageDownload, pkgType, nil, intent.Name, intent.Version, 0, 0)
+		r.auditSvc.LogWithRequestAndStatus(c.Request.Context(), nil, model.ActionPackageDownload, pkgType, nil, intent.Name, intent.Version, c.ClientIP(), c.Request.UserAgent(), 0, 0)
 	}
 }
 
@@ -267,6 +289,20 @@ func (r *RepoRouter) formatContentResponse(c *gin.Context, result *types.Content
 
 	for key, value := range result.Headers {
 		c.Header(key, value)
+	}
+
+	// 检查 If-None-Match 请求头（用于 HTTP 缓存验证）
+	if etag := c.GetHeader("If-None-Match"); etag != "" && result.StatusCode == 200 {
+		if resultETag := result.Headers["ETag"]; resultETag != "" {
+			if etag == resultETag || etag == "*" {
+				c.Header("ETag", resultETag)
+				if lastModified := result.Headers["Last-Modified"]; lastModified != "" {
+					c.Header("Last-Modified", lastModified)
+				}
+				c.Status(http.StatusNotModified)
+				return
+			}
+		}
 	}
 
 	if result.Content != nil {
@@ -486,7 +522,7 @@ func (r *RepoRouter) HandlePublish(c *gin.Context) {
 	}
 
 	if r.auditSvc != nil {
-		r.auditSvc.LogWithStatus(c.Request.Context(), nil, model.ActionPackageUpload, string(repo.PackageType), &uploadResult.PackageID, publishResult.PackageName, "", 0, 0)
+		r.auditSvc.LogWithRequestAndStatus(c.Request.Context(), nil, model.ActionPackageUpload, string(repo.PackageType), &uploadResult.PackageID, publishResult.PackageName, "", c.ClientIP(), c.Request.UserAgent(), 0, 0)
 	}
 
 	result := &types.RepoOperationResult{
@@ -604,6 +640,15 @@ func (r *RepoRouter) HandleDelete(c *gin.Context) {
 			0,
 		)
 	}
+}
+
+func shouldSetContentDisposition(pkgType model.PackageType, filename string) bool {
+	if pkgType == model.PackageTypeGo {
+		if strings.HasSuffix(filename, ".info") || strings.HasSuffix(filename, ".mod") {
+			return false
+		}
+	}
+	return true
 }
 
 func slogFields(args []any) logrus.Fields {

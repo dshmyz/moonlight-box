@@ -273,7 +273,7 @@ const managerConfig = computed(() => {
   const configs: Record<string, string> = {
     npm: `
       <div class="code-block-wrapper">
-        <pre><code>registry=${registry.value}/repo/npm-virtual/</code></pre>
+        <pre><code>registry=${registry.value}/repository/npm-virtual/</code></pre>
       </div>
       <div class="config-note">
         <i class="fa-solid fa-info-circle"></i>
@@ -285,7 +285,7 @@ const managerConfig = computed(() => {
         <pre><code>&lt;mirror&gt;
   &lt;id&gt;moonlight&lt;/id&gt;
   &lt;mirrorOf&gt;central&lt;/mirrorOf&gt;
-  &lt;url&gt;${registry.value}/repo/maven-virtual/&lt;/url&gt;
+  &lt;url&gt;${registry.value}/repository/maven-virtual/&lt;/url&gt;
 &lt;/mirror&gt;</code></pre>
       </div>
       <div class="config-note">
@@ -296,7 +296,7 @@ const managerConfig = computed(() => {
     pypi: `
       <div class="code-block-wrapper">
         <pre><code>[global]
-index-url = ${registry.value}/repo/pypi-virtual/simple/
+index-url = ${registry.value}/repository/pypi-virtual/simple/
 trusted-host = ${host.value}</code></pre>
       </div>
       <div class="config-note">
@@ -424,7 +424,7 @@ const faqs = [
       <div class="command-list">
         <div class="command-item">
           <span class="command-label">NPM:</span>
-          <code>npm publish --registry=http://your-registry/repo/npm-local/</code>
+          <code>npm publish --registry=http://your-registry/repository/npm-local/</code>
         </div>
         <div class="command-item">
           <span class="command-label">Maven:</span>

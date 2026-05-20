@@ -94,7 +94,7 @@ TEST_FILE="$TEST_DIR/small-test.txt"
 echo "Small test content" > "$TEST_FILE"
 
 curl -s -X PUT \
-    "$BASE_URL/repo/maven-local/com/test/perf-test/1.0.0/perf-test-1.0.0.txt" \
+    "$BASE_URL/repository/maven-local/com/test/perf-test/1.0.0/perf-test-1.0.0.txt" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: text/plain" \
     --data-binary @"$TEST_FILE" > /dev/null 2>&1
@@ -104,7 +104,7 @@ if check_ab; then
     
     AB_OUTPUT=$(ab -n $REQUEST_COUNT -c $CONCURRENT_USERS \
         -H "Authorization: Bearer $TOKEN" \
-        "$BASE_URL/repo/maven-local/com/test/perf-test/1.0.0/perf-test-1.0.0.txt" 2>&1)
+        "$BASE_URL/repository/maven-local/com/test/perf-test/1.0.0/perf-test-1.0.0.txt" 2>&1)
     
     if echo "$AB_OUTPUT" | grep -q "Failed requests: 0"; then
         pass "基准测试 - 无失败请求"
@@ -149,7 +149,7 @@ if [ -f "$LARGE_FILE" ]; then
     START_TIME=$(date +%s%N)
     
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-        "$BASE_URL/repo/maven-local/com/test/large-perf-test/1.0.0/large-perf-test-1.0.0.bin" \
+        "$BASE_URL/repository/maven-local/com/test/large-perf-test/1.0.0/large-perf-test-1.0.0.bin" \
         -H "Authorization: Bearer $TOKEN" \
         -H "Content-Type: application/octet-stream" \
         --data-binary @"$LARGE_FILE")
@@ -171,7 +171,7 @@ if [ -f "$LARGE_FILE" ]; then
     START_TIME=$(date +%s%N)
     
     HTTP_CODE=$(curl -s -o "$TEST_DIR/downloaded-large.bin" -w "%{http_code}" \
-        "$BASE_URL/repo/maven-local/com/test/large-perf-test/1.0.0/large-perf-test-1.0.0.bin")
+        "$BASE_URL/repository/maven-local/com/test/large-perf-test/1.0.0/large-perf-test-1.0.0.bin")
     
     END_TIME=$(date +%s%N)
     DOWNLOAD_TIME=$(( (END_TIME - START_TIME) / 1000000 ))
@@ -208,7 +208,7 @@ for i in $(seq 1 $CONCURRENT_COUNT); do
         
         START_TIME=$(date +%s%N)
         HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-            "$BASE_URL/repo/maven-local/com/test/concurrent-test/1.0.0/concurrent-test-$i.bin" \
+            "$BASE_URL/repository/maven-local/com/test/concurrent-test/1.0.0/concurrent-test-$i.bin" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/octet-stream" \
             --data-binary @"$CONCURRENT_FILE")
@@ -259,7 +259,7 @@ for i in $(seq 1 $CONCURRENT_COUNT); do
     (
         START_TIME=$(date +%s%N)
         HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            "$BASE_URL/repo/maven-local/com/test/concurrent-test/1.0.0/concurrent-test-$i.bin")
+            "$BASE_URL/repository/maven-local/com/test/concurrent-test/1.0.0/concurrent-test-$i.bin")
         END_TIME=$(date +%s%N)
         ELAPSED=$(( (END_TIME - START_TIME) / 1000000 ))
         
@@ -307,7 +307,7 @@ if check_ab; then
     
     AB_OUTPUT=$(ab -n $REQUEST_COUNT -c $CONCURRENT_USERS -t $DURATION \
         -H "Authorization: Bearer $TOKEN" \
-        "$BASE_URL/repo/maven-local/com/test/perf-test/1.0.0/perf-test-1.0.0.txt" 2>&1 || true)
+        "$BASE_URL/repository/maven-local/com/test/perf-test/1.0.0/perf-test-1.0.0.txt" 2>&1 || true)
     
     if echo "$AB_OUTPUT" | grep -q "Complete requests:"; then
         COMPLETE=$(echo "$AB_OUTPUT" | grep "Complete requests:" | awk '{print $3}')
@@ -346,7 +346,7 @@ if command -v ps &> /dev/null; then
             
             for i in $(seq 1 50); do
                 curl -s -o /dev/null \
-                    "$BASE_URL/repo/maven-local/com/test/perf-test/1.0.0/perf-test-1.0.0.txt" > /dev/null 2>&1
+                    "$BASE_URL/repository/maven-local/com/test/perf-test/1.0.0/perf-test-1.0.0.txt" > /dev/null 2>&1
             done
             
             sleep 2
@@ -380,7 +380,7 @@ if check_ab; then
     CONNECTIONS=50
     AB_OUTPUT=$(ab -n $REQUEST_COUNT -c $CONNECTIONS \
         -H "Authorization: Bearer $TOKEN" \
-        "$BASE_URL/repo/maven-local/com/test/perf-test/1.0.0/perf-test-1.0.0.txt" 2>&1)
+        "$BASE_URL/repository/maven-local/com/test/perf-test/1.0.0/perf-test-1.0.0.txt" 2>&1)
     
     if echo "$AB_OUTPUT" | grep -q "Keep-Alive"; then
         KEEP_ALIVE=$(echo "$AB_OUTPUT" | grep "Keep-Alive requests:" | awk '{print $3}')

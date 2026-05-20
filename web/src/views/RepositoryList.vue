@@ -139,6 +139,15 @@
                   />
                 </template>
               </el-table-column>
+              <el-table-column label="公开可见" width="90" align="center">
+                <template #default="{ row }">
+                  <el-switch
+                    :model-value="row.public_visible ?? true"
+                    size="small"
+                    @change="(val: boolean) => togglePublicVisible(row, val)"
+                  />
+                </template>
+              </el-table-column>
               <el-table-column label="操作" width="220">
                 <template #default="{ row }">
                   <div class="operation-buttons">
@@ -328,6 +337,16 @@ const toggleEnabled = async (repo: Repository, enabled: boolean) => {
     loadRepos()
   } catch (err) {
     ElMessage.error('状态更新失败')
+  }
+}
+
+const togglePublicVisible = async (repo: Repository, publicVisible: boolean) => {
+  try {
+    await repositoryApi.update(repo.name, { public_visible: publicVisible })
+    ElMessage.success(publicVisible ? '已设为公开可见' : '已设为仅内部可见')
+    loadRepos()
+  } catch (err) {
+    ElMessage.error('公开状态更新失败')
   }
 }
 

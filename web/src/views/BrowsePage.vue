@@ -1,105 +1,124 @@
 <template>
-  <div class="browse-page">
-    <div class="hero-section">
-      <h1 class="page-title">软件包中心</h1>
-      <p class="page-desc">统一管理、搜索和分发多语言软件包</p>
-    </div>
+  <div class="browse-page" @keydown="handleKeydown">
+    <HeroSection
+      ref="heroRef"
+      v-model:search-query="searchQuery"
+      v-model:selected-type="selectedType"
+      @search="handleHeroSearch"
+    />
 
-    <div class="search-bar-wrapper">
-      <el-input
-        v-model="searchQuery"
-        placeholder="搜索包名、描述或标签..."
-        size="large"
-        clearable
-        class="search-input"
-        @keyup.enter="handleSearch"
-        @clear="handleSearch"
+    <div class="lunar-tabs-bar">
+      <button
+        class="lunar-tab"
+        :class="{ 'lunar-tab--active': activeTab === 'packages' }"
+        @click="activeTab = 'packages'"
       >
-        <template #prefix>
-          <el-icon><Search /></el-icon>
-        </template>
-        <template #append>
-          <el-button @click="handleSearch">搜索</el-button>
-        </template>
-      </el-input>
+        <el-icon><Box /></el-icon>
+        包
+      </button>
+      <button
+        class="lunar-tab"
+        :class="{ 'lunar-tab--active': activeTab === 'repositories' }"
+        @click="activeTab = 'repositories'"
+      >
+        <el-icon><FolderOpened /></el-icon>
+        仓库
+      </button>
+
+      <div v-if="activeTab === 'packages'" class="lunar-tab-actions">
+        <el-select v-model="sortBy" class="lunar-sort-select" @change="handleSortChange">
+          <el-option label="按名称" value="name" />
+          <el-option label="按更新时间" value="updated_at" />
+          <el-option label="按下载量" value="downloads" />
+        </el-select>
+        <span class="lunar-stats-count">{{ total }} 个包</span>
+      </div>
     </div>
 
-    <el-tabs v-model="activeTab" class="browse-tabs">
-      <el-tab-pane label="包" name="packages">
-        <div class="results-section">
-          <div class="filter-card">
-            <div class="filter-group">
-              <span class="filter-label">类型:</span>
-              <el-radio-group v-model="selectedType" @change="handleSearch" class="type-filter-group">
-                <el-radio-button value="all">全部</el-radio-button>
-                <el-radio-button value="npm">npm</el-radio-button>
-                <el-radio-button value="maven">Maven</el-radio-button>
-                <el-radio-button value="pypi">PyPI</el-radio-button>
-                <el-radio-button value="go">Go</el-radio-button>
-                <el-radio-button value="yum">Yum</el-radio-button>
-                <el-radio-button value="apt">Apt</el-radio-button>
-                <el-radio-button value="generic">Generic</el-radio-button>
-              </el-radio-group>
-            </div>
-            <div class="filter-divider" />
-            <div class="filter-group">
-              <span class="filter-label">排序:</span>
-              <el-select v-model="sortBy" class="sort-filter-select" @change="handleSearch">
-                <el-option label="按名称" value="name" />
-                <el-option label="按更新时间" value="updated_at" />
-                <el-option label="按下载量" value="downloads" />
-              </el-select>
-            </div>
-            <div class="filter-divider" />
-            <div class="filter-stats">
-              <span class="stats-count">{{ total }} 个包</span>
-            </div>
-          </div>
+    <div v-if="activeTab === 'packages' && !loading && packages.length > 0" class="stats-inline">
+      <span class="stat-chip">
+        <el-icon><Box /></el-icon>
+        {{ formatNumber(total) }} 个包
+      </span>
+      <span v-if="searchTime > 0" class="stat-chip stat-chip-dim">
+        <el-icon><Clock /></el-icon>
+        {{ searchTime }}ms
+      </span>
+    </div>
 
-          <div v-loading="loading" class="package-list">
-            <el-empty v-if="packages.length === 0 && !loading" description="暂无匹配的包" />
-            <template v-else>
-              <PackageCard
-                v-for="pkg in packages"
-                :key="pkg.id"
-                :pkg="pkg"
-                @click="goToDetail(pkg)"
-              />
-            </template>
-          </div>
-
-          <div v-if="total > pageSize" class="pagination-container">
-            <el-pagination
-              v-model:current-page="currentPage"
-              v-model:page-size="pageSize"
-              :total="total"
-              :page-sizes="[10, 20, 50, 100]"
-              layout="total, sizes, prev, pager, next"
-              @current-change="handleSearch"
-              @size-change="handleSearch"
-            />
+    <div v-if="activeTab === 'packages'" class="results-section">
+      <!-- 骨架屏 -->
+      <div v-if="loading" class="package-grid">
+        <div v-for="i in 8" :key="i" class="package-card skeleton-card">
+          <div class="skeleton-inner">
+            <div class="skeleton-line short"></div>
+            <div class="skeleton-line long"></div>
+            <div class="skeleton-line medium"></div>
+            <div class="skeleton-meta">
+              <div class="skeleton-line tiny"></div>
+              <div class="skeleton-line tiny"></div>
+              <div class="skeleton-line tiny"></div>
+            </div>
           </div>
         </div>
-      </el-tab-pane>
+      </div>
 
-      <el-tab-pane label="仓库" name="repositories">
-        <RepositoryShowcase />
-      </el-tab-pane>
-    </el-tabs>
+      <!-- 包列表 - 响应式网格布局 -->
+      <div v-else-if="packages.length > 0" class="package-grid">
+        <PackageCard
+          v-for="pkg in packages"
+          :key="pkg.id"
+          :pkg="pkg"
+          @click="goToDetail(pkg)"
+        />
+      </div>
+
+      <el-empty
+        v-else
+        description="暂无匹配的包"
+        class="lunar-empty"
+      />
+
+      <div v-if="total > pageSize" class="pagination-container">
+        <el-pagination
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          :total="total"
+          :page-sizes="[12, 24, 48, 96]"
+          layout="total, sizes, prev, pager, next"
+          @current-change="handlePageChange"
+          @size-change="handleSizeChange"
+          class="lunar-pagination"
+        />
+      </div>
+    </div>
+
+    <div v-if="activeTab === 'repositories'" class="results-section">
+      <RepositoryShowcase />
+    </div>
+
+    <div class="keyboard-hint" :class="{ 'hint-faded': hintFaded }">
+      <span class="hint-item"><kbd>/</kbd> 聚焦搜索</span>
+      <span class="hint-item"><kbd>Esc</kbd> 清空</span>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { Search } from '@element-plus/icons-vue'
+import { Box, FolderOpened, Clock } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { packageApi, type Package } from '@/api/package'
+import { formatNumber } from '@/utils/format'
 import PackageCard from '@/components/browse/PackageCard.vue'
 import RepositoryShowcase from '@/components/browse/RepositoryShowcase.vue'
+import HeroSection from '@/components/browse/HeroSection.vue'
 
 const router = useRouter()
 const route = useRoute()
+
+const heroRef = ref<InstanceType<typeof HeroSection> | null>(null)
 
 const activeTab = ref('packages')
 const loading = ref(false)
@@ -107,9 +126,42 @@ const searchQuery = ref('')
 const selectedType = ref('all')
 const sortBy = ref('name')
 const currentPage = ref(1)
-const pageSize = ref(20)
+const pageSize = ref(24)
 const total = ref(0)
 const packages = ref<Package[]>([])
+const searchTime = ref(0)
+const hintFaded = ref(false)
+let hintTimer: ReturnType<typeof setTimeout> | null = null
+
+// URL 参数同步 - 读取初始值
+function initFromUrl() {
+  const query = route.query
+  if (query.q) searchQuery.value = query.q as string
+  if (query.type) selectedType.value = query.type as string
+  if (query.sort) sortBy.value = query.sort as string
+  if (query.page) currentPage.value = parseInt(query.page as string) || 1
+  if (query.page_size) pageSize.value = parseInt(query.page_size as string) || 24
+}
+
+// URL 参数同步 - 更新 URL
+function updateUrl() {
+  const query: Record<string, string> = {}
+  if (searchQuery.value) query.q = searchQuery.value
+  if (selectedType.value !== 'all') query.type = selectedType.value
+  if (sortBy.value !== 'name') query.sort = sortBy.value
+  if (currentPage.value !== 1) query.page = String(currentPage.value)
+  if (pageSize.value !== 24) query.page_size = String(pageSize.value)
+
+  router.replace({ query })
+}
+
+// 搜索处理
+function handleHeroSearch(query: string, type: string) {
+  searchQuery.value = query
+  selectedType.value = type
+  currentPage.value = 1
+  handleSearch()
+}
 
 const handleSearch = async () => {
   loading.value = true
@@ -118,15 +170,16 @@ const handleSearch = async () => {
       q: searchQuery.value,
       page: currentPage.value,
       page_size: pageSize.value,
-      sort: sortBy.value,
+      sort: sortBy.value === 'downloads' ? 'downloads' : sortBy.value,
     }
     if (selectedType.value !== 'all') {
       params.type = selectedType.value
     }
 
-    const res = await packageApi.search(params as { q: string; type?: string; scope?: string; sort?: string; page?: number; page_size?: number })
+    const res = await packageApi.search(params as { q?: string; type?: string; sort?: string; page?: number; page_size?: number })
     packages.value = res.list || []
     total.value = res.total || 0
+    searchTime.value = res.search_time_ms || 0
   } catch {
     packages.value = []
     total.value = 0
@@ -134,24 +187,91 @@ const handleSearch = async () => {
   } finally {
     loading.value = false
   }
+
+  // 更新 URL
+  updateUrl()
+}
+
+function handleSortChange() {
+  currentPage.value = 1
+  handleSearch()
+}
+
+function handlePageChange() {
+  handleSearch()
+  // 滚动到顶部
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+function handleSizeChange() {
+  currentPage.value = 1
+  handleSearch()
 }
 
 function goToDetail(pkg: { id: number; type: string; name: string }) {
   router.push(`/packages/${pkg.type}/${encodeURIComponent(pkg.name)}`)
 }
 
-watch(() => route.query.q, (newVal) => {
-  if (newVal && typeof newVal === 'string') {
-    searchQuery.value = newVal
+// 键盘快捷键处理
+function handleKeydown(event: KeyboardEvent) {
+  // 如果焦点在输入框中，不处理
+  const target = event.target as HTMLElement
+  if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+    if (event.key === 'Escape') {
+      target.blur()
+    }
+    return
+  }
+
+  switch (event.key) {
+    case '/':
+      event.preventDefault()
+      // 聚焦搜索框
+      const searchInput = heroRef.value?.$el?.querySelector?.('input') || document.querySelector('.lunar-search-input input') as HTMLInputElement
+      if (searchInput) {
+        searchInput.focus()
+      }
+      break
+    case 'Escape':
+      if (searchQuery.value) {
+        searchQuery.value = ''
+        selectedType.value = 'all'
+        currentPage.value = 1
+        handleSearch()
+      }
+      break
+  }
+}
+
+// 监听路由变化（仅用于外部链接变化，如浏览器前进后退）
+watch(() => route.query, () => {
+  const query = route.query
+  const newSearch = (query.q as string) || ''
+  const newType = (query.type as string) || 'all'
+  const newSort = (query.sort as string) || 'name'
+  const newPage = parseInt((query.page as string) || '1')
+
+  // 只有当值确实发生变化时才更新并搜索
+  if (newSearch !== searchQuery.value || newType !== selectedType.value ||
+      newSort !== sortBy.value || newPage !== currentPage.value) {
+    searchQuery.value = newSearch
+    selectedType.value = newType
+    sortBy.value = newSort
+    currentPage.value = newPage
     handleSearch()
   }
-})
+}, { immediate: false })
 
 onMounted(() => {
-  if (route.query.q && typeof route.query.q === 'string') {
-    searchQuery.value = route.query.q
-  }
+  initFromUrl()
   handleSearch()
+  hintTimer = setTimeout(() => {
+    hintFaded.value = true
+  }, 5000)
+})
+
+onUnmounted(() => {
+  if (hintTimer) clearTimeout(hintTimer)
 })
 </script>
 
@@ -160,234 +280,309 @@ onMounted(() => {
   width: 100%;
 }
 
-.hero-section {
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 20px 24px;
-  margin-bottom: 16px;
+/* Tab Bar */
+.lunar-tabs-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 24px;
+  gap: 4px;
+  padding: 0;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--lunar-border);
 }
 
-.page-title {
-  font-size: 28px;
-  font-weight: 800;
-  color: #0f172a;
-  margin: 0 0 6px;
-  letter-spacing: -0.8px;
-  line-height: 1.1;
-}
-
-.page-desc {
-  color: #64748b;
-  font-size: 14px;
-  margin: 0;
-  line-height: 1.5;
-}
-
-.search-bar-wrapper {
+.lunar-tab {
   display: flex;
-  justify-content: flex-start;
-  margin-bottom: 16px;
-}
-
-.search-input {
-  width: 480px;
-}
-
-.search-input :deep(.el-input__wrapper) {
-  border-radius: 8px;
-  border: 2px solid #e2e8f0;
-  box-shadow: none;
-  padding: 6px 12px;
-  background: #fafbfc;
-  transition: all 0.25s ease;
-}
-
-.search-input :deep(.el-input__wrapper:hover) {
-  border-color: #0f172a;
-  background: #ffffff;
-}
-
-.search-input :deep(.el-input__wrapper.is-focus) {
-  border-color: #0f172a;
-  background: #ffffff;
-  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
-}
-
-.search-input :deep(.el-input__inner) {
+  align-items: center;
+  gap: 6px;
+  padding: 12px 24px;
   font-size: 14px;
-  color: #0f172a;
-}
-
-.search-input :deep(.el-input__prefix) {
-  color: #94a3b8;
-}
-
-.search-input :deep(.el-input__prefix-inner > .el-icon) {
-  font-size: 16px;
-}
-
-.search-input :deep(.el-input-group__append) {
-  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-  color: #ffffff;
-  border: none;
-  border-radius: 0 8px 8px 0;
   font-weight: 600;
-  font-size: 14px;
-  padding: 0 28px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  letter-spacing: 0.5px;
-}
-
-.search-input :deep(.el-input-group__append:hover) {
-  background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
-}
-
-.search-input :deep(.el-input-group__append:active) {
-  transform: scale(0.97);
-}
-
-.search-input :deep(.el-input-group__append .el-button) {
+  color: var(--lunar-silver-muted);
   background: transparent;
   border: none;
-  color: #ffffff;
-  font-weight: 600;
-  font-size: 14px;
-  padding: 0;
-  height: auto;
-  line-height: normal;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  margin-bottom: -1px;
 }
 
-.browse-tabs {
-  margin-top: 0;
+.lunar-tab:hover {
+  color: var(--lunar-silver);
 }
 
-.browse-tabs :deep(.el-tabs__content) {
-  padding: 0;
+.lunar-tab--active {
+  color: var(--lunar-accent);
+  border-bottom-color: var(--lunar-accent);
 }
 
-.browse-tabs :deep(.el-tabs__nav-wrap::after) {
-  height: 1px;
-  background: #e2e8f0;
-}
-
-.browse-tabs :deep(.el-tabs__header) {
-  margin-bottom: 0;
-  border-bottom: 2px solid #0f172a;
-}
-
-.browse-tabs :deep(.el-tabs__item) {
-  font-weight: 600;
-  color: #64748b;
-  transition: all 0.2s ease;
-  font-size: 14px;
-  padding: 0 24px;
-  height: 48px;
-  line-height: 48px;
-}
-
-.browse-tabs :deep(.el-tabs__item.is-active) {
-  color: #0f172a;
-}
-
-.browse-tabs :deep(.el-tabs__active-bar) {
-  background: #0f172a;
-  height: 2px;
-}
-
-.results-section {
-  margin-top: 24px;
-}
-
-.filter-card {
+.lunar-tab-actions {
   display: flex;
   align-items: center;
-  gap: 24px;
-  padding: 16px 20px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  margin-bottom: 20px;
+  gap: 16px;
+  margin-left: auto;
+  padding-bottom: 12px;
 }
 
-.filter-group {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.filter-divider {
-  width: 1px;
-  height: 20px;
-  background: #e2e8f0;
-}
-
-.filter-label {
-  font-size: 13px;
-  color: #475569;
-  white-space: nowrap;
-  font-weight: 600;
-}
-
-.type-filter-group :deep(.el-radio-button__inner) {
-  height: 34px;
-  padding: 0 18px;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 34px;
-  border-radius: 0;
-}
-
-.type-filter-group :deep(.el-radio-button:first-child .el-radio-button__inner) {
-  border-radius: 6px 0 0 6px;
-}
-
-.type-filter-group :deep(.el-radio-button:last-child .el-radio-button__inner) {
-  border-radius: 0 6px 6px 0;
-}
-
-.sort-filter-select {
+.lunar-sort-select {
   min-width: 140px;
 }
 
-.sort-filter-select :deep(.el-input__wrapper) {
-  height: 34px;
-  border-radius: 6px;
+.lunar-sort-select :deep(.el-input__wrapper) {
+  background: var(--lunar-bg-glass);
+  border: 1px solid var(--lunar-border);
+  border-radius: 8px;
+  box-shadow: none;
+  height: 32px;
+}
+
+.lunar-sort-select :deep(.el-input__wrapper:hover) {
+  border-color: var(--lunar-border-hover);
+}
+
+.lunar-sort-select :deep(.el-input__wrapper.is-focus) {
+  border-color: var(--lunar-accent);
+  box-shadow: var(--lunar-shadow-glow);
+}
+
+.lunar-sort-select :deep(.el-input__inner) {
+  color: var(--lunar-silver);
   font-size: 13px;
   font-weight: 600;
 }
 
-.sort-filter-select :deep(.el-input__inner) {
+.lunar-stats-count {
+  color: var(--lunar-accent);
   font-size: 13px;
-  font-weight: 600;
-}
-
-.filter-stats {
-  margin-left: auto;
-}
-
-.stats-count {
-  color: #0f172a;
-  font-size: 14px;
   font-weight: 700;
   white-space: nowrap;
 }
 
-.package-list {
+/* 统计概览 */
+.stats-inline {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 16px;
 }
 
+.stat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--lunar-silver-muted);
+}
+
+.stat-chip .el-icon {
+  font-size: 14px;
+  color: var(--lunar-accent);
+}
+
+.stat-chip-dim {
+  color: var(--lunar-silver-dim);
+}
+
+.stat-chip-dim .el-icon {
+  color: var(--lunar-accent-soft);
+}
+
+/* 响应式网格布局 */
+.results-section {
+  margin-top: 0;
+}
+
+.package-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 768px) {
+  .package-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-inline {
+    gap: 6px;
+  }
+
+  .lunar-tab-actions {
+    gap: 8px;
+  }
+
+  .lunar-sort-select {
+    min-width: 100px;
+  }
+}
+
+/* 骨架屏 */
+.skeleton-card {
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.skeleton-inner {
+  padding: 20px 24px;
+  background: var(--lunar-bg-card);
+  border-radius: 10px;
+  border: 1px solid var(--lunar-border);
+  transform: translateZ(0);
+}
+
+.skeleton-line {
+  height: 12px;
+  background: var(--lunar-border);
+  border-radius: 4px;
+  animation: skeletonPulse 1.5s ease-in-out infinite;
+  margin-bottom: 12px;
+}
+
+@keyframes skeletonPulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+.skeleton-line.short {
+  width: 30%;
+}
+
+.skeleton-line.long {
+  width: 100%;
+}
+
+.skeleton-line.medium {
+  width: 70%;
+}
+
+.skeleton-line.tiny {
+  width: 60px;
+  height: 10px;
+  margin-bottom: 0;
+}
+
+.skeleton-meta {
+  display: flex;
+  gap: 20px;
+  margin-top: 16px;
+}
+
+/* 空状态 */
+.lunar-empty :deep(.el-empty__description p) {
+  color: var(--lunar-silver-muted);
+}
+
+.lunar-empty :deep(.el-empty__image svg) {
+  fill: var(--lunar-silver-dim);
+}
+
+/* 分页 */
 .pagination-container {
   display: flex;
   justify-content: center;
   margin-top: 32px;
   padding: 24px 0;
+}
+
+.lunar-pagination :deep(.el-pagination) {
+  --el-pagination-bg-color: var(--lunar-bg-glass);
+  --el-pagination-text-color: var(--lunar-silver-muted);
+  --el-pagination-button-bg-color: var(--lunar-bg-glass);
+  --el-pagination-hover-color: var(--lunar-accent);
+}
+
+.lunar-pagination :deep(.el-pager li) {
+  background: var(--lunar-bg-glass);
+  color: var(--lunar-silver-muted);
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+.lunar-pagination :deep(.el-pager li:hover) {
+  color: var(--lunar-accent);
+}
+
+.lunar-pagination :deep(.el-pager li.is-active) {
+  background: var(--lunar-gradient-btn);
+  color: var(--lunar-bg-deep);
+}
+
+.lunar-pagination :deep(.btn-prev),
+.lunar-pagination :deep(.btn-next) {
+  background: var(--lunar-bg-glass);
+  color: var(--lunar-silver-muted);
+  border-radius: 6px;
+}
+
+.lunar-pagination :deep(.btn-prev:hover),
+.lunar-pagination :deep(.btn-next:hover) {
+  color: var(--lunar-accent);
+}
+
+.lunar-pagination :deep(.el-pagination__total) {
+  color: var(--lunar-silver-muted);
+}
+
+.lunar-pagination :deep(.el-pagination__sizes .el-input__wrapper) {
+  background: var(--lunar-bg-glass);
+  border: 1px solid var(--lunar-border);
+  color: var(--lunar-silver);
+  box-shadow: none;
+}
+
+/* 键盘快捷键提示 */
+.keyboard-hint {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  gap: 16px;
+  padding: 8px 16px;
+  background: var(--lunar-bg-glass);
+  border: 1px solid var(--lunar-border);
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  opacity: 0.7;
+  transition: opacity 0.4s ease;
+  z-index: 100;
+}
+
+.keyboard-hint:hover,
+.keyboard-hint:focus-within {
+  opacity: 1;
+}
+
+.hint-faded {
+  opacity: 0.2;
+}
+
+.hint-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--lunar-silver-dim);
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  color: var(--lunar-silver-muted);
+  background: var(--lunar-bg-surface);
+  border: 1px solid var(--lunar-border);
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+@media (max-width: 768px) {
+  .keyboard-hint {
+    display: none;
+  }
 }
 </style>

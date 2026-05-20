@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/model"
@@ -19,6 +21,17 @@ type RepoRequestHandler interface {
 	HandleDelete(c *gin.Context, ctx *types.DeleteContext) error
 	ParsePath(path string) (*types.PackagePathInfo, error)
 	Type() types.PackageType
+}
+
+// MetadataMerger is an optional interface that adapters can implement
+// to support merging metadata results from multiple member repositories
+// in a virtual repository. If an adapter does not implement this interface,
+// the default "first success wins" strategy is used.
+type MetadataMerger interface {
+	// MergeMetadata merges multiple metadata results into one.
+	// results contains all successful responses from member repositories.
+	// Returns the merged result, or nil+error if merging fails.
+	MergeMetadata(ctx context.Context, results []*types.ContentResult, intent *types.RequestIntent) (*types.ContentResult, error)
 }
 
 // ProxyFetcher 定义代理获取能力接口
@@ -91,7 +104,9 @@ func (r *RepoHandler) HandleRepoPublish(c *gin.Context, repo *model.Repository) 
 		return nil, fmt.Errorf("unsupported package type: %s", repo.PackageType)
 	}
 	ctx := &types.PublishContext{
-		Repo: repo,
+		Repo:     repo,
+		UserID:   c.GetUint("userID"),
+		ClientIP: c.ClientIP(),
 	}
 	return adp.HandlePut(c, ctx)
 }
@@ -121,13 +136,14 @@ func (r *RepoHandler) resolveLocal(ctx context.Context, downloadCtx *types.Downl
 		return nil, err
 	}
 	return &RouteResult{
-		SourceType: "local",
-		Content:    result.Content,
-		Size:       result.Size,
-		FromCache:  result.FromCache,
-		Name:       result.Name,
-		Version:    result.Version,
-		Filename:   result.Filename,
+		SourceType:  "local",
+		Content:     result.Content,
+		Size:        result.Size,
+		FromCache:   result.FromCache,
+		Name:        result.Name,
+		Version:     result.Version,
+		Filename:    result.Filename,
+		ContentType: result.ContentType,
 	}, nil
 }
 
@@ -141,15 +157,16 @@ func (r *RepoHandler) resolveProxy(ctx context.Context, downloadCtx *types.Downl
 		return nil, err
 	}
 	return &RouteResult{
-		Source:     downloadCtx.Repo.Name,
-		SourceType: "proxy",
-		RepoID:     result.RepoID,
-		Content:    result.Content,
-		Size:       result.Size,
-		FromCache:  result.FromCache,
-		Name:       result.Name,
-		Version:    result.Version,
-		Filename:   result.Filename,
+		Source:      downloadCtx.Repo.Name,
+		SourceType:  "proxy",
+		RepoID:      result.RepoID,
+		Content:     result.Content,
+		Size:        result.Size,
+		FromCache:   result.FromCache,
+		Name:        result.Name,
+		Version:     result.Version,
+		Filename:    result.Filename,
+		ContentType: result.ContentType,
 	}, nil
 }
 
@@ -234,7 +251,9 @@ func isPackageNotFoundError(err error) bool {
 }
 
 // ResolveMetadata 解析虚拟仓库的元数据请求
-// 遍历成员仓库，对每个成员调用 adapter 的 HandleGet，返回第一个成功的结果
+// 遍历成员仓库，对每个成员调用 adapter 的 HandleGet。
+// 如果 adapter 实现了 MetadataMerger 接口，收集所有成功结果并合并；
+// 否则使用 "第一个成功即返回" 策略。
 func (r *RepoHandler) ResolveMetadata(ctx context.Context, virtualRepo *model.Repository, intent *types.RequestIntent, adp RepoRequestHandler) (*types.ContentResult, error) {
 	members, err := r.getMembers(ctx, virtualRepo.ID)
 	if err != nil {
@@ -252,19 +271,8 @@ func (r *RepoHandler) ResolveMetadata(ctx context.Context, virtualRepo *model.Re
 		return nil, ErrPackageNotFound
 	}
 
-	// 对于列表请求（如 PyPI simple index），优先使用代理成员获取上游完整索引。
-	// 本地成员通常只有少量缓存包，优先代理成员可以避免返回空列表。
-	if intent != nil && intent.Type == types.RequestList {
-		var proxyMembers []model.RepositoryGroup
-		for _, m := range matchingMembers {
-			if m.MemberRepo.Type == model.RepoTypeProxy {
-				proxyMembers = append(proxyMembers, m)
-			}
-		}
-		if len(proxyMembers) > 0 {
-			matchingMembers = proxyMembers
-		}
-	}
+	// Check if adapter supports metadata merging
+	_, supportsMerge := adp.(MetadataMerger)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -289,6 +297,8 @@ func (r *RepoHandler) ResolveMetadata(ctx context.Context, virtualRepo *model.Re
 		}()
 	}
 
+	// Collect all results
+	var successResults []*types.ContentResult
 	var firstErr error
 	remaining := len(matchingMembers)
 	for remaining > 0 {
@@ -307,10 +317,37 @@ func (r *RepoHandler) ResolveMetadata(ctx context.Context, virtualRepo *model.Re
 				continue
 			}
 			if mr.res != nil && mr.res.StatusCode < 400 {
-				cancel()
-				return mr.res, nil
+				if !supportsMerge {
+					// No merge support: return first success immediately
+					cancel()
+					return mr.res, nil
+				}
+				// Read the content into memory for merging
+				if mr.res.Content != nil {
+					body, readErr := io.ReadAll(mr.res.Content)
+					mr.res.Content.Close()
+					if readErr != nil {
+						continue
+					}
+					mr.res.Content = io.NopCloser(bytes.NewReader(body))
+				}
+				successResults = append(successResults, mr.res)
 			}
 		}
+	}
+
+	if len(successResults) > 0 && supportsMerge {
+		merger := adp.(MetadataMerger)
+		merged, mergeErr := merger.MergeMetadata(ctx, successResults, intent)
+		if mergeErr != nil {
+			// Merge failed, return the first successful result as fallback
+			return successResults[0], nil
+		}
+		return merged, nil
+	}
+
+	if len(successResults) > 0 {
+		return successResults[0], nil
 	}
 
 	if firstErr != nil {

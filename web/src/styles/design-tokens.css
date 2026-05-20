@@ -4,6 +4,75 @@
   --color-primary-light: #60a5fa;
   --color-primary-dark: #2563eb;
 
+  /* Lunar 主题色（公共页面） - 默认浅色，lunar-night 覆盖为深色 */
+  --lunar-bg-deep: #f0f2f8;
+  --lunar-bg-surface: #ffffff;
+  --lunar-bg-card: rgba(255, 255, 255, 0.85);
+  --lunar-bg-card-hover: rgba(255, 255, 255, 0.95);
+  --lunar-bg-glass: rgba(139, 92, 246, 0.06);
+  --lunar-accent: #7c3aed;
+  --lunar-accent-soft: #6d28d9;
+  --lunar-accent-glow: rgba(139, 92, 246, 0.2);
+  --lunar-silver: #1e1b4b;
+  --lunar-silver-muted: #4c4885;
+  --lunar-silver-dim: #6b6fa3;
+  --lunar-border: rgba(139, 92, 246, 0.12);
+  --lunar-border-hover: rgba(139, 92, 246, 0.3);
+  --lunar-gradient-hero: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 40%, #c7d2fe 100%);
+  --lunar-gradient-card: linear-gradient(135deg, rgba(139, 92, 246, 0.03) 0%, rgba(124, 58, 237, 0.01) 100%);
+  --lunar-gradient-btn: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
+  --lunar-shadow-glow: 0 0 20px rgba(139, 92, 246, 0.12);
+  --lunar-shadow-card: 0 2px 12px rgba(139, 92, 246, 0.06);
+  --lunar-shadow-elevated: 0 4px 16px rgba(139, 92, 246, 0.1);
+  --lunar-hero-opacity: 0.35;
+  --lunar-star-opacity: 0.5;
+
+  /* Lunar Night 深色模式变量 */
+  --lunar-night-bg-deep: #0b0f2b;
+  --lunar-night-bg-surface: #131836;
+  --lunar-night-bg-card: rgba(20, 25, 55, 0.65);
+  --lunar-night-bg-card-hover: rgba(25, 32, 68, 0.8);
+  --lunar-night-bg-glass: rgba(196, 181, 253, 0.08);
+  --lunar-night-accent: #c4b5fd;
+  --lunar-night-accent-soft: #a78bfa;
+  --lunar-night-accent-glow: rgba(196, 181, 253, 0.3);
+  --lunar-night-silver: #e2e8f0;
+  --lunar-night-silver-muted: #94a3b8;
+  --lunar-night-silver-dim: #64748b;
+  --lunar-night-border: rgba(196, 181, 253, 0.15);
+  --lunar-night-border-hover: rgba(196, 181, 253, 0.35);
+  --lunar-night-gradient-hero: linear-gradient(135deg, #0b0f2b 0%, #1a1040 40%, #2d1b69 100%);
+  --lunar-night-gradient-card: linear-gradient(135deg, rgba(196, 181, 253, 0.05) 0%, rgba(167, 139, 250, 0.02) 100%);
+  --lunar-night-gradient-btn: linear-gradient(135deg, #c4b5fd 0%, #a78bfa 100%);
+  --lunar-night-shadow-glow: 0 0 20px rgba(196, 181, 253, 0.15);
+  --lunar-night-shadow-card: 0 4px 24px rgba(0, 0, 0, 0.3);
+  --lunar-night-shadow-elevated: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --lunar-night-hero-opacity: 1;
+  --lunar-night-star-opacity: 1;
+
+  /* Lunar Dawn 亮色模式变量（与默认值一致，供 lunar-dawn 类覆盖 night） */
+  --lunar-dawn-bg-deep: #f0f2f8;
+  --lunar-dawn-bg-surface: #ffffff;
+  --lunar-dawn-bg-card: rgba(255, 255, 255, 0.85);
+  --lunar-dawn-bg-card-hover: rgba(255, 255, 255, 0.95);
+  --lunar-dawn-bg-glass: rgba(139, 92, 246, 0.06);
+  --lunar-dawn-accent: #7c3aed;
+  --lunar-dawn-accent-soft: #6d28d9;
+  --lunar-dawn-accent-glow: rgba(139, 92, 246, 0.2);
+  --lunar-dawn-silver: #1e1b4b;
+  --lunar-dawn-silver-muted: #4c4885;
+  --lunar-dawn-silver-dim: #6b6fa3;
+  --lunar-dawn-border: rgba(139, 92, 246, 0.12);
+  --lunar-dawn-border-hover: rgba(139, 92, 246, 0.3);
+  --lunar-dawn-gradient-hero: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 40%, #c7d2fe 100%);
+  --lunar-dawn-gradient-card: linear-gradient(135deg, rgba(139, 92, 246, 0.03) 0%, rgba(124, 58, 237, 0.01) 100%);
+  --lunar-dawn-gradient-btn: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
+  --lunar-dawn-shadow-glow: 0 0 20px rgba(139, 92, 246, 0.12);
+  --lunar-dawn-shadow-card: 0 2px 12px rgba(139, 92, 246, 0.06);
+  --lunar-dawn-shadow-elevated: 0 4px 16px rgba(139, 92, 246, 0.1);
+  --lunar-dawn-hero-opacity: 0.35;
+  --lunar-dawn-star-opacity: 0.5;
+
   /* 功能色 */
   --color-success: #10b981;
   --color-success-light: #4ade80;

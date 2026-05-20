@@ -425,6 +425,30 @@ func (r *PackageRepository) DeleteVersionContext(ctx context.Context, id uint) e
 	return r.db.WithContext(ctx).Delete(&model.PackageVersion{}, id).Error
 }
 
+func (r *PackageRepository) DeletePackageByID(id uint) error {
+	return r.DeletePackageByIDContext(context.Background(), id)
+}
+
+func (r *PackageRepository) DeletePackageByIDContext(ctx context.Context, id uint) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var versionIDs []uint
+		if err := tx.Model(&model.PackageVersion{}).Where("package_id = ?", id).Pluck("id", &versionIDs).Error; err != nil {
+			return err
+		}
+
+		if len(versionIDs) > 0 {
+			if err := tx.Where("version_id IN ?", versionIDs).Delete(&model.PackageFile{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("package_id = ?", id).Delete(&model.PackageVersion{}).Error; err != nil {
+				return err
+			}
+		}
+
+		return tx.Delete(&model.Package{}, id).Error
+	})
+}
+
 func (r *PackageRepository) IncrementDownloadCount(pkgID uint, versionID uint, fileID uint) error {
 	return r.IncrementDownloadCountByAmount(context.Background(), pkgID, versionID, fileID, 1)
 }

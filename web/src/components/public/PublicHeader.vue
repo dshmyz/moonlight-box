@@ -5,43 +5,27 @@
         <defs>
           <linearGradient id="moonlight" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" style="stop-color:#c4b5fd" />
-            <stop offset="100%" style="stop-color:#8b5cf6" />
+            <stop offset="100%" style="stop-color:#a78bfa" />
           </linearGradient>
         </defs>
-        <!-- 圆月 -->
-        <circle cx="20" cy="20" r="12" fill="url(#moonlight)"/>
-        <!-- 月牙阴影 -->
-        <circle cx="24" cy="16" r="10" fill="#fff"/>
-        <!-- 小星星 -->
-        <circle cx="10" cy="10" r="1.5" fill="#c4b5fd"/>
-        <circle cx="32" cy="14" r="1" fill="#c4b5fd" opacity="0.6"/>
-        <circle cx="28" cy="30" r="1.2" fill="#c4b5fd" opacity="0.4"/>
+        <circle cx="20" cy="20" r="12" fill="url(#moonlight)" />
+        <circle cx="24" cy="16" r="10" fill="var(--lunar-bg-surface)" />
+        <circle cx="10" cy="10" r="1.5" fill="#c4b5fd" />
+        <circle cx="32" cy="14" r="1" fill="#c4b5fd" opacity="0.6" />
+        <circle cx="28" cy="30" r="1.2" fill="#c4b5fd" opacity="0.4" />
       </svg>
-      <div class="logo-text">
-        <span class="logo-title">Moonlight Registry</span>
-      </div>
+      <span class="logo-title">Moonlight Box</span>
     </router-link>
+
     <div class="header-actions">
-      <el-input
-        v-model="searchQuery"
-        placeholder="搜索包..."
-        class="header-search"
-        clearable
-        @keyup.enter="handleQuickSearch"
-        @clear="handleQuickSearch"
-      >
-        <template #prefix>
-          <el-icon><Search /></el-icon>
-        </template>
-      </el-input>
       <router-link to="/help">
-        <el-button class="header-btn">
+        <el-button class="lunar-btn lunar-btn--ghost">
           <el-icon><QuestionFilled /></el-icon>
           帮助
         </el-button>
       </router-link>
       <router-link to="/login">
-        <el-button class="header-btn header-btn--login">
+        <el-button class="lunar-btn lunar-btn--accent">
           <el-icon><User /></el-icon>
           登录
         </el-button>
@@ -51,18 +35,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { Search, User, QuestionFilled } from '@element-plus/icons-vue'
-
-const router = useRouter()
-const searchQuery = ref('')
-
-function handleQuickSearch() {
-  if (searchQuery.value.trim()) {
-    router.push({ path: '/', query: { q: searchQuery.value.trim() } })
-  }
-}
+import { User, QuestionFilled } from '@element-plus/icons-vue'
 </script>
 
 <style scoped>
@@ -80,27 +53,20 @@ function handleQuickSearch() {
 .logo-link {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   text-decoration: none;
-  flex-shrink: 0;
 }
 
 .logo-icon {
-  width: 60px;
-  height: 60px;
+  width: 36px;
+  height: 36px;
   flex-shrink: 0;
-}
-
-.logo-text {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
 }
 
 .logo-title {
   font-size: 16px;
   font-weight: 700;
-  color: #303133;
+  color: var(--lunar-silver);
   letter-spacing: -0.3px;
 }
 
@@ -110,41 +76,40 @@ function handleQuickSearch() {
   gap: 12px;
 }
 
-.header-search {
-  width: 260px;
-}
-
-.header-search :deep(.el-input__wrapper) {
-  background-color: #f5f7fa;
-}
-
-.header-btn {
+.lunar-btn {
   height: 36px;
   padding: 0 16px;
   border-radius: 8px;
   font-size: 13px;
   font-weight: 600;
-  border: 1.5px solid #e2e8f0;
-  background: #ffffff;
-  color: #475569;
-  transition: all 0.2s ease;
+  transition: all 0.25s ease;
 }
 
-.header-btn:hover {
-  border-color: #cbd5e1;
-  background: #f8fafc;
-  color: #334155;
+.lunar-btn--ghost {
+  background: transparent;
+  border: 1px solid var(--lunar-border);
+  color: var(--lunar-silver-muted);
 }
 
-.header-btn--login {
-  background: #0f172a;
-  border-color: #0f172a;
-  color: #ffffff;
+.lunar-btn--ghost:hover {
+  border-color: var(--lunar-border-hover);
+  color: var(--lunar-silver);
+  background: var(--lunar-bg-glass);
 }
 
-.header-btn--login:hover {
-  background: #1e293b;
-  border-color: #1e293b;
-  color: #ffffff;
+.lunar-btn--accent {
+  background: var(--lunar-gradient-btn);
+  border: 1px solid var(--lunar-accent);
+  color: var(--lunar-bg-deep);
+}
+
+.lunar-btn--accent:hover {
+  filter: brightness(1.1);
+  border-color: var(--lunar-accent);
+  color: var(--lunar-bg-deep);
+}
+
+.lunar-btn--accent:active {
+  transform: scale(0.97);
 }
 </style>

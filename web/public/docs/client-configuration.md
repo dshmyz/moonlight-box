@@ -1,6 +1,6 @@
 # 客户端配置指南
 
-本文档详细介绍了如何配置各种包管理器以使用 Moonlight Registry。
+本文档详细介绍了如何配置各种包管理器以使用 Moonlight Box。
 
 ## NPM 配置
 
@@ -16,8 +16,8 @@ NPM 是 Node.js 的包管理器，用于安装、发布和管理 JavaScript 包�
 2. 添加以下内容：
 
 ```
-registry=https://your-moonlight-domain/repo/npm-virtual/
-//your-moonlight-domain/repo/npm-virtual/:_authToken=YOUR_TOKEN_HERE
+registry=https://your-moonlight-domain/repository/npm-virtual/
+//your-moonlight-domain/repository/npm-virtual/:_authToken=YOUR_TOKEN_HERE
 ```
 
 3. 保存文件并验证配置：
@@ -60,7 +60,7 @@ Maven 是 Java 项目的构建和依赖管理工具。
     <mirror>
       <id>moonlight</id>
       <mirrorOf>central</mirrorOf>
-      <url>https://your-moonlight-domain/repo/maven-virtual/</url>
+      <url>https://your-moonlight-domain/repository/maven-virtual/</url>
     </mirror>
   </mirrors>
 </settings>
@@ -83,7 +83,7 @@ PyPI 是 Python 的包索引和依赖管理工具。
 
 ```ini
 [global]
-index-url = https://your-moonlight-domain/repo/pypi-virtual/simple/
+index-url = https://your-moonlight-domain/repository/pypi-virtual/simple/
 trusted-host = your-moonlight-domain
 ```
 
@@ -156,8 +156,8 @@ Yum 是 CentOS/RHEL 系统的包管理器。
 
 ```ini
 [moonlight]
-name=Moonlight Registry
-baseurl=https://your-moonlight-domain/repo/yum-virtual/$basearch/
+name=Moonlight Box
+baseurl=https://your-moonlight-domain/repository/yum-virtual/$basearch/
 enabled=1
 gpgcheck=0
 ```
@@ -178,7 +178,7 @@ APT 是 Debian/Ubuntu 系统的包管理器。
 创建 `/etc/apt/sources.list.d/moonlight.list` 文件：
 
 ```
-deb https://your-moonlight-domain/repo/apt-virtual/ stable main
+deb https://your-moonlight-domain/repository/apt-virtual/ stable main
 ```
 
 ### 添加 GPG 密钥（可选）

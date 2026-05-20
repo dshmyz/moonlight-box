@@ -22,16 +22,14 @@ var (
 )
 
 // RewritePyPIHTML rewrites PyPI simple index HTML to point download URLs to this proxy.
-// 生成干净的下载链接，只保留文件名，不包含 CDN 的哈希前缀目录。
+// baseURL is the repository-relative path like "/repository/my-repo/packages/".
 // Also strips PEP 658 data-dist-info-metadata attributes since we don't serve .metadata files.
-func RewritePyPIHTML(html []byte, repo *model.Repository) []byte {
-	baseURL := fmt.Sprintf("/repo/%s/packages/", repo.Name)
-
+func RewritePyPIHTML(html []byte, baseURL string) []byte {
 	// Strip PEP 658 metadata attributes (data-dist-info-metadata, data-core-metadata)
 	html = pypiMetadataAttrRe.ReplaceAll(html, []byte{})
 
 	// Rewrite CDN URLs: https://files.pythonhosted.org/packages/XX/YY/hash/filename#sha256=...
-	// → /repo/{repo}/packages/filename
+	// → {baseURL}filename
 	html = pypiCDNRe.ReplaceAllFunc(html, func(match []byte) []byte {
 		sub := pypiCDNRe.FindSubmatch(match)
 		if len(sub) >= 2 {
@@ -50,7 +48,7 @@ func RewritePyPIHTML(html []byte, repo *model.Repository) []byte {
 	})
 
 	// Rewrite relative paths: ../../packages/XX/YY/hash/filename#sha256=...
-	// → /repo/{repo}/packages/filename
+	// → {baseURL}filename
 	html = pypiHTMLPkgRe.ReplaceAllFunc(html, func(match []byte) []byte {
 		path := string(pypiHTMLPkgRe.FindSubmatch(match)[1])
 		relPath := strings.TrimPrefix(path, "packages/")
@@ -69,11 +67,8 @@ func RewritePyPIHTML(html []byte, repo *model.Repository) []byte {
 }
 
 // RewritePyPIJSON rewrites PyPI simple JSON API file URLs to point to this proxy.
-func RewritePyPIJSON(data []byte, repo *model.Repository) []byte {
-	// The JSON has "url" fields like "/packages/filename.whl" or upstream URLs.
-	// We replace any upstream URL patterns to point to our proxy.
-	baseURL := fmt.Sprintf("/repo/%s/packages/", repo.Name)
-
+// baseURL is the repository-relative path like "/repository/my-repo/packages/".
+func RewritePyPIJSON(data []byte, baseURL string) []byte {
 	// Match "url": "https://files.pythonhosted.org/packages/..." or "url": "/packages/..."
 	urlRe := regexp.MustCompile(`("url"\s*:\s*")https://[^"]*?/([^/"]+\.(?:whl|tar\.gz|zip|egg))([^"]*")`)
 	data = urlRe.ReplaceAllFunc(data, func(match []byte) []byte {
@@ -88,10 +83,10 @@ func RewritePyPIJSON(data []byte, repo *model.Repository) []byte {
 }
 
 // RewriteNpmTarballURLs rewrites npm metadata JSON tarball URLs to point to this proxy.
-// baseURL is the full proxy base URL, e.g. "http://localhost:9081/repo/npm-proxy".
+// baseURL is the full proxy base URL, e.g. "http://localhost:9081/repository/npm-proxy".
 func RewriteNpmTarballURLs(data []byte, baseURL string) []byte {
 	// Rewrite tarball URLs like https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz
-	// to http://localhost:9081/repo/npm-proxy/lodash/-/lodash-4.17.21.tgz
+	// to http://localhost:9081/repository/npm-proxy/lodash/-/lodash-4.17.21.tgz
 	data = npmTarballRe.ReplaceAllFunc(data, func(match []byte) []byte {
 		sub := npmTarballRe.FindSubmatch(match)
 		if len(sub) >= 2 {
@@ -129,8 +124,7 @@ func RewriteNpmTarballURLsInMap(metadata map[string]interface{}, baseURL string)
 
 func rewriteSingleTarball(tarball, baseURL string) string {
 	if !strings.HasPrefix(tarball, "http") {
-		// Already a relative URL, check if it starts with /repo/
-		if strings.HasPrefix(tarball, "/repo/") {
+		if strings.HasPrefix(tarball, "/repository/") {
 			return tarball
 		}
 		// Convert relative path to proxy URL
@@ -152,7 +146,7 @@ func rewriteSingleTarball(tarball, baseURL string) string {
 
 // RewriteContentResult rewrites URLs in a ContentResult based on content type.
 func RewriteContentResult(result *RewriteContext) {
-	if result.Data == nil || result.Repo == nil {
+	if result.Data == nil {
 		return
 	}
 
@@ -163,12 +157,12 @@ func RewriteContentResult(result *RewriteContext) {
 
 	switch result.ContentType {
 	case "text/html", "":
-		if result.PackageType == model.PackageTypePyPI {
-			content = RewritePyPIHTML(content, result.Repo)
+		if result.PackageType == model.PackageTypePyPI && result.BaseURL != "" {
+			content = RewritePyPIHTML(content, result.BaseURL)
 		}
 	case "application/json", "application/vnd.pypi.simple.v1+json":
-		if result.PackageType == model.PackageTypePyPI {
-			content = RewritePyPIJSON(content, result.Repo)
+		if result.PackageType == model.PackageTypePyPI && result.BaseURL != "" {
+			content = RewritePyPIJSON(content, result.BaseURL)
 		} else if result.PackageType == model.PackageTypeNPM {
 			content = RewriteNpmTarballURLs(content, result.BaseURL)
 		}
@@ -182,10 +176,10 @@ type RewriteContext struct {
 	Repo        *model.Repository
 	PackageType model.PackageType
 	ContentType string
-	BaseURL     string // Full request base URL, e.g. "http://localhost:9081/repo/npm-proxy"
+	BaseURL     string // Full request base URL, e.g. "http://localhost:9081/repository/npm-proxy"
 }
 
-// BaseURLCtxKey is the context key for the request base URL (e.g. "http://localhost:9081/repo/npm-proxy").
+// BaseURLCtxKey is the context key for the request base URL (e.g. "http://localhost:9081/repository/npm-proxy").
 // Set by the repo router handler so adapters can construct full absolute URLs for metadata rewriting.
 type BaseURLCtxKey struct{}
 

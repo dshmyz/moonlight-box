@@ -36,13 +36,14 @@ type DeleteContext struct {
 }
 
 type DownloadResult struct {
-	Content   io.ReadCloser
-	Size      int64
-	FromCache bool
-	RepoID    uint
-	Filename  string
-	Name      string
-	Version   string
+	Content     io.ReadCloser
+	Size        int64
+	FromCache   bool
+	RepoID      uint
+	Filename    string
+	Name        string
+	Version     string
+	ContentType string
 }
 
 // ContentResult 表示 adapter 返回的内容结果

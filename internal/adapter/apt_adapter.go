@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/types"
+	"github.com/moonlight-box/registry/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -73,7 +75,38 @@ func NewAptAdapter(
 
 func (a *AptAdapter) Type() PackageType { return AptType }
 
+// validateAptPath 验证 APT 路径安全性
+func validateAptPath(path string) error {
+	// 检测路径遍历攻击
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("path traversal detected")
+	}
+
+	// 检测 Windows 绝对路径
+	if strings.Contains(path, ":\\") || strings.HasPrefix(path, "\\") {
+		return fmt.Errorf("absolute paths not allowed")
+	}
+
+	// 检测 null 字符
+	if strings.Contains(path, "\x00") {
+		return fmt.Errorf("null characters not allowed")
+	}
+
+	return nil
+}
+
+// isValidDebFilename 验证 .deb 文件名格式
+func isValidDebFilename(filename string) bool {
+	matched, _ := regexp.MatchString(`^[a-zA-Z0-9][a-zA-Z0-9._+-]*\.deb$`, filename)
+	return matched
+}
+
 func (a *AptAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
+	// 路径安全验证
+	if err := validateAptPath(path); err != nil {
+		return nil, err
+	}
+
 	parts := strings.Split(path, "/")
 	if len(parts) < 2 {
 		return nil, fmt.Errorf("invalid apt path: %s", path)
@@ -103,227 +136,6 @@ func (a *AptAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 		StorageVersion: storageVersion,
 		RemotePath:     remotePath,
 	}, nil
-}
-
-func (a *AptAdapter) ReleaseFile(c *gin.Context, dist string) *types.ContentResult {
-	release := fmt.Sprintf(
-		`Origin: Moonlight Registry
-Label: Moonlight
-Suite: %s
-Codename: %s
-Architectures: amd64 arm64 i386
-Components: main
-Date: %s
-Description: Moonlight Registry APT Repository
-`,
-		dist, dist, time.Now().UTC().Format(time.RFC1123),
-	)
-
-	release += "\nMD5Sum:\n"
-	release += "SHA1:\n"
-	release += "SHA256:\n"
-
-	return &types.ContentResult{
-		ContentType: "text/plain; charset=utf-8",
-		StatusCode:  200,
-		Content:     io.NopCloser(bytes.NewReader([]byte(release))),
-		Size:        int64(len(release)),
-	}
-}
-
-func (a *AptAdapter) InReleaseFile(c *gin.Context, dist string) *types.ContentResult {
-	release := fmt.Sprintf(
-		`-----BEGIN PGP SIGNED MESSAGE-----
-Hash: SHA256
-
-Origin: Moonlight Registry
-Label: Moonlight
-Suite: %s
-Codename: %s
-Architectures: amd64 arm64 i386
-Components: main
-Date: %s
-Description: Moonlight Registry APT Repository
------BEGIN PGP SIGNATURE-----
-(placeholder - not signed)
------END PGP SIGNATURE-----
-`,
-		dist, dist, time.Now().UTC().Format(time.RFC1123),
-	)
-
-	return &types.ContentResult{
-		ContentType: "text/plain; charset=utf-8",
-		StatusCode:  200,
-		Content:     io.NopCloser(bytes.NewReader([]byte(release))),
-		Size:        int64(len(release)),
-	}
-}
-
-func (a *AptAdapter) ReleaseGPG(c *gin.Context) *types.ContentResult {
-	return &types.ContentResult{
-		StatusCode: 404,
-		ExtraData:  map[string]interface{}{"message": "GPG signature not available"},
-	}
-}
-
-func (a *AptAdapter) PackagesFile(c *gin.Context) *types.ContentResult {
-	packages, _, err := a.GetPackageRepository().ListContext(c.Request.Context(), 1, 10000, string(model.PackageTypeApt), "")
-	if err != nil {
-		return &types.ContentResult{
-			StatusCode: 500,
-			ExtraData:  map[string]interface{}{"message": err.Error()},
-		}
-	}
-
-	var output strings.Builder
-	for _, pkg := range packages {
-		for _, ver := range pkg.Versions {
-			filename := filepath.Base(ver.Version)
-			entry := AptPackageEntry{
-				Package:       pkg.Name,
-				Version:       ver.Version,
-				Architecture:  "amd64",
-				Maintainer:    "Moonlight Registry",
-				Description:   pkg.Description,
-				Section:       "misc",
-				Priority:      "optional",
-				InstalledSize: fmt.Sprintf("%d", ver.SizeBytes/1024),
-				Filename:      fmt.Sprintf("pool/%s", filename),
-				Size:          ver.SizeBytes,
-				MD5Sum:        ver.ChecksumMD5,
-				SHA256:        ver.ChecksumSHA256,
-			}
-			output.WriteString(formatPackageEntry(entry))
-		}
-	}
-
-	if output.Len() == 0 {
-		return &types.ContentResult{
-			StatusCode: 404,
-			ExtraData:  map[string]interface{}{"message": "packages not found"},
-		}
-	}
-
-	content := output.String()
-	return &types.ContentResult{
-		ContentType: "text/plain; charset=utf-8",
-		StatusCode:  200,
-		Content:     io.NopCloser(bytes.NewReader([]byte(content))),
-		Size:        int64(len(content)),
-	}
-}
-
-func (a *AptAdapter) PackagesFileGz(c *gin.Context) *types.ContentResult {
-	packages, _, err := a.GetPackageRepository().ListContext(c.Request.Context(), 1, 10000, string(model.PackageTypeApt), "")
-	if err != nil {
-		return &types.ContentResult{
-			StatusCode: 500,
-			ExtraData:  map[string]interface{}{"message": err.Error()},
-		}
-	}
-
-	var output strings.Builder
-	for _, pkg := range packages {
-		for _, ver := range pkg.Versions {
-			filename := filepath.Base(ver.Version)
-			entry := AptPackageEntry{
-				Package:       pkg.Name,
-				Version:       ver.Version,
-				Architecture:  "amd64",
-				Maintainer:    "Moonlight Registry",
-				Description:   pkg.Description,
-				Section:       "misc",
-				Priority:      "optional",
-				InstalledSize: fmt.Sprintf("%d", ver.SizeBytes/1024),
-				Filename:      fmt.Sprintf("pool/%s", filename),
-				Size:          ver.SizeBytes,
-			}
-			output.WriteString(formatPackageEntry(entry))
-		}
-	}
-
-	content := output.String()
-	headers := map[string]string{
-		"Content-Disposition": `attachment; filename="Packages.gz"`,
-	}
-
-	return &types.ContentResult{
-		ContentType: "application/gzip",
-		StatusCode:  200,
-		Content:     io.NopCloser(bytes.NewReader([]byte(content))),
-		Size:        int64(len(content)),
-		Headers:     headers,
-	}
-}
-
-func (a *AptAdapter) DownloadDeb(c *gin.Context, filePath string) *types.ContentResult {
-	filePath = strings.TrimPrefix(filePath, "/")
-
-	storageKey := filePath
-
-	backend := a.storageSvc.GetDefaultBackend()
-	content, err := backend.Get(c.Request.Context(), storageKey)
-	if err == nil {
-		defer content.Close()
-
-		size, err := backend.Size(c.Request.Context(), storageKey)
-		if err != nil {
-			return &types.ContentResult{
-				StatusCode: 404,
-				ExtraData:  map[string]interface{}{"message": "DEB not found"},
-			}
-		}
-
-		filename := filepath.Base(filePath)
-		headers := map[string]string{
-			"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)),
-		}
-
-		return &types.ContentResult{
-			Content:     content,
-			Size:        size,
-			ContentType: "application/vnd.debian.binary-package",
-			StatusCode:  200,
-			Headers:     headers,
-		}
-	}
-
-	var repo *model.Repository
-	if r, ok := c.Get("repo"); ok {
-		repo = r.(*model.Repository)
-	}
-
-	if a.fetcher != nil && repo != nil && repo.Type == "proxy" {
-		slog.Info("APT proxy: fetching from remote", "filePath", filePath)
-		pathInfo, pathErr := a.ParsePath(filePath)
-		if pathErr != nil {
-			slog.Warn("APT proxy: failed to resolve path", "filePath", filePath, "error", pathErr)
-		} else {
-			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-			result, fetchErr := a.fetcher.FetchFromRemote(c.Request.Context(), repo, remoteURL)
-			if fetchErr == nil && result != nil {
-				defer result.Content.Close()
-				filename := filepath.Base(filePath)
-				slog.Info("APT proxy: successfully fetched from remote", "filePath", filePath, "size", result.Size)
-				headers := map[string]string{
-					"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)),
-				}
-				return &types.ContentResult{
-					Content:     result.Content,
-					Size:        result.Size,
-					ContentType: "application/vnd.debian.binary-package",
-					StatusCode:  200,
-					Headers:     headers,
-				}
-			}
-			slog.Warn("APT proxy: failed to fetch from remote", "filePath", filePath, "error", fetchErr)
-		}
-	}
-
-	return &types.ContentResult{
-		StatusCode: 404,
-		ExtraData:  map[string]interface{}{"message": "DEB not found"},
-	}
 }
 
 func (a *AptAdapter) GetMetadata(ctx context.Context, name string) (*PackageMeta, error) {
@@ -480,10 +292,10 @@ func (a *AptAdapter) ParseIntent(path string, method string) *types.RequestInten
 			}
 		}
 
-		if len(parts) >= 6 {
-			fileName := parts[4]
+		if len(parts) >= 5 {
+			fileName := parts[len(parts)-1]
 			if fileName == "Packages" || fileName == "Packages.gz" {
-				intent.Type = types.RequestList
+				intent.Type = types.RequestMetadata
 				intent.Filename = fileName
 				return intent
 			}
@@ -562,11 +374,18 @@ Description: Moonlight Registry APT Repository
 	release += "SHA1:\n"
 	release += "SHA256:\n"
 
+	// 生成 ETag
+	etag := util.GenerateETag([]byte(release))
+
 	return &types.ContentResult{
 		ContentType: "text/plain; charset=utf-8",
 		StatusCode:  200,
 		Content:     io.NopCloser(bytes.NewReader([]byte(release))),
 		Size:        int64(len(release)),
+		Headers: map[string]string{
+			"ETag":          etag,
+			"Cache-Control": "public, max-age=300",
+		},
 	}, nil
 }
 
@@ -591,11 +410,18 @@ Description: Moonlight Registry APT Repository
 		dist, dist, time.Now().UTC().Format(time.RFC1123),
 	)
 
+	// 生成 ETag
+	etag := util.GenerateETag([]byte(release))
+
 	return &types.ContentResult{
 		ContentType: "text/plain; charset=utf-8",
 		StatusCode:  200,
 		Content:     io.NopCloser(bytes.NewReader([]byte(release))),
 		Size:        int64(len(release)),
+		Headers: map[string]string{
+			"ETag":          etag,
+			"Cache-Control": "public, max-age=300",
+		},
 	}, nil
 }
 
@@ -647,11 +473,19 @@ func (a *AptAdapter) packagesFile(ctx context.Context) (*types.ContentResult, er
 	}
 
 	content := output.String()
+
+	// 生成 ETag
+	etag := util.GenerateETag([]byte(content))
+
 	return &types.ContentResult{
 		ContentType: "text/plain; charset=utf-8",
 		StatusCode:  200,
 		Content:     io.NopCloser(bytes.NewReader([]byte(content))),
 		Size:        int64(len(content)),
+		Headers: map[string]string{
+			"ETag":          etag,
+			"Cache-Control": "public, max-age=300",
+		},
 	}, nil
 }
 
@@ -686,8 +520,14 @@ func (a *AptAdapter) packagesFileGz(ctx context.Context) (*types.ContentResult, 
 	}
 
 	content := output.String()
+
+	// 生成 ETag
+	etag := util.GenerateETag([]byte(content))
+
 	headers := map[string]string{
 		"Content-Disposition": `attachment; filename="Packages.gz"`,
+		"ETag":                etag,
+		"Cache-Control":       "public, max-age=300",
 	}
 
 	return &types.ContentResult{
@@ -703,6 +543,23 @@ func (a *AptAdapter) packagesFileGz(ctx context.Context) (*types.ContentResult, 
 func (a *AptAdapter) downloadDeb(ctx context.Context, filePath string, repo *model.Repository) (*types.ContentResult, error) {
 	filePath = strings.TrimPrefix(filePath, "/")
 
+	// 路径安全验证
+	if err := validateAptPath(filePath); err != nil {
+		return &types.ContentResult{
+			StatusCode: 400,
+			ExtraData:  map[string]interface{}{"message": err.Error()},
+		}, nil
+	}
+
+	// 验证文件名格式
+	filename := filepath.Base(filePath)
+	if !strings.HasSuffix(filename, ".deb") || !isValidDebFilename(filename) {
+		return &types.ContentResult{
+			StatusCode: 400,
+			ExtraData:  map[string]interface{}{"message": "invalid deb filename"},
+		}, nil
+	}
+
 	storageKey := filePath
 
 	backend := a.storageSvc.GetDefaultBackend()
@@ -710,29 +567,33 @@ func (a *AptAdapter) downloadDeb(ctx context.Context, filePath string, repo *mod
 	if err == nil {
 		defer content.Close()
 
-		size, err := backend.Size(ctx, storageKey)
-		if err != nil {
+		// 读取内容用于计算 ETag
+		body, readErr := io.ReadAll(content)
+		if readErr != nil {
 			return &types.ContentResult{
-				StatusCode: 404,
-				ExtraData:  map[string]interface{}{"message": "DEB not found"},
+				StatusCode: 500,
+				ExtraData:  map[string]interface{}{"message": "failed to read content"},
 			}, nil
 		}
 
-		filename := filepath.Base(filePath)
+		etag := util.GenerateETag(body)
+
 		headers := map[string]string{
 			"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)),
+			"ETag":                etag,
+			"Cache-Control":       "public, max-age=86400",
 		}
 
 		return &types.ContentResult{
-			Content:     content,
-			Size:        size,
+			Content:     io.NopCloser(bytes.NewReader(body)),
+			Size:        int64(len(body)),
 			ContentType: "application/vnd.debian.binary-package",
 			StatusCode:  200,
 			Headers:     headers,
 		}, nil
 	}
 
-	if a.fetcher != nil && repo != nil && repo.Type == "proxy" {
+	if a.fetcher != nil && repo != nil && repo.Type == model.RepoTypeProxy {
 		slog.Info("APT proxy: fetching from remote", "filePath", filePath)
 		pathInfo, pathErr := a.ParsePath(filePath)
 		if pathErr != nil {
@@ -742,18 +603,23 @@ func (a *AptAdapter) downloadDeb(ctx context.Context, filePath string, repo *mod
 			result, fetchErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
 			if fetchErr == nil && result != nil {
 				defer result.Content.Close()
-				filename := filepath.Base(filePath)
-				slog.Info("APT proxy: successfully fetched from remote", "filePath", filePath, "size", result.Size)
-				headers := map[string]string{
-					"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)),
+				body, readErr := io.ReadAll(result.Content)
+				if readErr == nil {
+					etag := util.GenerateETag(body)
+					slog.Info("APT proxy: successfully fetched from remote", "filePath", filePath, "size", result.Size)
+					headers := map[string]string{
+						"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, url.PathEscape(filename)),
+						"ETag":                etag,
+						"Cache-Control":       "public, max-age=86400",
+					}
+					return &types.ContentResult{
+						Content:     io.NopCloser(bytes.NewReader(body)),
+						Size:        int64(len(body)),
+						ContentType: "application/vnd.debian.binary-package",
+						StatusCode:  200,
+						Headers:     headers,
+					}, nil
 				}
-				return &types.ContentResult{
-					Content:     result.Content,
-					Size:        result.Size,
-					ContentType: "application/vnd.debian.binary-package",
-					StatusCode:  200,
-					Headers:     headers,
-				}, nil
 			}
 			slog.Warn("APT proxy: failed to fetch from remote", "filePath", filePath, "error", fetchErr)
 		}
