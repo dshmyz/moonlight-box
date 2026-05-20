@@ -367,6 +367,7 @@ func TestProxyDownloader_CircuitBreakerIntegration(t *testing.T) {
 		Interval:         100 * time.Millisecond,
 		Timeout:          2 * time.Second,
 		FailureThreshold: 5,
+		BlockOnUnhealthy: true,
 	}
 
 	repoRepo := repository.NewRepositoryRepository(db)
@@ -425,4 +426,68 @@ func TestProxyDownloader_CircuitBreakerIntegration(t *testing.T) {
 	_, err = repoHandler.resolveProxy(ctx, downloadCtx)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "circuit breaker open")
+}
+
+func TestProxyDownloader_CircuitBreakerNonBlocking(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	assert.NoError(t, err)
+	db.AutoMigrate(&model.Repository{})
+
+	tm := NewTransportManager(5*time.Second, NewDNSResolver(nil))
+	remoteClient := NewRemoteClient(tm, 10)
+
+	config := HealthCheckConfig{
+		Enabled:          true,
+		Interval:         100 * time.Millisecond,
+		Timeout:          2 * time.Second,
+		FailureThreshold: 5,
+		BlockOnUnhealthy: false,
+	}
+
+	repoRepo := repository.NewRepositoryRepository(db)
+	healthSvc := NewHealthCheckService(db, repoRepo, &mockStorageChecker{}, remoteClient, config, &mockConfigReader{})
+
+	repo := &model.Repository{
+		Name:             "test-proxy-nonblock",
+		Type:             model.RepoTypeProxy,
+		RemoteURL:        "http://invalid-host:12345",
+		Enabled:          true,
+		CacheEnabled:     false,
+		CacheTTLSeconds:  0,
+		CacheNegativeTTL: 0,
+		TimeoutSeconds:   1,
+		MaxRedirects:     0,
+	}
+	db.Create(repo)
+
+	proxyDownloader := NewProxyDownloader(NewCacheService(), remoteClient, nil)
+	proxyDownloader.SetHealthCheckService(healthSvc)
+
+	mockAdp := &testMockAdapter{}
+	proxyDownloader.RegisterAdapter("maven", mockAdp)
+
+	repoCache := NewRepositoryCache(repoRepo, nil, 5*time.Minute)
+	repoHandler := NewRepoHandler(repoRepo, nil, repoCache)
+	repoHandler.RegisterAdapter("maven", mockAdp)
+	repoHandler.SetDownloadService(&mockDownloadService{downloader: proxyDownloader})
+
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		downloadCtx := &types.DownloadContext{
+			Repo:    repo,
+			PkgType: "maven",
+			Name:    "test",
+			Version: "1.0.0",
+		}
+		_, err := repoHandler.resolveProxy(ctx, downloadCtx)
+		assert.Error(t, err)
+	}
+
+	cb := healthSvc.GetCircuitBreaker(repo.ID)
+	assert.NotNil(t, cb)
+	assert.Equal(t, CircuitOpen, cb.GetState())
+
+	assert.False(t, healthSvc.BlockOnUnhealthy())
+
+	assert.True(t, healthSvc.ShouldSkipRequest(repo.ID))
 }

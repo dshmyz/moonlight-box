@@ -64,8 +64,11 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 
 	if r.healthCheckSvc != nil && r.healthCheckSvc.ShouldSkipRequest(repo.ID) {
 		retryAfter := r.healthCheckSvc.GetRetryAfter(repo.ID)
-		slog.Warn("circuit breaker open, skipping request", "repo", repo.Name, "retry_after", retryAfter)
-		return nil, fmt.Errorf("circuit breaker open for repo %s, retry after %d seconds", repo.Name, retryAfter)
+		if r.healthCheckSvc.BlockOnUnhealthy() {
+			slog.Warn("circuit breaker open, blocking request", "repo", repo.Name, "retry_after", retryAfter)
+			return nil, fmt.Errorf("circuit breaker open for repo %s, retry after %d seconds", repo.Name, retryAfter)
+		}
+		slog.Warn("circuit breaker open, request allowed (block_on_unhealthy=false)", "repo", repo.Name, "retry_after", retryAfter)
 	}
 
 	if remoteURL == "" {

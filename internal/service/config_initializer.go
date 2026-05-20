@@ -71,6 +71,7 @@ func (i *ConfigInitializer) InitializeDefaultConfigs() error {
 		{"health_check.interval", "30", "int", "network", "健康检查间隔（秒）", false},
 		{"health_check.timeout", "5", "int", "network", "健康检查超时时间（秒）", false},
 		{"health_check.failure_threshold", "3", "int", "network", "健康检查失败阈值", false},
+		{"health_check.block_on_unhealthy", "false", "bool", "network", "不健康时是否阻断请求", false},
 	}
 
 	for _, config := range defaultConfigs {

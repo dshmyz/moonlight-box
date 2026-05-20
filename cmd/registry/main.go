@@ -175,6 +175,7 @@ func main() {
 		Interval:         cfg.Proxy.HealthCheck.Interval,
 		Timeout:          cfg.Proxy.HealthCheck.Timeout,
 		FailureThreshold: cfg.Proxy.HealthCheck.FailureThreshold,
+		BlockOnUnhealthy: cfg.Proxy.HealthCheck.BlockOnUnhealthy,
 	}
 
 	// 从系统配置中读取健康检查配置（覆盖配置文件中的值）
@@ -192,6 +193,7 @@ func main() {
 	if threshold := configInitializer.GetConfigAsInt("health_check.failure_threshold", 0); threshold > 0 {
 		healthCheckCfg.FailureThreshold = threshold
 	}
+	healthCheckCfg.BlockOnUnhealthy = configInitializer.GetConfigAsBool("health_check.block_on_unhealthy", false)
 
 	// 使用默认值填充未配置的值
 	if healthCheckCfg.Interval == 0 {

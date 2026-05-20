@@ -44,8 +44,9 @@ func (h *HealthCheckHandler) GetHealthStatus(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"health_status":   status,
-		"circuit_breaker": cbStats,
+		"health_status":     status,
+		"circuit_breaker":   cbStats,
+		"block_on_unhealthy": h.healthCheckSvc.BlockOnUnhealthy(),
 	})
 }
 
@@ -70,8 +71,9 @@ func (h *HealthCheckHandler) GetAllHealthStatuses(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"total": len(result),
-		"items": result,
+		"total":             len(result),
+		"items":             result,
+		"block_on_unhealthy": h.healthCheckSvc.BlockOnUnhealthy(),
 	})
 }
 

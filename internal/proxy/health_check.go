@@ -25,19 +25,21 @@ type StorageChecker interface {
 
 // HealthCheckConfig 健康检查配置
 type HealthCheckConfig struct {
-	Enabled          bool          `json:"enabled"`           // 是否启用健康检查
-	Interval         time.Duration `json:"interval"`          // 检查间隔
-	Timeout          time.Duration `json:"timeout"`           // 检查超时
-	FailureThreshold int           `json:"failure_threshold"` // 失败阈值
+	Enabled          bool          `json:"enabled"`            // 是否启用健康检查
+	Interval         time.Duration `json:"interval"`           // 检查间隔
+	Timeout          time.Duration `json:"timeout"`            // 检查超时
+	FailureThreshold int           `json:"failure_threshold"`  // 失败阈值
+	BlockOnUnhealthy bool          `json:"block_on_unhealthy"` // 不健康时是否阻断请求
 }
 
 // DefaultHealthCheckConfig 默认健康检查配置
 func DefaultHealthCheckConfig() HealthCheckConfig {
 	return HealthCheckConfig{
 		Enabled:          true,
-		Interval:         30 * time.Second, // 每30秒检查一次
-		Timeout:          5 * time.Second,  // 检查超时5秒
-		FailureThreshold: 3,                // 连续3次失败标记为不健康
+		Interval:         30 * time.Second,
+		Timeout:          5 * time.Second,
+		FailureThreshold: 3,
+		BlockOnUnhealthy: false,
 	}
 }
 
@@ -540,6 +542,13 @@ func (h *HealthCheckService) ShouldSkipRequest(repoID uint) bool {
 		return false
 	}
 	return !cb.AllowRequest()
+}
+
+// BlockOnUnhealthy 判断健康检查不健康时是否应阻断请求
+func (h *HealthCheckService) BlockOnUnhealthy() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.config.BlockOnUnhealthy
 }
 
 // GetRetryAfter 获取重试等待时间（秒）
