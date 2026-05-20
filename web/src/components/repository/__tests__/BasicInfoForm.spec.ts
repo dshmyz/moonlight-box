@@ -1,8 +1,15 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createApp } from 'vue'
 import ElementPlus from 'element-plus'
 import BasicInfoForm from '../BasicInfoForm.vue'
+import { storageBackendApi } from '@/api/storageBackend'
+
+vi.mock('@/api/storageBackend', () => ({
+  storageBackendApi: {
+    list: vi.fn(),
+  },
+}))
 
 const createWrapper = (props = {}) => {
   const app = createApp({})
@@ -27,6 +34,11 @@ const createWrapper = (props = {}) => {
 }
 
 describe('BasicInfoForm', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(storageBackendApi.list as any).mockResolvedValue([])
+  })
+
   it('renders all form fields', () => {
     const wrapper = createWrapper()
     

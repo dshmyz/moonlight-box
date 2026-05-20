@@ -118,7 +118,7 @@ function handleSearch() {
 
 function selectType(value: string) {
   selectedType.value = value
-  emit('search', searchQuery.value, selectedType.value)
+  emit('search', searchQuery.value, value)
 }
 </script>
 

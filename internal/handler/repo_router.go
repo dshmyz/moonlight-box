@@ -249,12 +249,10 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 			Headers:     headers,
 		})
 	} else {
-		// Build base URL for metadata URL rewriting (npm tarball URLs, etc.)
-		scheme := "http"
-		if c.Request.TLS != nil {
-			scheme = "https"
-		}
-		baseURL := fmt.Sprintf("%s://%s/repository/%s", scheme, c.Request.Host, repoName)
+		baseURL := buildBaseURL(c, repoName)
+
+		// 提取反向代理路径前缀（nginx X-Forwarded-Prefix / X-Script-Name）
+		pathPrefix := extractForwardedPrefix(c)
 
 		var contentResult *types.ContentResult
 		var err error
@@ -262,10 +260,12 @@ func (r *RepoRouter) HandleRequest(c *gin.Context) {
 			// 虚拟仓库没有 RemoteURL 也没有本地包数据，需要遍历成员仓库处理元数据请求
 			ctx := context.WithValue(c.Request.Context(), "repo", repo)
 			ctx = context.WithValue(ctx, adapter.BaseURLCtxKey{}, baseURL)
+			ctx = context.WithValue(ctx, adapter.PathPrefixCtxKey{}, pathPrefix)
 			contentResult, err = r.resolver.ResolveMetadata(ctx, repo, intent, adp)
 		} else {
 			ctx := context.WithValue(c.Request.Context(), "repo", repo)
 			ctx = context.WithValue(ctx, adapter.BaseURLCtxKey{}, baseURL)
+			ctx = context.WithValue(ctx, adapter.PathPrefixCtxKey{}, pathPrefix)
 			contentResult, err = adp.HandleGet(ctx, repo, intent)
 		}
 		if err != nil {
@@ -661,4 +661,37 @@ func slogFields(args []any) logrus.Fields {
 		fields[key] = args[i+1]
 	}
 	return fields
+}
+
+func buildBaseURL(c *gin.Context, repoName string) string {
+	scheme := "http"
+	if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+
+	// 支持 nginx 加路径前缀反向代理（如 X-Forwarded-Prefix: /my-prefix）
+	prefix := c.GetHeader("X-Forwarded-Prefix")
+	if prefix == "" {
+		prefix = c.GetHeader("X-Script-Name")
+	}
+	prefix = strings.TrimRight(prefix, "/")
+
+	path := c.Request.URL.Path
+	if strings.HasPrefix(path, "/content/repositories/") {
+		return fmt.Sprintf("%s://%s%s/content/repositories/%s", scheme, c.Request.Host, prefix, repoName)
+	}
+	if strings.HasPrefix(path, "/content/groups/") {
+		return fmt.Sprintf("%s://%s%s/content/groups/%s", scheme, c.Request.Host, prefix, repoName)
+	}
+	return fmt.Sprintf("%s://%s%s/repository/%s", scheme, c.Request.Host, prefix, repoName)
+}
+
+// extractForwardedPrefix extracts the reverse proxy path prefix from request headers.
+// Supports X-Forwarded-Prefix (standard) and X-Script-Name (uWSGI convention).
+func extractForwardedPrefix(c *gin.Context) string {
+	prefix := c.GetHeader("X-Forwarded-Prefix")
+	if prefix == "" {
+		prefix = c.GetHeader("X-Script-Name")
+	}
+	return strings.TrimRight(prefix, "/")
 }

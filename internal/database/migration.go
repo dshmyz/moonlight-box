@@ -320,11 +320,6 @@ func SeedData() error {
 		}
 	}
 
-	// 创建默认仓库
-	if err := seedDefaultRepositories(); err != nil {
-		return err
-	}
-
 	// 根据配置决定是否加载测试包数据
 	cfg := config.Get()
 	if cfg != nil && cfg.Seed.LoadTestData {

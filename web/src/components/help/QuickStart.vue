@@ -48,19 +48,19 @@
         <div class="step-icon"><i class="fa-solid fa-box"></i></div>
         <h3>选择您的包管理器</h3>
         <el-radio-group v-model="selectedManager" size="large" class="manager-selector">
-          <el-radio-button label="npm">
+          <el-radio-button value="npm">
             <i class="fa-brands fa-npm"></i>
             <span>NPM</span>
           </el-radio-button>
-          <el-radio-button label="maven">
+          <el-radio-button value="maven">
             <i class="fa-brands fa-java"></i>
             <span>Maven</span>
           </el-radio-button>
-          <el-radio-button label="pypi">
+          <el-radio-button value="pypi">
             <i class="fa-brands fa-python"></i>
             <span>PyPI</span>
           </el-radio-button>
-          <el-radio-button label="go">
+          <el-radio-button value="go">
             <i class="fa-brands fa-golang"></i>
             <span>Go</span>
           </el-radio-button>

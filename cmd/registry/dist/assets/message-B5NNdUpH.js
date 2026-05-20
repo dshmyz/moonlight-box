@@ -1,1 +1,0 @@
-import{b as o,E as t}from"./index-XymGmvge.js";async function u(e){const{title:s="提示",message:c,type:n="warning",confirmText:r="确定",cancelText:a="取消"}=e;try{return await o.confirm(c,s,{confirmButtonText:r,cancelButtonText:a,type:n}),!0}catch{return!1}}function f(e){t.success(e)}function m(e){t.error(e)}export{u as c,m as e,f as s};

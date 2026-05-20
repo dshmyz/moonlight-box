@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/util"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -425,7 +426,7 @@ func (s *MigrationService) executeSyncConfigTask(taskID uint, task *model.Migrat
 			storageID = nil
 		}
 
-		if err := s.repoCreator.CreateRepo(nr.Name, repoType, nr.Format, remoteURL, cacheEnabled, cacheTTL, storageID); err != nil {
+		if err := s.repoCreator.CreateRepo(nr.Name, repoType, util.NormalizePackageType(nr.Format), remoteURL, cacheEnabled, cacheTTL, storageID); err != nil {
 			s.AddLog(taskID, fmt.Sprintf("创建仓库失败: %s, 错误: %v", nr.Name, err))
 			continue
 		}

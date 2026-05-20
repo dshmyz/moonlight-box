@@ -281,10 +281,12 @@ func pypiBaseURLFromContext(ctx context.Context, repo *model.Repository) string 
 	if baseURL := BaseURLFromContext(ctx, nil); baseURL != "" {
 		return baseURL + "/packages/"
 	}
+	// Fallback: 使用路径前缀构建
+	prefix := PathPrefixFromContext(ctx)
 	if repo != nil {
-		return fmt.Sprintf("/repository/%s/packages/", repo.Name)
+		return fmt.Sprintf("%s/repository/%s/packages/", prefix, repo.Name)
 	}
-	return "/packages/"
+	return prefix + "/packages/"
 }
 
 // pypiSimplePrefixFromContext returns the URL prefix for PyPI simple index links.
@@ -292,13 +294,14 @@ func pypiSimplePrefixFromContext(ctx context.Context) string {
 	if baseURL := BaseURLFromContext(ctx, nil); baseURL != "" {
 		return baseURL + "/pypi/simple/"
 	}
-	// Extract repo name from context if available
+	// Fallback: 使用路径前缀构建
+	prefix := PathPrefixFromContext(ctx)
 	if repoVal := ctx.Value("repo"); repoVal != nil {
 		if repo, ok := repoVal.(*model.Repository); ok {
-			return fmt.Sprintf("/repository/%s/pypi/simple/", repo.Name)
+			return fmt.Sprintf("%s/repository/%s/pypi/simple/", prefix, repo.Name)
 		}
 	}
-	return "/pypi/simple/"
+	return prefix + "/pypi/simple/"
 }
 
 // ListPackages 列出包列表。根据仓库类型返回不同结果：
@@ -348,10 +351,11 @@ func (a *PyPIAdapter) listPackagesFromUpstream(ctx context.Context, repo *model.
 		return nil, readErr
 	}
 
-	// 重写上游 HTML 中的下载链接
+	// 重写上游 HTML 中的下载链接和 simple index 导航链接
 	if strings.HasPrefix(contentType, "text/html") {
 		baseURL := pypiBaseURLFromContext(ctx, repo)
-		body = RewritePyPIHTML(body, baseURL)
+		simplePrefix := pypiSimplePrefixFromContext(ctx)
+		body = RewritePyPIHTML(body, baseURL, simplePrefix)
 	}
 
 	return &types.ContentResult{
@@ -458,7 +462,7 @@ func (a *PyPIAdapter) PackageFiles(ctx context.Context, acceptHeader string, pkg
 				return nil, readErr
 			}
 			if strings.HasPrefix(contentType, "text/html") {
-				raw = RewritePyPIHTML(raw, pypiBaseURLFromContext(ctx, repo))
+				raw = RewritePyPIHTML(raw, pypiBaseURLFromContext(ctx, repo), pypiSimplePrefixFromContext(ctx))
 			} else {
 				raw = RewritePyPIJSON(raw, pypiBaseURLFromContext(ctx, repo))
 			}
@@ -478,7 +482,7 @@ func (a *PyPIAdapter) PackageFiles(ctx context.Context, acceptHeader string, pkg
 }
 
 func (a *PyPIAdapter) packageFilesJSON(ctx context.Context, pkgName string, repo *model.Repository) (*types.ContentResult, error) {
-	pkg, err := a.GetPackageRepository().FindByRepoNameAndTypeContext(ctx, repositoryID(repo), pkgName, model.PackageTypePyPI)
+	pkg, err := a.GetPackageRepository().FindByRepoNameAndTypeContext(ctx, repositoryID(repo), normalizePackageName(pkgName), model.PackageTypePyPI)
 	if err != nil {
 		if util.IsErr(err, util.ErrPackageNotFound) {
 			if a.fetcher != nil && repo != nil {
@@ -506,12 +510,12 @@ func (a *PyPIAdapter) packageFilesJSON(ctx context.Context, pkgName string, repo
 
 	// 按 PEP 691 格式构建文件列表
 	type file struct {
-		URL         string `json:"url"`
-		Filename    string `json:"filename"`
+		URL         string            `json:"url"`
+		Filename    string            `json:"filename"`
 		Hashes      map[string]string `json:"hashes,omitempty"`
-		Size        int64  `json:"size,omitempty"`
-		UploadTime  string `json:"upload-time,omitempty"`
-		Packagetype string `json:"packagetype,omitempty"`
+		Size        int64             `json:"size,omitempty"`
+		UploadTime  string            `json:"upload-time,omitempty"`
+		Packagetype string            `json:"packagetype,omitempty"`
 	}
 
 	files := make([]file, 0)
@@ -519,6 +523,10 @@ func (a *PyPIAdapter) packageFilesJSON(ctx context.Context, pkgName string, repo
 	for _, ver := range pkg.Versions {
 		for _, f := range ver.Files {
 			if f.Filename == "" {
+				continue
+			}
+			// 只列出 primary 类型的文件（实际安装包），过滤掉 metadata/pom 等辅助文件
+			if f.FileType != "" && f.FileType != model.FileTypePrimary {
 				continue
 			}
 			hashes := make(map[string]string)
@@ -530,11 +538,11 @@ func (a *PyPIAdapter) packageFilesJSON(ctx context.Context, pkgName string, repo
 			}
 
 			files = append(files, file{
-				URL:         pkgBaseURL + f.Filename,
-				Filename:    f.Filename,
+				URL:        pkgBaseURL + f.Filename,
+				Filename:   f.Filename,
 				Hashes:     hashes,
-				Size:        f.SizeBytes,
-				UploadTime:  ver.PublishedAt.Format("2006-01-02T15:04:05"),
+				Size:       f.SizeBytes,
+				UploadTime: ver.PublishedAt.Format("2006-01-02T15:04:05"),
 			})
 		}
 	}
@@ -550,7 +558,7 @@ func (a *PyPIAdapter) packageFilesJSON(ctx context.Context, pkgName string, repo
 	lastModified := time.Now().UTC().Format(time.RFC1123)
 
 	return &types.ContentResult{
-		StatusCode: 200,
+		StatusCode:  200,
 		ContentType: "application/vnd.pypi.simple.v1+json",
 		Content:     io.NopCloser(bytes.NewReader(responseJSON)),
 		Size:        int64(len(responseJSON)),
@@ -563,7 +571,7 @@ func (a *PyPIAdapter) packageFilesJSON(ctx context.Context, pkgName string, repo
 }
 
 func (a *PyPIAdapter) packageFilesHTML(ctx context.Context, pkgName string, repo *model.Repository) (*types.ContentResult, error) {
-	pkg, err := a.GetPackageRepository().FindByRepoNameAndTypeContext(ctx, repositoryID(repo), pkgName, model.PackageTypePyPI)
+	pkg, err := a.GetPackageRepository().FindByRepoNameAndTypeContext(ctx, repositoryID(repo), normalizePackageName(pkgName), model.PackageTypePyPI)
 	if err != nil {
 		if util.IsErr(err, util.ErrPackageNotFound) {
 			if a.fetcher != nil && repo != nil {
@@ -574,7 +582,7 @@ func (a *PyPIAdapter) packageFilesHTML(ctx context.Context, pkgName string, repo
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
 					if readErr == nil {
-						body = RewritePyPIHTML(body, pypiBaseURLFromContext(ctx, repo))
+						body = RewritePyPIHTML(body, pypiBaseURLFromContext(ctx, repo), pypiSimplePrefixFromContext(ctx))
 						return &types.ContentResult{
 							StatusCode:  200,
 							ContentType: "text/html",
@@ -598,13 +606,18 @@ func (a *PyPIAdapter) packageFilesHTML(ctx context.Context, pkgName string, repo
 	sb.Grow(len(html) + len(pkg.Versions)*60)
 	sb.WriteString(html)
 
+	baseURL := pypiBaseURLFromContext(ctx, repo)
+
 	for _, ver := range pkg.Versions {
 		for _, f := range ver.Files {
 			filename := f.Filename
 			if filename == "" {
 				continue
 			}
-			baseURL := pypiBaseURLFromContext(ctx, repo)
+			// 只列出 primary 类型的文件（实际安装包），过滤掉 metadata/pom 等辅助文件
+			if f.FileType != "" && f.FileType != model.FileTypePrimary {
+				continue
+			}
 			sb.WriteString(`<a href="`)
 			sb.WriteString(baseURL)
 			sb.WriteString(filename)
@@ -677,9 +690,9 @@ func (a *PyPIAdapter) DownloadPackage(filename string, repo *model.Repository, c
 			Size:        int64(len(body)),
 			Headers: map[string]string{
 				"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, actualFilename),
-				"ETag":               etag,
-				"Last-Modified":      lastModified,
-				"Cache-Control":      "public, max-age=86400",
+				"ETag":                etag,
+				"Last-Modified":       lastModified,
+				"Cache-Control":       "public, max-age=86400",
 			},
 		}, nil
 	}
@@ -712,9 +725,9 @@ func (a *PyPIAdapter) DownloadPackage(filename string, repo *model.Repository, c
 						Size:        int64(len(body)),
 						Headers: map[string]string{
 							"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, actualFilename),
-							"ETag":               etag,
-							"Last-Modified":      lastModified,
-							"Cache-Control":      "public, max-age=86400",
+							"ETag":                etag,
+							"Last-Modified":       lastModified,
+							"Cache-Control":       "public, max-age=86400",
 						},
 					}, nil
 				}
@@ -798,7 +811,7 @@ func (a *PyPIAdapter) handleChecksumRequest(filename string, repo *model.Reposit
 }
 
 func (a *PyPIAdapter) JSONAPI(pkgName string, version string, repo *model.Repository, ctx context.Context) (*types.ContentResult, error) {
-	pkg, err := a.GetPackageRepository().FindByRepoNameAndTypeContext(ctx, repositoryID(repo), pkgName, model.PackageTypePyPI)
+	pkg, err := a.GetPackageRepository().FindByRepoNameAndTypeContext(ctx, repositoryID(repo), normalizePackageName(pkgName), model.PackageTypePyPI)
 	if err != nil {
 		if util.IsErr(err, util.ErrPackageNotFound) {
 			if a.fetcher != nil && repo != nil {
@@ -938,22 +951,22 @@ func (a *PyPIAdapter) JSONAPI(pkgName string, version string, repo *model.Reposi
 		StatusCode: 200,
 		ExtraData: gin.H{
 			"info": gin.H{
-				"name":               pkg.Name,
-				"version":            infoVersion,
-				"summary":            pkg.Description,
-				"description":        pkg.Description,
-				"classifiers":        []string{},
-				"author":             "",
-				"author_email":       "",
-				"maintainer":         "",
-				"maintainer_email":   "",
-				"home_page":          "",
-				"license":            "",
-				"project_urls":       gin.H{},
-				"requires_python":    nil,
-				"requires_dist":      []string{},
-				"provides_dist":      []string{},
-				"obsoletes_dist":     []string{},
+				"name":                 pkg.Name,
+				"version":              infoVersion,
+				"summary":              pkg.Description,
+				"description":          pkg.Description,
+				"classifiers":          []string{},
+				"author":               "",
+				"author_email":         "",
+				"maintainer":           "",
+				"maintainer_email":     "",
+				"home_page":            "",
+				"license":              "",
+				"project_urls":         gin.H{},
+				"requires_python":      nil,
+				"requires_dist":        []string{},
+				"provides_dist":        []string{},
+				"obsoletes_dist":       []string{},
 				"requires_external":    []string{},
 				"upload_time":          latestInfo.PublishedAt.Format("2006-01-02T15:04:05"),
 				"upload_time_iso_8601": latestInfo.PublishedAt.Format(time.RFC3339),
@@ -961,9 +974,9 @@ func (a *PyPIAdapter) JSONAPI(pkgName string, version string, repo *model.Reposi
 				"docs_url":             nil,
 			},
 			"releases":      releases,
-			"urls":           releases[infoVersion],
-			"last_serial":    pkg.ID,
-			"_cache_sha256":  "",
+			"urls":          releases[infoVersion],
+			"last_serial":   pkg.ID,
+			"_cache_sha256": "",
 		},
 	}, nil
 }
@@ -1066,7 +1079,7 @@ func (a *PyPIAdapter) ParseIntent(path string, method string) *types.RequestInte
 			intent.Type = types.RequestChecksum
 		}
 		name, version := parseWheelFilename(filename)
-		intent.Name = name
+		intent.Name = normalizePackageName(name)
 		intent.Version = version
 		if pathInfo, err := a.ParsePath(path); err == nil {
 			intent.PkgPathInfo = pathInfo
@@ -1163,27 +1176,59 @@ func (a *PyPIAdapter) HandleGet(ctx context.Context, repo *model.Repository, int
 	return nil, fmt.Errorf("path not found")
 }
 
-var wheelRegex = regexp.MustCompile(`^([A-Za-z0-9_]+)-([^-]+)-.+\.whl$`)
-var sdistRegex = regexp.MustCompile(`^([A-Za-z0-9_]+)-([^-]+)\.(tar\.gz|tar\.bz2|zip)$`)
-
 func parseWheelFilename(filename string) (name, version string) {
 	basename := filepath.Base(filename)
 	basename = strings.Split(basename, "#")[0]
 
-	if matches := wheelRegex.FindStringSubmatch(basename); len(matches) >= 3 {
-		return matches[1], matches[2]
+	if strings.HasSuffix(basename, ".whl") {
+		return parsePyPIWheel(basename)
 	}
 
-	if matches := sdistRegex.FindStringSubmatch(basename); len(matches) >= 3 {
-		return matches[1], matches[2]
+	for _, ext := range []string{".tar.gz", ".tar.bz2", ".zip"} {
+		if strings.HasSuffix(basename, ext) {
+			base := strings.TrimSuffix(basename, ext)
+			return splitNameVersion(base)
+		}
 	}
 
-	parts := strings.SplitN(basename, "-", 2)
-	if len(parts) == 2 {
-		version = strings.TrimSuffix(parts[1], filepath.Ext(parts[1]))
-		return parts[0], version
-	}
 	return "", ""
+}
+
+func parsePyPIWheel(filename string) (name, version string) {
+	base := strings.TrimSuffix(filename, ".whl")
+	parts := strings.Split(base, "-")
+	if len(parts) < 4 {
+		return "", ""
+	}
+
+	tagStart := len(parts) - 3
+
+	if tagStart > 1 {
+		buildTag := parts[tagStart-1]
+		isBuildTag := true
+		for _, c := range buildTag {
+			if c < '0' || c > '9' {
+				isBuildTag = false
+				break
+			}
+		}
+		if isBuildTag {
+			tagStart--
+		}
+	}
+
+	nameVersion := strings.Join(parts[:tagStart], "-")
+	return splitNameVersion(nameVersion)
+}
+
+func splitNameVersion(s string) (name, version string) {
+	parts := strings.Split(s, "-")
+	for i, part := range parts {
+		if len(part) > 0 && part[0] >= '0' && part[0] <= '9' {
+			return strings.Join(parts[:i], "-"), strings.Join(parts[i:], "-")
+		}
+	}
+	return s, ""
 }
 
 func normalizePackageName(name string) string {
@@ -1205,6 +1250,8 @@ func (a *PyPIAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*typ
 		return nil, fmt.Errorf("failed to parse package name from filename: %s", header.Filename)
 	}
 
+	name = normalizePackageName(name)
+
 	requiresDist := c.PostFormArray("requires_dist")
 	if len(requiresDist) == 0 {
 		requiresDist = c.PostFormArray("requires")
@@ -1212,12 +1259,12 @@ func (a *PyPIAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*typ
 	dependencies := buildPyPIDependencies(requiresDist)
 
 	return &types.PublishResult{
-		PackageName: name,
-		Version:     version,
-		Filename:    header.Filename,
-		Content:     file,
-		Size:        header.Size,
-		FileType:    model.FileTypePrimary,
+		PackageName:  name,
+		Version:      version,
+		Filename:     header.Filename,
+		Content:      file,
+		Size:         header.Size,
+		FileType:     model.FileTypePrimary,
 		Dependencies: dependencies,
 		Response: &types.PypiPublishResponse{
 			PublishResponse: types.PublishResponse{

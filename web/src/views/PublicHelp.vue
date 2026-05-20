@@ -88,23 +88,23 @@
               
               <div class="manager-selector">
                 <el-radio-group v-model="selectedManager" class="manager-group">
-                  <el-radio-button label="npm" class="manager-option">
+                  <el-radio-button value="npm" class="manager-option">
                     <i class="fa-solid fa-box"></i>
                     <span>NPM</span>
                   </el-radio-button>
-                  <el-radio-button label="maven" class="manager-option">
+                  <el-radio-button value="maven" class="manager-option">
                     <i class="fa-solid fa-box"></i>
                     <span>Maven</span>
                   </el-radio-button>
-                  <el-radio-button label="pypi" class="manager-option">
+                  <el-radio-button value="pypi" class="manager-option">
                     <i class="fa-solid fa-code"></i>
                     <span>PyPI</span>
                   </el-radio-button>
-                  <el-radio-button label="go" class="manager-option">
+                  <el-radio-button value="go" class="manager-option">
                     <i class="fa-brands fa-golang"></i>
                     <span>Go</span>
                   </el-radio-button>
-                  <el-radio-button label="yum" class="manager-option">
+                  <el-radio-button value="yum" class="manager-option">
                     <i class="fa-solid fa-server"></i>
                     <span>Yum/APT</span>
                   </el-radio-button>

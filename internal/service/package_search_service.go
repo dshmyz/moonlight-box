@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/util"
 	"gorm.io/gorm"
 )
 
@@ -61,9 +62,10 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 		}
 	}
 
-	// 包类型过滤
+	// 包类型过滤（兼容 maven2/raw 等历史类型值）
 	if req.Type != "" {
-		query = query.Where("type = ?", req.Type)
+		aliases := util.ExpandPackageTypeAliases(req.Type)
+		query = query.Where("type IN ?", aliases)
 	}
 
 	// 按仓库名过滤

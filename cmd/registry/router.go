@@ -517,6 +517,40 @@ func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.Reposi
 			deleteGroup.DELETE("/*path", repoRouter.HandleDelete)
 		}
 	}
+
+	nexus2RepoGroup := r.Group("/content/repositories/:repoName")
+	{
+		nexus2RepoGroup.GET("/*path", repoRouter.HandleRequest)
+
+		nexus2Publish := nexus2RepoGroup.Group("")
+		nexus2Publish.Use(authMw)
+		{
+			nexus2Publish.PUT("/*path", repoRouter.HandlePublish)
+		}
+
+		nexus2Delete := nexus2RepoGroup.Group("")
+		nexus2Delete.Use(authMw, permMw("package", "delete"))
+		{
+			nexus2Delete.DELETE("/*path", repoRouter.HandleDelete)
+		}
+	}
+
+	nexus2GroupGroup := r.Group("/content/groups/:repoName")
+	{
+		nexus2GroupGroup.GET("/*path", repoRouter.HandleRequest)
+
+		nexus2GroupPublish := nexus2GroupGroup.Group("")
+		nexus2GroupPublish.Use(authMw)
+		{
+			nexus2GroupPublish.PUT("/*path", repoRouter.HandlePublish)
+		}
+
+		nexus2GroupDelete := nexus2GroupGroup.Group("")
+		nexus2GroupDelete.Use(authMw, permMw("package", "delete"))
+		{
+			nexus2GroupDelete.DELETE("/*path", repoRouter.HandleDelete)
+		}
+	}
 }
 
 func (ctx *RouterContext) requirePermission(resource, action string) gin.HandlerFunc {

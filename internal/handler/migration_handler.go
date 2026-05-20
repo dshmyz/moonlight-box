@@ -8,6 +8,7 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/response"
+	"github.com/moonlight-box/registry/internal/util"
 )
 
 type MigrationHandler struct {
@@ -209,7 +210,7 @@ func (h *MigrationHandler) syncNexusRepos(c *gin.Context, client *migration.Nexu
 			repo := &model.Repository{
 				Name:             nr.Name,
 				Type:             model.RepositoryType(repoType),
-				PackageType:      nr.Format,
+				PackageType:      util.NormalizePackageType(nr.Format),
 				Enabled:          true,
 				StorageBackendID: defaultBackendID,
 			}

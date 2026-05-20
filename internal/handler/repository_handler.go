@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	apperr "github.com/moonlight-box/registry/internal/errors"
@@ -28,23 +29,23 @@ func (h *RepositoryHandler) Service() *service.RepositoryService {
 }
 
 // fillRepositoryURL 为仓库填充访问URL
-func fillRepositoryURL(repo *model.Repository, scheme string, host string) {
+func fillRepositoryURL(repo *model.Repository, scheme string, host string, prefix string) {
 	if repo == nil || repo.Name == "" {
 		return
 	}
-	repo.URL = fmt.Sprintf("%s://%s/repository/%s/", scheme, host, repo.Name)
+	repo.URL = fmt.Sprintf("%s://%s%s/repository/%s/", scheme, host, prefix, repo.Name)
 }
 
 // fillRepositoryURLs 为仓库列表填充访问URL
-func fillRepositoryURLs(repos []model.Repository, scheme string, host string) {
+func fillRepositoryURLs(repos []model.Repository, scheme string, host string, prefix string) {
 	for i := range repos {
-		fillRepositoryURL(&repos[i], scheme, host)
+		fillRepositoryURL(&repos[i], scheme, host, prefix)
 	}
 }
 
-func fillRepositoryListURLs(repos []service.RepositoryListView, scheme string, host string) {
+func fillRepositoryListURLs(repos []service.RepositoryListView, scheme string, host string, prefix string) {
 	for i := range repos {
-		fillRepositoryURL(&repos[i].Repository, scheme, host)
+		fillRepositoryURL(&repos[i].Repository, scheme, host, prefix)
 	}
 }
 
@@ -55,6 +56,15 @@ func getSchemeAndHost(c *gin.Context) (string, string) {
 		scheme = "https"
 	}
 	return scheme, c.Request.Host
+}
+
+// getForwardedPrefix 从请求头中获取反向代理路径前缀
+func getForwardedPrefix(c *gin.Context) string {
+	prefix := strings.TrimRight(c.GetHeader("X-Forwarded-Prefix"), "/")
+	if prefix == "" {
+		prefix = strings.TrimRight(c.GetHeader("X-Script-Name"), "/")
+	}
+	return prefix
 }
 
 // List 列出仓库，支持按 package_type 和 type 过滤
@@ -74,7 +84,8 @@ func (h *RepositoryHandler) List(c *gin.Context) {
 	}
 
 	scheme, host := getSchemeAndHost(c)
-	fillRepositoryListURLs(repos, scheme, host)
+	prefix := getForwardedPrefix(c)
+	fillRepositoryListURLs(repos, scheme, host, prefix)
 
 	for i := range repos {
 		repos[i].AuthConfig = repos[i].MaskAuthConfig()
@@ -93,7 +104,8 @@ func (h *RepositoryHandler) Get(c *gin.Context) {
 	}
 
 	scheme, host := getSchemeAndHost(c)
-	fillRepositoryURL(repo, scheme, host)
+	prefix := getForwardedPrefix(c)
+	fillRepositoryURL(repo, scheme, host, prefix)
 
 	repo.AuthConfig = repo.MaskAuthConfig()
 

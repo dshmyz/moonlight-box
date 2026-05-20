@@ -1,11 +1,12 @@
 package handler
 
 import (
-	"github.com/moonlight-box/registry/internal/response"
 	"fmt"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/model"
+	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 )
 
@@ -51,7 +52,11 @@ func (h *PublicRepoHandler) List(c *gin.Context) {
 		scheme = "https"
 	}
 	host := c.Request.Host
-	baseURL := fmt.Sprintf("%s://%s", scheme, host)
+	prefix := strings.TrimRight(c.GetHeader("X-Forwarded-Prefix"), "/")
+	if prefix == "" {
+		prefix = strings.TrimRight(c.GetHeader("X-Script-Name"), "/")
+	}
+	baseURL := fmt.Sprintf("%s://%s%s", scheme, host, prefix)
 
 	items := make([]PublicRepoListItem, len(repos))
 	for i, repo := range repos {
@@ -108,7 +113,11 @@ func (h *PublicRepoHandler) GetRepoConfig(c *gin.Context) {
 		scheme = "https"
 	}
 	host := c.Request.Host
-	baseURL := fmt.Sprintf("%s://%s", scheme, host)
+	prefix := strings.TrimRight(c.GetHeader("X-Forwarded-Prefix"), "/")
+	if prefix == "" {
+		prefix = strings.TrimRight(c.GetHeader("X-Script-Name"), "/")
+	}
+	baseURL := fmt.Sprintf("%s://%s%s", scheme, host, prefix)
 
 	registryURL := buildRegistryURL(baseURL, repo)
 	guide := buildConfigGuide(baseURL, repo)

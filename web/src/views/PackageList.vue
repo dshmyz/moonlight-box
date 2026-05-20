@@ -34,14 +34,14 @@
 
       <div class="type-filters">
         <el-radio-group v-model="filterType" @change="handleFilter">
-          <el-radio-button label="">全部</el-radio-button>
-          <el-radio-button label="npm">npm</el-radio-button>
-          <el-radio-button label="maven">Maven</el-radio-button>
-          <el-radio-button label="pypi">PyPI</el-radio-button>
-          <el-radio-button label="go">Go</el-radio-button>
-          <el-radio-button label="yum">Yum</el-radio-button>
-          <el-radio-button label="apt">Apt</el-radio-button>
-          <el-radio-button label="generic">Generic</el-radio-button>
+          <el-radio-button value="">全部</el-radio-button>
+          <el-radio-button value="npm">npm</el-radio-button>
+          <el-radio-button value="maven">Maven</el-radio-button>
+          <el-radio-button value="pypi">PyPI</el-radio-button>
+          <el-radio-button value="go">Go</el-radio-button>
+          <el-radio-button value="yum">Yum</el-radio-button>
+          <el-radio-button value="apt">Apt</el-radio-button>
+          <el-radio-button value="generic">Generic</el-radio-button>
         </el-radio-group>
       </div>
 
