@@ -40,7 +40,33 @@ func AutoMigrate() error {
 		return err
 	}
 
+	if err := migratePackageTypeAliases(); err != nil {
+		return err
+	}
+
 	return migratePackageRepositoryIndex()
+}
+
+func migratePackageTypeAliases() error {
+	// 统一 packages 表中的类型别名
+	pkgAliases := map[string]string{
+		"maven2": "maven",
+		"raw":    "generic",
+	}
+	for from, to := range pkgAliases {
+		if err := DB.Model(&model.Package{}).Where("type = ?", from).Update("type", to).Error; err != nil {
+			return fmt.Errorf("迁移 packages.type=%s 失败: %w", from, err)
+		}
+	}
+
+	// 统一 repositories 表中的 package_type 别名
+	for from, to := range pkgAliases {
+		if err := DB.Model(&model.Repository{}).Where("package_type = ?", from).Update("package_type", to).Error; err != nil {
+			return fmt.Errorf("迁移 repositories.package_type=%s 失败: %w", from, err)
+		}
+	}
+
+	return nil
 }
 
 func migratePackageRepositoryIndex() error {

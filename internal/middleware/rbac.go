@@ -18,26 +18,14 @@ func RequirePermission(permCache *service.PermissionCacheService, resource, acti
 			return
 		}
 
-		permissions, err := permCache.GetUserPermissions(userID)
+		hasPerm, err := permCache.HasPermission(userID, resource, action)
 		if err != nil {
 			response.InternalError(c, "failed to load user permissions")
 			c.Abort()
 			return
 		}
 
-		hasPermission := false
-		for _, p := range permissions {
-			if p.Resource == resource && p.Action == action {
-				hasPermission = true
-				break
-			}
-			if p.Resource == "system" && p.Action == "admin" {
-				hasPermission = true
-				break
-			}
-		}
-
-		if !hasPermission {
+		if !hasPerm {
 			response.Forbidden(c, "insufficient permissions")
 			c.Abort()
 		}

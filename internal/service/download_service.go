@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"regexp"
 	"strings"
@@ -24,18 +25,36 @@ import (
 
 // PyPI CDN path resolver cache.
 // Maps "filename" -> "hash_prefix1/hash_prefix2/full_hash/filename"
-var (
-	pypiCDNPathCache   = make(map[string]pypiCDNCacheEntry)
-	pypiCDNPathCacheMu sync.RWMutex
-	pypiCDNCacheMax    = 50000
+// Uses sharded locks to reduce contention under high concurrency.
+const (
+	pypiCDNNumShards = 16
+	pypiCDNCacheMax  = 50000
+	pypiCDNCacheTTL  = 1 * time.Hour
 )
+
+type pypiCDNShard struct {
+	mu    sync.RWMutex
+	store map[string]pypiCDNCacheEntry
+}
 
 type pypiCDNCacheEntry struct {
 	url      string
 	expireAt time.Time
 }
 
-const pypiCDNCacheTTL = 1 * time.Hour
+var pypiCDNCaches [pypiCDNNumShards]*pypiCDNShard
+
+func init() {
+	for i := 0; i < pypiCDNNumShards; i++ {
+		pypiCDNCaches[i] = &pypiCDNShard{store: make(map[string]pypiCDNCacheEntry)}
+	}
+}
+
+func pypiCDNShardIndex(key string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return h.Sum32() % pypiCDNNumShards
+}
 
 // resolvePyPIRemoteURL resolves a PyPI filename to a full download URL through the configured proxy.
 // Instead of hardcoding files.pythonhosted.org, it queries the upstream simple index via the proxy
@@ -55,9 +74,11 @@ func resolvePyPIRemoteURL(fetcher proxy.ProxyFetcher, downloadCtx *types.Downloa
 	}
 
 	// Check cache first
-	pypiCDNPathCacheMu.RLock()
-	entry, ok := pypiCDNPathCache[filename]
-	pypiCDNPathCacheMu.RUnlock()
+	shardIdx := pypiCDNShardIndex(filename)
+	shard := pypiCDNCaches[shardIdx]
+	shard.mu.RLock()
+	entry, ok := shard.store[filename]
+	shard.mu.RUnlock()
 	if ok && time.Now().Before(entry.expireAt) {
 		return entry.url
 	}
@@ -108,18 +129,18 @@ func resolvePyPIRemoteURL(fetcher proxy.ProxyFetcher, downloadCtx *types.Downloa
 			}
 
 			// Cache the result
-			pypiCDNPathCacheMu.Lock()
-			if len(pypiCDNPathCache) >= pypiCDNCacheMax {
+			shard.mu.Lock()
+			if len(shard.store) >= pypiCDNCacheMax/pypiCDNNumShards {
 				// Evict expired entries
 				now := time.Now()
-				for k, v := range pypiCDNPathCache {
+				for k, v := range shard.store {
 					if now.After(v.expireAt) {
-						delete(pypiCDNPathCache, k)
+						delete(shard.store, k)
 					}
 				}
 			}
-			pypiCDNPathCache[filename] = pypiCDNCacheEntry{url: fullURL, expireAt: time.Now().Add(pypiCDNCacheTTL)}
-			pypiCDNPathCacheMu.Unlock()
+			shard.store[filename] = pypiCDNCacheEntry{url: fullURL, expireAt: time.Now().Add(pypiCDNCacheTTL)}
+			shard.mu.Unlock()
 
 			return fullURL
 		}
@@ -144,6 +165,13 @@ func normalizePyPNameFromFilename(filename string) string {
 	return strings.ToLower(strings.ReplaceAll(name, "_", "-"))
 }
 
+type pkgVerFileIDs struct {
+	pkgID   uint
+	verID   uint
+	fileID  uint
+	expires time.Time
+}
+
 type DownloadService struct {
 	pkgRepo      *repository.PackageRepository
 	storageSvc   *StorageService
@@ -153,7 +181,9 @@ type DownloadService struct {
 	countBatcher *DownloadCountBatcher
 	inflight     singleflight.Group
 
-	depParseSem *semaphore.Weighted // 限制依赖解析并发数
+	depParseSem    *semaphore.Weighted // 限制依赖解析并发数
+	idCache        sync.Map            // key="repoID:name:pkgType:version:filename" → pkgVerFileIDs
+	idCacheTTL     time.Duration
 }
 
 func NewDownloadService(
@@ -172,6 +202,7 @@ func NewDownloadService(
 		logBatcher:   logBatcher,
 		countBatcher: countBatcher,
 		depParseSem:  semaphore.NewWeighted(10), // 最多10个并发依赖解析任务
+		idCacheTTL:   5 * time.Minute,
 	}
 }
 
@@ -671,22 +702,33 @@ func (s *DownloadService) incrementDownloadCount(ctx context.Context, req *types
 		return
 	}
 
-	pkg, err := s.pkgRepo.FindByRepoNameAndTypeContext(ctx, req.Repo.ID, req.Name, req.PkgType)
+	cacheKey := fmt.Sprintf("%d:%s:%s:%s:%s", req.Repo.ID, req.Name, req.PkgType, req.Version, req.Filename)
+	if cached, ok := s.idCache.Load(cacheKey); ok {
+		if entry, ok := cached.(pkgVerFileIDs); ok && time.Now().Before(entry.expires) {
+			s.countBatcher.Increment(entry.pkgID, entry.verID, entry.fileID, req.Repo.ID)
+			return
+		}
+	}
+
+	// Cache miss: do DB lookups (lightweight, ID-only queries)
+	pkg, err := s.pkgRepo.LookupIDByRepoNameAndType(ctx, req.Repo.ID, req.Name, req.PkgType)
 	if err != nil {
 		return
 	}
 
-	ver, err := s.pkgRepo.FindVersionByPackageAndVersionContext(ctx, pkg.ID, req.Version)
+	ver, err := s.pkgRepo.FindVersionByPackageAndVersionContext(ctx, pkg, req.Version)
 	if err != nil {
-		s.countBatcher.Increment(pkg.ID, 0, 0, req.Repo.ID)
+		s.countBatcher.Increment(pkg, 0, 0, req.Repo.ID)
 		return
 	}
 
 	file, err := s.pkgRepo.FindFileByVersionAndFilenameContext(ctx, ver.ID, req.Filename)
 	if err != nil {
-		s.countBatcher.Increment(pkg.ID, ver.ID, 0, req.Repo.ID)
+		s.countBatcher.Increment(pkg, ver.ID, 0, req.Repo.ID)
+		s.idCache.Store(cacheKey, pkgVerFileIDs{pkgID: pkg, verID: ver.ID, expires: time.Now().Add(s.idCacheTTL)})
 		return
 	}
 
-	s.countBatcher.Increment(pkg.ID, ver.ID, file.ID, req.Repo.ID)
+	s.countBatcher.Increment(pkg, ver.ID, file.ID, req.Repo.ID)
+	s.idCache.Store(cacheKey, pkgVerFileIDs{pkgID: pkg, verID: ver.ID, fileID: file.ID, expires: time.Now().Add(s.idCacheTTL)})
 }

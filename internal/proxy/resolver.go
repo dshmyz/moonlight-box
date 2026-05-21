@@ -11,6 +11,7 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/types"
+	"golang.org/x/sync/semaphore"
 )
 
 // RepoRequestHandler 定义仓库请求处理接口
@@ -56,6 +57,7 @@ type RepoHandler struct {
 	downloadSvc DownloadService
 	repoCache   *RepositoryCache
 	adapters    map[string]RepoRequestHandler
+	virtSem     *semaphore.Weighted // 限制虚拟仓库并发解析数
 }
 
 func NewRepoHandler(
@@ -68,6 +70,7 @@ func NewRepoHandler(
 		groupRepo: groupRepo,
 		repoCache: repoCache,
 		adapters:  make(map[string]RepoRequestHandler),
+		virtSem:   semaphore.NewWeighted(50), // 全局最多50个虚拟仓库并发解析
 	}
 }
 
@@ -187,6 +190,12 @@ func (r *RepoHandler) resolveVirtual(ctx context.Context, downloadCtx *types.Dow
 		return nil, ErrPackageNotFound
 	}
 
+	// Acquire semaphore to limit concurrent virtual repo resolution
+	if err := r.virtSem.Acquire(ctx, 1); err != nil {
+		return nil, fmt.Errorf("virtual repo resolution throttled: %w", err)
+	}
+	defer r.virtSem.Release(1)
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -273,6 +282,12 @@ func (r *RepoHandler) ResolveMetadata(ctx context.Context, virtualRepo *model.Re
 
 	// Check if adapter supports metadata merging
 	_, supportsMerge := adp.(MetadataMerger)
+
+	// Acquire semaphore
+	if err := r.virtSem.Acquire(ctx, 1); err != nil {
+		return nil, fmt.Errorf("virtual repo metadata resolution throttled: %w", err)
+	}
+	defer r.virtSem.Release(1)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

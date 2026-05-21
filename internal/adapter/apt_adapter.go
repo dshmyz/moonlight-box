@@ -341,10 +341,10 @@ func (a *AptAdapter) HandleGet(ctx context.Context, repo *model.Repository, inte
 		if len(parts) >= 6 {
 			fileName := parts[4]
 			if fileName == "Packages" {
-				return a.packagesFile(ctx)
+				return a.packagesFile(ctx, repo, intent.Path)
 			}
 			if fileName == "Packages.gz" {
-				return a.packagesFileGz(ctx)
+				return a.packagesFileGz(ctx, repo, intent.Path)
 			}
 		}
 	}
@@ -434,7 +434,32 @@ func (a *AptAdapter) releaseGPG() (*types.ContentResult, error) {
 }
 
 // packagesFile 生成 Packages 文件内容（不依赖 gin.Context）
-func (a *AptAdapter) packagesFile(ctx context.Context) (*types.ContentResult, error) {
+func (a *AptAdapter) packagesFile(ctx context.Context, repo *model.Repository, remotePath string) (*types.ContentResult, error) {
+	// Try upstream first for proxy repos — package index is dynamic.
+	// FetchFromRemote has HTTP-level cache, so repeat requests within TTL won't hit upstream.
+	if repo != nil && repo.Type == model.RepoTypeProxy && a.fetcher != nil {
+		remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), strings.TrimPrefix(remotePath, "/"))
+		result, fetchErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
+		if fetchErr == nil && result != nil {
+			defer result.Content.Close()
+			body, readErr := io.ReadAll(result.Content)
+			if readErr == nil {
+				etag := util.GenerateETag(body)
+				return &types.ContentResult{
+					ContentType: "text/plain; charset=utf-8",
+					StatusCode:  200,
+					Content:     io.NopCloser(bytes.NewReader(body)),
+					Size:        int64(len(body)),
+					Headers: map[string]string{
+						"ETag":          etag,
+						"Cache-Control": "public, max-age=300",
+					},
+				}, nil
+			}
+		}
+	}
+
+	// Fallback: return from local DB
 	packages, _, err := a.GetPackageRepository().ListContext(ctx, 1, 10000, string(model.PackageTypeApt), "")
 	if err != nil {
 		return &types.ContentResult{
@@ -490,7 +515,33 @@ func (a *AptAdapter) packagesFile(ctx context.Context) (*types.ContentResult, er
 }
 
 // packagesFileGz 生成 Packages.gz 文件内容（不依赖 gin.Context）
-func (a *AptAdapter) packagesFileGz(ctx context.Context) (*types.ContentResult, error) {
+func (a *AptAdapter) packagesFileGz(ctx context.Context, repo *model.Repository, remotePath string) (*types.ContentResult, error) {
+	// Try upstream first for proxy repos — package index is dynamic.
+	// FetchFromRemote has HTTP-level cache, so repeat requests within TTL won't hit upstream.
+	if repo != nil && repo.Type == model.RepoTypeProxy && a.fetcher != nil {
+		remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), strings.TrimPrefix(remotePath, "/"))
+		result, fetchErr := a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
+		if fetchErr == nil && result != nil {
+			defer result.Content.Close()
+			body, readErr := io.ReadAll(result.Content)
+			if readErr == nil {
+				etag := util.GenerateETag(body)
+				return &types.ContentResult{
+					ContentType: "application/gzip",
+					StatusCode:  200,
+					Content:     io.NopCloser(bytes.NewReader(body)),
+					Size:        int64(len(body)),
+					Headers: map[string]string{
+						"Content-Disposition": `attachment; filename="Packages.gz"`,
+						"ETag":                etag,
+						"Cache-Control":       "public, max-age=300",
+					},
+				}, nil
+			}
+		}
+	}
+
+	// Fallback: return from local DB
 	packages, _, err := a.GetPackageRepository().ListContext(ctx, 1, 10000, string(model.PackageTypeApt), "")
 	if err != nil {
 		return &types.ContentResult{

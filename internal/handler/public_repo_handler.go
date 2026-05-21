@@ -51,7 +51,10 @@ func (h *PublicRepoHandler) List(c *gin.Context) {
 	if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
 		scheme = "https"
 	}
-	host := c.Request.Host
+	host := c.GetHeader("X-Forwarded-Host")
+	if host == "" {
+		host = c.Request.Host
+	}
 	prefix := strings.TrimRight(c.GetHeader("X-Forwarded-Prefix"), "/")
 	if prefix == "" {
 		prefix = strings.TrimRight(c.GetHeader("X-Script-Name"), "/")
@@ -112,7 +115,10 @@ func (h *PublicRepoHandler) GetRepoConfig(c *gin.Context) {
 	if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
 		scheme = "https"
 	}
-	host := c.Request.Host
+	host := c.GetHeader("X-Forwarded-Host")
+	if host == "" {
+		host = c.Request.Host
+	}
 	prefix := strings.TrimRight(c.GetHeader("X-Forwarded-Prefix"), "/")
 	if prefix == "" {
 		prefix = strings.TrimRight(c.GetHeader("X-Script-Name"), "/")

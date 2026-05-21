@@ -53,8 +53,8 @@ func (h *UserHandler) List(c *gin.Context) {
 
 func (h *UserHandler) Create(c *gin.Context) {
 	var req struct {
-		Username    string `json:"username" binding:"required"`
-		Password    string `json:"password" binding:"required"`
+		Username    string `json:"username" binding:"required,min=3,max=50"`
+		Password    string `json:"password" binding:"required,min=5"`
 		DisplayName string `json:"display_name"`
 		Email       string `json:"email"`
 	}

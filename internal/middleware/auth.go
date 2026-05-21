@@ -1,13 +1,33 @@
 package middleware
 
 import (
+	"crypto/sha256"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/moonlight-box/registry/internal/response"
 	"github.com/moonlight-box/registry/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
+
+// basicAuthCache caches successful Basic Auth lookups to avoid full DB login per request.
+// Key = sha256(username:password), value = cached auth result.
+// CI/CD tools use Basic Auth on every request; 1min TTL avoids stale credentials.
+var (
+	basicAuthCache   = make(map[string]*basicAuthEntry)
+	basicAuthCacheMu sync.RWMutex
+	basicAuthTTL     = 1 * time.Minute
+	basicAuthMaxSize = 10000
+)
+
+type basicAuthEntry struct {
+	userID   uint
+	username string
+	roles    []string
+	expires  time.Time
+}
 
 func Auth(authService *service.AuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -84,6 +104,36 @@ func extractToken(c *gin.Context) string {
 	return ""
 }
 
+func basicAuthCacheKey(username, password string) string {
+	h := sha256.Sum256([]byte(username + ":" + password))
+	return string(h[:])
+}
+
+func getBasicAuthCache(key string) (*basicAuthEntry, bool) {
+	basicAuthCacheMu.RLock()
+	entry, ok := basicAuthCache[key]
+	basicAuthCacheMu.RUnlock()
+	if !ok || time.Now().After(entry.expires) {
+		return nil, false
+	}
+	return entry, true
+}
+
+func setBasicAuthCache(key string, entry *basicAuthEntry) {
+	basicAuthCacheMu.Lock()
+	defer basicAuthCacheMu.Unlock()
+	if len(basicAuthCache) >= basicAuthMaxSize {
+		now := time.Now()
+		for k, v := range basicAuthCache {
+			if now.After(v.expires) {
+				delete(basicAuthCache, k)
+			}
+		}
+	}
+	entry.expires = time.Now().Add(basicAuthTTL)
+	basicAuthCache[key] = entry
+}
+
 func extractBasicAuth(c *gin.Context, authService *service.AuthService) (uint, string, []string, bool) {
 	authHeader := c.GetHeader("Authorization")
 	if authHeader == "" {
@@ -100,6 +150,12 @@ func extractBasicAuth(c *gin.Context, authService *service.AuthService) (uint, s
 		return 0, "", nil, false
 	}
 
+	// Check cache first
+	cacheKey := basicAuthCacheKey(username, password)
+	if entry, hit := getBasicAuthCache(cacheKey); hit {
+		return entry.userID, entry.username, entry.roles, true
+	}
+
 	claims, err := authService.Login(&service.LoginRequest{
 		Username: username,
 		Password: password,
@@ -107,6 +163,12 @@ func extractBasicAuth(c *gin.Context, authService *service.AuthService) (uint, s
 	if err != nil {
 		return 0, "", nil, false
 	}
+
+	setBasicAuthCache(cacheKey, &basicAuthEntry{
+		userID:   claims.User.ID,
+		username: claims.User.Username,
+		roles:    claims.User.Roles,
+	})
 
 	return claims.User.ID, claims.User.Username, claims.User.Roles, true
 }

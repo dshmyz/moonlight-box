@@ -184,45 +184,54 @@ func (a *GoAdapter) goProxyHandler(ctx context.Context, fullPath string, repo *m
 }
 
 func (a *GoAdapter) handleListVersions(ctx context.Context, module string, repo *model.Repository, reqHeaders map[string]string) (*types.ContentResult, error) {
-	// 获取带时间信息的版本列表
-	versionsWithTime, err := a.ListVersionsWithTime(ctx, module)
-	if err != nil {
-		// 如果本地没有，尝试从上游获取
-		if a.fetcher != nil {
-			result, resolveErr := func() (*types.RouteResult, error) {
-				pathInfo, err := a.ParsePath(module + "/@v/list")
-				if err != nil {
-					return nil, err
-				}
-				remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-				return a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
-			}()
-			if resolveErr == nil && result != nil {
-				defer result.Content.Close()
-				body, readErr := io.ReadAll(result.Content)
-				if readErr == nil {
-					remoteVersions := parseVersionList(string(body))
-					if len(remoteVersions) > 0 {
-						a.syncVersionsToLocal(ctx, module, remoteVersions, result.RepoID)
-						content := strings.Join(remoteVersions, "\n") + "\n"
-						// 生成 ETag 基于内容
-						etag := util.GenerateETag([]byte(content))
-						headers := map[string]string{
+	// Try upstream first — FetchFromRemote has HTTP-level cache (CacheTTLSeconds),
+	// so repeated requests within TTL don't actually hit the upstream server.
+	if a.fetcher != nil {
+		result, resolveErr := func() (*types.RouteResult, error) {
+			pathInfo, err := a.ParsePath(module + "/@v/list")
+			if err != nil {
+				return nil, err
+			}
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+			return a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
+		}()
+		if resolveErr == nil && result != nil {
+			defer result.Content.Close()
+			body, readErr := io.ReadAll(result.Content)
+			if readErr == nil {
+				remoteVersions := parseVersionList(string(body))
+				if len(remoteVersions) > 0 {
+					// Sync upstream versions to local DB so fallback stays current
+					a.syncVersionsToLocal(ctx, module, remoteVersions, result.RepoID)
+					content := strings.Join(remoteVersions, "\n") + "\n"
+					etag := util.GenerateETag([]byte(content))
+
+					if result, matched := util.CheckIfNotModified(reqHeaders, etag); matched {
+						return &types.ContentResult{
+							StatusCode: result.StatusCode,
+							Headers:    result.Headers,
+						}, nil
+					}
+
+					return &types.ContentResult{
+						Content:     io.NopCloser(strings.NewReader(content)),
+						Size:        int64(len(content)),
+						ContentType: "text/plain",
+						StatusCode:  200,
+						Headers: map[string]string{
 							"ETag":          etag,
 							"Content-Type":  "text/plain",
 							"Cache-Control": "public, max-age=300",
-						}
-						return &types.ContentResult{
-							Content:     io.NopCloser(strings.NewReader(content)),
-							Size:        int64(len(content)),
-							ContentType: "text/plain",
-							StatusCode:  200,
-							Headers:     headers,
-						}, nil
-					}
+						},
+					}, nil
 				}
 			}
 		}
+	}
+
+	// Fallback: return versions from local DB
+	versionsWithTime, err := a.ListVersionsWithTime(ctx, module)
+	if err != nil {
 		return nil, fmt.Errorf("module not found")
 	}
 
@@ -238,7 +247,6 @@ func (a *GoAdapter) handleListVersions(ctx context.Context, module string, repo 
 	}
 
 	content := strings.Join(versions, "\n") + "\n"
-	// 生成 ETag 基于内容
 	etag := util.GenerateETag([]byte(content))
 
 	// 检查 If-None-Match 头，如果匹配则返回 304
@@ -249,17 +257,16 @@ func (a *GoAdapter) handleListVersions(ctx context.Context, module string, repo 
 		}, nil
 	}
 
-	headers := map[string]string{
-		"ETag":          etag,
-		"Content-Type":  "text/plain",
-		"Cache-Control": "public, max-age=300",
-	}
 	return &types.ContentResult{
 		Content:     io.NopCloser(strings.NewReader(content)),
 		Size:        int64(len(content)),
 		ContentType: "text/plain",
 		StatusCode:  200,
-		Headers:     headers,
+		Headers: map[string]string{
+			"ETag":          etag,
+			"Content-Type":  "text/plain",
+			"Cache-Control": "public, max-age=300",
+		},
 	}, nil
 }
 
@@ -442,37 +449,39 @@ func (a *GoAdapter) handleDownloadZip(ctx context.Context, module, version strin
 }
 
 func (a *GoAdapter) handleLatest(ctx context.Context, module string, repo *model.Repository) (*types.ContentResult, error) {
-	// 获取带时间信息的版本列表
-	versionsWithTime, err := a.ListVersionsWithTime(ctx, module)
-	if err != nil || len(versionsWithTime) == 0 {
-		// 如果本地没有，尝试从上游获取
-		if a.fetcher != nil {
-			result, resolveErr := func() (*types.RouteResult, error) {
-				pathInfo, err := a.ParsePath(module + "/@latest")
-				if err != nil {
-					return nil, err
-				}
-				remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
-				return a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
-			}()
-			if resolveErr == nil && result != nil {
-				defer result.Content.Close()
-				body, readErr := io.ReadAll(result.Content)
-				if readErr == nil {
-					etag := util.GenerateETag(body)
-					return &types.ContentResult{
-						Content:     io.NopCloser(bytes.NewReader(body)),
-						Size:        int64(len(body)),
-						ContentType: "application/json",
-						StatusCode:  200,
-						Headers: map[string]string{
-							"ETag":          etag,
-							"Cache-Control": "public, max-age=300",
-						},
-					}, nil
-				}
+	// Try upstream first — FetchFromRemote has HTTP-level cache (CacheTTLSeconds),
+	// so repeated requests within TTL don't actually hit the upstream server.
+	if a.fetcher != nil {
+		result, resolveErr := func() (*types.RouteResult, error) {
+			pathInfo, err := a.ParsePath(module + "/@latest")
+			if err != nil {
+				return nil, err
+			}
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), pathInfo.RemotePath)
+			return a.fetcher.FetchFromRemote(ctx, repo, remoteURL)
+		}()
+		if resolveErr == nil && result != nil {
+			defer result.Content.Close()
+			body, readErr := io.ReadAll(result.Content)
+			if readErr == nil {
+				etag := util.GenerateETag(body)
+				return &types.ContentResult{
+					Content:     io.NopCloser(bytes.NewReader(body)),
+					Size:        int64(len(body)),
+					ContentType: "application/json",
+					StatusCode:  200,
+					Headers: map[string]string{
+						"ETag":          etag,
+						"Cache-Control": "public, max-age=300",
+					},
+				}, nil
 			}
 		}
+	}
+
+	// Fallback: compute latest from local DB version list
+	versionsWithTime, err := a.ListVersionsWithTime(ctx, module)
+	if err != nil || len(versionsWithTime) == 0 {
 		return nil, fmt.Errorf("module not found")
 	}
 
@@ -486,7 +495,6 @@ func (a *GoAdapter) handleLatest(ctx context.Context, module string, repo *model
 		"Version": latest.Version,
 		"Time":    latest.Time.UTC().Format(time.RFC3339),
 	}
-	// 序列化生成 ETag
 	infoBytes, _ := json.Marshal(latestInfo)
 	etag := util.GenerateETag(infoBytes)
 	return &types.ContentResult{

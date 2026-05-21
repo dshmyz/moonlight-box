@@ -99,21 +99,6 @@ func main() {
 		"ai_enabled":  cfg.AI.Enabled,
 	}).Info("Configuration loaded")
 
-	// 初始化日志
-	if err := util.InitLogger(&util.LoggerConfig{
-		Level:            cfg.Logging.Level,
-		Format:           cfg.Logging.Format,
-		Output:           cfg.Logging.Output,
-		EnableSplitFiles: cfg.Logging.EnableSplitFiles,
-		SqlLogFile:       cfg.Logging.SqlLogFile,
-		ErrorLogFile:     cfg.Logging.ErrorLogFile,
-		AccessLogFile:    cfg.Logging.AccessLogFile,
-		LogRetentionDays: cfg.Logging.LogRetentionDays,
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
-		os.Exit(1)
-	}
-
 	// 初始化数据库
 	if err := database.Initialize(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize database: %v\n", err)

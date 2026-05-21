@@ -220,6 +220,23 @@ func (r *PackageRepository) FindByRepoNameAndTypeContext(ctx context.Context, re
 	return &pkg, nil
 }
 
+// LookupIDByRepoNameAndType 轻量查询：只返回 package ID，用于下载计数等热路径。
+func (r *PackageRepository) LookupIDByRepoNameAndType(ctx context.Context, repositoryID uint, name string, pkgType model.PackageType) (uint, error) {
+	var pkg model.Package
+	query := r.db.WithContext(ctx).Select("id").Where("name = ? AND type = ?", name, pkgType)
+	if repositoryID > 0 {
+		query = query.Where("repository_id = ?", repositoryID)
+	}
+	result := query.First(&pkg)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return 0, util.ErrPackageNotFound
+		}
+		return 0, result.Error
+	}
+	return pkg.ID, nil
+}
+
 func (r *PackageRepository) FindVersionByPackageAndVersion(pkgID uint, version string) (*model.PackageVersion, error) {
 	return r.FindVersionByPackageAndVersionContext(context.Background(), pkgID, version)
 }

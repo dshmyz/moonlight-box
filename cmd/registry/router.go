@@ -1,6 +1,8 @@
 package main
 
 import (
+	"compress/gzip"
+
 	"github.com/gin-gonic/gin"
 	"github.com/moonlight-box/registry/internal/adapter"
 	"github.com/moonlight-box/registry/internal/config"
@@ -92,6 +94,7 @@ func (ctx *RouterContext) SetupRouter(version string) *gin.Engine {
 	r.Use(middleware.RequestID())
 	r.Use(middleware.CORS())
 	r.Use(middleware.PrometheusMiddleware())
+	r.Use(middleware.Gzip(gzip.DefaultCompression))
 	if ctx.Config != nil && ctx.Config.Server.MaxUploadSize > 0 {
 		r.Use(middleware.BodySizeLimit(ctx.Config.Server.MaxUploadSize))
 	}

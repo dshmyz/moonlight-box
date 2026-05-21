@@ -208,6 +208,45 @@ func (a *PyPIAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 
 	parts := strings.Split(path, "/")
 
+	if len(parts) >= 2 && parts[0] == "pypi" {
+		// Handle "pypi/simple/xxx/" paths (URL rewrite output)
+		if parts[1] == "simple" {
+			if len(parts) >= 3 && parts[2] != "" {
+				version := ""
+				if len(parts) >= 4 && parts[3] != "" {
+					version = parts[3]
+				}
+				return &types.PackagePathInfo{
+					Name:           parts[2],
+					Version:        version,
+					Filename:       "",
+					StorageName:    parts[2],
+					StorageVersion: version,
+					RemotePath:     fmt.Sprintf("simple/%s/", parts[2]),
+				}, nil
+			}
+			return nil, fmt.Errorf("invalid pypi pypi/simple path: %s", path)
+		}
+
+		// Handle "pypi/{name}/json" and "pypi/{name}/{version}/json" paths
+		if len(parts) >= 3 && parts[len(parts)-1] == "json" {
+			name := parts[1]
+			version := ""
+			if len(parts) == 4 {
+				// pypi/{name}/{version}/json
+				version = parts[2]
+			}
+			return &types.PackagePathInfo{
+				Name:           name,
+				Version:        version,
+				Filename:       "",
+				StorageName:    name,
+				StorageVersion: version,
+				RemotePath:     fmt.Sprintf("pypi/%s/json", name),
+			}, nil
+		}
+	}
+
 	if parts[0] == "simple" {
 		if len(parts) < 2 {
 			return nil, fmt.Errorf("invalid pypi simple path: %s", path)
@@ -275,35 +314,6 @@ func (a *PyPIAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 	return nil, fmt.Errorf("invalid pypi path: %s", path)
 }
 
-// pypiBaseURLFromContext returns the base URL for PyPI package file download links.
-// It first checks the context for a virtual repo base URL, then falls back to the member repo name.
-func pypiBaseURLFromContext(ctx context.Context, repo *model.Repository) string {
-	if baseURL := BaseURLFromContext(ctx, nil); baseURL != "" {
-		return baseURL + "/packages/"
-	}
-	// Fallback: 使用路径前缀构建
-	prefix := PathPrefixFromContext(ctx)
-	if repo != nil {
-		return fmt.Sprintf("%s/repository/%s/packages/", prefix, repo.Name)
-	}
-	return prefix + "/packages/"
-}
-
-// pypiSimplePrefixFromContext returns the URL prefix for PyPI simple index links.
-func pypiSimplePrefixFromContext(ctx context.Context) string {
-	if baseURL := BaseURLFromContext(ctx, nil); baseURL != "" {
-		return baseURL + "/pypi/simple/"
-	}
-	// Fallback: 使用路径前缀构建
-	prefix := PathPrefixFromContext(ctx)
-	if repoVal := ctx.Value("repo"); repoVal != nil {
-		if repo, ok := repoVal.(*model.Repository); ok {
-			return fmt.Sprintf("%s/repository/%s/pypi/simple/", prefix, repo.Name)
-		}
-	}
-	return prefix + "/pypi/simple/"
-}
-
 // ListPackages 列出包列表。根据仓库类型返回不同结果：
 // - local: 仅本地缓存的包
 // - proxy: 代理上游的完整索引
@@ -351,11 +361,9 @@ func (a *PyPIAdapter) listPackagesFromUpstream(ctx context.Context, repo *model.
 		return nil, readErr
 	}
 
-	// 重写上游 HTML 中的下载链接和 simple index 导航链接
+	// 重写上游 HTML 中的下载链接和 simple index 导航链接为相对路径
 	if strings.HasPrefix(contentType, "text/html") {
-		baseURL := pypiBaseURLFromContext(ctx, repo)
-		simplePrefix := pypiSimplePrefixFromContext(ctx)
-		body = RewritePyPIHTML(body, baseURL, simplePrefix)
+		body = RewritePyPIHTML(body)
 	}
 
 	return &types.ContentResult{
@@ -377,14 +385,12 @@ func (a *PyPIAdapter) listPackagesJSON(ctx context.Context) (*types.ContentResul
 		URL  string `json:"url"`
 	}
 
-	// Build simple index prefix from context (virtual repo) or use default
-	simplePrefix := pypiSimplePrefixFromContext(ctx)
-
 	result := make([]project, len(packages))
 	for i, pkg := range packages {
+		normalized := normalizePackageName(pkg.Name)
 		result[i] = project{
-			Name: normalizePackageName(pkg.Name),
-			URL:  simplePrefix + normalizePackageName(pkg.Name) + "/",
+			Name: normalized,
+			URL:  normalized + "/",
 		}
 	}
 
@@ -401,16 +407,12 @@ func (a *PyPIAdapter) listPackagesHTML(ctx context.Context) (*types.ContentResul
 		return nil, err
 	}
 
-	// Build simple index prefix from context (virtual repo) or use default
-	simplePrefix := pypiSimplePrefixFromContext(ctx)
-
 	var sb strings.Builder
 	sb.Grow(100 + len(packages)*80)
 	sb.WriteString("<!DOCTYPE html>\n<html><head><title>Simple Index</title></head><body>\n")
 	for _, pkg := range packages {
 		normalized := normalizePackageName(pkg.Name)
 		sb.WriteString(`<a href="`)
-		sb.WriteString(simplePrefix)
 		sb.WriteString(normalized)
 		sb.WriteString(`/">`)
 		sb.WriteString(normalized)
@@ -462,9 +464,9 @@ func (a *PyPIAdapter) PackageFiles(ctx context.Context, acceptHeader string, pkg
 				return nil, readErr
 			}
 			if strings.HasPrefix(contentType, "text/html") {
-				raw = RewritePyPIHTML(raw, pypiBaseURLFromContext(ctx, repo), pypiSimplePrefixFromContext(ctx))
+				raw = RewritePyPIHTML(raw)
 			} else {
-				raw = RewritePyPIJSON(raw, pypiBaseURLFromContext(ctx, repo))
+				raw = RewritePyPIJSON(raw)
 			}
 			return &types.ContentResult{
 				StatusCode:  200,
@@ -493,7 +495,7 @@ func (a *PyPIAdapter) packageFilesJSON(ctx context.Context, pkgName string, repo
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
 					if readErr == nil {
-						body = RewritePyPIJSON(body, pypiBaseURLFromContext(ctx, repo))
+						body = RewritePyPIJSON(body)
 						return &types.ContentResult{
 							StatusCode:  200,
 							ContentType: "application/vnd.pypi.simple.v1+json",
@@ -519,7 +521,6 @@ func (a *PyPIAdapter) packageFilesJSON(ctx context.Context, pkgName string, repo
 	}
 
 	files := make([]file, 0)
-	pkgBaseURL := pypiBaseURLFromContext(ctx, repo)
 	for _, ver := range pkg.Versions {
 		for _, f := range ver.Files {
 			if f.Filename == "" {
@@ -538,7 +539,7 @@ func (a *PyPIAdapter) packageFilesJSON(ctx context.Context, pkgName string, repo
 			}
 
 			files = append(files, file{
-				URL:        pkgBaseURL + f.Filename,
+				URL:        "../../packages/" + f.Filename,
 				Filename:   f.Filename,
 				Hashes:     hashes,
 				Size:       f.SizeBytes,
@@ -582,7 +583,7 @@ func (a *PyPIAdapter) packageFilesHTML(ctx context.Context, pkgName string, repo
 					defer result.Content.Close()
 					body, readErr := io.ReadAll(result.Content)
 					if readErr == nil {
-						body = RewritePyPIHTML(body, pypiBaseURLFromContext(ctx, repo), pypiSimplePrefixFromContext(ctx))
+						body = RewritePyPIHTML(body)
 						return &types.ContentResult{
 							StatusCode:  200,
 							ContentType: "text/html",
@@ -606,8 +607,6 @@ func (a *PyPIAdapter) packageFilesHTML(ctx context.Context, pkgName string, repo
 	sb.Grow(len(html) + len(pkg.Versions)*60)
 	sb.WriteString(html)
 
-	baseURL := pypiBaseURLFromContext(ctx, repo)
-
 	for _, ver := range pkg.Versions {
 		for _, f := range ver.Files {
 			filename := f.Filename
@@ -619,7 +618,7 @@ func (a *PyPIAdapter) packageFilesHTML(ctx context.Context, pkgName string, repo
 				continue
 			}
 			sb.WriteString(`<a href="`)
-			sb.WriteString(baseURL)
+			sb.WriteString("../../packages/")
 			sb.WriteString(filename)
 			sb.WriteString(`">`)
 			sb.WriteString(filename)
@@ -837,6 +836,8 @@ func (a *PyPIAdapter) JSONAPI(pkgName string, version string, repo *model.Reposi
 							}
 							body, _ = json.Marshal(fallback)
 						}
+						// Rewrite absolute CDN URLs in releases to relative paths
+						body = RewritePyPIJSON(body)
 						return &types.ContentResult{
 							StatusCode:  200,
 							ContentType: "application/json",
@@ -864,6 +865,8 @@ func (a *PyPIAdapter) JSONAPI(pkgName string, version string, repo *model.Reposi
 								}
 								body, _ = json.Marshal(fallback)
 							}
+							// Rewrite absolute CDN URLs in releases to relative paths
+							body = RewritePyPIJSON(body)
 							return &types.ContentResult{
 								StatusCode:  200,
 								ContentType: "application/json",
@@ -895,7 +898,6 @@ func (a *PyPIAdapter) JSONAPI(pkgName string, version string, repo *model.Reposi
 	releases := make(map[string][]urlInfo)
 	var latestVersion string
 	var latestInfo *model.PackageVersion
-	pkgBaseURL := pypiBaseURLFromContext(ctx, repo)
 
 	for _, ver := range pkg.Versions {
 		if version != "" && ver.Version != version {
@@ -908,7 +910,7 @@ func (a *PyPIAdapter) JSONAPI(pkgName string, version string, repo *model.Reposi
 				continue
 			}
 			files = append(files, urlInfo{
-				URL:      pkgBaseURL + f.Filename,
+				URL:      "../../packages/" + f.Filename,
 				Filename: f.Filename,
 				MD5:      f.ChecksumMD5,
 				SHA256:   f.ChecksumSHA256,
@@ -919,7 +921,7 @@ func (a *PyPIAdapter) JSONAPI(pkgName string, version string, repo *model.Reposi
 		// 如果版本没有文件，至少添加一个条目指向包版本
 		if len(files) == 0 {
 			files = append(files, urlInfo{
-				URL:      pkgBaseURL + ver.Version,
+				URL:      "../../packages/" + ver.Version,
 				Filename: ver.Version,
 				Size:     ver.SizeBytes,
 				MD5:      ver.ChecksumMD5,
@@ -1056,6 +1058,21 @@ func (a *PyPIAdapter) ParseIntent(path string, method string) *types.RequestInte
 		Extra: make(map[string]interface{}),
 	}
 
+	if strings.HasPrefix(path, "pypi/simple/") {
+		pkgPath := strings.TrimPrefix(path, "pypi/simple/")
+		if pkgPath == "" || pkgPath == "/" {
+			intent.Type = types.RequestList
+			intent.Name = ""
+			intent.Filename = ""
+		} else {
+			pkgName := strings.Trim(pkgPath, "/")
+			intent.Type = types.RequestMetadata
+			intent.Name = pkgName
+			intent.Filename = ""
+		}
+		return intent
+	}
+
 	if strings.HasPrefix(path, "simple/") {
 		pkgPath := strings.TrimPrefix(path, "simple/")
 		if pkgPath == "" || pkgPath == "/" {
@@ -1125,6 +1142,11 @@ func (a *PyPIAdapter) HandleGet(ctx context.Context, repo *model.Repository, int
 
 	if intent.Type == types.RequestList {
 		return a.ListPackages(ctx, repo, accept)
+	}
+
+	if strings.HasPrefix(intent.Path, "pypi/simple/") {
+		pkgName := strings.Trim(strings.TrimPrefix(intent.Path, "pypi/simple/"), "/")
+		return a.PackageFiles(ctx, accept, pkgName, repo)
 	}
 
 	if strings.HasPrefix(intent.Path, "simple/") {
@@ -1364,13 +1386,11 @@ func (a *PyPIAdapter) mergeSimpleIndexHTML(ctx context.Context, results []*types
 		return results[0], nil
 	}
 
-	prefix := pypiSimplePrefixFromContext(ctx)
 	var sb strings.Builder
 	sb.Grow(100 + len(links)*80)
 	sb.WriteString("<!DOCTYPE html>\n<html><head><title>Simple Index</title></head><body>\n")
 	for _, name := range links {
 		sb.WriteString(`<a href="`)
-		sb.WriteString(prefix)
 		sb.WriteString(name)
 		sb.WriteString(`/">`)
 		sb.WriteString(name)
@@ -1403,8 +1423,6 @@ func (a *PyPIAdapter) mergeSimpleIndexJSON(ctx context.Context, results []*types
 	}
 	var projects []project
 
-	prefix := pypiSimplePrefixFromContext(ctx)
-
 	for _, res := range results {
 		if res.Content == nil && res.ExtraData == nil {
 			continue
@@ -1418,10 +1436,10 @@ func (a *PyPIAdapter) mergeSimpleIndexJSON(ctx context.Context, results []*types
 								normalized := normalizePackageName(name)
 								if _, exists := seen[normalized]; !exists {
 									seen[normalized] = struct{}{}
-									projects = append(projects, project{
-										Name: normalized,
-										URL:  prefix + normalized + "/",
-									})
+							projects = append(projects, project{
+								Name: normalized,
+								URL:  normalized + "/",
+							})
 								}
 							}
 						}
@@ -1450,7 +1468,7 @@ func (a *PyPIAdapter) mergeSimpleIndexJSON(ctx context.Context, results []*types
 					seen[normalized] = struct{}{}
 					projects = append(projects, project{
 						Name: normalized,
-						URL:  prefix + normalized + "/",
+						URL:  normalized + "/",
 					})
 				}
 			}
@@ -1519,14 +1537,12 @@ func (a *PyPIAdapter) mergePackageFilesHTML(ctx context.Context, results []*type
 		return results[0], nil
 	}
 
-	baseURL := pypiBaseURLFromContext(ctx, nil)
-
 	var sb strings.Builder
 	sb.WriteString("<!DOCTYPE html>\n<html><head><title>Links</title></head><body>\n")
 
 	for _, filename := range links {
 		sb.WriteString(`<a href="`)
-		sb.WriteString(baseURL)
+		sb.WriteString("../../packages/")
 		sb.WriteString(filename)
 		sb.WriteString(`">`)
 		sb.WriteString(filename)
@@ -1585,6 +1601,10 @@ func (a *PyPIAdapter) mergePackageFilesJSON(ctx context.Context, results []*type
 		for _, f := range parsed.Files {
 			if _, exists := seen[f.Filename]; !exists {
 				seen[f.Filename] = struct{}{}
+				// Ensure URL is a relative path, not an upstream CDN absolute URL
+				if strings.HasPrefix(f.URL, "http://") || strings.HasPrefix(f.URL, "https://") {
+					f.URL = "../../packages/" + f.Filename
+				}
 				files = append(files, f)
 			}
 		}

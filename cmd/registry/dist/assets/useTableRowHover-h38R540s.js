@@ -1,1 +1,0 @@
-import{r as l}from"./index-Qwaom7ET.js";function t(){const e=l(null);function n({rowIndex:o}){return e.value===o?"row-hovered":""}function r({rowIndex:o}){e.value=o}function u(){e.value=null}return{hoveredRow:e,tableRowClass:n,handleRowEnter:r,handleRowLeave:u}}export{t as u};

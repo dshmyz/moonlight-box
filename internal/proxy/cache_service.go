@@ -3,8 +3,8 @@ package proxy
 import (
 	"container/list"
 	"context"
-	"crypto/sha256"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"sync"
 	"time"
@@ -92,8 +92,9 @@ func NewCacheServiceWithOptions(opts CacheServiceOptions) *CacheService {
 }
 
 func (c *CacheService) getShard(key string) *CacheShard {
-	hash := sha256.Sum256([]byte(key))
-	shardIndex := int(hash[0]) % c.numShards
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	shardIndex := int(h.Sum32()) % c.numShards
 	return c.shards[shardIndex]
 }
 

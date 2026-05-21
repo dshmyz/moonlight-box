@@ -669,6 +669,12 @@ func buildBaseURL(c *gin.Context, repoName string) string {
 		scheme = "https"
 	}
 
+	// 优先使用 X-Forwarded-Host（nginx 反向代理时的公开域名）
+	host := c.GetHeader("X-Forwarded-Host")
+	if host == "" {
+		host = c.Request.Host
+	}
+
 	// 支持 nginx 加路径前缀反向代理（如 X-Forwarded-Prefix: /my-prefix）
 	prefix := c.GetHeader("X-Forwarded-Prefix")
 	if prefix == "" {
@@ -678,12 +684,12 @@ func buildBaseURL(c *gin.Context, repoName string) string {
 
 	path := c.Request.URL.Path
 	if strings.HasPrefix(path, "/content/repositories/") {
-		return fmt.Sprintf("%s://%s%s/content/repositories/%s", scheme, c.Request.Host, prefix, repoName)
+		return fmt.Sprintf("%s://%s%s/content/repositories/%s", scheme, host, prefix, repoName)
 	}
 	if strings.HasPrefix(path, "/content/groups/") {
-		return fmt.Sprintf("%s://%s%s/content/groups/%s", scheme, c.Request.Host, prefix, repoName)
+		return fmt.Sprintf("%s://%s%s/content/groups/%s", scheme, host, prefix, repoName)
 	}
-	return fmt.Sprintf("%s://%s%s/repository/%s", scheme, c.Request.Host, prefix, repoName)
+	return fmt.Sprintf("%s://%s%s/repository/%s", scheme, host, prefix, repoName)
 }
 
 // extractForwardedPrefix extracts the reverse proxy path prefix from request headers.

@@ -23,28 +23,26 @@ var (
 	pypiMetadataAttrRe = regexp.MustCompile(`\s+data-(?:dist-info-metadata|core-metadata)="[^"]*"`)
 )
 
-// RewritePyPIHTML rewrites PyPI simple index HTML to point download URLs to this proxy.
-// baseURL is the repository-relative path like "/repository/my-repo/packages/".
-// simplePrefix is the path for simple index links like "/repository/my-repo/pypi/simple/".
+// RewritePyPIHTML rewrites PyPI simple index HTML to use relative paths.
+// Simple index links (e.g. /simple/xxx/, ../../simple/xxx/) are rewritten to href="xxx/" (relative to current directory).
+// Download links (e.g. CDN URLs, relative ../../packages/...) are rewritten to href="../../packages/filename" (relative to current page).
 // Also strips PEP 658 data-dist-info-metadata attributes since we don't serve .metadata files.
-func RewritePyPIHTML(html []byte, baseURL string, simplePrefix string) []byte {
+func RewritePyPIHTML(html []byte) []byte {
 	// Strip PEP 658 metadata attributes (data-dist-info-metadata, data-core-metadata)
 	html = pypiMetadataAttrRe.ReplaceAll(html, []byte{})
 
-	// Rewrite simple index navigation links: /simple/xxx/ → {simplePrefix}xxx/
-	if simplePrefix != "" {
-		html = pypiSimpleIndexLinkRe.ReplaceAllFunc(html, func(match []byte) []byte {
-			sub := pypiSimpleIndexLinkRe.FindSubmatch(match)
-			if len(sub) >= 3 {
-				pkgName := string(sub[2])
-				return []byte(fmt.Sprintf(`href="%s%s/"`, simplePrefix, pkgName))
-			}
-			return match
-		})
-	}
+	// Rewrite simple index navigation links to relative paths: xxx/
+	html = pypiSimpleIndexLinkRe.ReplaceAllFunc(html, func(match []byte) []byte {
+		sub := pypiSimpleIndexLinkRe.FindSubmatch(match)
+		if len(sub) >= 3 {
+			pkgName := string(sub[2])
+			return []byte(fmt.Sprintf(`href="%s/"`, pkgName))
+		}
+		return match
+	})
 
 	// Rewrite CDN/mirror URLs: https://any-domain/[prefix/]packages/XX/YY/hash/filename#sha256=...
-	// → {baseURL}filename
+	// → ../../packages/filename
 	html = pypiCDNRe.ReplaceAllFunc(html, func(match []byte) []byte {
 		sub := pypiCDNRe.FindSubmatch(match)
 		if len(sub) >= 2 {
@@ -56,14 +54,14 @@ func RewritePyPIHTML(html []byte, baseURL string, simplePrefix string) []byte {
 			// Extract only the filename
 			if idx := strings.LastIndex(url, "/"); idx != -1 {
 				filename := url[idx+1:]
-				return []byte(fmt.Sprintf(`href="%s%s"`, baseURL, filename))
+				return []byte(fmt.Sprintf(`href="../../packages/%s"`, filename))
 			}
 		}
 		return match
 	})
 
 	// Rewrite relative paths: ../../packages/XX/YY/hash/filename#sha256=...
-	// → {baseURL}filename
+	// → ../../packages/filename (normalized, hash stripped)
 	html = pypiHTMLPkgRe.ReplaceAllFunc(html, func(match []byte) []byte {
 		path := string(pypiHTMLPkgRe.FindSubmatch(match)[1])
 		relPath := strings.TrimPrefix(path, "packages/")
@@ -75,21 +73,27 @@ func RewritePyPIHTML(html []byte, baseURL string, simplePrefix string) []byte {
 		if idx := strings.LastIndex(relPath, "/"); idx != -1 {
 			relPath = relPath[idx+1:]
 		}
-		return []byte(fmt.Sprintf(`href="%s%s"`, baseURL, relPath))
+		return []byte(fmt.Sprintf(`href="../../packages/%s"`, relPath))
 	})
 
 	return html
 }
 
-// RewritePyPIJSON rewrites PyPI simple JSON API file URLs to point to this proxy.
-// baseURL is the repository-relative path like "/repository/my-repo/packages/".
-func RewritePyPIJSON(data []byte, baseURL string) []byte {
-	// Match "url": "https://any-domain/packages/..." or "url": "/packages/..."
-	urlRe := regexp.MustCompile(`("url"\s*:\s*")https://[^"]*?/([^/"]+\.(?:whl|tar\.gz|zip|egg))([^"]*")`)
+// RewritePyPIJSON rewrites PyPI simple JSON API file URLs to use relative paths.
+// Absolute CDN URLs are rewritten to "../../packages/filename" (relative to request URL).
+// Supports PEP 691 simple API JSON and legacy PyPI JSON API "releases" format.
+// Hash fragments (#sha256=...) are stripped since they belong in the "hashes" field per PEP 691.
+func RewritePyPIJSON(data []byte) []byte {
+	// Match "url": "http(s)://any-domain/packages/.../filename.ext"
+	// Groups: 1) "url": " prefix, 2) filename, 3) trailing suffix (hash + quote)
+	urlRe := regexp.MustCompile(`("url"\s*:\s*")https?://[^"]*?/([^/"]+\.(?:whl|tar\.gz|tar\.bz2|zip|egg))([^"]*")`)
 	data = urlRe.ReplaceAllFunc(data, func(match []byte) []byte {
 		sub := urlRe.FindSubmatch(match)
 		if len(sub) >= 4 {
-			return []byte(fmt.Sprintf(`%s%s%s%s`, sub[1], baseURL, sub[2], sub[3]))
+			filename := string(sub[2])
+			// Strip hash fragment from filename (sub[3] contains hash#sha256=... + closing quote)
+			// Use just the filename + closing quote for a clean relative URL
+			return []byte(fmt.Sprintf(`%s../../packages/%s"`, sub[1], filename))
 		}
 		return match
 	})
@@ -210,12 +214,12 @@ func RewriteContentResult(result *RewriteContext) {
 
 	switch result.ContentType {
 	case "text/html", "":
-		if result.PackageType == model.PackageTypePyPI && result.BaseURL != "" {
-			content = RewritePyPIHTML(content, result.BaseURL, result.SimplePrefix)
+		if result.PackageType == model.PackageTypePyPI {
+			content = RewritePyPIHTML(content)
 		}
 	case "application/json", "application/vnd.pypi.simple.v1+json":
-		if result.PackageType == model.PackageTypePyPI && result.BaseURL != "" {
-			content = RewritePyPIJSON(content, result.BaseURL)
+		if result.PackageType == model.PackageTypePyPI {
+			content = RewritePyPIJSON(content)
 		} else if result.PackageType == model.PackageTypeNPM {
 			content = RewriteNpmTarballURLs(content, result.BaseURL)
 		}

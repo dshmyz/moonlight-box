@@ -533,8 +533,6 @@ func (a *GenericAdapter) HandleGet(ctx context.Context, repo *model.Repository, 
 	}
 
 	if a.fetcher != nil && repo != nil && repo.Type == model.RepoTypeProxy {
-		filename := filepath.Base(filePath)
-
 		pathInfo, pathErr := a.ParsePath(filePath)
 		if pathErr != nil {
 			slog.Warn("failed to resolve generic package path", "path", filePath, "error", pathErr)
@@ -544,12 +542,43 @@ func (a *GenericAdapter) HandleGet(ctx context.Context, repo *model.Repository, 
 			if err == nil && result != nil {
 				defer result.Content.Close()
 
-				// 读取到 buffer，同时用于存储和响应
 				body, readErr := io.ReadAll(result.Content)
 				if readErr != nil {
 					slog.Warn("failed to read generic proxy content", "error", readErr)
 				} else {
-					// 缓存到本地存储，避免后续重复拉取
+					// 如果远程返回 HTML，尝试解析为目录索引
+					if strings.HasPrefix(result.ContentType, "text/html") {
+						if entries := parseRemoteDirectoryHTML(body); len(entries) > 0 {
+							repoBasePath := fmt.Sprintf("/repository/%s/", repo.Name)
+							for i := range entries {
+								entries[i].Path = repoBasePath + filePath + entries[i].Name
+							}
+							var parentPath string
+							if idx := strings.LastIndex(strings.TrimSuffix(filePath, "/"), "/"); idx >= 0 {
+								parentPath = repoBasePath + filePath[:idx] + "/"
+							} else if filePath != "" && filePath != "/" {
+								parentPath = repoBasePath
+							}
+							var buf bytes.Buffer
+							renderErr := browseHTML.Execute(&buf, gin.H{
+								"path":       filePath,
+								"entries":    entries,
+								"parentPath": parentPath,
+							})
+							if renderErr == nil {
+								htmlContent := buf.String()
+								return &types.ContentResult{
+									ContentType: "text/html; charset=utf-8",
+									StatusCode:  200,
+									Content:     io.NopCloser(bytes.NewReader([]byte(htmlContent))),
+									Size:        int64(len(htmlContent)),
+								}, nil
+							}
+						}
+					}
+
+					// 非目录索引 HTML，或其他类型：按文件返回
+					filename := filepath.Base(filePath)
 					storageKey := fmt.Sprintf("generic/%s/%s", repo.Name, filePath)
 					_ = storageKey
 					a.storageSvc.StorePackageWithBackend(ctx, repo.Name, "generic", filePath, filename, bytes.NewReader(body), int64(len(body)), repositoryStorageBackendID(repo))
@@ -669,6 +698,55 @@ func (a *GenericAdapter) listDirectory(ctx context.Context, backend storage.Back
 	}
 
 	return nil, fileEntries
+}
+
+// parseRemoteDirectoryHTML 解析远程 HTTP 目录索引 HTML（Apache/Nginx autoindex 格式），
+// 提取文件和目录列表。返回空切片表示不是目录索引页面。
+func parseRemoteDirectoryHTML(body []byte) []FileEntry {
+	// 匹配 <a href="...">name</a>
+	linkRe := regexp.MustCompile(`<a\s+[^>]*href="([^"]+)"[^>]*>([^<]*)</a>`)
+	matches := linkRe.FindAllSubmatch(body, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	var entries []FileEntry
+	seen := make(map[string]bool)
+	for _, m := range matches {
+		href := string(m[1])
+		name := strings.TrimSpace(string(m[2]))
+		if name == "" {
+			name = strings.TrimSuffix(href, "/")
+			name = strings.Trim(name, "/")
+		}
+
+		// 过滤无效链接
+		if name == "" || name == "." || strings.HasSuffix(href, "?") || strings.Contains(href, "?") {
+			continue
+		}
+		// 过滤父目录、绝对路径和外部 URL
+		if strings.HasPrefix(href, "../") || strings.HasPrefix(href, "..") || strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") || strings.HasPrefix(href, "/") {
+			continue
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+
+		isDir := strings.HasSuffix(href, "/")
+		// 目录名去掉尾部 /
+		displayName := name
+		if isDir {
+			displayName = strings.TrimSuffix(name, "/")
+		}
+		entries = append(entries, FileEntry{
+			Name:  displayName,
+			IsDir: isDir,
+			Path:  displayName,
+		})
+	}
+
+	return entries
 }
 
 func (a *GenericAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {

@@ -283,7 +283,7 @@ func (a *MavenAdapter) handleMetadataXML(ctx context.Context, fullPath string, r
 	}
 
 	if isVersionLevelMetadata {
-		return a.handleVersionLevelMetadata(ctx, name, version, groupID, artifactID, repo)
+		return a.handleVersionLevelMetadata(ctx, name, version, groupID, artifactID, repo, fullPath)
 	}
 
 	pkg, err := a.GetPackageRepository().FindByRepoNameAndTypeContext(ctx, repositoryID(repo), name, model.PackageTypeMaven)
@@ -479,9 +479,76 @@ func (a *MavenAdapter) handleMetadataXML(ctx context.Context, fullPath string, r
 	}, nil
 }
 
-func (a *MavenAdapter) handleVersionLevelMetadata(ctx context.Context, name, version, groupID, artifactID string, repo *model.Repository) (*types.ContentResult, error) {
+func (a *MavenAdapter) handleVersionLevelMetadata(ctx context.Context, name, version, groupID, artifactID string, repo *model.Repository, fullPath string) (*types.ContentResult, error) {
 	logrus.Infof("handleVersionLevelMetadata: name=%s, version=%s, groupID=%s, artifactID=%s", name, version, groupID, artifactID)
 
+	// Try upstream first — SNAPSHOT metadata is dynamic (new builds appear upstream).
+	// FetchFromRemote has HTTP-level cache, so repeat requests within TTL won't hit upstream.
+	if repo != nil && repo.Type == model.RepoTypeProxy && a.fetcher != nil && a.metaCache != nil {
+		ttl := time.Duration(repo.CacheTTLSeconds) * time.Second
+		if ttl <= 0 {
+			ttl = 5 * time.Minute
+		}
+
+		cacheContent, _, cacheErr := a.metaCache.GetOrFetch(context.Background(), repo.Name, "maven", name+"/"+version+"/maven-metadata.xml", ttl, func() (io.ReadCloser, int64, error) {
+			remoteURL := fmt.Sprintf("%s/%s", strings.TrimSuffix(repo.RemoteURL, "/"), fullPath)
+			result, fetchErr := a.fetcher.FetchFromRemote(context.Background(), repo, remoteURL)
+			if fetchErr != nil {
+				return nil, 0, fetchErr
+			}
+			return result.Content, result.Size, nil
+		})
+		if cacheErr == nil {
+			body, readErr := io.ReadAll(cacheContent)
+			cacheContent.Close()
+			if readErr == nil {
+				// Parse upstream XML response
+				var upstreamMeta MavenMetadata
+				if xml.Unmarshal(body, &upstreamMeta) == nil && upstreamMeta.Versioning.Snapshot != nil {
+					// Store in local DB for fallback
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								logrus.Errorf("panic storing SNAPSHOT metadata for %s: %v", name, r)
+							}
+						}()
+						repoID := repositoryID(repo)
+						pkg, _, pkgErr := a.GetPackageRepository().CreateOrUpdate(context.Background(), &model.Package{
+							Name:           name,
+							Type:           model.PackageTypeMaven,
+							RepositoryID:   repoID,
+							RepositoryType: model.RepoTypeProxy,
+						}, nil)
+						if pkgErr != nil || pkg == nil {
+							logrus.Errorf("failed to create package for SNAPSHOT metadata: %v", pkgErr)
+							return
+						}
+						metaBytes, _ := json.Marshal(map[string]interface{}{
+							"snapshotTimestamp":  upstreamMeta.Versioning.Snapshot.Timestamp,
+							"snapshotBuildNumber": upstreamMeta.Versioning.Snapshot.BuildNumber,
+						})
+						a.GetPackageRepository().CreateOrUpdateMetadata(context.Background(), pkg, &model.PackageVersion{
+							Version:  version,
+							Status:   model.StatusPublished,
+							Metadata: string(metaBytes),
+						})
+					}()
+
+					return &types.ContentResult{
+						StatusCode:  200,
+						ContentType: "application/xml",
+						ExtraData: map[string]interface{}{
+							"xml_body":  body,
+							"xml_struct": &upstreamMeta,
+						},
+					}, nil
+				}
+				// If upstream returned non-SNAPSHOT data, fall through to local
+			}
+		}
+	}
+
+	// Fallback: return from local DB / storage
 	pkg, err := a.GetPackageRepository().FindByRepoNameAndTypeContext(ctx, repositoryID(repo), name, model.PackageTypeMaven)
 	if err != nil {
 		logrus.Warnf("Package not found for SNAPSHOT metadata: %s, will generate from storage", name)

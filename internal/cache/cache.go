@@ -1,7 +1,7 @@
 package cache
 
 import (
-	"crypto/sha256"
+	"hash/fnv"
 	"sync"
 	"time"
 )
@@ -57,8 +57,9 @@ func NewMemoryCacheWithShards(numShards int) *MemoryCache {
 }
 
 func (c *MemoryCache) getShard(key string) *Shard {
-	hash := sha256.Sum256([]byte(key))
-	shardIndex := int(hash[0]) % c.numShards
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	shardIndex := int(h.Sum32()) % c.numShards
 	return c.shards[shardIndex]
 }
 
