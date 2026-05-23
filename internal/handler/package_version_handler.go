@@ -13,11 +13,11 @@ import (
 )
 
 type PackageVersionHandler struct {
-	pkgRepo *repository.PackageRepository
+	compRepo *repository.ComponentRepository
 }
 
-func NewPackageVersionHandler(pkgRepo *repository.PackageRepository) *PackageVersionHandler {
-	return &PackageVersionHandler{pkgRepo: pkgRepo}
+func NewPackageVersionHandler(compRepo *repository.ComponentRepository) *PackageVersionHandler {
+	return &PackageVersionHandler{compRepo: compRepo}
 }
 
 func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
@@ -39,28 +39,36 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		repositoryID = uint(repoID)
 	}
 
-	pkg, err := h.pkgRepo.FindByRepoNameAndTypeContext(c.Request.Context(), repositoryID, pkgName, model.PackageType(pkgType))
+	agg, err := h.compRepo.FindByRepoNameAndTypeContext(c.Request.Context(), repositoryID, pkgName, model.PackageType(pkgType))
 	if err != nil {
 		response.NotFound(c, "package not found")
 		return
 	}
 
-	// 动态计算每个版本的总大小
-	for i := range pkg.Versions {
-		version := &pkg.Versions[i]
-		if version.SizeBytes == 0 && len(version.Files) > 0 {
-			var totalSize int64
-			for _, file := range version.Files {
-				totalSize += file.SizeBytes
+	versions := make([]gin.H, 0, len(agg.Components))
+	for _, comp := range agg.Components {
+		size := comp.SizeBytes
+		if size == 0 {
+			for _, asset := range comp.Assets {
+				size += asset.Blob.SizeBytes
 			}
-			version.SizeBytes = totalSize
 		}
+		versions = append(versions, gin.H{
+			"id":              comp.ID,
+			"version":         comp.Version,
+			"status":          comp.Status,
+			"published_at":    comp.PublishedAt,
+			"download_count":  comp.DownloadCount,
+			"size_bytes":      size,
+			"files_downloaded": comp.FilesDownloaded,
+			"assets":          comp.Assets,
+		})
 	}
 
 	response.Success(c, gin.H{
-		"package_name": pkg.Name,
-		"type":         pkg.Type,
-		"versions":     pkg.Versions,
+		"package_name": agg.Name,
+		"type":         agg.Format,
+		"versions":     versions,
 	})
 }
 
@@ -78,22 +86,22 @@ func (h *PackageVersionHandler) DeprecateVersion(c *gin.Context) {
 		req.Reason = "deprecated"
 	}
 
-	ver, pkg, err := findVersionAndPackage(c.Request.Context(), h.pkgRepo, uint(versionID))
+	comp, err := h.compRepo.FindComponentByIDContext(c.Request.Context(), uint(versionID))
 	if err != nil {
 		response.NotFound(c, "version not found")
 		return
 	}
 
-	ver.Status = model.StatusDeprecated
-	if err := h.pkgRepo.UpdatePackageVersionContext(c.Request.Context(), ver); err != nil {
+	comp.Status = model.StatusDeprecated
+	if err := h.compRepo.UpdateComponentContext(c.Request.Context(), comp); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
 
 	response.Success(c, gin.H{
 		"message": "version deprecated",
-		"package": pkg.Name,
-		"version": ver.Version,
+		"package": comp.Name,
+		"version": comp.Version,
 		"reason":  req.Reason,
 	})
 }
@@ -105,22 +113,22 @@ func (h *PackageVersionHandler) RestoreVersion(c *gin.Context) {
 		return
 	}
 
-	ver, pkg, err := findVersionAndPackage(c.Request.Context(), h.pkgRepo, uint(versionID))
+	comp, err := h.compRepo.FindComponentByIDContext(c.Request.Context(), uint(versionID))
 	if err != nil {
 		response.NotFound(c, "version not found")
 		return
 	}
 
-	ver.Status = model.StatusPublished
-	if err := h.pkgRepo.UpdatePackageVersionContext(c.Request.Context(), ver); err != nil {
+	comp.Status = model.StatusPublished
+	if err := h.compRepo.UpdateComponentContext(c.Request.Context(), comp); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
 
 	response.Success(c, gin.H{
 		"message": "version restored",
-		"package": pkg.Name,
-		"version": ver.Version,
+		"package": comp.Name,
+		"version": comp.Version,
 	})
 }
 
@@ -138,22 +146,22 @@ func (h *PackageVersionHandler) YankVersion(c *gin.Context) {
 		req.Reason = "yanked"
 	}
 
-	ver, pkg, err := findVersionAndPackage(c.Request.Context(), h.pkgRepo, uint(versionID))
+	comp, err := h.compRepo.FindComponentByIDContext(c.Request.Context(), uint(versionID))
 	if err != nil {
 		response.NotFound(c, "version not found")
 		return
 	}
 
-	ver.Status = model.StatusYanked
-	if err := h.pkgRepo.UpdatePackageVersionContext(c.Request.Context(), ver); err != nil {
+	comp.Status = model.StatusYanked
+	if err := h.compRepo.UpdateComponentContext(c.Request.Context(), comp); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
 
 	response.Success(c, gin.H{
 		"message": "version yanked",
-		"package": pkg.Name,
-		"version": ver.Version,
+		"package": comp.Name,
+		"version": comp.Version,
 		"reason":  req.Reason,
 	})
 }
@@ -165,7 +173,7 @@ func (h *PackageVersionHandler) DeleteVersion(c *gin.Context) {
 		return
 	}
 
-	if err := h.pkgRepo.DeleteVersionContext(c.Request.Context(), uint(versionID)); err != nil {
+	if err := h.compRepo.DeleteComponentContext(c.Request.Context(), uint(versionID)); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -180,7 +188,7 @@ func (h *PackageVersionHandler) DeletePackage(c *gin.Context) {
 		return
 	}
 
-	if err := h.pkgRepo.DeletePackageByIDContext(c.Request.Context(), uint(packageID)); err != nil {
+	if err := h.compRepo.DeleteCatalogEntryContext(c.Request.Context(), uint(packageID)); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -190,12 +198,5 @@ func (h *PackageVersionHandler) DeletePackage(c *gin.Context) {
 	})
 }
 
-func findVersionAndPackage(ctx context.Context, pkgRepo *repository.PackageRepository, versionID uint) (*model.PackageVersion, *model.Package, error) {
-	ver, err := pkgRepo.FindVersionByIDContext(ctx, versionID)
-	if err != nil {
-		return nil, nil, err
-	}
-	return ver, &ver.Package, nil
-}
-
+var _ = context.Background
 var _ = http.StatusOK

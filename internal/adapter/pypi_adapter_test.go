@@ -29,16 +29,16 @@ func setupPyPIAdapter(t *testing.T) (*PyPIAdapter, *gorm.DB) {
 	}
 
 	db.AutoMigrate(
-		&model.Package{},
-		&model.PackageVersion{},
-		&model.PackageFile{},
-		&model.PackageDependency{},
+		&model.Component{},
+		&model.Component{},
+		&model.Asset{},
+		&model.ComponentDependency{},
 		&model.Repository{},
 		&model.StorageBackend{},
 	)
 
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
-	pkgRepo := repository.NewPackageRepository(db)
+	compRepo := repository.NewComponentRepository(db)
 
 	// 确保存储目录存在
 	os.MkdirAll("/tmp/test-pypi-storage", 0755)
@@ -65,10 +65,10 @@ func setupPyPIAdapter(t *testing.T) (*PyPIAdapter, *gorm.DB) {
 
 	storageSvc.RefreshBackends()
 
-	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
+	compCache := cache.NewComponentCache(compRepo, 5*time.Minute)
 	repoRepo := repository.NewRepositoryRepository(db)
 
-	adapter := NewPyPIAdapter(repoRepo, storageSvc, pkgCache)
+	adapter := NewPyPIAdapter(repoRepo, storageSvc, compCache)
 	return adapter, db
 }
 
@@ -130,7 +130,7 @@ func TestPyPIAdapter_ParsePath(t *testing.T) {
 //
 // 	req := &UploadRequest{
 // 		Package:  bytes.NewReader(wheelContent),
-// 		Filename: "test_package-1.0.0-py3-none-any.whl",
+// 		FileName: "test_package-1.0.0-py3-none-any.whl",
 // 		Size:     int64(len(wheelContent)),
 // 		Metadata: map[string]interface{}{
 // 			"name":     "test-package",
@@ -151,7 +151,7 @@ func TestPyPIAdapter_ParsePath(t *testing.T) {
 // 	assert.Nil(t, err)
 // 	assert.Equal(t, model.PackageTypePyPI, pkg.Type)
 //
-// 	var version model.PackageVersion
+// 	var version model.Component
 // 	err = db.Where("package_id = ? AND version = ?", pkg.ID, "1.0.0").First(&version).Error
 // 	assert.Nil(t, err)
 // 	assert.Equal(t, model.StatusPublished, version.Status)
@@ -165,7 +165,7 @@ func TestPyPIAdapter_ParsePath(t *testing.T) {
 //
 // 	req := &UploadRequest{
 // 		Package:  bytes.NewReader(tarGzContent),
-// 		Filename: "test-package-1.0.0.tar.gz",
+// 		FileName: "test-package-1.0.0.tar.gz",
 // 		Size:     int64(len(tarGzContent)),
 // 		Metadata: map[string]interface{}{
 // 			"name":     "test-package",
@@ -184,14 +184,14 @@ func TestPyPIAdapter_ParsePath(t *testing.T) {
 func TestPyPIAdapter_GetMetadata(t *testing.T) {
 	adapter, db := setupPyPIAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name:        "requests",
-		Type:        model.PackageTypePyPI,
+		Format: model.PackageTypePyPI,
 		Description: "Python HTTP library",
 	}
 	db.Create(pkg)
 
-	version := &model.PackageVersion{
+	version := &model.Component{
 		PackageID: pkg.ID,
 		Version:   "2.28.0",
 		Status:    model.StatusPublished,
@@ -217,14 +217,14 @@ func TestPyPIAdapter_GetMetadata_NotFound(t *testing.T) {
 func TestPyPIAdapter_ListVersions(t *testing.T) {
 	adapter, db := setupPyPIAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name:        "numpy",
-		Type:        model.PackageTypePyPI,
+		Format: model.PackageTypePyPI,
 		Description: "NumPy library",
 	}
 	db.Create(pkg)
 
-	versions := []model.PackageVersion{
+	versions := []model.Component{
 		{PackageID: pkg.ID, Version: "1.21.0", Status: model.StatusPublished},
 		{PackageID: pkg.ID, Version: "1.22.0", Status: model.StatusPublished},
 		{PackageID: pkg.ID, Version: "1.23.0", Status: model.StatusPublished},
@@ -244,14 +244,14 @@ func TestPyPIAdapter_ListVersions(t *testing.T) {
 func TestPyPIAdapter_Delete(t *testing.T) {
 	adapter, db := setupPyPIAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name:        "deletable-package",
-		Type:        model.PackageTypePyPI,
+		Format: model.PackageTypePyPI,
 		Description: "Deletable package",
 	}
 	db.Create(pkg)
 
-	version := &model.PackageVersion{
+	version := &model.Component{
 		PackageID: pkg.ID,
 		Version:   "1.0.0",
 		Status:    model.StatusPublished,
@@ -268,17 +268,17 @@ func TestPyPIAdapter_Delete(t *testing.T) {
 	assert.Nil(t, err)
 
 	var count int64
-	db.Model(&model.PackageVersion{}).Where("package_id = ? AND version = ?", pkg.ID, "1.0.0").Count(&count)
+	db.Model(&model.Component{}).Where("package_id = ? AND version = ?", pkg.ID, "1.0.0").Count(&count)
 	assert.Equal(t, int64(0), count)
 }
 
 func TestPyPIAdapter_ListPackages(t *testing.T) {
 	adapter, db := setupPyPIAdapter(t)
 
-	packages := []model.Package{
-		{Name: "requests", Type: model.PackageTypePyPI, Description: "HTTP library"},
-		{Name: "numpy", Type: model.PackageTypePyPI, Description: "NumPy"},
-		{Name: "pandas", Type: model.PackageTypePyPI, Description: "Pandas"},
+	packages := []model.Component{
+		{Name: "requests", Format: model.PackageTypePyPI, Description: "HTTP library"},
+		{Name: "numpy", Format: model.PackageTypePyPI, Description: "NumPy"},
+		{Name: "pandas", Format: model.PackageTypePyPI, Description: "Pandas"},
 	}
 	for _, p := range packages {
 		db.Create(&p)
@@ -303,24 +303,24 @@ func TestPyPIAdapter_ListPackages(t *testing.T) {
 func TestPyPIAdapter_PackageFiles(t *testing.T) {
 	adapter, db := setupPyPIAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name:        "flask",
-		Type:        model.PackageTypePyPI,
+		Format: model.PackageTypePyPI,
 		Description: "Flask framework",
 	}
 	db.Create(pkg)
 
-	version := &model.PackageVersion{
+	version := &model.Component{
 		PackageID: pkg.ID,
 		Version:   "2.0.0",
 		Status:    model.StatusPublished,
 	}
 	db.Create(version)
 
-	file := &model.PackageFile{
-		VersionID: version.ID,
-		Filename:  "Flask-2.0.0-py3-none-any.whl",
-		FileType:  model.FileTypePrimary,
+	file := &model.Asset{
+		ComponentID: version.ID,
+		FileName:  "Flask-2.0.0-py3-none-any.whl",
+		Kind:  model.AssetKindPrimary,
 		SizeBytes: 1000,
 	}
 	db.Create(file)
@@ -348,23 +348,23 @@ func TestPyPIAdapter_PackageFilesJSONPEP691Shape(t *testing.T) {
 
 	adapter, db := setupPyPIAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name: "flask",
-		Type: model.PackageTypePyPI,
+		Format: model.PackageTypePyPI,
 	}
 	db.Create(pkg)
 
-	version := &model.PackageVersion{
+	version := &model.Component{
 		PackageID: pkg.ID,
 		Version:   "2.0.0",
 		Status:    model.StatusPublished,
 	}
 	db.Create(version)
 
-	file := &model.PackageFile{
-		VersionID: version.ID,
-		Filename:  "Flask-2.0.0-py3-none-any.whl",
-		FileType:  model.FileTypePrimary,
+	file := &model.Asset{
+		ComponentID: version.ID,
+		FileName:  "Flask-2.0.0-py3-none-any.whl",
+		Kind:  model.AssetKindPrimary,
 		SizeBytes: 1000,
 	}
 	db.Create(file)
@@ -419,14 +419,14 @@ func TestPyPIAdapter_DownloadPackage(t *testing.T) {
 func TestPyPIAdapter_JSONAPI(t *testing.T) {
 	adapter, db := setupPyPIAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name:        "jsonapi-test",
-		Type:        model.PackageTypePyPI,
+		Format: model.PackageTypePyPI,
 		Description: "JSON API test package",
 	}
 	db.Create(pkg)
 
-	version := &model.PackageVersion{
+	version := &model.Component{
 		PackageID: pkg.ID,
 		Version:   "1.0.0",
 		Status:    model.StatusPublished,

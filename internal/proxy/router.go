@@ -18,7 +18,6 @@ var ErrPackageNotFound = fmt.Errorf("package not found")
 type ProxyDownloader struct {
 	cache              *CacheService
 	client             *RemoteClient
-	adapters           map[string]types.Adapter
 	healthCheckSvc     *HealthCheckService
 	largeFileThreshold int64
 }
@@ -26,12 +25,10 @@ type ProxyDownloader struct {
 func NewProxyDownloader(
 	cache *CacheService,
 	client *RemoteClient,
-	adapters map[string]types.Adapter,
 ) *ProxyDownloader {
 	return &ProxyDownloader{
-		cache:    cache,
-		client:   client,
-		adapters: adapters,
+		cache:  cache,
+		client: client,
 	}
 }
 
@@ -41,13 +38,6 @@ func (r *ProxyDownloader) SetLargeFileThreshold(threshold int64) {
 
 func (r *ProxyDownloader) SetHealthCheckService(svc *HealthCheckService) {
 	r.healthCheckSvc = svc
-}
-
-func (r *ProxyDownloader) RegisterAdapter(pkgType string, adapter types.Adapter) {
-	if r.adapters == nil {
-		r.adapters = make(map[string]types.Adapter)
-	}
-	r.adapters[pkgType] = adapter
 }
 
 type RouteResult = types.RouteResult

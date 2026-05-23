@@ -9,7 +9,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// SearchRequest 包搜索请求参数
 type SearchRequest struct {
 	Query      string
 	Type       string
@@ -22,130 +21,131 @@ type SearchRequest struct {
 	PageSize   int
 }
 
-// SearchResult 包搜索结果
 type SearchResult struct {
-	List         []model.Package `json:"list"`
-	Total        int64           `json:"total"`
-	Page         int             `json:"page"`
-	PageSize     int             `json:"page_size"`
-	SearchTimeMs int64           `json:"search_time_ms"`
+	List         []model.ComponentCatalogEntry `json:"list"`
+	Total        int64                         `json:"total"`
+	Page         int                           `json:"page"`
+	PageSize     int                           `json:"page_size"`
+	SearchTimeMs int64                         `json:"search_time_ms"`
 }
 
-// PackageSearchService 包搜索服务
 type PackageSearchService struct {
 	db *gorm.DB
 }
 
-// NewPackageSearchService 创建包搜索服务实例
 func NewPackageSearchService(db *gorm.DB) *PackageSearchService {
 	return &PackageSearchService{db: db}
 }
 
-// Search 执行包搜索
 func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (*SearchResult, error) {
 	start := time.Now()
 
-	query := s.db.Model(&model.Package{})
+	subQuery := s.db.WithContext(ctx).Model(&model.Component{}).
+		Select(`MIN(id) as id, repository_id, format, namespace, name,
+			MAX(display_name) as display_name,
+			MAX(description) as description,
+			MAX(updated_at) as updated_at,
+			SUM(download_count) as download_count,
+			COUNT(*) as version_count`)
 
-	// 根据 scope 构建搜索条件
 	if req.Query != "" {
 		switch req.Scope {
-		case "name":
-			query = query.Where("name LIKE ?", "%"+req.Query+"%")
 		case "description":
-			query = query.Where("description LIKE ?", "%"+req.Query+"%")
+			subQuery = subQuery.Where("description LIKE ?", "%"+req.Query+"%")
 		case "all":
-			query = query.Where("name LIKE ? OR description LIKE ?",
-				"%"+req.Query+"%", "%"+req.Query+"%")
+			subQuery = subQuery.Where("name LIKE ? OR description LIKE ?", "%"+req.Query+"%", "%"+req.Query+"%")
 		default:
-			query = query.Where("name LIKE ?", "%"+req.Query+"%")
+			subQuery = subQuery.Where("name LIKE ?", "%"+req.Query+"%")
 		}
 	}
 
-	// 包类型过滤（兼容 maven2/raw 等历史类型值）
 	if req.Type != "" {
-		aliases := util.ExpandPackageTypeAliases(req.Type)
-		query = query.Where("type IN ?", aliases)
+		subQuery = subQuery.Where("format IN ?", util.ExpandPackageTypeAliases(req.Type))
 	}
-
-	// 按仓库名过滤
 	if req.Repository != "" {
-		query = query.Where("repository_id IN (?)",
-			s.db.Model(&model.Repository{}).
-				Select("id").
-				Where("name = ?", req.Repository))
+		subQuery = subQuery.Where("repository_id IN (?)",
+			s.db.Model(&model.Repository{}).Select("id").Where("name = ?", req.Repository))
 	}
-
-	// 包名精确匹配
 	if req.Name != "" {
-		query = query.Where("name = ?", req.Name)
+		subQuery = subQuery.Where("name = ?", req.Name)
 	}
-
-	// 版本号精确查询（通过子查询）
 	if req.Version != "" {
-		query = query.Where("id IN (?)",
-			s.db.Model(&model.PackageVersion{}).
-				Select("package_id").
-				Where("version = ?", req.Version))
+		subQuery = subQuery.Where("version = ?", req.Version)
 	}
 
-	// 排序
-	switch req.Sort {
-	case "downloads":
-		query = query.Order("download_count DESC")
-	case "name":
-		query = query.Order("name ASC")
-	case "updated_at":
-		query = query.Order("updated_at DESC")
-	default:
-		query = query.Order("download_count DESC")
-	}
+	subQuery = subQuery.Group("repository_id, format, namespace, name")
 
-	// 统计总数
 	var total int64
-	if err := query.Count(&total).Error; err != nil {
+	if err := s.db.Table("(?) as grouped", subQuery).Count(&total).Error; err != nil {
 		return nil, err
 	}
 
-	// 分页查询
-	var packages []model.Package
+	order := "download_count DESC"
+	switch req.Sort {
+	case "name":
+		order = "name ASC"
+	case "updated_at":
+		order = "updated_at DESC"
+	}
+
+	type row struct {
+		ID            uint
+		RepositoryID  uint
+		Format        model.PackageType
+		Namespace     string
+		Name          string
+		DisplayName   string
+		Description   string
+		UpdatedAt     time.Time
+		DownloadCount int64
+		VersionCount  int
+	}
+
+	var rows []row
 	offset := (req.Page - 1) * req.PageSize
-	if err := query.Offset(offset).Limit(req.PageSize).Find(&packages).Error; err != nil {
+	if err := s.db.Table("(?) as grouped", subQuery).
+		Order(order).Offset(offset).Limit(req.PageSize).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 
-	// 批量获取仓库名称，避免 N+1 问题
-	if len(packages) > 0 {
-		var repoIDs []uint
-		for i := range packages {
-			if packages[i].RepositoryID > 0 {
-				repoIDs = append(repoIDs, packages[i].RepositoryID)
-			}
+	list := make([]model.ComponentCatalogEntry, len(rows))
+	repoIDs := make([]uint, 0, len(rows))
+	for i, r := range rows {
+		list[i] = model.ComponentCatalogEntry{
+			ID:            r.ID,
+			RepositoryID:  r.RepositoryID,
+			Format:        r.Format,
+			Namespace:     r.Namespace,
+			Name:          r.Name,
+			DisplayName:   r.DisplayName,
+			Description:   r.Description,
+			DownloadCount: r.DownloadCount,
+			VersionCount:  r.VersionCount,
+			UpdatedAt:     r.UpdatedAt,
 		}
+		if r.RepositoryID > 0 {
+			repoIDs = append(repoIDs, r.RepositoryID)
+		}
+	}
 
-		if len(repoIDs) > 0 {
-			type RepoName struct {
-				ID   uint
-				Name string
-			}
-			var repoNames []RepoName
-			s.db.Model(&model.Repository{}).Select("id, name").Where("id IN ?", repoIDs).Find(&repoNames)
-
-			repoNameMap := make(map[uint]string)
-			for _, rn := range repoNames {
-				repoNameMap[rn.ID] = rn.Name
-			}
-
-			for i := range packages {
-				if packages[i].RepositoryID > 0 {
-					packages[i].RepositoryName = repoNameMap[packages[i].RepositoryID]
-				}
-			}
+	if len(repoIDs) > 0 {
+		type RepoName struct {
+			ID   uint
+			Name string
+		}
+		var names []RepoName
+		s.db.Model(&model.Repository{}).Select("id, name").Where("id IN ?", repoIDs).Find(&names)
+		m := make(map[uint]string, len(names))
+		for _, n := range names {
+			m[n.ID] = n.Name
+		}
+		for i := range list {
+			list[i].RepositoryName = m[list[i].RepositoryID]
 		}
 	}
 
 	return &SearchResult{
-		List:         packages,
+		List:         list,
 		Total:        total,
 		Page:         req.Page,
 		PageSize:     req.PageSize,

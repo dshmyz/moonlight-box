@@ -44,7 +44,7 @@ func (m *mockDownloadService) Download(ctx context.Context, downloadCtx *types.D
 		Content:  result.Content,
 		Size:     result.Size,
 		RepoID:   result.RepoID,
-		Filename: result.Name,
+		FileName: result.Name,
 		Name:     downloadCtx.Name,
 		Version:  downloadCtx.Version,
 	}, nil

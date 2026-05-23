@@ -32,7 +32,7 @@ var (
 	mavenTestDB      *gorm.DB
 	mavenAdapter     adapter.RepoAwareAdapter
 	mavenRepoSvc     *service.RepositoryService
-	mavenPkgRepo     *repository.PackageRepository
+	mavenPkgRepo     *repository.ComponentRepository
 	mavenStorageSvc  *service.StorageService
 	mavenRepoHandler *proxy.RepoHandler
 )
@@ -55,10 +55,10 @@ func setupMavenTestEnv() {
 		&model.UserRole{},
 		&model.Repository{},
 		&model.RepositoryGroup{},
-		&model.Package{},
-		&model.PackageVersion{},
-		&model.PackageFile{},
-		&model.PackageDependency{},
+		&model.Component{},
+		&model.Component{},
+		&model.Asset{},
+		&model.ComponentDependency{},
 		&model.AuditLog{},
 		&model.BlockRule{},
 		&model.ScanResult{},
@@ -71,7 +71,7 @@ func setupMavenTestEnv() {
 	mavenStorageSvc, _ = service.NewStorageService(storageBackendRepo, "", 0)
 	mavenStorageSvc.SetDefaultBackendForTest(localStorage)
 
-	mavenPkgRepo = repository.NewPackageRepository(mavenTestDB)
+	mavenPkgRepo = repository.NewComponentRepository(mavenTestDB)
 	repoRepo := repository.NewRepositoryRepository(mavenTestDB)
 	groupRepo := repository.NewGroupRepository(mavenTestDB)
 
@@ -264,17 +264,17 @@ func TestE2E_Maven_DownloadArtifact(t *testing.T) {
 	setupMavenTestEnv()
 	defer teardownMavenTestEnv()
 
-	mavenPkgRepo.StorePackageFile(context.Background(), &model.Package{
+	mavenPkgRepo.StoreComponentAsset(context.Background(), &model.Component{
 		Name:        "com.test:download-lib",
-		Type:        model.PackageTypeMaven,
+		Format: model.PackageTypeMaven,
 		Description: "Download test library",
-	}, &model.PackageVersion{
+	}, &model.Component{
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    "download-lib-1.0.0.jar",
-		FileType:    model.FileTypePrimary,
-		StoragePath: "com/test/download-lib/1.0.0/download-lib-1.0.0.jar",
+	}, &model.Asset{
+		FileName:    "download-lib-1.0.0.jar",
+		Kind:    model.AssetKindPrimary,
+		Path: "com/test/download-lib/1.0.0/download-lib-1.0.0.jar",
 		SizeBytes:   1000,
 	})
 	_, _ = mavenStorageSvc.StorePackageWithBackend(
@@ -328,17 +328,17 @@ func TestE2E_Maven_ChecksumFiles(t *testing.T) {
 		0,
 	)
 
-	mavenPkgRepo.StorePackageFile(context.Background(), &model.Package{
+	mavenPkgRepo.StoreComponentAsset(context.Background(), &model.Component{
 		Name:        "com.test:checksum-lib",
-		Type:        model.PackageTypeMaven,
+		Format: model.PackageTypeMaven,
 		Description: "Checksum test library",
-	}, &model.PackageVersion{
+	}, &model.Component{
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    "checksum-lib-1.0.0.jar",
-		FileType:    model.FileTypePrimary,
-		StoragePath: "com/test/checksum-lib/1.0.0/checksum-lib-1.0.0.jar",
+	}, &model.Asset{
+		FileName:    "checksum-lib-1.0.0.jar",
+		Kind:    model.AssetKindPrimary,
+		Path: "com/test/checksum-lib/1.0.0/checksum-lib-1.0.0.jar",
 		SizeBytes:   int64(len(jarContent)),
 	})
 
@@ -361,17 +361,18 @@ func TestE2E_Maven_DeleteArtifact(t *testing.T) {
 	setupMavenTestEnv()
 	defer teardownMavenTestEnv()
 
-	mavenPkgRepo.StorePackageFile(context.Background(), &model.Package{
-		Name:        "com.test:deletable-lib",
-		Type:        model.PackageTypeMaven,
-		Description: "Deletable test library",
-	}, &model.PackageVersion{
+	mavenPkgRepo.StoreComponentAsset(context.Background(), &model.Component{
+		Name:         "com.test:deletable-lib",
+		Format: model.PackageTypeMaven,
+		Description:  "Deletable test library",
+		RepositoryID: 1,
+	}, &model.Component{
 		Version:     "1.0.0",
 		Status:      model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    "deletable-lib-1.0.0.jar",
-		FileType:    model.FileTypePrimary,
-		StoragePath: "com/test/deletable-lib/1.0.0/deletable-lib-1.0.0.jar",
+	}, &model.Asset{
+		FileName:    "deletable-lib-1.0.0.jar",
+		Kind:    model.AssetKindPrimary,
+		Path: "com/test/deletable-lib/1.0.0/deletable-lib-1.0.0.jar",
 		SizeBytes:   1000,
 	})
 	_, _ = mavenStorageSvc.StorePackageWithBackend(

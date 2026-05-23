@@ -78,48 +78,34 @@ func (t *PackageInfoTool) Execute(ctx context.Context, params map[string]interfa
 		return "", fmt.Errorf("数据库连接未配置")
 	}
 
-	// 查询包信息
-	var pkg model.Package
-	query := db.Model(&model.Package{}).Where("name = ?", packageName)
+	var versions []model.Component
+	versionQuery := db.Model(&model.Component{}).Where("name = ?", packageName)
 	if packageType != "" {
-		query = query.Where("type = ?", packageType)
+		versionQuery = versionQuery.Where("format = ?", packageType)
 	}
-
-	if err := query.First(&pkg).Error; err != nil {
-		return "", fmt.Errorf("未找到包: %s", packageName)
-	}
-
-	// 查询版本信息
-	var versions []model.PackageVersion
-	versionQuery := db.Where("package_id = ?", pkg.ID)
 	if version != "" {
 		versionQuery = versionQuery.Where("version = ?", version)
 	}
-
 	if includeDeps {
 		versionQuery = versionQuery.Preload("Dependencies")
 	}
-
 	if err := versionQuery.Order("published_at DESC").Find(&versions).Error; err != nil {
-		return "", fmt.Errorf("查询版本信息失败: %v", err)
+		return "", fmt.Errorf("查询组件信息失败: %v", err)
+	}
+	if len(versions) == 0 {
+		return "", fmt.Errorf("未找到包: %s", packageName)
 	}
 
-	// 格式化输出
+	pkg := versions[0]
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📦 **%s** (%s)\n\n", pkg.Name, pkg.Type))
+	sb.WriteString(fmt.Sprintf("📦 **%s** (%s)\n\n", pkg.Name, pkg.Format))
 
 	if pkg.DisplayName != "" {
 		sb.WriteString(fmt.Sprintf("📝 显示名称: %s\n", pkg.DisplayName))
 	}
-
 	if pkg.Description != "" {
 		sb.WriteString(fmt.Sprintf("📄 描述: %s\n", pkg.Description))
 	}
-
-	if pkg.Homepage != "" {
-		sb.WriteString(fmt.Sprintf("🏠 主页: %s\n", pkg.Homepage))
-	}
-
 	if pkg.License != "" {
 		sb.WriteString(fmt.Sprintf("⚖️  许可证: %s\n", pkg.License))
 	}
@@ -167,13 +153,13 @@ func (t *PackageInfoTool) Execute(ctx context.Context, params map[string]interfa
 	// 显示README（如果需要）
 	if includeReadme {
 		// 查找README文件
-		var readmeFile model.PackageFile
+		var readmeFile model.Asset
 		for _, v := range versions {
-			if err := db.Where("version_id = ? AND (filename LIKE ? OR filename LIKE ?)",
+			if err := db.Where("component_id = ? AND (filename LIKE ? OR filename LIKE ?)",
 				v.ID, "%README%", "%readme%").
 				First(&readmeFile).Error; err == nil {
 				sb.WriteString("📖 README:\n")
-				sb.WriteString("   (文件路径: " + readmeFile.StoragePath + ")\n")
+				sb.WriteString("   (文件路径: " + readmeFile.Path + ")\n")
 				// 注意: 实际读取README内容需要文件系统访问
 				sb.WriteString("   请使用文件读取工具查看完整内容\n\n")
 				break
@@ -183,7 +169,7 @@ func (t *PackageInfoTool) Execute(ctx context.Context, params map[string]interfa
 
 	// 显示安全信息
 	var scanResult model.ScanResult
-	if err := db.Where("version_id = ?", versions[0].ID).
+	if err := db.Where("component_id = ?", versions[0].ID).
 		Preload("Vulnerabilities").
 		First(&scanResult).Error; err == nil {
 		sb.WriteString("🔒 安全状态:\n")

@@ -2,31 +2,29 @@ package main
 
 import (
 	"compress/gzip"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/adapter"
 	"github.com/moonlight-box/registry/internal/config"
 	"github.com/moonlight-box/registry/internal/handler"
 	"github.com/moonlight-box/registry/internal/middleware"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/service"
-	"github.com/moonlight-box/registry/internal/types"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type RouterContext struct {
-	Config       *config.Config
-	AuthSvc      *service.AuthService
-	AuditSvc     *service.AuditService
-	PermCache    *service.PermissionCacheService
-	BlockRule    *service.BlockRuleService
-	RepoSvc      *service.RepositoryService
-	RepoCache    *proxy.RepositoryCache
-	RepoResolver *proxy.RepoHandler
-	WebhookSvc   *service.WebhookService
-	UploadSvc    *service.UploadService
-
-	Handlers struct {
+	Config           *config.Config
+	AuthSvc          *service.AuthService
+	AuditSvc         *service.AuditService
+	PermCache        *service.PermissionCacheService
+	BlockRule        *service.BlockRuleService
+	RepoSvc          *service.RepositoryService
+	RepoCache        *proxy.RepositoryCache
+	RepoResolver     *proxy.RepoHandler
+	WebhookSvc       *service.WebhookService
+	RepositoryRouter http.Handler
+	Handlers         struct {
 		Auth             *handler.AuthHandler
 		Repo             *handler.RepositoryHandler
 		PublicRepo       *handler.PublicRepoHandler
@@ -40,7 +38,6 @@ type RouterContext struct {
 		AuditLog         *handler.AuditLogHandler
 		User             *handler.UserHandler
 		Role             *handler.RoleHandler
-		PackageVersion   *handler.PackageVersionHandler
 		Backup           *handler.BackupHandler
 		BackupConfig     *handler.BackupConfigHandler
 		Webhook          *handler.WebhookHandler
@@ -53,8 +50,6 @@ type RouterContext struct {
 		HealthCheck      *handler.HealthCheckHandler
 		VulnRule         *handler.VulnRuleHandler
 	}
-
-	Adapters []types.Adapter
 }
 
 func NewRouterContext(
@@ -65,21 +60,13 @@ func NewRouterContext(
 	blockRule *service.BlockRuleService,
 	repoSvc *service.RepositoryService,
 	repoResolver *proxy.RepoHandler,
-	adapters []types.Adapter,
+	repositoryRouter http.Handler,
 	webhookSvc *service.WebhookService,
-	uploadSvc *service.UploadService,
 ) *RouterContext {
 	ctx := &RouterContext{
-		Config:       cfg,
-		AuthSvc:      authSvc,
-		AuditSvc:     auditSvc,
-		PermCache:    permCache,
-		BlockRule:    blockRule,
-		RepoSvc:      repoSvc,
-		RepoResolver: repoResolver,
-		Adapters:     adapters,
-		WebhookSvc:   webhookSvc,
-		UploadSvc:    uploadSvc,
+		Config: cfg, AuthSvc: authSvc, AuditSvc: auditSvc, PermCache: permCache,
+		BlockRule: blockRule, RepoSvc: repoSvc, RepoResolver: repoResolver,
+		RepositoryRouter: repositoryRouter, WebhookSvc: webhookSvc,
 	}
 
 	ctx.Handlers.Auth = handler.NewAuthHandler(authSvc, auditSvc)
@@ -130,13 +117,12 @@ func (ctx *RouterContext) setupAPIRoutes(r *gin.Engine) {
 		ctx.setupProtectedRoutes(api)
 	}
 
-	ctx.setupRepoRoutes(r, ctx.RepoCache, ctx.UploadSvc)
+	ctx.setupRepoRoutes(r, ctx.RepoCache)
 	setupFrontendRouter(r, ctx.Config.Server.StaticDir)
 }
 
 func (ctx *RouterContext) setupPackagePublicRoutes(api *gin.RouterGroup) {
 	api.GET("/packages/search", ctx.Handlers.Search.Search)
-	api.GET("/packages/:type/versions", ctx.Handlers.PackageVersion.ListVersions)
 	api.GET("/public/repo/:name", ctx.Handlers.PublicRepo.GetRepoConfig)
 	api.GET("/public/repositories", ctx.Handlers.PublicRepo.List)
 }
@@ -373,12 +359,6 @@ func (ctx *RouterContext) setupAuditRoutes(protected *gin.RouterGroup) {
 		proxyDownloads.GET("/logs", ctx.Handlers.ProxyDownloadLog.List)
 		proxyDownloads.GET("/stats", ctx.Handlers.ProxyDownloadLog.GetStats)
 	}
-
-	protected.POST("/packages/versions/:id/deprecate", ctx.requirePermission("npm", "write"), ctx.Handlers.PackageVersion.DeprecateVersion)
-	protected.POST("/packages/versions/:id/restore", ctx.requirePermission("npm", "write"), ctx.Handlers.PackageVersion.RestoreVersion)
-	protected.POST("/packages/versions/:id/yank", ctx.requirePermission("npm", "write"), ctx.Handlers.PackageVersion.YankVersion)
-	protected.DELETE("/packages/versions/:id", ctx.requirePermission("npm", "delete"), ctx.Handlers.PackageVersion.DeleteVersion)
-	protected.DELETE("/packages/:id", ctx.requirePermission("package", "delete"), ctx.Handlers.PackageVersion.DeletePackage)
 }
 
 func (ctx *RouterContext) setupBackupRoutes(protected *gin.RouterGroup) {
@@ -486,73 +466,36 @@ func (ctx *RouterContext) setupHealthRoutes(protected *gin.RouterGroup) {
 	}
 }
 
-func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.RepositoryCache, uploadSvc *service.UploadService) {
-	repoRouter := handler.NewRepoRouter(ctx.RepoSvc)
-	repoRouter.SetRepoCache(repoCache)
-	repoRouter.SetResolver(ctx.RepoResolver)
-	repoRouter.SetWebhookService(ctx.WebhookSvc)
-	repoRouter.SetPermCache(ctx.PermCache)
-	repoRouter.SetBlockService(ctx.BlockRule)
-	repoRouter.SetUploadService(uploadSvc)
-	repoRouter.SetAuditService(ctx.AuditSvc)
-	for _, adap := range ctx.Adapters {
-		if repoAware, ok := adap.(adapter.RepoAwareAdapter); ok {
-			ctx.RepoResolver.RegisterAdapter(string(adap.Type()), repoAware)
-		}
-	}
-
+func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.RepositoryCache) {
 	authMw := middleware.Auth(ctx.AuthSvc)
 	permMw := ctx.requirePermission
 
+	// 使用新架构 RepositoryRouter
+	repoHandler := gin.WrapH(ctx.RepositoryRouter)
+
+	// Nexus 兼容路由: /repository/:repoName/*path
 	repoGroup := r.Group("/repository/:repoName")
 	{
-		repoGroup.GET("/*path", repoRouter.HandleRequest)
-
-		publishGroup := repoGroup.Group("")
-		publishGroup.Use(authMw)
-		{
-			publishGroup.PUT("/*path", repoRouter.HandlePublish)
-		}
-
-		deleteGroup := repoGroup.Group("")
-		deleteGroup.Use(authMw, permMw("package", "delete"))
-		{
-			deleteGroup.DELETE("/*path", repoRouter.HandleDelete)
-		}
+		repoGroup.GET("/*path", repoHandler)
+		repoGroup.PUT("/*path", authMw, repoHandler)
+		repoGroup.POST("/*path", authMw, repoHandler)
+		repoGroup.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
 	}
 
-	nexus2RepoGroup := r.Group("/content/repositories/:repoName")
+	// Nexus 2 兼容: /content/repositories/:repoName/*path
+	nexus2Group := r.Group("/content/repositories/:repoName")
 	{
-		nexus2RepoGroup.GET("/*path", repoRouter.HandleRequest)
-
-		nexus2Publish := nexus2RepoGroup.Group("")
-		nexus2Publish.Use(authMw)
-		{
-			nexus2Publish.PUT("/*path", repoRouter.HandlePublish)
-		}
-
-		nexus2Delete := nexus2RepoGroup.Group("")
-		nexus2Delete.Use(authMw, permMw("package", "delete"))
-		{
-			nexus2Delete.DELETE("/*path", repoRouter.HandleDelete)
-		}
+		nexus2Group.GET("/*path", repoHandler)
+		nexus2Group.PUT("/*path", authMw, repoHandler)
+		nexus2Group.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
 	}
 
-	nexus2GroupGroup := r.Group("/content/groups/:repoName")
+	// 组合仓库: /content/groups/:groupName/*path
+	groupGroup := r.Group("/content/groups/:groupName")
 	{
-		nexus2GroupGroup.GET("/*path", repoRouter.HandleRequest)
-
-		nexus2GroupPublish := nexus2GroupGroup.Group("")
-		nexus2GroupPublish.Use(authMw)
-		{
-			nexus2GroupPublish.PUT("/*path", repoRouter.HandlePublish)
-		}
-
-		nexus2GroupDelete := nexus2GroupGroup.Group("")
-		nexus2GroupDelete.Use(authMw, permMw("package", "delete"))
-		{
-			nexus2GroupDelete.DELETE("/*path", repoRouter.HandleDelete)
-		}
+		groupGroup.GET("/*path", repoHandler)
+		groupGroup.PUT("/*path", authMw, repoHandler)
+		groupGroup.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
 	}
 }
 

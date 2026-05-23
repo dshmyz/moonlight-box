@@ -32,7 +32,7 @@ var (
 	yumTestDB     *gorm.DB
 	yumAdapter    adapter.RepoAwareAdapter
 	yumRepoSvc    *service.RepositoryService
-	yumPkgRepo    *repository.PackageRepository
+	yumPkgRepo    *repository.ComponentRepository
 	yumStorageSvc *service.StorageService
 	yumRepoHandler *proxy.RepoHandler
 )
@@ -55,10 +55,10 @@ func setupYumTestEnv() {
 		&model.UserRole{},
 		&model.Repository{},
 		&model.RepositoryGroup{},
-		&model.Package{},
-		&model.PackageVersion{},
-		&model.PackageFile{},
-		&model.PackageDependency{},
+		&model.Component{},
+		&model.Component{},
+		&model.Asset{},
+		&model.ComponentDependency{},
 		&model.AuditLog{},
 		&model.BlockRule{},
 		&model.ScanResult{},
@@ -71,7 +71,7 @@ func setupYumTestEnv() {
 	yumStorageSvc, _ = service.NewStorageService(storageBackendRepo, "", 0)
 	yumStorageSvc.SetDefaultBackendForTest(localStorage)
 
-	yumPkgRepo = repository.NewPackageRepository(yumTestDB)
+	yumPkgRepo = repository.NewComponentRepository(yumTestDB)
 	repoRepo := repository.NewRepositoryRepository(yumTestDB)
 	groupRepo := repository.NewGroupRepository(yumTestDB)
 
@@ -175,16 +175,16 @@ func TestE2E_Yum_DownloadRPM(t *testing.T) {
 	setupYumTestEnv()
 	defer teardownYumTestEnv()
 
-	yumPkgRepo.StorePackageFile(context.Background(), &model.Package{
+	yumPkgRepo.StoreComponentAsset(context.Background(), &model.Component{
 		Name:        "nginx",
-		Type:        model.PackageTypeYum,
+		Format: model.PackageTypeYum,
 		Description: "Nginx web server",
-	}, &model.PackageVersion{
+	}, &model.Component{
 		Version:     "1.20.1",
 		Status:      model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    "nginx-1.20.1-1.el9.x86_64.rpm",
-		FileType:    model.FileTypePrimary,
+	}, &model.Asset{
+		FileName:    "nginx-1.20.1-1.el9.x86_64.rpm",
+		Kind:    model.AssetKindPrimary,
 		SizeBytes:   1000,
 	})
 	_, _ = yumStorageSvc.StorePackageWithBackend(

@@ -20,7 +20,7 @@ import (
 type MigrationWorkerV2 struct {
 	service     *MigrationService
 	storageSvc  *service.StorageService
-	pkgRepo     *repository.PackageRepository
+	compRepo     *repository.ComponentRepository
 	repoRepo    *repository.RepositoryRepository
 	itemRepo    *repository.MigrationItemRepository
 	concurrency int
@@ -37,7 +37,7 @@ type migrationTarget struct {
 func NewMigrationWorkerV2(
 	migrationSvc *MigrationService,
 	storageSvc *service.StorageService,
-	pkgRepo *repository.PackageRepository,
+	compRepo *repository.ComponentRepository,
 	repoRepo *repository.RepositoryRepository,
 	itemRepo *repository.MigrationItemRepository,
 	concurrency int,
@@ -47,7 +47,7 @@ func NewMigrationWorkerV2(
 	return &MigrationWorkerV2{
 		service:     migrationSvc,
 		storageSvc:  storageSvc,
-		pkgRepo:     pkgRepo,
+		compRepo:     compRepo,
 		repoRepo:    repoRepo,
 		itemRepo:    itemRepo,
 		concurrency: concurrency,
@@ -662,23 +662,19 @@ func (w *MigrationWorkerV2) storeMavenAsset(taskID uint, comp NexusComponent, as
 		"filename":   filepath.Base(asset.Path),
 	}
 
-	repoType := model.RepoTypeLocal
 
-	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
+	_, _, err = w.compRepo.StoreComponentAsset(context.Background(), &model.Component{
 		Name:           comp.Group + ":" + comp.Name,
-		Type:           model.PackageTypeMaven,
+		Format:         model.PackageTypeMaven,
 		RepositoryID:   target.repoID,
-		RepositoryType: repoType,
 		Description:    comp.Name,
-	}, &model.PackageVersion{
-		Version:  comp.Version,
-		Status:   model.StatusPublished,
-		Metadata: marshalMetadata(metadata),
-	}, &model.PackageFile{
-		Filename:    filepath.Base(asset.Path),
-		FileType:    model.FileTypePrimary,
-		StoragePath: storageKey,
-		SizeBytes:   size,
+		Version:        comp.Version,
+		Status:         model.StatusPublished,
+		Metadata:       marshalMetadata(metadata),
+	}, &model.Asset{
+		FileName:    filepath.Base(asset.Path),
+		Kind:        model.AssetKindPrimary,
+		Path:        storageKey,
 	})
 
 	return err
@@ -700,22 +696,18 @@ func (w *MigrationWorkerV2) storeNpmAsset(taskID uint, comp NexusComponent, _ Ne
 		return err
 	}
 
-	repoType := model.RepoTypeLocal
 
-	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
+	_, _, err = w.compRepo.StoreComponentAsset(context.Background(), &model.Component{
 		Name:           name,
-		Type:           model.PackageTypeNPM,
+		Format:         model.PackageTypeNPM,
 		RepositoryID:   target.repoID,
-		RepositoryType: repoType,
 		Description:    name,
-	}, &model.PackageVersion{
-		Version: version,
-		Status:  model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    "package.tgz",
-		FileType:    model.FileTypePrimary,
-		StoragePath: storageKey,
-		SizeBytes:   size,
+		Version:        version,
+		Status:         model.StatusPublished,
+	}, &model.Asset{
+		FileName:    "package.tgz",
+		Kind:        model.AssetKindPrimary,
+		Path:        storageKey,
 	})
 
 	return err
@@ -737,22 +729,18 @@ func (w *MigrationWorkerV2) storePypiAsset(taskID uint, comp NexusComponent, ass
 		return err
 	}
 
-	repoType := model.RepoTypeLocal
 
-	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
-		Name:           name,
-		Type:           model.PackageTypePyPI,
+	_, _, err = w.compRepo.StoreComponentAsset(context.Background(), &model.Component{Name:           name,
+		Format: model.PackageTypePyPI,
 		RepositoryID:   target.repoID,
-		RepositoryType: repoType,
 		Description:    name,
-	}, &model.PackageVersion{
 		Version: version,
 		Status:  model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    filepath.Base(asset.Path),
-		FileType:    model.FileTypePrimary,
-		StoragePath: storageKey,
-		SizeBytes:   size,
+	}, &model.Asset{
+		FileName:    filepath.Base(asset.Path),
+		Kind:    model.AssetKindPrimary,
+		Path: storageKey,
+	
 	})
 
 	return err
@@ -774,22 +762,18 @@ func (w *MigrationWorkerV2) storeGoAsset(taskID uint, comp NexusComponent, asset
 		return err
 	}
 
-	repoType := model.RepoTypeLocal
 
-	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
-		Name:           name,
-		Type:           model.PackageTypeGo,
+	_, _, err = w.compRepo.StoreComponentAsset(context.Background(), &model.Component{Name:           name,
+		Format: model.PackageTypeGo,
 		RepositoryID:   target.repoID,
-		RepositoryType: repoType,
 		Description:    name,
-	}, &model.PackageVersion{
 		Version: version,
 		Status:  model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    filepath.Base(asset.Path),
-		FileType:    model.FileTypePrimary,
-		StoragePath: storageKey,
-		SizeBytes:   size,
+	}, &model.Asset{
+		FileName:    filepath.Base(asset.Path),
+		Kind:    model.AssetKindPrimary,
+		Path: storageKey,
+	
 	})
 
 	return err
@@ -807,22 +791,18 @@ func (w *MigrationWorkerV2) storeGenericAsset(taskID uint, comp NexusComponent, 
 		return err
 	}
 
-	repoType := model.RepoTypeLocal
 
-	_, _, _, err = w.pkgRepo.StorePackageFile(context.Background(), &model.Package{
-		Name:           path,
-		Type:           model.PackageTypeGeneric,
+	_, _, err = w.compRepo.StoreComponentAsset(context.Background(), &model.Component{Name:           path,
+		Format: model.PackageTypeGeneric,
 		RepositoryID:   target.repoID,
-		RepositoryType: repoType,
 		Description:    path,
-	}, &model.PackageVersion{
 		Version: "1.0.0",
 		Status:  model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    filepath.Base(path),
-		FileType:    model.FileTypePrimary,
-		StoragePath: storageKey,
-		SizeBytes:   size,
+	}, &model.Asset{
+		FileName:    filepath.Base(path),
+		Kind:    model.AssetKindPrimary,
+		Path: storageKey,
+	
 	})
 
 	return err

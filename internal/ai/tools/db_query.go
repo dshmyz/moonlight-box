@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/moonlight-box/registry/internal/model"
-	"gorm.io/gorm"
 )
 
 // DBQueryTool 数据库查询工具
@@ -102,14 +101,14 @@ func (t *DBQueryTool) Execute(ctx context.Context, params map[string]interface{}
 func (t *DBQueryTool) queryPackageStats(packageName, packageType string, limit int) (string, error) {
 	db := t.Context().DB
 
-	var packages []model.Package
-	query := db.Model(&model.Package{}).Preload("Versions")
+	var packages []model.Component
+	query := db.Model(&model.Component{})
 
 	if packageName != "" {
 		query = query.Where("name LIKE ?", "%"+packageName+"%")
 	}
 	if packageType != "" {
-		query = query.Where("type = ?", packageType)
+		query = query.Where("format = ?", packageType)
 	}
 
 	if err := query.Limit(limit).Find(&packages).Error; err != nil {
@@ -123,11 +122,10 @@ func (t *DBQueryTool) queryPackageStats(packageName, packageType string, limit i
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📦 找到 %d 个包:\n\n", len(packages)))
 	for i, pkg := range packages {
-		sb.WriteString(fmt.Sprintf("%d. **%s** (%s)\n", i+1, pkg.Name, pkg.Type))
+		sb.WriteString(fmt.Sprintf("%d. **%s** (%s@%s)\n", i+1, pkg.Name, pkg.Format, pkg.Version))
 		sb.WriteString(fmt.Sprintf("   - 显示名称: %s\n", pkg.DisplayName))
 		sb.WriteString(fmt.Sprintf("   - 描述: %s\n", pkg.Description))
 		sb.WriteString(fmt.Sprintf("   - 下载次数: %d\n", pkg.DownloadCount))
-		sb.WriteString(fmt.Sprintf("   - 版本数: %d\n", len(pkg.Versions)))
 		if pkg.License != "" {
 			sb.WriteString(fmt.Sprintf("   - 许可证: %s\n", pkg.License))
 		}
@@ -144,7 +142,7 @@ func (t *DBQueryTool) queryDownloadStats(timeRange string, limit int) (string, e
 	// 注意: 当前数据模型不支持按时间过滤下载统计
 	// 这里显示的是总下载量，时间范围仅用于显示
 
-	var packages []model.Package
+	var packages []model.Component
 	if err := db.Where("download_count > 0").
 		Order("download_count DESC").
 		Limit(limit).
@@ -164,7 +162,7 @@ func (t *DBQueryTool) queryDownloadStats(timeRange string, limit int) (string, e
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📊 下载统计 (最近 %s):\n\n", timeRangeDisplay))
 	for i, pkg := range packages {
-		sb.WriteString(fmt.Sprintf("%d. **%s** (%s)\n", i+1, pkg.Name, pkg.Type))
+		sb.WriteString(fmt.Sprintf("%d. **%s** (%s@%s)\n", i+1, pkg.Name, pkg.Format, pkg.Version))
 		sb.WriteString(fmt.Sprintf("   - 总下载次数: %d\n", pkg.DownloadCount))
 		sb.WriteString("\n")
 	}
@@ -182,9 +180,8 @@ func (t *DBQueryTool) querySecuritySummary(packageName, packageType string, limi
 		Where("scan_status = ?", model.ScanStatusCompleted)
 
 	if packageName != "" {
-		query = query.Joins("JOIN package_versions ON package_versions.id = scan_results.version_id").
-			Joins("JOIN packages ON packages.id = package_versions.package_id").
-			Where("packages.name LIKE ?", "%"+packageName+"%")
+		query = query.Joins("JOIN components ON components.id = scan_results.component_id").
+			Where("components.name LIKE ?", "%"+packageName+"%")
 	}
 
 	if err := query.Order("scanned_at DESC").Limit(limit).Find(&results).Error; err != nil {
@@ -209,7 +206,7 @@ func (t *DBQueryTool) querySecuritySummary(packageName, packageType string, limi
 		totalMedium += result.MediumCount
 		totalLow += result.LowCount
 
-		sb.WriteString(fmt.Sprintf("📦 版本ID %d:\n", result.VersionID))
+		sb.WriteString(fmt.Sprintf("📦 组件ID %d:\n", result.ComponentID))
 		sb.WriteString(fmt.Sprintf("   - 扫描时间: %s\n", result.ScannedAt.Format("2006-01-02 15:04:05")))
 		sb.WriteString(fmt.Sprintf("   - 总漏洞数: %d\n", result.TotalVulnerabilities))
 		sb.WriteString(fmt.Sprintf("   - 严重: %d, 高危: %d, 中危: %d, 低危: %d\n",
@@ -241,14 +238,13 @@ func (t *DBQueryTool) queryRepositoryStats(limit int) (string, error) {
 	}
 
 	// 统计总数
-	db.Model(&model.Package{}).Count(&stats.TotalPackages)
-	db.Model(&model.PackageVersion{}).Count(&stats.TotalVersions)
-	db.Model(&model.Package{}).Select("SUM(download_count)").Scan(&stats.TotalDownloads)
+	db.Model(&model.Component{}).Distinct("repository_id, format, namespace, name").Count(&stats.TotalPackages)
+	db.Model(&model.Component{}).Count(&stats.TotalVersions)
+	db.Model(&model.Component{}).Select("COALESCE(SUM(download_count),0)").Scan(&stats.TotalDownloads)
 
-	// 按类型统计
-	db.Model(&model.Package{}).
-		Select("type, count(*) as count").
-		Group("type").
+	db.Model(&model.Component{}).
+		Select("format as type, count(*) as count").
+		Group("format").
 		Find(&stats.PackagesByType)
 
 	var sb strings.Builder
@@ -269,11 +265,8 @@ func (t *DBQueryTool) queryRepositoryStats(limit int) (string, error) {
 func (t *DBQueryTool) queryRecentPackages(limit int) (string, error) {
 	db := t.Context().DB
 
-	var packages []model.Package
+	var packages []model.Component
 	if err := db.Order("created_at DESC").
-		Preload("Versions", func(db *gorm.DB) *gorm.DB {
-			return db.Order("published_at DESC").Limit(1)
-		}).
 		Limit(limit).
 		Find(&packages).Error; err != nil {
 		return "", fmt.Errorf("查询最近的包失败: %v", err)
@@ -286,11 +279,9 @@ func (t *DBQueryTool) queryRecentPackages(limit int) (string, error) {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📦 最近添加的 %d 个包:\n\n", len(packages)))
 	for i, pkg := range packages {
-		sb.WriteString(fmt.Sprintf("%d. **%s** (%s)\n", i+1, pkg.Name, pkg.Type))
+		sb.WriteString(fmt.Sprintf("%d. **%s** (%s@%s)\n", i+1, pkg.Name, pkg.Format, pkg.Version))
 		sb.WriteString(fmt.Sprintf("   - 创建时间: %s\n", pkg.CreatedAt.Format("2006-01-02 15:04:05")))
-		if len(pkg.Versions) > 0 {
-			sb.WriteString(fmt.Sprintf("   - 最新版本: %s\n", pkg.Versions[0].Version))
-		}
+		sb.WriteString(fmt.Sprintf("   - 版本: %s\n", pkg.Version))
 		sb.WriteString(fmt.Sprintf("   - 描述: %s\n\n", pkg.Description))
 	}
 

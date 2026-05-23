@@ -26,16 +26,16 @@ func setupYumAdapter(t *testing.T) (*YumAdapter, *gorm.DB) {
 	}
 
 	db.AutoMigrate(
-		&model.Package{},
-		&model.PackageVersion{},
-		&model.PackageFile{},
-		&model.PackageDependency{},
+		&model.Component{},
+		&model.Component{},
+		&model.Asset{},
+		&model.ComponentDependency{},
 		&model.Repository{},
 		&model.StorageBackend{},
 	)
 
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
-	pkgRepo := repository.NewPackageRepository(db)
+	compRepo := repository.NewComponentRepository(db)
 	repoRepo := repository.NewRepositoryRepository(db)
 
 	storageSvc, err := service.NewStorageService(storageBackendRepo, "", 0)
@@ -60,9 +60,9 @@ func setupYumAdapter(t *testing.T) (*YumAdapter, *gorm.DB) {
 
 	storageSvc.RefreshBackends()
 
-	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
+	compCache := cache.NewComponentCache(compRepo, 5*time.Minute)
 
-	adapter := NewYumAdapter(repoRepo, storageSvc, pkgCache)
+	adapter := NewYumAdapter(repoRepo, storageSvc, compCache)
 	return adapter, db
 }
 
@@ -120,7 +120,7 @@ func TestYumAdapter_ParsePath(t *testing.T) {
 //
 // 	req := &UploadRequest{
 // 		Package:  bytes.NewReader(rpmContent),
-// 		Filename: "nginx-1.20.1-1.el9.x86_64.rpm",
+// 		FileName: "nginx-1.20.1-1.el9.x86_64.rpm",
 // 		Size:     int64(len(rpmContent)),
 // 		Metadata: map[string]interface{}{
 // 			"name":     "nginx-1.20.1-1.el9.x86_64.rpm",
@@ -144,14 +144,14 @@ func TestYumAdapter_ParsePath(t *testing.T) {
 func TestYumAdapter_GetMetadata(t *testing.T) {
 	adapter, db := setupYumAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name:        "nginx",
-		Type:        model.PackageTypeYum,
+		Format: model.PackageTypeYum,
 		Description: "Nginx web server",
 	}
 	db.Create(pkg)
 
-	version := &model.PackageVersion{
+	version := &model.Component{
 		PackageID: pkg.ID,
 		Version:   "1.20.1",
 		Status:    model.StatusPublished,
@@ -177,14 +177,14 @@ func TestYumAdapter_GetMetadata_NotFound(t *testing.T) {
 func TestYumAdapter_ListVersions(t *testing.T) {
 	adapter, db := setupYumAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name:        "httpd",
-		Type:        model.PackageTypeYum,
+		Format: model.PackageTypeYum,
 		Description: "Apache HTTP Server",
 	}
 	db.Create(pkg)
 
-	versions := []model.PackageVersion{
+	versions := []model.Component{
 		{PackageID: pkg.ID, Version: "2.4.51", Status: model.StatusPublished},
 		{PackageID: pkg.ID, Version: "2.4.52", Status: model.StatusPublished},
 		{PackageID: pkg.ID, Version: "2.4.53", Status: model.StatusPublished},
@@ -204,14 +204,14 @@ func TestYumAdapter_ListVersions(t *testing.T) {
 func TestYumAdapter_Delete(t *testing.T) {
 	adapter, db := setupYumAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name:        "deletable-pkg",
-		Type:        model.PackageTypeYum,
+		Format: model.PackageTypeYum,
 		Description: "Deletable package",
 	}
 	db.Create(pkg)
 
-	version := &model.PackageVersion{
+	version := &model.Component{
 		PackageID: pkg.ID,
 		Version:   "1.0.0",
 		Status:    model.StatusPublished,
@@ -228,7 +228,7 @@ func TestYumAdapter_Delete(t *testing.T) {
 	assert.Nil(t, err)
 
 	var count int64
-	db.Model(&model.PackageVersion{}).Where("package_id = ? AND version = ?", pkg.ID, "1.0.0").Count(&count)
+	db.Model(&model.Component{}).Where("package_id = ? AND version = ?", pkg.ID, "1.0.0").Count(&count)
 	assert.Equal(t, int64(0), count)
 }
 

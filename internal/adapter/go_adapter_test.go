@@ -27,16 +27,16 @@ func setupGoAdapterFull(t *testing.T) (*GoAdapter, *gorm.DB) {
 	}
 
 	db.AutoMigrate(
-		&model.Package{},
-		&model.PackageVersion{},
-		&model.PackageFile{},
-		&model.PackageDependency{},
+		&model.Component{},
+		&model.Component{},
+		&model.Asset{},
+		&model.ComponentDependency{},
 		&model.Repository{},
 		&model.StorageBackend{},
 	)
 
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
-	pkgRepo := repository.NewPackageRepository(db)
+	compRepo := repository.NewComponentRepository(db)
 
 	testDir := t.TempDir()
 
@@ -62,9 +62,9 @@ func setupGoAdapterFull(t *testing.T) (*GoAdapter, *gorm.DB) {
 		t.Fatalf("failed to create storage service: %v", err)
 	}
 
-	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
+	compCache := cache.NewComponentCache(compRepo, 5*time.Minute)
 
-	adapter := NewGoAdapter(storageSvc, pkgCache)
+	adapter := NewGoAdapter(storageSvc, compCache)
 	return adapter, db
 }
 

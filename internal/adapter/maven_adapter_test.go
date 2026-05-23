@@ -26,16 +26,16 @@ func setupMavenAdapter(t *testing.T) (*MavenAdapter, *gorm.DB) {
 	}
 
 	db.AutoMigrate(
-		&model.Package{},
-		&model.PackageVersion{},
-		&model.PackageFile{},
-		&model.PackageDependency{},
+		&model.Component{},
+		&model.Component{},
+		&model.Asset{},
+		&model.ComponentDependency{},
 		&model.Repository{},
 		&model.StorageBackend{},
 	)
 
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
-	pkgRepo := repository.NewPackageRepository(db)
+	compRepo := repository.NewComponentRepository(db)
 
 	storageSvc, err := service.NewStorageService(storageBackendRepo, "", 0)
 	if err != nil {
@@ -59,9 +59,9 @@ func setupMavenAdapter(t *testing.T) (*MavenAdapter, *gorm.DB) {
 
 	storageSvc.RefreshBackends()
 
-	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
+	compCache := cache.NewComponentCache(compRepo, 5*time.Minute)
 
-	adapter := NewMavenAdapter(storageSvc, pkgCache)
+	adapter := NewMavenAdapter(storageSvc, compCache)
 	return adapter, db
 }
 
@@ -123,14 +123,14 @@ func TestMavenAdapter_ParsePath(t *testing.T) {
 func TestMavenAdapter_GetMetadata(t *testing.T) {
 	adapter, db := setupMavenAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name:        "com.test/my-lib",
-		Type:        model.PackageTypeMaven,
+		Format: model.PackageTypeMaven,
 		Description: "Test Maven package",
 	}
 	db.Create(pkg)
 
-	version := &model.PackageVersion{
+	version := &model.Component{
 		PackageID: pkg.ID,
 		Version:   "1.0.0",
 		Status:    model.StatusPublished,
@@ -156,14 +156,14 @@ func TestMavenAdapter_GetMetadata_NotFound(t *testing.T) {
 func TestMavenAdapter_ListVersions(t *testing.T) {
 	adapter, db := setupMavenAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name:        "com.test/versioned-lib",
-		Type:        model.PackageTypeMaven,
+		Format: model.PackageTypeMaven,
 		Description: "Versioned library",
 	}
 	db.Create(pkg)
 
-	versions := []model.PackageVersion{
+	versions := []model.Component{
 		{PackageID: pkg.ID, Version: "1.0.0", Status: model.StatusPublished},
 		{PackageID: pkg.ID, Version: "1.1.0", Status: model.StatusPublished},
 		{PackageID: pkg.ID, Version: "2.0.0", Status: model.StatusPublished},
@@ -183,14 +183,14 @@ func TestMavenAdapter_ListVersions(t *testing.T) {
 func TestMavenAdapter_Delete(t *testing.T) {
 	adapter, db := setupMavenAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name:        "com.test/deletable-lib",
-		Type:        model.PackageTypeMaven,
+		Format: model.PackageTypeMaven,
 		Description: "Deletable library",
 	}
 	db.Create(pkg)
 
-	version := &model.PackageVersion{
+	version := &model.Component{
 		PackageID: pkg.ID,
 		Version:   "1.0.0",
 		Status:    model.StatusPublished,
@@ -207,21 +207,21 @@ func TestMavenAdapter_Delete(t *testing.T) {
 	assert.Nil(t, err)
 
 	var count int64
-	db.Model(&model.PackageVersion{}).Where("package_id = ? AND version = ?", pkg.ID, "1.0.0").Count(&count)
+	db.Model(&model.Component{}).Where("package_id = ? AND version = ?", pkg.ID, "1.0.0").Count(&count)
 	assert.Equal(t, int64(0), count)
 }
 
 func TestMavenAdapter_HandleMetadataXML(t *testing.T) {
 	adapter, db := setupMavenAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name:        "com.test.metadata:metadata-lib",
-		Type:        model.PackageTypeMaven,
+		Format: model.PackageTypeMaven,
 		Description: "Metadata test library",
 	}
 	db.Create(pkg)
 
-	versions := []model.PackageVersion{
+	versions := []model.Component{
 		{PackageID: pkg.ID, Version: "1.0.0", Status: model.StatusPublished},
 		{PackageID: pkg.ID, Version: "1.1.0", Status: model.StatusPublished},
 		{PackageID: pkg.ID, Version: "2.0.0-SNAPSHOT", Status: model.StatusPublished},
@@ -354,13 +354,13 @@ func TestGetPackaging(t *testing.T) {
 func TestGetMavenFileType(t *testing.T) {
 	tests := []struct {
 		filename string
-		expected model.PackageFileType
+		expected model.AssetKind
 	}{
-		{"lib-1.0.0.jar", model.FileTypePrimary},
-		{"lib-1.0.0.pom", model.FileTypePom},
-		{"lib-1.0.0-sources.jar", model.FileTypeSources},
-		{"lib-1.0.0-javadoc.jar", model.FileTypeJavadoc},
-		{"maven-metadata.xml", model.FileTypeMetadata},
+		{"lib-1.0.0.jar", model.AssetKindPrimary},
+		{"lib-1.0.0.pom", model.AssetKindPom},
+		{"lib-1.0.0-sources.jar", model.AssetKindSources},
+		{"lib-1.0.0-javadoc.jar", model.AssetKindJavadoc},
+		{"maven-metadata.xml", model.AssetKindMetadata},
 	}
 
 	for _, tt := range tests {

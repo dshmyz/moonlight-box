@@ -27,16 +27,16 @@ func setupAptAdapter(t *testing.T) (*AptAdapter, *gorm.DB) {
 	}
 
 	db.AutoMigrate(
-		&model.Package{},
-		&model.PackageVersion{},
-		&model.PackageFile{},
-		&model.PackageDependency{},
+		&model.Component{},
+		&model.Component{},
+		&model.Asset{},
+		&model.ComponentDependency{},
 		&model.Repository{},
 		&model.StorageBackend{},
 	)
 
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
-	pkgRepo := repository.NewPackageRepository(db)
+	compRepo := repository.NewComponentRepository(db)
 
 	testDir := t.TempDir()
 
@@ -62,9 +62,9 @@ func setupAptAdapter(t *testing.T) (*AptAdapter, *gorm.DB) {
 		t.Fatalf("failed to create storage service: %v", err)
 	}
 
-	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
+	compCache := cache.NewComponentCache(compRepo, 5*time.Minute)
 
-	adapter := NewAptAdapter(storageSvc, pkgCache)
+	adapter := NewAptAdapter(storageSvc, compCache)
 	return adapter, db
 }
 
@@ -311,7 +311,7 @@ func TestAptAdapter_HandleGet_PoolDownload_NotFound(t *testing.T) {
 		Path:     "pool/main/nonexistent/package_1.0.deb",
 		Name:     "nonexistent",
 		Version:  "1.0",
-		Filename: "package_1.0.deb",
+		FileName: "package_1.0.deb",
 		Extra:    make(map[string]interface{}),
 	}
 
@@ -410,7 +410,7 @@ func TestAptAdapter_HandleGet_NotFound(t *testing.T) {
 		Type:     types.RequestDownload,
 		Path:     "unknown/path/file.txt",
 		Name:     "unknown",
-		Filename: "file.txt",
+		FileName: "file.txt",
 		Extra:    make(map[string]interface{}),
 	}
 
@@ -470,7 +470,7 @@ func TestFormatPackageEntry(t *testing.T) {
 		Section:       "web",
 		Priority:      "optional",
 		InstalledSize: "10240",
-		Filename:      "pool/main/nginx/nginx_1.20.1-1_amd64.deb",
+		FileName:      "pool/main/nginx/nginx_1.20.1-1_amd64.deb",
 		Size:          2048000,
 	}
 
@@ -483,7 +483,7 @@ func TestFormatPackageEntry(t *testing.T) {
 	assert.Contains(t, result, "Section: web")
 	assert.Contains(t, result, "Priority: optional")
 	assert.Contains(t, result, "Installed-Size: 10240")
-	assert.Contains(t, result, "Filename: pool/main/nginx/nginx_1.20.1-1_amd64.deb")
+	assert.Contains(t, result, "FileName: pool/main/nginx/nginx_1.20.1-1_amd64.deb")
 	assert.Contains(t, result, "Size: 2048000")
 }
 

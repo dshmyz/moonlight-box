@@ -95,15 +95,8 @@ func (t *SecurityTool) analyzePackageScan(packageName string) (string, error) {
 		return "", fmt.Errorf("缺少包名称参数")
 	}
 
-	// 查找包
-	var pkg model.Package
-	if err := db.Where("name = ?", packageName).First(&pkg).Error; err != nil {
-		return "", fmt.Errorf("未找到包: %s", packageName)
-	}
-
-	// 查询所有版本的扫描结果
-	var versions []model.PackageVersion
-	if err := db.Where("package_id = ?", pkg.ID).
+	var versions []model.Component
+	if err := db.Where("name = ?", packageName).
 		Order("published_at DESC").
 		Find(&versions).Error; err != nil {
 		return "", fmt.Errorf("查询版本信息失败: %v", err)
@@ -120,7 +113,7 @@ func (t *SecurityTool) analyzePackageScan(packageName string) (string, error) {
 
 	for _, version := range versions {
 		var scanResult model.ScanResult
-		if err := db.Where("version_id = ?", version.ID).
+		if err := db.Where("component_id = ?", version.ID).
 			Preload("Vulnerabilities").
 			First(&scanResult).Error; err != nil {
 			continue

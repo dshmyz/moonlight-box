@@ -57,7 +57,7 @@ func (h *SecurityHandler) TriggerScan(c *gin.Context) {
 
 	response.Success(c, gin.H{
 		"message":    "scan triggered",
-		"version_id": versionID,
+		"component_id": versionID,
 	})
 }
 

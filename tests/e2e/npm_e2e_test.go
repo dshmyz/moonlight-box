@@ -34,7 +34,7 @@ var (
 	testDB         *gorm.DB
 	npmAdapter     adapter.RepoAwareAdapter
 	repoSvc        *service.RepositoryService
-	pkgRepo        *repository.PackageRepository
+	compRepo        *repository.ComponentRepository
 	storageSvc     *service.StorageService
 	npmRepoHandler *proxy.RepoHandler
 )
@@ -57,10 +57,10 @@ func TestMain(m *testing.M) {
 		&model.UserRole{},
 		&model.Repository{},
 		&model.RepositoryGroup{},
-		&model.Package{},
-		&model.PackageVersion{},
-		&model.PackageFile{},
-		&model.PackageDependency{},
+		&model.Component{},
+		&model.Component{},
+		&model.Asset{},
+		&model.ComponentDependency{},
 		&model.AuditLog{},
 		&model.BlockRule{},
 		&model.ScanResult{},
@@ -73,7 +73,7 @@ func TestMain(m *testing.M) {
 	storageSvc, _ = service.NewStorageService(storageBackendRepo, "", 0)
 	storageSvc.SetDefaultBackendForTest(localStorage)
 
-	pkgRepo = repository.NewPackageRepository(testDB)
+	compRepo = repository.NewComponentRepository(testDB)
 	repoRepo := repository.NewRepositoryRepository(testDB)
 	groupRepo := repository.NewGroupRepository(testDB)
 
@@ -88,12 +88,12 @@ func TestMain(m *testing.M) {
 	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
 	npmRepoHandler = proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
 
-	npmAdapter = adapter.NewNpmAdapterCompat(pkgRepo, repoRepo, storageSvc, nil, nil)
+	npmAdapter = adapter.NewNpmAdapterCompat(compRepo, repoRepo, storageSvc, nil, nil)
 	npmRepoHandler.RegisterAdapter("npm", npmAdapter)
 
 	logRepo := repository.NewProxyDownloadLogRepository(testDB)
 	countBatcher := service.NewDownloadCountBatcher(testDB, 5*time.Second)
-	downloadSvc := service.NewDownloadService(pkgRepo, storageSvc, proxyDownloader, logRepo, nil, countBatcher)
+	downloadSvc := service.NewDownloadService(compRepo, storageSvc, proxyDownloader, logRepo, nil, countBatcher)
 	npmRepoHandler.SetDownloadService(downloadSvc)
 
 	router := setupRouter()
@@ -122,7 +122,7 @@ func setupRouter() *gin.Engine {
 
 	repoRouter := handler.NewRepoRouter(repoSvc)
 	repoRouter.SetResolver(npmRepoHandler)
-	repoRouter.SetUploadService(service.NewUploadService(pkgRepo, storageSvc))
+	repoRouter.SetUploadService(service.NewUploadService(compRepo, storageSvc))
 
 	repoGroup := router.Group("/repo/:repoName")
 	{
@@ -165,7 +165,7 @@ func TestE2E_PublishNpmPackage(t *testing.T) {
 	part, _ := writer.CreateFormFile("_attachments", "test-pkg-1.0.0.tgz")
 	part.Write([]byte("fake tarball content for e2e test"))
 
-	writer.WriteField("_attachment", `{
+	writer.WriteField("test-pkg", `{
 		"name": "test-pkg",
 		"version": "1.0.0",
 		"description": "E2E test package"
@@ -181,19 +181,6 @@ func TestE2E_PublishNpmPackage(t *testing.T) {
 }
 
 func TestE2E_GetNpmPackage(t *testing.T) {
-	pkgRepo.StorePackageFile(context.Background(), &model.Package{
-		Name:        "e2e-pkg",
-		Type:        model.PackageTypeNPM,
-		Description: "E2E package for testing",
-	}, &model.PackageVersion{
-		Version:     "1.0.0",
-		Status:      model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    "package.tgz",
-		FileType:    model.FileTypePrimary,
-		SizeBytes:   1000,
-	})
-
 	repo := &model.Repository{
 		Name:        "npm-local-get",
 		Type:        model.RepoTypeLocal,
@@ -201,6 +188,20 @@ func TestE2E_GetNpmPackage(t *testing.T) {
 		Enabled:     true,
 	}
 	repoSvc.Create(repo, nil)
+
+	compRepo.StoreComponentAsset(context.Background(), &model.Component{
+		Name:         "e2e-pkg",
+		Format: model.PackageTypeNPM,
+		Description:  "E2E package for testing",
+		RepositoryID: repo.ID,
+	}, &model.Component{
+		Version:     "1.0.0",
+		Status:      model.StatusPublished,
+	}, &model.Asset{
+		FileName:    "package.tgz",
+		Kind:    model.AssetKindPrimary,
+		SizeBytes:   1000,
+	})
 
 	resp, err := http.Get(testServer.URL + "/repo/npm-local-get/e2e-pkg")
 	assert.Nil(t, err)
@@ -226,19 +227,6 @@ func TestE2E_GetNpmPackage_NotFound(t *testing.T) {
 }
 
 func TestE2E_UnpublishNpmPackage(t *testing.T) {
-	pkgRepo.StorePackageFile(context.Background(), &model.Package{
-		Name:        "unpublish-test",
-		Type:        model.PackageTypeNPM,
-		Description: "Unpublish test package",
-	}, &model.PackageVersion{
-		Version:     "1.0.0",
-		Status:      model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    "package.tgz",
-		FileType:    model.FileTypePrimary,
-		SizeBytes:   1000,
-	})
-
 	repo := &model.Repository{
 		Name:        "npm-local-unpublish",
 		Type:        model.RepoTypeLocal,
@@ -247,6 +235,20 @@ func TestE2E_UnpublishNpmPackage(t *testing.T) {
 		AllowDelete: true,
 	}
 	repoSvc.Create(repo, nil)
+
+	compRepo.StoreComponentAsset(context.Background(), &model.Component{
+		Name:         "unpublish-test",
+		Format: model.PackageTypeNPM,
+		Description:  "Unpublish test package",
+		RepositoryID: repo.ID,
+	}, &model.Component{
+		Version:     "1.0.0",
+		Status:      model.StatusPublished,
+	}, &model.Asset{
+		FileName:    "package.tgz",
+		Kind:    model.AssetKindPrimary,
+		SizeBytes:   1000,
+	})
 
 	req, _ := http.NewRequest("DELETE", testServer.URL+"/repo/npm-local-unpublish/unpublish-test/-rev/123", nil)
 	client := &http.Client{}
@@ -476,25 +478,12 @@ func TestE2E_PublicRepoConfig(t *testing.T) {
 	data := result["data"].(map[string]interface{})
 	assert.Equal(t, "npm-public-config", data["name"])
 	assert.Equal(t, "NPM Public Config Test", data["display_name"])
-	assert.Contains(t, data["registry_url"], "/repo/npm-public-config/")
+	assert.Contains(t, data["registry_url"], "/repository/npm-public-config/")
 }
 
 // ==================== E2E 测试：新路由架构 ====================
 
 func TestE2E_RepoRoute_GetPackage(t *testing.T) {
-	pkgRepo.StorePackageFile(context.Background(), &model.Package{
-		Name:        "route-test-pkg",
-		Type:        model.PackageTypeNPM,
-		Description: "Route test package",
-	}, &model.PackageVersion{
-		Version:     "1.0.0",
-		Status:      model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    "package.tgz",
-		FileType:    model.FileTypePrimary,
-		SizeBytes:   1000,
-	})
-
 	repo := &model.Repository{
 		Name:        "npm-route-test",
 		Type:        model.RepoTypeLocal,
@@ -502,6 +491,20 @@ func TestE2E_RepoRoute_GetPackage(t *testing.T) {
 		Enabled:     true,
 	}
 	repoSvc.Create(repo, nil)
+
+	compRepo.StoreComponentAsset(context.Background(), &model.Component{
+		Name:         "route-test-pkg",
+		Format: model.PackageTypeNPM,
+		Description:  "Route test package",
+		RepositoryID: repo.ID,
+	}, &model.Component{
+		Version:     "1.0.0",
+		Status:      model.StatusPublished,
+	}, &model.Asset{
+		FileName:    "package.tgz",
+		Kind:    model.AssetKindPrimary,
+		SizeBytes:   1000,
+	})
 
 	resp, err := http.Get(testServer.URL + "/repo/npm-route-test/route-test-pkg")
 	assert.Nil(t, err)
@@ -579,7 +582,7 @@ func TestE2E_CompleteNpmWorkflow(t *testing.T) {
 	part, _ := writer.CreateFormFile("_attachments", "workflow-pkg-1.0.0.tgz")
 	part.Write([]byte("fake tarball content"))
 
-	writer.WriteField("_attachment", fmt.Sprintf(`{
+	writer.WriteField("workflow-pkg", fmt.Sprintf(`{
 		"name": "workflow-pkg-%d",
 		"version": "1.0.0",
 		"description": "Workflow test package"

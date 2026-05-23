@@ -111,8 +111,8 @@ func (t *DependencyOptimizerTool) Execute(ctx context.Context, params map[string
 	}
 
 	// 查询项目关联的包
-	var packages []model.Package
-	query := db.Model(&model.Package{}).
+	var packages []model.Component
+	query := db.Model(&model.Component{}).
 		Where("name LIKE ? OR display_name LIKE ?", 
 			"%"+projectName+"%", "%"+projectName+"%")
 	if packageType != "" {
@@ -130,32 +130,25 @@ func (t *DependencyOptimizerTool) Execute(ctx context.Context, params map[string
 	sb.WriteString(fmt.Sprintf("🔍 **依赖优化分析报告** - %s\n\n", projectName))
 
 	// 收集所有依赖关系
-	dependencies := make(map[string][]*model.PackageDependency)
+	dependencies := make(map[string][]*model.ComponentDependency)
 	versionMap := make(map[string]map[string]bool)
 
-	for _, pkg := range packages {
-		var versions []model.PackageVersion
-		if err := db.Where("package_id = ?", pkg.ID).Find(&versions).Error; err != nil {
+	for _, comp := range packages {
+		var deps []model.ComponentDependency
+		dbQuery := db.Where("component_id = ?", comp.ID)
+		if !includeTransitive {
+			dbQuery = dbQuery.Where("dep_type = ?", "direct")
+		}
+		if err := dbQuery.Find(&deps).Error; err != nil {
 			continue
 		}
 
-		for _, v := range versions {
-			var deps []model.PackageDependency
-			dbQuery := db.Where("version_id = ?", v.ID)
-			if !includeTransitive {
-				dbQuery = dbQuery.Where("dep_type = ?", "direct")
+		for _, dep := range deps {
+			dependencies[dep.DepName] = append(dependencies[dep.DepName], &dep)
+			if versionMap[dep.DepName] == nil {
+				versionMap[dep.DepName] = make(map[string]bool)
 			}
-			if err := dbQuery.Find(&deps).Error; err != nil {
-				continue
-			}
-
-			for _, dep := range deps {
-				dependencies[dep.DepName] = append(dependencies[dep.DepName], &dep)
-				if versionMap[dep.DepName] == nil {
-					versionMap[dep.DepName] = make(map[string]bool)
-				}
-				versionMap[dep.DepName][dep.DepVersionConstraint] = true
-			}
+			versionMap[dep.DepName][dep.DepVersionConstraint] = true
 		}
 	}
 
@@ -188,7 +181,7 @@ func (t *DependencyOptimizerTool) Execute(ctx context.Context, params map[string
 
 // analyzeConflicts 分析版本冲突
 func (t *DependencyOptimizerTool) analyzeConflicts(
-	deps map[string][]*model.PackageDependency,
+	deps map[string][]*model.ComponentDependency,
 	versions map[string]map[string]bool,
 ) string {
 	var sb strings.Builder
@@ -241,7 +234,7 @@ func (t *DependencyOptimizerTool) analyzeConflicts(
 // analyzeSecurity 分析安全漏洞
 func (t *DependencyOptimizerTool) analyzeSecurity(
 	db *gorm.DB,
-	deps map[string][]*model.PackageDependency,
+	deps map[string][]*model.ComponentDependency,
 	minSeverity string,
 ) string {
 	var sb strings.Builder
@@ -252,19 +245,14 @@ func (t *DependencyOptimizerTool) analyzeSecurity(
 	vulnerableDeps := make(map[string][]model.ScanResult)
 
 	for depName := range deps {
-		var pkg model.Package
-		if err := db.Where("name = ?", depName).First(&pkg).Error; err != nil {
-			continue
-		}
-
-		var versions []model.PackageVersion
-		if err := db.Where("package_id = ?", pkg.ID).Find(&versions).Error; err != nil {
+		var versions []model.Component
+		if err := db.Where("name = ?", depName).Find(&versions).Error; err != nil {
 			continue
 		}
 
 		for _, v := range versions {
 			var scan model.ScanResult
-			if err := db.Where("version_id = ?", v.ID).
+			if err := db.Where("component_id = ?", v.ID).
 				Preload("Vulnerabilities").
 				First(&scan).Error; err != nil {
 				continue
@@ -319,19 +307,14 @@ func (t *DependencyOptimizerTool) analyzeSecurity(
 }
 
 // analyzeUsage 分析未使用依赖
-func (t *DependencyOptimizerTool) analyzeUsage(db *gorm.DB, packages []model.Package) string {
+func (t *DependencyOptimizerTool) analyzeUsage(db *gorm.DB, packages []model.Component) string {
 	var sb strings.Builder
 
-	underused := make([]model.Package, 0)
+	underused := make([]model.Component, 0)
 
-	for _, pkg := range packages {
-		if pkg.DownloadCount < 10 {
-			var latest model.PackageVersion
-			if err := db.Where("package_id = ?", pkg.ID).
-				Order("published_at DESC").
-				First(&latest).Error; err == nil {
-				underused = append(underused, pkg)
-			}
+	for _, comp := range packages {
+		if comp.DownloadCount < 10 {
+			underused = append(underused, comp)
 		}
 	}
 
@@ -344,7 +327,7 @@ func (t *DependencyOptimizerTool) analyzeUsage(db *gorm.DB, packages []model.Pac
 	sb.WriteString("⚠️  以下包下载量<10，可能未被实际使用：\n")
 	for _, pkg := range underused {
 		sb.WriteString(fmt.Sprintf("   - `%s` (%s) - 下载: %d, 类型: %s\n",
-			pkg.Name, pkg.DisplayName, pkg.DownloadCount, pkg.Type))
+			pkg.Name, pkg.DisplayName, pkg.DownloadCount, pkg.Format))
 	}
 	sb.WriteString("\n💡 建议: 确认这些依赖是否仍需要，可考虑移除以减少攻击面和构建体积\n\n")
 	return sb.String()
@@ -352,7 +335,7 @@ func (t *DependencyOptimizerTool) analyzeUsage(db *gorm.DB, packages []model.Pac
 
 // generateRecommendations 生成综合优化建议
 func (t *DependencyOptimizerTool) generateRecommendations(
-	deps map[string][]*model.PackageDependency,
+	deps map[string][]*model.ComponentDependency,
 	versions map[string]map[string]bool,
 	db *gorm.DB,
 ) string {
@@ -379,12 +362,12 @@ func (t *DependencyOptimizerTool) generateRecommendations(
 
 	securityCount := 0
 	for depName := range deps {
-		var pkg model.Package
-		if err := db.Where("name = ?", depName).First(&pkg).Error; err != nil {
+		var comp model.Component
+		if err := db.Where("name = ?", depName).Order("published_at DESC").First(&comp).Error; err != nil {
 			continue
 		}
 		var scan model.ScanResult
-		if err := db.Where("package_id = ?", pkg.ID).
+		if err := db.Where("component_id = ?", comp.ID).
 			Where("scan_status = ?", model.ScanStatusCompleted).
 			Where("total_vulnerabilities > 0").
 			First(&scan).Error; err == nil {
@@ -412,8 +395,8 @@ type nodeMeta struct {
 // generateMermaidGraph 生成 Mermaid 格式的依赖关系图
 func (t *DependencyOptimizerTool) generateMermaidGraph(
 	db *gorm.DB,
-	packages []model.Package,
-	deps map[string][]*model.PackageDependency,
+	packages []model.Component,
+	deps map[string][]*model.ComponentDependency,
 	maxDepth int,
 	includeTransitive bool,
 ) string {
@@ -431,7 +414,7 @@ func (t *DependencyOptimizerTool) generateMermaidGraph(
 
 	// 标记根节点
 	for _, pkg := range packages {
-		nodeKey := fmt.Sprintf("%s@%s", pkg.Name, pkg.Type)
+		nodeKey := fmt.Sprintf("%s@%s", pkg.Name, pkg.Format)
 		nodeInfo[nodeKey] = &nodeMeta{isRoot: true}
 		visited[nodeKey] = true
 	}
@@ -467,12 +450,12 @@ func (t *DependencyOptimizerTool) generateMermaidGraph(
 		if checkedVuln[depName] {
 			continue
 		}
-		var pkg model.Package
+		var pkg model.Component
 		if err := db.Where("name = ?", depName).First(&pkg).Error; err != nil {
 			continue
 		}
 		var scan model.ScanResult
-		if err := db.Where("package_id = ?", pkg.ID).
+		if err := db.Where("component_id = ?", pkg.ID).
 			Where("scan_status = ?", model.ScanStatusCompleted).
 			Where("total_vulnerabilities > 0").
 			First(&scan).Error; err == nil {
@@ -486,8 +469,8 @@ func (t *DependencyOptimizerTool) generateMermaidGraph(
 
 	// 输出根节点
 	for _, pkg := range packages {
-		nodeID := sanitizeMermaidID(fmt.Sprintf("%s_%s", pkg.Name, pkg.Type))
-		label := fmt.Sprintf("%s\\n(%s)", pkg.Name, pkg.Type)
+		nodeID := sanitizeMermaidID(fmt.Sprintf("%s_%s", pkg.Name, pkg.Format))
+		label := fmt.Sprintf("%s\\n(%s)", pkg.Name, pkg.Format)
 		sb.WriteString(fmt.Sprintf("    %s[\"%s\"]:::root\n", nodeID, label))
 	}
 
@@ -516,7 +499,7 @@ func (t *DependencyOptimizerTool) generateMermaidGraph(
 		sb.WriteString(fmt.Sprintf("    %s[\"%s\"]:::%s\n", nodeID, label, style))
 		
 		if len(packages) > 0 {
-			rootID := sanitizeMermaidID(fmt.Sprintf("%s_%s", packages[0].Name, packages[0].Type))
+			rootID := sanitizeMermaidID(fmt.Sprintf("%s_%s", packages[0].Name, packages[0].Format))
 			sb.WriteString(fmt.Sprintf("    %s --> %s\n", rootID, nodeID))
 		}
 		

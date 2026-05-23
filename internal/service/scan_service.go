@@ -15,7 +15,7 @@ import (
 
 type SecurityScanner struct {
 	scanRepo        *repository.ScanRepository
-	pkgRepo         *repository.PackageRepository
+	compRepo        *repository.ComponentRepository
 	blockRepo       *repository.BlockRuleRepository
 	vulnRuleService *VulnRuleService
 	logger          *logrus.Logger
@@ -125,10 +125,10 @@ var scanRules = []ScanRule{
 	},
 }
 
-func NewSecurityScanner(scanRepo *repository.ScanRepository, pkgRepo *repository.PackageRepository, blockRepo *repository.BlockRuleRepository) *SecurityScanner {
+func NewSecurityScanner(scanRepo *repository.ScanRepository, compRepo *repository.ComponentRepository, blockRepo *repository.BlockRuleRepository) *SecurityScanner {
 	return &SecurityScanner{
 		scanRepo:  scanRepo,
-		pkgRepo:   pkgRepo,
+		compRepo:  compRepo,
 		blockRepo: blockRepo,
 		logger:    logrus.New(),
 	}
@@ -142,7 +142,7 @@ func (s *SecurityScanner) ScanPackage(ctx context.Context, versionID uint, pkgTy
 	s.logger.Infof("Scanning %s@%s (type: %s, versionID: %d)", name, version, pkgType, versionID)
 
 	scanResult := &model.ScanResult{
-		VersionID:      versionID,
+		ComponentID:    versionID,
 		ScanStatus:     model.ScanStatusScanning,
 		ScannerVersion: "1.0.0",
 		ScannedAt:      time.Now(),
@@ -210,7 +210,7 @@ func (s *SecurityScanner) TriggerScan(ctx context.Context, versionID uint, pkgTy
 }
 
 func (s *SecurityScanner) GetScanResult(versionID uint) (*model.ScanResult, error) {
-	return s.scanRepo.FindScanResultByVersionID(versionID)
+	return s.scanRepo.FindScanResultByComponentID(versionID)
 }
 
 func (s *SecurityScanner) ListScanResults(page, pageSize int, status, pkgType string) ([]model.ScanResult, int64, error) {
@@ -292,17 +292,15 @@ func parseVersion(v string) []int {
 
 func (s *SecurityScanner) ScanAllPackages(ctx context.Context) {
 	for _, pkgType := range []string{"npm", "maven", "pypi", "go"} {
-		packages, total, err := s.pkgRepo.List(1, 10000, pkgType, "")
+		packages, total, err := s.compRepo.ListContext(ctx, 1, 10000, pkgType, "")
 		if err != nil {
 			s.logger.Errorf("Failed to list %s packages: %v", pkgType, err)
 			continue
 		}
 		s.logger.Infof("Scanning %d %s packages", total, pkgType)
 		for _, pkg := range packages {
-			for _, ver := range pkg.Versions {
-				s.TriggerScan(ctx, ver.ID, pkgType, pkg.Name, ver.Version)
-				time.Sleep(50 * time.Millisecond)
-			}
+			s.TriggerScan(ctx, pkg.ID, pkgType, pkg.Name, pkg.Version)
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 }

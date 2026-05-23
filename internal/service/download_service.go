@@ -165,15 +165,14 @@ func normalizePyPNameFromFilename(filename string) string {
 	return strings.ToLower(strings.ReplaceAll(name, "_", "-"))
 }
 
-type pkgVerFileIDs struct {
-	pkgID   uint
-	verID   uint
-	fileID  uint
-	expires time.Time
+type componentAssetIDs struct {
+	componentID uint
+	assetID     uint
+	expires     time.Time
 }
 
 type DownloadService struct {
-	pkgRepo      *repository.PackageRepository
+	compRepo      *repository.ComponentRepository
 	storageSvc   *StorageService
 	fetcher      proxy.ProxyFetcher
 	logRepo      *repository.ProxyDownloadLogRepository
@@ -182,12 +181,12 @@ type DownloadService struct {
 	inflight     singleflight.Group
 
 	depParseSem    *semaphore.Weighted // 限制依赖解析并发数
-	idCache        sync.Map            // key="repoID:name:pkgType:version:filename" → pkgVerFileIDs
+	idCache        sync.Map            // key="repoID:name:pkgType:version:filename" → componentAssetIDs
 	idCacheTTL     time.Duration
 }
 
 func NewDownloadService(
-	pkgRepo *repository.PackageRepository,
+	compRepo *repository.ComponentRepository,
 	storageSvc *StorageService,
 	fetcher proxy.ProxyFetcher,
 	logRepo *repository.ProxyDownloadLogRepository,
@@ -195,7 +194,7 @@ func NewDownloadService(
 	countBatcher *DownloadCountBatcher,
 ) *DownloadService {
 	return &DownloadService{
-		pkgRepo:      pkgRepo,
+		compRepo:      compRepo,
 		storageSvc:   storageSvc,
 		fetcher:      fetcher,
 		logRepo:      logRepo,
@@ -427,20 +426,21 @@ func storageBackendID(repo *model.Repository) uint {
 }
 
 func (s *DownloadService) storePackageFileRecord(ctx context.Context, req *types.DownloadContext, repoID uint, storageKey string, size int64, downloadURL string) {
-	_, ver, _, dbErr := s.pkgRepo.StorePackageFile(ctx, &model.Package{
-		Name:           req.Name,
-		Type:           req.PkgType,
-		RepositoryID:   repoID,
-		RepositoryType: req.Repo.Type,
-	}, &model.PackageVersion{
-		Version: req.Version,
-		Status:  model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    req.Filename,
-		FileType:    model.FileTypePrimary,
-		StoragePath: storageKey,
-		SizeBytes:   size,
+	comp, _, dbErr := s.compRepo.StoreComponentAsset(ctx, &model.Component{
+		RepositoryID: repoID,
+		Format:       req.PkgType,
+		Name:         req.Name,
+		Version:      req.Version,
+		Status:       model.StatusPublished,
+	}, &model.Asset{
+		FileName:    req.Filename,
+		Kind:        model.AssetKindPrimary,
+		Path:        storageKey,
 		DownloadURL: downloadURL,
+		Blob: model.Blob{
+			Ref:       storageKey,
+			SizeBytes: size,
+		},
 	})
 	if dbErr != nil {
 		logrus.WithFields(logrus.Fields{
@@ -461,7 +461,7 @@ func (s *DownloadService) storePackageFileRecord(ctx context.Context, req *types
 				return
 			}
 			defer s.depParseSem.Release(1)
-			s.asyncUpsertMavenDeps(req, ver.ID)
+			s.asyncUpsertMavenDeps(req, comp.ID)
 		}()
 	}
 	if req.PkgType == model.PackageTypeGo && strings.HasSuffix(strings.ToLower(req.Filename), ".mod") {
@@ -474,7 +474,7 @@ func (s *DownloadService) storePackageFileRecord(ctx context.Context, req *types
 				return
 			}
 			defer s.depParseSem.Release(1)
-			s.asyncUpsertGoDeps(req, ver.ID)
+			s.asyncUpsertGoDeps(req, comp.ID)
 		}()
 	}
 }
@@ -532,7 +532,7 @@ func (s *DownloadService) asyncUpsertMavenDeps(req *types.DownloadContext, versi
 		return
 	}
 
-	deps := make([]model.PackageDependency, 0, len(pom.Dependencies))
+	deps := make([]model.ComponentDependency, 0, len(pom.Dependencies))
 	seen := make(map[string]struct{}, len(pom.Dependencies))
 	for _, dep := range pom.Dependencies {
 		if dep.GroupID == "" || dep.ArtifactID == "" || dep.Version == "" {
@@ -544,7 +544,7 @@ func (s *DownloadService) asyncUpsertMavenDeps(req *types.DownloadContext, versi
 			continue
 		}
 		seen[key] = struct{}{}
-		deps = append(deps, model.PackageDependency{
+		deps = append(deps, model.ComponentDependency{
 			DepName:              depName,
 			DepVersionConstraint: dep.Version,
 			DepType:              "direct",
@@ -556,7 +556,7 @@ func (s *DownloadService) asyncUpsertMavenDeps(req *types.DownloadContext, versi
 	if len(deps) == 0 {
 		return
 	}
-	if err := s.pkgRepo.UpsertVersionDependencies(bg, versionID, deps); err != nil {
+	if err := s.compRepo.UpsertComponentDependencies(bg, versionID, deps); err != nil {
 		logrus.WithFields(logrus.Fields{
 			"module": "dep_parse", "pkg_type": "maven", "pkg_name": req.Name,
 			"pkg_version": req.Version, "repo": req.Repo.Name, "dep_count": len(deps), "error": err,
@@ -602,7 +602,7 @@ func (s *DownloadService) asyncUpsertGoDeps(req *types.DownloadContext, versionI
 		return
 	}
 
-	deps := make([]model.PackageDependency, 0, len(parsed.Require))
+	deps := make([]model.ComponentDependency, 0, len(parsed.Require))
 	seen := make(map[string]struct{}, len(parsed.Require))
 	for _, reqDep := range parsed.Require {
 		if reqDep == nil || reqDep.Mod.Path == "" || reqDep.Mod.Version == "" {
@@ -613,7 +613,7 @@ func (s *DownloadService) asyncUpsertGoDeps(req *types.DownloadContext, versionI
 			continue
 		}
 		seen[key] = struct{}{}
-		deps = append(deps, model.PackageDependency{
+		deps = append(deps, model.ComponentDependency{
 			DepName:              reqDep.Mod.Path,
 			DepVersionConstraint: reqDep.Mod.Version,
 			DepType:              "direct",
@@ -625,7 +625,7 @@ func (s *DownloadService) asyncUpsertGoDeps(req *types.DownloadContext, versionI
 	if len(deps) == 0 {
 		return
 	}
-	if err := s.pkgRepo.UpsertVersionDependencies(bg, versionID, deps); err != nil {
+	if err := s.compRepo.UpsertComponentDependencies(bg, versionID, deps); err != nil {
 		logrus.WithFields(logrus.Fields{
 			"module": "dep_parse", "pkg_type": "go", "pkg_name": req.Name,
 			"pkg_version": req.Version, "repo": req.Repo.Name, "dep_count": len(deps), "error": err,
@@ -704,31 +704,24 @@ func (s *DownloadService) incrementDownloadCount(ctx context.Context, req *types
 
 	cacheKey := fmt.Sprintf("%d:%s:%s:%s:%s", req.Repo.ID, req.Name, req.PkgType, req.Version, req.Filename)
 	if cached, ok := s.idCache.Load(cacheKey); ok {
-		if entry, ok := cached.(pkgVerFileIDs); ok && time.Now().Before(entry.expires) {
-			s.countBatcher.Increment(entry.pkgID, entry.verID, entry.fileID, req.Repo.ID)
+		if entry, ok := cached.(componentAssetIDs); ok && time.Now().Before(entry.expires) {
+			s.countBatcher.Increment(entry.componentID, entry.assetID, req.Repo.ID)
 			return
 		}
 	}
 
-	// Cache miss: do DB lookups (lightweight, ID-only queries)
-	pkg, err := s.pkgRepo.LookupIDByRepoNameAndType(ctx, req.Repo.ID, req.Name, req.PkgType)
+	comp, err := s.compRepo.FindComponentByRepoNameVersionContext(ctx, req.Repo.ID, req.Name, req.Version, req.PkgType)
 	if err != nil {
 		return
 	}
 
-	ver, err := s.pkgRepo.FindVersionByPackageAndVersionContext(ctx, pkg, req.Version)
+	asset, err := s.compRepo.FindAssetByComponentAndFilenameContext(ctx, comp.ID, req.Filename)
 	if err != nil {
-		s.countBatcher.Increment(pkg, 0, 0, req.Repo.ID)
+		s.countBatcher.Increment(comp.ID, 0, req.Repo.ID)
+		s.idCache.Store(cacheKey, componentAssetIDs{componentID: comp.ID, expires: time.Now().Add(s.idCacheTTL)})
 		return
 	}
 
-	file, err := s.pkgRepo.FindFileByVersionAndFilenameContext(ctx, ver.ID, req.Filename)
-	if err != nil {
-		s.countBatcher.Increment(pkg, ver.ID, 0, req.Repo.ID)
-		s.idCache.Store(cacheKey, pkgVerFileIDs{pkgID: pkg, verID: ver.ID, expires: time.Now().Add(s.idCacheTTL)})
-		return
-	}
-
-	s.countBatcher.Increment(pkg, ver.ID, file.ID, req.Repo.ID)
-	s.idCache.Store(cacheKey, pkgVerFileIDs{pkgID: pkg, verID: ver.ID, fileID: file.ID, expires: time.Now().Add(s.idCacheTTL)})
+	s.countBatcher.Increment(comp.ID, asset.ID, req.Repo.ID)
+	s.idCache.Store(cacheKey, componentAssetIDs{componentID: comp.ID, assetID: asset.ID, expires: time.Now().Add(s.idCacheTTL)})
 }

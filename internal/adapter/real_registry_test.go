@@ -23,15 +23,15 @@ func setupGoAdapter(t *testing.T) *GoAdapter {
 	}
 
 	db.AutoMigrate(
-		&model.Package{},
-		&model.PackageVersion{},
-		&model.PackageDependency{},
+		&model.Component{},
+		&model.Component{},
+		&model.ComponentDependency{},
 		&model.Repository{},
 		&model.StorageBackend{},
 	)
 
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
-	pkgRepo := repository.NewPackageRepository(db)
+	compRepo := repository.NewComponentRepository(db)
 
 	storageSvc, err := service.NewStorageService(storageBackendRepo, "", 0)
 	if err != nil {
@@ -55,9 +55,9 @@ func setupGoAdapter(t *testing.T) *GoAdapter {
 
 	storageSvc.RefreshBackends()
 
-	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
+	compCache := cache.NewComponentCache(compRepo, 5*time.Minute)
 
-	adapter := NewGoAdapter(storageSvc, pkgCache)
+	adapter := NewGoAdapter(storageSvc, compCache)
 	return adapter
 }
 

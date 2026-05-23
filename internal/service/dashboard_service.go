@@ -176,7 +176,7 @@ func (s *DashboardService) computeStats(ctx context.Context) (*DashboardStats, e
 		Count        int64
 	}
 	if len(repoIDs) > 0 {
-		s.db.Model(&model.Package{}).
+		s.db.Model(&model.Component{}).
 			Select("repository_id, COUNT(*) as count").
 			Where("repository_id IN ?", repoIDs).
 			Group("repository_id").
@@ -316,7 +316,7 @@ func (s *DashboardService) getDirStorageBytes(path string) int64 {
 
 // getTopPackages 获取下载量最高的包
 func (s *DashboardService) getTopPackages(limit int) []PackageTop {
-	var packages []model.Package
+	var packages []model.Component
 	if err := s.db.Order("download_count DESC").Limit(limit).Find(&packages).Error; err != nil {
 		return []PackageTop{}
 	}
@@ -325,7 +325,7 @@ func (s *DashboardService) getTopPackages(limit int) []PackageTop {
 	for _, pkg := range packages {
 		topPackages = append(topPackages, PackageTop{
 			Name:          pkg.Name,
-			Type:          string(pkg.Type),
+			Type:          string(pkg.Format),
 			DownloadCount: pkg.DownloadCount,
 			Description:   pkg.Description,
 			License:       pkg.License,

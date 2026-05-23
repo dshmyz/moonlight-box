@@ -14,13 +14,13 @@ import (
 )
 
 type UploadService struct {
-	pkgRepo    *repository.PackageRepository
+	compRepo   *repository.ComponentRepository
 	storageSvc *StorageService
 }
 
-func NewUploadService(pkgRepo *repository.PackageRepository, storageSvc *StorageService) *UploadService {
+func NewUploadService(compRepo *repository.ComponentRepository, storageSvc *StorageService) *UploadService {
 	return &UploadService{
-		pkgRepo:    pkgRepo,
+		compRepo:   compRepo,
 		storageSvc: storageSvc,
 	}
 }
@@ -35,20 +35,20 @@ type UploadContext struct {
 	Content          io.Reader
 	Size             int64
 	PackageType      model.PackageType
-	RepositoryType   model.RepositoryType
 	RepositoryID     uint
 	UploadedBy       uint
 	Metadata         map[string]interface{}
-	Dependencies     []model.PackageDependency
-	FileType         model.PackageFileType
+	Dependencies     []model.ComponentDependency
+	FileType         model.AssetKind
 	DownloadURL      string
 	RepoName         string
 	StorageBackendID uint
+	Namespace        string
 }
 
 type UploadResult struct {
-	PackageID      uint
-	VersionID      uint
+	ComponentID    uint
+	VersionID      uint // alias of ComponentID for API compatibility
 	Version        string
 	StorageKey     string
 	Size           int64
@@ -78,52 +78,55 @@ func (s *UploadService) Upload(ctx context.Context, uc *UploadContext) (*UploadR
 		return nil, fmt.Errorf("failed to calculate checksum")
 	}
 
-	pkg, ver, _, err := s.pkgRepo.StorePackageFile(ctx, &model.Package{
-		Name:           uc.Name,
-		Type:           uc.PackageType,
-		Description:    getDescription(uc.Metadata),
-		RepositoryID:   uc.RepositoryID,
-		RepositoryType: uc.RepositoryType,
-		CreatedBy:      uc.UploadedBy,
-	}, &model.PackageVersion{
-		Version:     uc.Version,
-		Status:      model.StatusPublished,
-		PublishedBy: uc.UploadedBy,
-		Metadata:    marshalMetadata(uc.Metadata),
-	}, &model.PackageFile{
-		Filename:       uc.Filename,
-		FileType:       uc.FileType,
-		StoragePath:    storageKey,
-		SizeBytes:      checksumReader.GetWrittenBytes(),
-		ChecksumSHA256: checksum.SHA256,
-		ChecksumMD5:    checksum.MD5,
-		DownloadURL:    uc.DownloadURL,
-	})
+	comp := &model.Component{
+		RepositoryID: uc.RepositoryID,
+		Format:       uc.PackageType,
+		Namespace:    uc.Namespace,
+		Name:         uc.Name,
+		Version:      uc.Version,
+		Description:  getDescription(uc.Metadata),
+		Status:       model.StatusPublished,
+		PublishedBy:  uc.UploadedBy,
+		Metadata:     marshalMetadata(uc.Metadata),
+		CreatedBy:    uc.UploadedBy,
+	}
+	asset := &model.Asset{
+		FileName:    uc.Filename,
+		Kind:        uc.FileType,
+		Path:        storageKey,
+		DownloadURL: uc.DownloadURL,
+		Blob: model.Blob{
+			Ref:       storageKey,
+			SHA256:    checksum.SHA256,
+			MD5:       checksum.MD5,
+			SizeBytes: checksumReader.GetWrittenBytes(),
+		},
+	}
 
+	savedComp, _, err := s.compRepo.StoreComponentAsset(ctx, comp, asset)
 	if err != nil {
 		s.storageSvc.DeletePackageWithBackend(ctx, uc.RepoName, uc.PkgType, storageName, storageVersion, uc.StorageBackendID)
-		return nil, fmt.Errorf("failed to store package metadata: %w", err)
+		return nil, fmt.Errorf("failed to store component metadata: %w", err)
 	}
 
 	if len(uc.Dependencies) > 0 {
-		versionID := ver.ID
-		deps := make([]model.PackageDependency, len(uc.Dependencies))
+		componentID := savedComp.ID
+		deps := make([]model.ComponentDependency, len(uc.Dependencies))
 		copy(deps, uc.Dependencies)
 		go func() {
 			bg, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
-			if depErr := s.pkgRepo.UpsertVersionDependencies(bg, versionID, deps); depErr != nil {
+			if depErr := s.compRepo.UpsertComponentDependencies(bg, componentID, deps); depErr != nil {
 				logrus.WithError(depErr).WithFields(logrus.Fields{
-					"version_id": versionID,
-					"dep_count":  len(deps),
-				}).Warn("failed to async upsert package dependencies")
+					"component_id": componentID,
+					"dep_count":    len(deps),
+				}).Warn("failed to async upsert component dependencies")
 			}
 		}()
 	}
 
 	return &UploadResult{
-		PackageID:      pkg.ID,
-		VersionID:      ver.ID,
+		ComponentID:    savedComp.ID,
 		Version:        uc.Version,
 		StorageKey:     storageKey,
 		Size:           checksumReader.GetWrittenBytes(),
@@ -170,14 +173,14 @@ func marshalMetadata(meta map[string]interface{}) string {
 	}
 	data, err := json.Marshal(meta)
 	if err != nil {
-		logrus.WithError(err).Warn("failed to marshal package metadata, returning empty")
+		logrus.WithError(err).Warn("failed to marshal component metadata, returning empty")
 		return ""
 	}
 	return string(data)
 }
 
-func (s *UploadService) GetPackageRepository() *repository.PackageRepository {
-	return s.pkgRepo
+func (s *UploadService) GetComponentRepository() *repository.ComponentRepository {
+	return s.compRepo
 }
 
 func (s *UploadService) GetStorageService() *StorageService {

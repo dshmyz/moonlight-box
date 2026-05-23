@@ -186,6 +186,35 @@ func (c *MemoryCache) Stats() map[string]interface{} {
 	}
 }
 
+func (c *MemoryCache) ListItems(offset, limit int, search string) ([]CacheItem, int) {
+	var items []CacheItem
+	total := 0
+
+	for _, shard := range c.shards {
+		shard.mu.RLock()
+		for key, item := range shard.items {
+			if search == "" || contains(key, search) {
+				total++
+				if total > offset && len(items) < limit {
+					remainingTTL := int64(0)
+					if !item.ExpiresAt.IsZero() {
+						remainingTTL = int64(time.Until(item.ExpiresAt).Seconds())
+					}
+					items = append(items, CacheItem{
+						Key:          key,
+						IsExpired:    item.IsExpired(),
+						Expiry:       item.ExpiresAt,
+						RemainingTTL: remainingTTL,
+					})
+				}
+			}
+		}
+		shard.mu.RUnlock()
+	}
+
+	return items, total
+}
+
 func (c *MemoryCache) Stop() {
 	close(c.stopChan)
 }

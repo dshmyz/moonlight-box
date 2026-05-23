@@ -132,7 +132,7 @@ func main() {
 	// 初始化仓库
 	userRepo := repository.NewUserRepository(database.GetDB())
 	roleRepo := repository.NewRoleRepository(database.GetDB())
-	packageRepo := repository.NewPackageRepository(database.GetDB())
+	compRepo := repository.NewComponentRepository(database.GetDB())
 	proxyDownloadLogRepo := repository.NewProxyDownloadLogRepository(database.GetDB())
 
 	// 初始化服务
@@ -227,50 +227,44 @@ func main() {
 	// 初始化权限缓存服务（5分钟TTL）
 	permCacheSvc := service.NewPermissionCacheService(roleRepo, 5*time.Minute)
 
-	// 创建 PackageCache（5分钟TTL）
-	pkgCache := cache.NewPackageCache(packageRepo, 5*time.Minute)
+	// 创建 ComponentCache（5分钟TTL）
+	compCache := cache.NewComponentCache(compRepo, 5*time.Minute)
 
-	// 创建 MetadataCache（元数据本地磁盘缓存，支持 TTL 和 stale-while-revalidate）
-	metaCache := service.NewMetadataCache(storageSvc)
+	// 初始化协议插件（新架构）
+	npmPlugin := adapter.NewNpmPlugin()
+	mavenPlugin := adapter.NewMavenPlugin()
+	goPlugin := adapter.NewGoPlugin()
+	pypiPlugin := adapter.NewPyPIPlugin()
+	genericPlugin := adapter.NewGenericPlugin()
+	yumPlugin := adapter.NewYumPlugin()
+	aptPlugin := adapter.NewAptPlugin()
 
-	// 初始化适配器（传入 pkgCache）
-	npmAdapter := adapter.NewNpmAdapter(storageSvc, pkgCache)
-	mavenAdapter := adapter.NewMavenAdapter(storageSvc, pkgCache)
-	pypiAdapter := adapter.NewPyPIAdapter(repoRepo, storageSvc, pkgCache)
-	goAdapter := adapter.NewGoAdapter(storageSvc, pkgCache)
-	genericAdapter := adapter.NewGenericAdapter(storageSvc, pkgCache)
-	yumAdapter := adapter.NewYumAdapter(repoRepo, storageSvc, pkgCache)
-	aptAdapter := adapter.NewAptAdapter(storageSvc, pkgCache)
-
-	// 注入元数据缓存
-	type metaCacher interface{ SetMetadataCache(*service.MetadataCache) }
-	for _, adp := range []metaCacher{
-		npmAdapter, mavenAdapter, pypiAdapter, goAdapter,
-		genericAdapter, yumAdapter, aptAdapter,
-	} {
-		adp.SetMetadataCache(metaCache)
+	// 创建新架构 RepositoryRouter
+	repoManager := types.NewDefaultRepositoryManager()
+	compositeResolver := &types.CompositeResolver{
+		Resolvers: []types.RepositoryPathResolver{
+			&types.Nexus3Resolver{},
+			&types.Nexus2Resolver{},
+		},
 	}
-
-	// 构建 adapter map 用于 DownloadService
-	adapterMap := map[string]types.Adapter{
-		string(types.NpmType):     npmAdapter,
-		string(types.MavenType):   mavenAdapter,
-		string(types.PyPIType):    pypiAdapter,
-		string(types.GoType):      goAdapter,
-		string(types.GenericType): genericAdapter,
-		string(types.YumType):     yumAdapter,
-		string(types.AptType):     aptAdapter,
-	}
+	repositoryRouter := types.NewRepositoryRouter(compositeResolver, repoManager)
+	repositoryRouter.RegisterPlugin("maven", mavenPlugin)
+	repositoryRouter.RegisterPlugin("npm", npmPlugin)
+	repositoryRouter.RegisterPlugin("go", goPlugin)
+	repositoryRouter.RegisterPlugin("pypi", pypiPlugin)
+	repositoryRouter.RegisterPlugin("generic", genericPlugin)
+	repositoryRouter.RegisterPlugin("yum", yumPlugin)
+	repositoryRouter.RegisterPlugin("apt", aptPlugin)
 
 	// 创建 ProxyDownloader 实例（纯代理下载组件）
-	proxyDownloader := proxy.NewProxyDownloader(cacheSvc, remoteClient, adapterMap)
+	proxyDownloader := proxy.NewProxyDownloader(cacheSvc, remoteClient)
 
 	// 注入健康检查服务到 ProxyDownloader
 	proxyDownloader.SetHealthCheckService(healthCheckSvc)
 
 	// 创建 DownloadService
 	downloadSvc := service.NewDownloadService(
-		packageRepo,
+		compRepo,
 		storageSvc,
 		proxyDownloader,
 		proxyDownloadLogRepo,
@@ -287,20 +281,9 @@ func main() {
 	proxyRepoHandler := proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
 	proxyRepoHandler.SetDownloadService(downloadSvc)
 
-	adapters := []types.Adapter{
-		npmAdapter,
-		mavenAdapter,
-		pypiAdapter,
-		goAdapter,
-		genericAdapter,
-		yumAdapter,
-		aptAdapter,
-	}
-
 	repoSvc := service.NewRepositoryService(repoRepo, groupRepo, db)
 	repoSvc.SetRepoCache(repoCache)
 	blockRuleSvc := service.NewBlockRuleService(blockRuleRepo, auditSvc)
-	uploadSvc := service.NewUploadService(packageRepo, storageSvc)
 
 	// 注册所有缓存到缓存管理器
 	cacheSvcProvider := proxy.NewCacheServiceProvider(cacheSvc, "proxy-content", "代理下载内容缓存")
@@ -312,15 +295,8 @@ func main() {
 	permCacheProvider := service.NewPermissionCacheProvider(permCacheSvc, "permission", "权限缓存")
 	cacheMgr.Register(permCacheProvider)
 
-	pkgCacheProvider := cache.NewPackageCacheProvider(pkgCache, "package-metadata", "包元数据缓存")
-	cacheMgr.Register(pkgCacheProvider)
-
-	// 注入 Fetcher 到所有适配器
-	for _, adap := range adapters {
-		if repoAdap, ok := adap.(adapter.RepoAwareAdapter); ok {
-			repoAdap.SetFetcher(proxyDownloader)
-		}
-	}
+	compCacheProvider := cache.NewComponentCacheProvider(compCache, "package-metadata", "包元数据缓存")
+	cacheMgr.Register(compCacheProvider)
 
 	// 初始化备份服务
 	backupRepo := repository.NewBackupRepository(db)
@@ -358,7 +334,6 @@ func main() {
 	blockRuleHandler := handler.NewBlockRuleHandler(blockRuleSvc, auditSvc, auditRepo)
 	userHandler := handler.NewUserHandler(userRepo, roleRepo, auditSvc)
 	roleHandler := handler.NewRoleHandler(roleRepo, auditSvc)
-	pkgVersionHandler := handler.NewPackageVersionHandler(packageRepo)
 
 	// 初始化 CAS 认证服务
 	casSvc := service.NewCASService(&cfg.Auth, userRepo, roleRepo, authService, systemConfigSvc)
@@ -366,7 +341,7 @@ func main() {
 
 	// 初始化安全扫描服务
 	scanRepo := repository.NewScanRepository(db)
-	scanner := service.NewSecurityScanner(scanRepo, packageRepo, blockRuleRepo)
+	scanner := service.NewSecurityScanner(scanRepo, compRepo, blockRuleRepo)
 	securityHandler := handler.NewSecurityHandler(scanner)
 
 	vulnRuleRepo := repository.NewVulnRuleRepository(db)
@@ -392,7 +367,7 @@ func main() {
 	fileBrowseHandler := handler.NewFileBrowseHandler(storageSvc)
 
 	// 初始化迁移 worker（先传 nil 作为 service）
-	migrationWorker := migration.NewMigrationWorkerV2(nil, storageSvc, packageRepo, repoRepo, migrationItemRepo, 5, 3, 50)
+	migrationWorker := migration.NewMigrationWorkerV2(nil, storageSvc, compRepo, repoRepo, migrationItemRepo, 5, 3, 50)
 
 	// 创建仓库创建器适配器
 	repoCreator := migration.NewRepositoryCreatorAdapter(repoRepo, storageBackendRepo)
@@ -467,7 +442,7 @@ func main() {
 	}
 
 	// 创建路由器上下文
-	routerCtx := NewRouterContext(cfg, authService, auditSvc, permCacheSvc, blockRuleSvc, repoSvc, proxyRepoHandler, adapters, webhookSvc, uploadSvc)
+	routerCtx := NewRouterContext(cfg, authService, auditSvc, permCacheSvc, blockRuleSvc, repoSvc, proxyRepoHandler, repositoryRouter, webhookSvc)
 	routerCtx.RepoCache = repoCache
 	routerCtx.Handlers.Repo = repoHandler
 	routerCtx.Handlers.PublicRepo = publicRepoHandler
@@ -481,7 +456,6 @@ func main() {
 	routerCtx.Handlers.AuditLog = auditLogHandler
 	routerCtx.Handlers.User = userHandler
 	routerCtx.Handlers.Role = roleHandler
-	routerCtx.Handlers.PackageVersion = pkgVersionHandler
 	routerCtx.Handlers.Backup = backupHandler
 	routerCtx.Handlers.BackupConfig = backupConfigHandler
 	routerCtx.Handlers.Webhook = webhookHandler

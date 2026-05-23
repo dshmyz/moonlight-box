@@ -39,7 +39,7 @@ func main() {
 	fmt.Printf("当前仓库数量: %d\n", repoCount)
 
 	var pkgCount int64
-	db.Model(&model.Package{}).Count(&pkgCount)
+	db.Model(&model.Component{}).Count(&pkgCount)
 	fmt.Printf("当前包数量: %d\n", pkgCount)
 
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
@@ -56,7 +56,7 @@ func main() {
 	}
 	storageSvc.SetDefaultBackendForTest(localStorage)
 
-	pkgRepo := repository.NewPackageRepository(db)
+	compRepo := repository.NewComponentRepository(db)
 	repoRepo := repository.NewRepositoryRepository(db)
 	logRepo := repository.NewProxyDownloadLogRepository(db)
 
@@ -73,7 +73,7 @@ func main() {
 	defer logBatcher.Stop()
 
 	downloadSvc := service.NewDownloadService(
-		pkgRepo,
+		compRepo,
 		storageSvc,
 		proxyDownloader,
 		logRepo,
@@ -184,7 +184,7 @@ func testPyPIPackage(svc *service.DownloadService, repoRepo *repository.Reposito
 }
 
 func verifyDatabaseStorage(db *gorm.DB) {
-	var packages []model.Package
+	var packages []model.Component
 	if err := db.Preload("Versions").Preload("Versions.Files").Find(&packages).Error; err != nil {
 		fmt.Printf("查询包失败: %v\n", err)
 		return
@@ -193,20 +193,11 @@ func verifyDatabaseStorage(db *gorm.DB) {
 	fmt.Printf("\n数据库中的包记录:\n")
 	for _, pkg := range packages {
 		fmt.Printf("\n📦 包名: %s\n", pkg.Name)
-		fmt.Printf("   类型: %s\n", pkg.Type)
+		fmt.Printf("   格式: %s\n", pkg.Format)
 		fmt.Printf("   仓库ID: %d\n", pkg.RepositoryID)
+		fmt.Printf("   版本: %s\n", pkg.Version)
 		fmt.Printf("   下载次数: %d\n", pkg.DownloadCount)
-
-		for _, version := range pkg.Versions {
-			fmt.Printf("   版本: %s (状态: %s)\n", version.Version, version.Status)
-			fmt.Printf("      存储路径: %s\n", version.Version)
-			fmt.Printf("      下载次数: %d\n", version.DownloadCount)
-
-			for _, file := range version.Files {
-				fmt.Printf("      文件: %s (%d bytes)\n", file.Filename, file.SizeBytes)
-				fmt.Printf("         存储路径: %s\n", file.StoragePath)
-			}
-		}
+		fmt.Printf("   状态: %s\n", pkg.Status)
 	}
 
 	var downloadLogs []model.ProxyDownloadLog

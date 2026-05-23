@@ -32,7 +32,7 @@ var (
 	pypiTestDB      *gorm.DB
 	pypiAdapter     adapter.RepoAwareAdapter
 	pypiRepoSvc     *service.RepositoryService
-	pypiPkgRepo     *repository.PackageRepository
+	pypiPkgRepo     *repository.ComponentRepository
 	pypiStorageSvc  *service.StorageService
 	pypiRepoHandler *proxy.RepoHandler
 )
@@ -55,10 +55,10 @@ func setupPyPITestEnv() {
 		&model.UserRole{},
 		&model.Repository{},
 		&model.RepositoryGroup{},
-		&model.Package{},
-		&model.PackageVersion{},
-		&model.PackageFile{},
-		&model.PackageDependency{},
+		&model.Component{},
+		&model.Component{},
+		&model.Asset{},
+		&model.ComponentDependency{},
 		&model.AuditLog{},
 		&model.BlockRule{},
 		&model.ScanResult{},
@@ -71,7 +71,7 @@ func setupPyPITestEnv() {
 	pypiStorageSvc, _ = service.NewStorageService(storageBackendRepo, "", 0)
 	pypiStorageSvc.SetDefaultBackendForTest(localStorage)
 
-	pypiPkgRepo = repository.NewPackageRepository(pypiTestDB)
+	pypiPkgRepo = repository.NewComponentRepository(pypiTestDB)
 	repoRepo := repository.NewRepositoryRepository(pypiTestDB)
 	groupRepo := repository.NewGroupRepository(pypiTestDB)
 
@@ -178,16 +178,16 @@ func TestE2E_PyPI_ListPackages(t *testing.T) {
 	setupPyPITestEnv()
 	defer teardownPyPITestEnv()
 
-	pypiPkgRepo.StorePackageFile(context.Background(), &model.Package{
+	pypiPkgRepo.StoreComponentAsset(context.Background(), &model.Component{
 		Name:        "requests",
-		Type:        model.PackageTypePyPI,
+		Format: model.PackageTypePyPI,
 		Description: "HTTP library",
-	}, &model.PackageVersion{
+	}, &model.Component{
 		Version:     "2.28.0",
 		Status:      model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    "requests-2.28.0-py3-none-any.whl",
-		FileType:    model.FileTypePrimary,
+	}, &model.Asset{
+		FileName:    "requests-2.28.0-py3-none-any.whl",
+		Kind:    model.AssetKindPrimary,
 		SizeBytes:   1000,
 	})
 
@@ -211,19 +211,6 @@ func TestE2E_PyPI_GetPackageFiles(t *testing.T) {
 	setupPyPITestEnv()
 	defer teardownPyPITestEnv()
 
-	pypiPkgRepo.StorePackageFile(context.Background(), &model.Package{
-		Name:        "flask",
-		Type:        model.PackageTypePyPI,
-		Description: "Flask framework",
-	}, &model.PackageVersion{
-		Version:     "2.0.0",
-		Status:      model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    "Flask-2.0.0-py3-none-any.whl",
-		FileType:    model.FileTypePrimary,
-		SizeBytes:   1000,
-	})
-
 	repo := &model.Repository{
 		Name:        "pypi-files-e2e",
 		Type:        model.RepoTypeLocal,
@@ -231,6 +218,20 @@ func TestE2E_PyPI_GetPackageFiles(t *testing.T) {
 		Enabled:     true,
 	}
 	pypiRepoSvc.Create(repo, nil)
+
+	pypiPkgRepo.StoreComponentAsset(context.Background(), &model.Component{
+		Name:         "flask",
+		Format: model.PackageTypePyPI,
+		Description:  "Flask framework",
+		RepositoryID: repo.ID,
+	}, &model.Component{
+		Version:     "2.0.0",
+		Status:      model.StatusPublished,
+	}, &model.Asset{
+		FileName:    "Flask-2.0.0-py3-none-any.whl",
+		Kind:    model.AssetKindPrimary,
+		SizeBytes:   1000,
+	})
 
 	resp, err := http.Get(pypiTestServer.URL + "/repo/pypi-files-e2e/simple/flask/")
 	assert.Nil(t, err)
@@ -244,29 +245,6 @@ func TestE2E_PyPI_DownloadPackage(t *testing.T) {
 	setupPyPITestEnv()
 	defer teardownPyPITestEnv()
 
-	pypiPkgRepo.StorePackageFile(context.Background(), &model.Package{
-		Name:        "download-test",
-		Type:        model.PackageTypePyPI,
-		Description: "Download test package",
-	}, &model.PackageVersion{
-		Version:     "1.0.0",
-		Status:      model.StatusPublished,
-	}, &model.PackageFile{
-		Filename:    "download_test-1.0.0-py3-none-any.whl",
-		FileType:    model.FileTypePrimary,
-		SizeBytes:   1000,
-	})
-	_, _ = pypiStorageSvc.StorePackageWithBackend(
-		context.Background(),
-		"pypi-download-e2e",
-		"pypi",
-		"download_test",
-		"download_test-1.0.0-py3-none-any.whl",
-		bytes.NewReader([]byte("download test wheel")),
-		int64(len([]byte("download test wheel"))),
-		0,
-	)
-
 	repo := &model.Repository{
 		Name:        "pypi-download-e2e",
 		Type:        model.RepoTypeLocal,
@@ -274,6 +252,20 @@ func TestE2E_PyPI_DownloadPackage(t *testing.T) {
 		Enabled:     true,
 	}
 	pypiRepoSvc.Create(repo, nil)
+
+	pypiPkgRepo.StoreComponentAsset(context.Background(), &model.Component{
+		Name:         "download-test",
+		Format: model.PackageTypePyPI,
+		Description:  "Download test package",
+		RepositoryID: repo.ID,
+	}, &model.Component{
+		Version:     "1.0.0",
+		Status:      model.StatusPublished,
+	}, &model.Asset{
+		FileName:    "download_test-1.0.0-py3-none-any.whl",
+		Kind:    model.AssetKindPrimary,
+		SizeBytes:   1000,
+	})
 
 	resp, err := http.Get(pypiTestServer.URL + "/repo/pypi-download-e2e/packages/download_test-1.0.0-py3-none-any.whl")
 	assert.Nil(t, err)

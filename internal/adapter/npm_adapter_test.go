@@ -28,10 +28,10 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	}
 
 	db.AutoMigrate(
-		&model.Package{},
-		&model.PackageVersion{},
-		&model.PackageFile{},
-		&model.PackageDependency{},
+		&model.Component{},
+		&model.Component{},
+		&model.Asset{},
+		&model.ComponentDependency{},
 		&model.Repository{},
 		&model.StorageBackend{},
 	)
@@ -43,7 +43,7 @@ func setupNpmAdapter(t *testing.T) (*NpmAdapter, *gorm.DB) {
 	db := setupTestDB(t)
 
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
-	pkgRepo := repository.NewPackageRepository(db)
+	compRepo := repository.NewComponentRepository(db)
 
 	testDir, err := os.MkdirTemp("", "npm-test-*")
 	if err != nil {
@@ -73,9 +73,9 @@ func setupNpmAdapter(t *testing.T) (*NpmAdapter, *gorm.DB) {
 		t.Fatalf("failed to create storage service: %v", err)
 	}
 
-	pkgCache := cache.NewPackageCache(pkgRepo, 5*time.Minute)
+	compCache := cache.NewComponentCache(compRepo, 5*time.Minute)
 
-	adapter := NewNpmAdapter(storageSvc, pkgCache)
+	adapter := NewNpmAdapter(storageSvc, compCache)
 	return adapter, db
 }
 
@@ -335,9 +335,9 @@ func TestNpmAdapter_GetVersion_NotFound(t *testing.T) {
 func TestNpmAdapter_ListVersions(t *testing.T) {
 	adapter, db := setupNpmAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name:        "test-pkg",
-		Type:        model.PackageTypeNPM,
+		Format: model.PackageTypeNPM,
 		Description: "Test package",
 	}
 	db.Create(pkg)
@@ -359,14 +359,14 @@ func TestNpmAdapter_GetMetadata_NotFound(t *testing.T) {
 func TestNpmAdapter_Delete(t *testing.T) {
 	adapter, db := setupNpmAdapter(t)
 
-	pkg := &model.Package{
+	pkg := &model.Component{
 		Name:        "delete-test",
-		Type:        model.PackageTypeNPM,
+		Format: model.PackageTypeNPM,
 		Description: "Delete test package",
 	}
 	db.Create(pkg)
 
-	version := &model.PackageVersion{
+	version := &model.Component{
 		PackageID: pkg.ID,
 		Version:   "1.0.0",
 		Status:    model.StatusPublished,

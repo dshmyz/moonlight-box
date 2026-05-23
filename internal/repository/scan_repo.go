@@ -21,9 +21,9 @@ func (r *ScanRepository) UpdateScanResult(id uint, updates map[string]interface{
 	return r.db.Model(&model.ScanResult{}).Where("id = ?", id).Updates(updates).Error
 }
 
-func (r *ScanRepository) FindScanResultByVersionID(versionID uint) (*model.ScanResult, error) {
+func (r *ScanRepository) FindScanResultByComponentID(componentID uint) (*model.ScanResult, error) {
 	var result model.ScanResult
-	err := r.db.Preload("Vulnerabilities").Where("version_id = ?", versionID).First(&result).Error
+	err := r.db.Preload("Vulnerabilities").Where("component_id = ?", componentID).First(&result).Error
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +62,7 @@ func (r *ScanRepository) ListVulnerabilitiesPaginated(page, pageSize int, severi
 
 	query := r.db.Model(&model.Vulnerability{}).
 		Joins("JOIN scan_results ON scan_results.id = vulnerabilities.scan_result_id").
-		Joins("JOIN package_versions ON package_versions.id = scan_results.version_id").
+		Joins("JOIN package_versions ON package_versions.id = scan_results.component_id").
 		Joins("JOIN packages ON packages.id = package_versions.package_id")
 
 	if severity != "" {
@@ -89,7 +89,7 @@ func (r *ScanRepository) ListScanResults(page, pageSize int, status string, pkgT
 	var total int64
 
 	query := r.db.Model(&model.ScanResult{}).
-		Joins("JOIN package_versions ON package_versions.id = scan_results.version_id").
+		Joins("JOIN package_versions ON package_versions.id = scan_results.component_id").
 		Joins("JOIN packages ON packages.id = package_versions.package_id")
 
 	if status != "" {
