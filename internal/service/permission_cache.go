@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/cache"
+	"github.com/moonlight-box/registry/internal/core/cache"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 )

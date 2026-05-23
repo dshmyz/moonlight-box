@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/types"
+	"github.com/moonlight-box/registry/internal/core/runtime"
 	"gorm.io/gorm"
 )
 
@@ -18,7 +18,7 @@ func NewMetadataStore(db *gorm.DB) *MetadataStore {
 	return &MetadataStore{db: db}
 }
 
-func (s *MetadataStore) Get(ctx context.Context, key types.ArtifactKey) (*types.Artifact, error) {
+func (s *MetadataStore) Get(ctx context.Context, key runtime.ArtifactKey) (*runtime.Artifact, error) {
 	var artifact model.Artifact
 
 	coordsJSON, _ := json.Marshal(key.Coordinates)
@@ -31,7 +31,7 @@ func (s *MetadataStore) Get(ctx context.Context, key types.ArtifactKey) (*types.
 
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return nil, types.ErrNotFound
+			return nil, runtime.ErrNotFound
 		}
 		return nil, err
 	}
@@ -39,7 +39,7 @@ func (s *MetadataStore) Get(ctx context.Context, key types.ArtifactKey) (*types.
 	return s.toTypesArtifact(&artifact), nil
 }
 
-func (s *MetadataStore) Put(ctx context.Context, artifact *types.Artifact) error {
+func (s *MetadataStore) Put(ctx context.Context, artifact *runtime.Artifact) error {
 	modelArtifact := s.toModelArtifact(artifact)
 
 	var existing model.Artifact
@@ -61,7 +61,7 @@ func (s *MetadataStore) Put(ctx context.Context, artifact *types.Artifact) error
 	return s.db.WithContext(ctx).Save(modelArtifact).Error
 }
 
-func (s *MetadataStore) Delete(ctx context.Context, key types.ArtifactKey) error {
+func (s *MetadataStore) Delete(ctx context.Context, key runtime.ArtifactKey) error {
 	coordsJSON, _ := json.Marshal(key.Coordinates)
 
 	result := s.db.WithContext(ctx).
@@ -74,12 +74,12 @@ func (s *MetadataStore) Delete(ctx context.Context, key types.ArtifactKey) error
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return types.ErrNotFound
+		return runtime.ErrNotFound
 	}
 	return nil
 }
 
-func (s *MetadataStore) List(ctx context.Context, repoID string) ([]*types.Artifact, error) {
+func (s *MetadataStore) List(ctx context.Context, repoID string) ([]*runtime.Artifact, error) {
 	var artifacts []model.Artifact
 
 	err := s.db.WithContext(ctx).
@@ -90,14 +90,14 @@ func (s *MetadataStore) List(ctx context.Context, repoID string) ([]*types.Artif
 		return nil, err
 	}
 
-	result := make([]*types.Artifact, len(artifacts))
+	result := make([]*runtime.Artifact, len(artifacts))
 	for i, a := range artifacts {
 		result[i] = s.toTypesArtifact(&a)
 	}
 	return result, nil
 }
 
-func (s *MetadataStore) toTypesArtifact(m *model.Artifact) *types.Artifact {
+func (s *MetadataStore) toTypesArtifact(m *model.Artifact) *runtime.Artifact {
 	var coords map[string]string
 	if m.Coordinates != nil {
 		coords = make(map[string]string)
@@ -108,7 +108,7 @@ func (s *MetadataStore) toTypesArtifact(m *model.Artifact) *types.Artifact {
 		}
 	}
 
-	return &types.Artifact{
+	return &runtime.Artifact{
 		ID:           fmt.Sprintf("%d", m.ID),
 		RepositoryID: fmt.Sprintf("%d", m.RepositoryID),
 		Format:       m.Format,
@@ -118,7 +118,7 @@ func (s *MetadataStore) toTypesArtifact(m *model.Artifact) *types.Artifact {
 	}
 }
 
-func (s *MetadataStore) toModelArtifact(t *types.Artifact) *model.Artifact {
+func (s *MetadataStore) toModelArtifact(t *runtime.Artifact) *model.Artifact {
 	coords := make(model.JSONB)
 	for k, v := range t.Coordinates {
 		coords[k] = v

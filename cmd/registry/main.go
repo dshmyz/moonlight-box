@@ -10,18 +10,24 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/adapter"
 	"github.com/moonlight-box/registry/internal/ai"
 	"github.com/moonlight-box/registry/internal/ai/tools"
-	"github.com/moonlight-box/registry/internal/cache"
+	handler "github.com/moonlight-box/registry/internal/api/http"
 	"github.com/moonlight-box/registry/internal/config"
+	"github.com/moonlight-box/registry/internal/core/cache"
+	"github.com/moonlight-box/registry/internal/core/runtime"
 	"github.com/moonlight-box/registry/internal/database"
-	"github.com/moonlight-box/registry/internal/handler"
 	"github.com/moonlight-box/registry/internal/migration"
+	"github.com/moonlight-box/registry/internal/plugins/apt"
+	gomod "github.com/moonlight-box/registry/internal/plugins/go"
+	"github.com/moonlight-box/registry/internal/plugins/maven"
+	"github.com/moonlight-box/registry/internal/plugins/npm"
+	"github.com/moonlight-box/registry/internal/plugins/pypi"
+	"github.com/moonlight-box/registry/internal/plugins/raw"
+	"github.com/moonlight-box/registry/internal/plugins/yum"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
-	"github.com/moonlight-box/registry/internal/types"
 	"github.com/moonlight-box/registry/internal/util"
 	"github.com/sirupsen/logrus"
 
@@ -231,23 +237,23 @@ func main() {
 	compCache := cache.NewComponentCache(compRepo, 5*time.Minute)
 
 	// 初始化协议插件（新架构）
-	npmPlugin := adapter.NewNpmPlugin()
-	mavenPlugin := adapter.NewMavenPlugin()
-	goPlugin := adapter.NewGoPlugin()
-	pypiPlugin := adapter.NewPyPIPlugin()
-	genericPlugin := adapter.NewGenericPlugin()
-	yumPlugin := adapter.NewYumPlugin()
-	aptPlugin := adapter.NewAptPlugin()
+	npmPlugin := npm.NewNpmPlugin()
+	mavenPlugin := maven.NewMavenPlugin()
+	goPlugin := gomod.NewGoPlugin()
+	pypiPlugin := pypi.NewPyPIPlugin()
+	genericPlugin := raw.NewGenericPlugin()
+	yumPlugin := yum.NewYumPlugin()
+	aptPlugin := apt.NewAptPlugin()
 
 	// 创建新架构 RepositoryRouter
-	repoManager := types.NewDefaultRepositoryManager()
-	compositeResolver := &types.CompositeResolver{
-		Resolvers: []types.RepositoryPathResolver{
-			&types.Nexus3Resolver{},
-			&types.Nexus2Resolver{},
+	repoManager := runtime.NewDefaultRepositoryManager()
+	compositeResolver := &runtime.CompositeResolver{
+		Resolvers: []runtime.RepositoryPathResolver{
+			&runtime.Nexus3Resolver{},
+			&runtime.Nexus2Resolver{},
 		},
 	}
-	repositoryRouter := types.NewRepositoryRouter(compositeResolver, repoManager)
+	repositoryRouter := runtime.NewRepositoryRouter(compositeResolver, repoManager)
 	repositoryRouter.RegisterPlugin("maven", mavenPlugin)
 	repositoryRouter.RegisterPlugin("npm", npmPlugin)
 	repositoryRouter.RegisterPlugin("go", goPlugin)

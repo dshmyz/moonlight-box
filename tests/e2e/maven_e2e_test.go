@@ -12,18 +12,17 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/adapter"
+	_ "github.com/mattn/go-sqlite3"
+	handler "github.com/moonlight-box/registry/internal/api/http"
 	"github.com/moonlight-box/registry/internal/database"
-	"github.com/moonlight-box/registry/internal/handler"
 	"github.com/moonlight-box/registry/internal/middleware"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/moonlight-box/registry/internal/storage"
-	_ "github.com/mattn/go-sqlite3"
-	"gorm.io/driver/sqlite"
 	"github.com/stretchr/testify/assert"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -266,16 +265,16 @@ func TestE2E_Maven_DownloadArtifact(t *testing.T) {
 
 	mavenPkgRepo.StoreComponentAsset(context.Background(), &model.Component{
 		Name:        "com.test:download-lib",
-		Format: model.PackageTypeMaven,
+		Format:      model.PackageTypeMaven,
 		Description: "Download test library",
 	}, &model.Component{
-		Version:     "1.0.0",
-		Status:      model.StatusPublished,
+		Version: "1.0.0",
+		Status:  model.StatusPublished,
 	}, &model.Asset{
-		FileName:    "download-lib-1.0.0.jar",
-		Kind:    model.AssetKindPrimary,
-		Path: "com/test/download-lib/1.0.0/download-lib-1.0.0.jar",
-		SizeBytes:   1000,
+		FileName:  "download-lib-1.0.0.jar",
+		Kind:      model.AssetKindPrimary,
+		Path:      "com/test/download-lib/1.0.0/download-lib-1.0.0.jar",
+		SizeBytes: 1000,
 	})
 	_, _ = mavenStorageSvc.StorePackageWithBackend(
 		context.Background(),
@@ -330,16 +329,16 @@ func TestE2E_Maven_ChecksumFiles(t *testing.T) {
 
 	mavenPkgRepo.StoreComponentAsset(context.Background(), &model.Component{
 		Name:        "com.test:checksum-lib",
-		Format: model.PackageTypeMaven,
+		Format:      model.PackageTypeMaven,
 		Description: "Checksum test library",
 	}, &model.Component{
-		Version:     "1.0.0",
-		Status:      model.StatusPublished,
+		Version: "1.0.0",
+		Status:  model.StatusPublished,
 	}, &model.Asset{
-		FileName:    "checksum-lib-1.0.0.jar",
-		Kind:    model.AssetKindPrimary,
-		Path: "com/test/checksum-lib/1.0.0/checksum-lib-1.0.0.jar",
-		SizeBytes:   int64(len(jarContent)),
+		FileName:  "checksum-lib-1.0.0.jar",
+		Kind:      model.AssetKindPrimary,
+		Path:      "com/test/checksum-lib/1.0.0/checksum-lib-1.0.0.jar",
+		SizeBytes: int64(len(jarContent)),
 	})
 
 	sha1Resp, err := http.Get(mavenTestServer.URL + "/repo/maven-checksum-e2e/com/test/checksum-lib/1.0.0/checksum-lib-1.0.0.jar.sha1")
@@ -363,17 +362,17 @@ func TestE2E_Maven_DeleteArtifact(t *testing.T) {
 
 	mavenPkgRepo.StoreComponentAsset(context.Background(), &model.Component{
 		Name:         "com.test:deletable-lib",
-		Format: model.PackageTypeMaven,
+		Format:       model.PackageTypeMaven,
 		Description:  "Deletable test library",
 		RepositoryID: 1,
 	}, &model.Component{
-		Version:     "1.0.0",
-		Status:      model.StatusPublished,
+		Version: "1.0.0",
+		Status:  model.StatusPublished,
 	}, &model.Asset{
-		FileName:    "deletable-lib-1.0.0.jar",
-		Kind:    model.AssetKindPrimary,
-		Path: "com/test/deletable-lib/1.0.0/deletable-lib-1.0.0.jar",
-		SizeBytes:   1000,
+		FileName:  "deletable-lib-1.0.0.jar",
+		Kind:      model.AssetKindPrimary,
+		Path:      "com/test/deletable-lib/1.0.0/deletable-lib-1.0.0.jar",
+		SizeBytes: 1000,
 	})
 	_, _ = mavenStorageSvc.StorePackageWithBackend(
 		context.Background(),

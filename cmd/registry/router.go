@@ -5,8 +5,8 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	handler "github.com/moonlight-box/registry/internal/api/http"
 	"github.com/moonlight-box/registry/internal/config"
-	"github.com/moonlight-box/registry/internal/handler"
 	"github.com/moonlight-box/registry/internal/middleware"
 	"github.com/moonlight-box/registry/internal/proxy"
 	"github.com/moonlight-box/registry/internal/service"

@@ -64,7 +64,7 @@ func main() {
 	dnsResolver := proxy.NewDNSResolver(nil)
 	tm := proxy.NewTransportManager(30*time.Second, dnsResolver)
 	remoteClient := proxy.NewRemoteClient(tm, 5)
-	proxyDownloader := proxy.NewProxyDownloader(cacheSvc, remoteClient, nil)
+	proxyDownloader := proxy.NewProxyDownloader(cacheSvc, remoteClient)
 
 	countBatcher := service.NewDownloadCountBatcher(db, 10*time.Second)
 	defer countBatcher.Stop()

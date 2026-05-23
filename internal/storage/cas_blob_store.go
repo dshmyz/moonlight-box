@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/types"
+	"github.com/moonlight-box/registry/internal/core/runtime"
 	"gorm.io/gorm"
 )
 
@@ -25,13 +25,13 @@ func NewCASBlobStore(backend Backend, db *gorm.DB) *CASBlobStore {
 	}
 }
 
-func (s *CASBlobStore) Put(reader io.Reader) (types.BlobRef, error) {
+func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 	hasher := sha256.New()
 	teeReader := io.TeeReader(reader, hasher)
 
 	tempPath := fmt.Sprintf("temp/%s", uuid.New().String())
 	if err := s.backend.Put(context.Background(), tempPath, teeReader, -1); err != nil {
-		return types.BlobRef{}, err
+		return runtime.BlobRef{}, err
 	}
 
 	digest := hex.EncodeToString(hasher.Sum(nil))
@@ -41,7 +41,7 @@ func (s *CASBlobStore) Put(reader io.Reader) (types.BlobRef, error) {
 	if err == nil {
 		s.backend.Delete(context.Background(), tempPath)
 		s.db.Model(&existingBlob).UpdateColumn("ref_count", gorm.Expr("ref_count + 1"))
-		return types.BlobRef{
+		return runtime.BlobRef{
 			BlobID:    existingBlob.ID,
 			Algorithm: "sha256",
 			Digest:    digest,
@@ -53,12 +53,12 @@ func (s *CASBlobStore) Put(reader io.Reader) (types.BlobRef, error) {
 	
 	rc, err := s.backend.Get(context.Background(), tempPath)
 	if err != nil {
-		return types.BlobRef{}, err
+		return runtime.BlobRef{}, err
 	}
 	defer rc.Close()
 	
 	if err := s.backend.Put(context.Background(), casPath, rc, -1); err != nil {
-		return types.BlobRef{}, err
+		return runtime.BlobRef{}, err
 	}
 	s.backend.Delete(context.Background(), tempPath)
 
@@ -69,10 +69,10 @@ func (s *CASBlobStore) Put(reader io.Reader) (types.BlobRef, error) {
 		StoragePath: casPath,
 	}
 	if err := s.db.Create(blob).Error; err != nil {
-		return types.BlobRef{}, err
+		return runtime.BlobRef{}, err
 	}
 
-	return types.BlobRef{
+	return runtime.BlobRef{
 		BlobID:    blob.ID,
 		Algorithm: "sha256",
 		Digest:    digest,
@@ -80,7 +80,7 @@ func (s *CASBlobStore) Put(reader io.Reader) (types.BlobRef, error) {
 	}, nil
 }
 
-func (s *CASBlobStore) Open(ref types.BlobRef) (io.ReadCloser, error) {
+func (s *CASBlobStore) Open(ref runtime.BlobRef) (io.ReadCloser, error) {
 	var blob model.BlobV2
 	if err := s.db.First(&blob, ref.BlobID).Error; err != nil {
 		return nil, err
@@ -88,12 +88,12 @@ func (s *CASBlobStore) Open(ref types.BlobRef) (io.ReadCloser, error) {
 	return s.backend.Get(context.Background(), blob.StoragePath)
 }
 
-func (s *CASBlobStore) Stat(ref types.BlobRef) (*types.BlobMetadata, error) {
+func (s *CASBlobStore) Stat(ref runtime.BlobRef) (*runtime.BlobMetadata, error) {
 	var blob model.BlobV2
 	if err := s.db.First(&blob, ref.BlobID).Error; err != nil {
 		return nil, err
 	}
-	return &types.BlobMetadata{
+	return &runtime.BlobMetadata{
 		Algorithm:   blob.Algorithm,
 		Digest:      blob.Digest,
 		Size:        blob.Size,
@@ -102,7 +102,7 @@ func (s *CASBlobStore) Stat(ref types.BlobRef) (*types.BlobMetadata, error) {
 	}, nil
 }
 
-func (s *CASBlobStore) Delete(ref types.BlobRef) error {
+func (s *CASBlobStore) Delete(ref runtime.BlobRef) error {
 	var blob model.BlobV2
 	if err := s.db.First(&blob, ref.BlobID).Error; err != nil {
 		return err

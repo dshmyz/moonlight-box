@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/adapter"
+	// "github.com/moonlight-box/registry/internal/plugins"
 	"github.com/moonlight-box/registry/internal/database"
-	"github.com/moonlight-box/registry/internal/handler"
+	handler "github.com/moonlight-box/registry/internal/api/http"
 	"github.com/moonlight-box/registry/internal/middleware"
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/proxy"

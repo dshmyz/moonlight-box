@@ -44,7 +44,7 @@ func (m *mockDownloadService) Download(ctx context.Context, downloadCtx *types.D
 		Content:  result.Content,
 		Size:     result.Size,
 		RepoID:   result.RepoID,
-		FileName: result.Name,
+		Filename: result.Name,
 		Name:     downloadCtx.Name,
 		Version:  downloadCtx.Version,
 	}, nil
@@ -387,11 +387,10 @@ func TestProxyDownloader_CircuitBreakerIntegration(t *testing.T) {
 	}
 	db.Create(repo)
 
-	proxyDownloader := NewProxyDownloader(NewCacheService(), remoteClient, nil)
+	proxyDownloader := NewProxyDownloader(NewCacheService(), remoteClient)
 	proxyDownloader.SetHealthCheckService(healthSvc)
 
 	mockAdp := &testMockAdapter{}
-	proxyDownloader.RegisterAdapter("maven", mockAdp)
 
 	repoCache := NewRepositoryCache(repoRepo, nil, 5*time.Minute)
 	repoHandler := NewRepoHandler(repoRepo, nil, repoCache)
@@ -460,11 +459,10 @@ func TestProxyDownloader_CircuitBreakerNonBlocking(t *testing.T) {
 	}
 	db.Create(repo)
 
-	proxyDownloader := NewProxyDownloader(NewCacheService(), remoteClient, nil)
+	proxyDownloader := NewProxyDownloader(NewCacheService(), remoteClient)
 	proxyDownloader.SetHealthCheckService(healthSvc)
 
 	mockAdp := &testMockAdapter{}
-	proxyDownloader.RegisterAdapter("maven", mockAdp)
 
 	repoCache := NewRepositoryCache(repoRepo, nil, 5*time.Minute)
 	repoHandler := NewRepoHandler(repoRepo, nil, repoCache)

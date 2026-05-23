@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/cache"
+	"github.com/moonlight-box/registry/internal/core/cache"
 )
 
 type RepositoryCacheProvider struct {
