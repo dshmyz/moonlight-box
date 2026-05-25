@@ -83,6 +83,31 @@ echo "============================================"
 
 setup
 
+# 清理可能残留的阻断规则（避免影响代理测试）
+TOKEN=$(curl -s -X POST "$BASE_URL/api/v1/auth/login" \
+    -H "Content-Type: application/json" \
+    -d '{"username":"admin","password":"admin123"}' | \
+    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('access_token',''))" 2>/dev/null)
+if [ -n "$TOKEN" ]; then
+    EXISTING_RULES=$(curl -s "$BASE_URL/api/v1/block-rules" \
+        -H "Authorization: Bearer $TOKEN")
+    echo "$EXISTING_RULES" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+rules=d.get('data',[])
+for r in rules:
+    pid=r.get('id')
+    pkg=r.get('package_name','')
+    reason=r.get('reason','')
+    if reason == 'test' or pkg == 'lodash' or pkg.startswith('test-block'):
+        print(pid)
+" 2>/dev/null | while read rid; do
+        [ -n "$rid" ] && curl -s -X DELETE "$BASE_URL/api/v1/block-rules/$rid" \
+            -H "Authorization: Bearer $TOKEN" > /dev/null 2>&1
+    done
+    sleep 1
+fi
+
 # ============================================================
 log_section "测试 1: NPM 代理回源"
 # ============================================================
