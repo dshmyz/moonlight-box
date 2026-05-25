@@ -1,0 +1,5 @@
+[moonlight]
+name=Moonlight Box
+baseurl=https://your-moonlight-domain/repository/yum-virtual/$basearch/
+enabled=1
+gpgcheck=0
