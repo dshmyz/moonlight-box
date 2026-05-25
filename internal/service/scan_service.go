@@ -11,11 +11,12 @@ import (
 	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
 )
 
 type SecurityScanner struct {
 	scanRepo        *repository.ScanRepository
-	compRepo        *repository.ComponentRepository
+	db              *gorm.DB
 	blockRepo       *repository.BlockRuleRepository
 	vulnRuleService *VulnRuleService
 	logger          *logrus.Logger
@@ -125,10 +126,10 @@ var scanRules = []ScanRule{
 	},
 }
 
-func NewSecurityScanner(scanRepo *repository.ScanRepository, compRepo *repository.ComponentRepository, blockRepo *repository.BlockRuleRepository) *SecurityScanner {
+func NewSecurityScanner(scanRepo *repository.ScanRepository, db *gorm.DB, blockRepo *repository.BlockRuleRepository) *SecurityScanner {
 	return &SecurityScanner{
 		scanRepo:  scanRepo,
-		compRepo:  compRepo,
+		db:        db,
 		blockRepo: blockRepo,
 		logger:    logrus.New(),
 	}
@@ -292,14 +293,33 @@ func parseVersion(v string) []int {
 
 func (s *SecurityScanner) ScanAllPackages(ctx context.Context) {
 	for _, pkgType := range []string{"npm", "maven", "pypi", "go"} {
-		packages, total, err := s.compRepo.ListContext(ctx, 1, 10000, pkgType, "")
-		if err != nil {
-			s.logger.Errorf("Failed to list %s packages: %v", pkgType, err)
-			continue
-		}
-		s.logger.Infof("Scanning %d %s packages", total, pkgType)
-		for _, pkg := range packages {
-			s.TriggerScan(ctx, pkg.ID, pkgType, pkg.Name, pkg.Version)
+		var artifacts []model.Artifact
+		s.db.WithContext(ctx).Model(&model.Artifact{}).
+			Where("format = ?", pkgType).
+			Find(&artifacts)
+
+		s.logger.Infof("Scanning %d %s packages", len(artifacts), pkgType)
+		for _, a := range artifacts {
+			name := ""
+			if v, ok := a.Coordinates["name"]; ok {
+				if s, ok := v.(string); ok {
+					name = s
+				}
+			}
+			if name == "" {
+				if v, ok := a.Coordinates["package"]; ok {
+					if s, ok := v.(string); ok {
+						name = s
+					}
+				}
+			}
+			version := ""
+			if v, ok := a.Coordinates["version"]; ok {
+				if s, ok := v.(string); ok {
+					version = s
+				}
+			}
+			s.TriggerScan(ctx, a.ID, pkgType, name, version)
 			time.Sleep(50 * time.Millisecond)
 		}
 	}

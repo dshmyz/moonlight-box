@@ -176,7 +176,7 @@ func (s *DashboardService) computeStats(ctx context.Context) (*DashboardStats, e
 		Count        int64
 	}
 	if len(repoIDs) > 0 {
-		s.db.Model(&model.Component{}).
+		s.db.Model(&model.Artifact{}).
 			Select("repository_id, COUNT(*) as count").
 			Where("repository_id IN ?", repoIDs).
 			Group("repository_id").
@@ -314,22 +314,40 @@ func (s *DashboardService) getDirStorageBytes(path string) int64 {
 	return calculateDirSize(path)
 }
 
-// getTopPackages 获取下载量最高的包
+// getTopPackages 获取最近创建的制品包
 func (s *DashboardService) getTopPackages(limit int) []PackageTop {
-	var packages []model.Component
-	if err := s.db.Order("download_count DESC").Limit(limit).Find(&packages).Error; err != nil {
+	var artifacts []model.Artifact
+	if err := s.db.Order("created_at DESC").Limit(limit * 3).Find(&artifacts).Error; err != nil {
 		return []PackageTop{}
 	}
 
-	topPackages := make([]PackageTop, 0, len(packages))
-	for _, pkg := range packages {
+	seen := make(map[string]bool)
+	topPackages := make([]PackageTop, 0, limit)
+	for _, a := range artifacts {
+		name := ""
+		if v, ok := a.Coordinates["name"]; ok {
+			if s, ok := v.(string); ok {
+				name = s
+			}
+		}
+		if name == "" {
+			if v, ok := a.Coordinates["package"]; ok {
+				if s, ok := v.(string); ok {
+					name = s
+				}
+			}
+		}
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
 		topPackages = append(topPackages, PackageTop{
-			Name:          pkg.Name,
-			Type:          string(pkg.Format),
-			DownloadCount: pkg.DownloadCount,
-			Description:   pkg.Description,
-			License:       pkg.License,
+			Name: name,
+			Type: a.Format,
 		})
+		if len(topPackages) >= limit {
+			break
+		}
 	}
 	return topPackages
 }

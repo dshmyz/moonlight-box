@@ -71,12 +71,19 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 	}
 
 	readTimeout := r.calcReadTimeout(repo, -1)
-	failureRules, _ := ParseFailureCacheRules(repo.FailureCacheRules)
+	failureRules, _ := ParseFailureCacheRules("")
+	if repo.Config != nil {
+		failureRules, _ = ParseFailureCacheRules(repo.Config.FailureCacheRules)
+	}
 
 	opts := RequestOptions{
 		ReadTimeout:        readTimeout,
-		MaxRedirects:       repo.MaxRedirects,
-		InsecureSkipVerify: repo.InsecureSkipVerify,
+		MaxRedirects:       0,
+		InsecureSkipVerify: false,
+	}
+	if repo.Config != nil {
+		opts.MaxRedirects = repo.Config.MaxRedirects
+		opts.InsecureSkipVerify = repo.Config.InsecureSkipVerify
 	}
 
 	resp, err := r.client.GetStream(ctx, remoteURL, opts, toProxyAuthConfig(authCfg))
@@ -90,7 +97,7 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 				ttl := failureRules.Match(remoteErr.StatusCode)
 				r.cache.SetNegative(ctx, cacheKey, time.Duration(ttl)*time.Second)
 			} else if remoteErr.IsNotFound() {
-				r.cache.SetNegative(ctx, cacheKey, time.Duration(repo.CacheNegativeTTL)*time.Second)
+				r.cache.SetNegative(ctx, cacheKey, time.Duration(repo.Config.CacheNegativeTTL)*time.Second)
 			}
 		}
 		return nil, err
@@ -104,6 +111,10 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 	isLargeFile := r.largeFileThreshold > 0 && contentLength > r.largeFileThreshold
 
 	if isLargeFile {
+		retTTL := 0
+		if repo.Config != nil {
+			retTTL = repo.Config.CacheTTLSeconds
+		}
 		return &RouteResult{
 			Source:     repo.Name,
 			SourceType: "proxy",
@@ -111,7 +122,7 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 			Content:    resp.Body,
 			Size:       contentLength,
 			FromCache:  false,
-			CacheTTL:   repo.CacheTTLSeconds,
+			CacheTTL:   retTTL,
 			IsLarge:    true,
 		}, nil
 	}
@@ -125,8 +136,11 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
+	cacheTTL := 0
+	if repo.Config != nil {
+		cacheTTL = repo.Config.CacheTTLSeconds
+	}
 	size := int64(len(body))
-
 	return &RouteResult{
 		Source:     repo.Name,
 		SourceType: "proxy",
@@ -134,7 +148,7 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 		Content:    io.NopCloser(bytes.NewReader(body)),
 		Size:       size,
 		FromCache:  false,
-		CacheTTL:   repo.CacheTTLSeconds,
+		CacheTTL:   cacheTTL,
 		IsLarge:    false,
 	}, nil
 }
@@ -142,8 +156,8 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 func (r *ProxyDownloader) calcReadTimeout(repo *model.Repository, contentLength int64) time.Duration {
 	var baseTimeout time.Duration
 
-	if repo.TimeoutSeconds > 0 {
-		baseTimeout = time.Duration(repo.TimeoutSeconds) * time.Second
+	if repo.Config != nil && repo.Config.TimeoutSeconds > 0 {
+		baseTimeout = time.Duration(repo.Config.TimeoutSeconds) * time.Second
 	} else {
 		cfg := config.Get()
 		if cfg != nil {

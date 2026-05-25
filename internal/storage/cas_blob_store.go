@@ -8,14 +8,25 @@ import (
 	"io"
 
 	"github.com/google/uuid"
-	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/core/runtime"
+	"github.com/moonlight-box/registry/internal/model"
 	"gorm.io/gorm"
 )
 
 type CASBlobStore struct {
 	backend Backend
 	db      *gorm.DB
+}
+
+type countingReader struct {
+	reader io.Reader
+	n      int64
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.n += int64(n)
+	return n, err
 }
 
 func NewCASBlobStore(backend Backend, db *gorm.DB) *CASBlobStore {
@@ -27,7 +38,8 @@ func NewCASBlobStore(backend Backend, db *gorm.DB) *CASBlobStore {
 
 func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 	hasher := sha256.New()
-	teeReader := io.TeeReader(reader, hasher)
+	counter := &countingReader{reader: reader}
+	teeReader := io.TeeReader(counter, hasher)
 
 	tempPath := fmt.Sprintf("temp/%s", uuid.New().String())
 	if err := s.backend.Put(context.Background(), tempPath, teeReader, -1); err != nil {
@@ -35,12 +47,12 @@ func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 	}
 
 	digest := hex.EncodeToString(hasher.Sum(nil))
+	size := counter.n
 
 	var existingBlob model.BlobV2
 	err := s.db.Where("algorithm = ? AND digest = ?", "sha256", digest).First(&existingBlob).Error
 	if err == nil {
 		s.backend.Delete(context.Background(), tempPath)
-		s.db.Model(&existingBlob).UpdateColumn("ref_count", gorm.Expr("ref_count + 1"))
 		return runtime.BlobRef{
 			BlobID:    existingBlob.ID,
 			Algorithm: "sha256",
@@ -50,13 +62,13 @@ func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 	}
 
 	casPath := s.buildCASPath("sha256", digest)
-	
+
 	rc, err := s.backend.Get(context.Background(), tempPath)
 	if err != nil {
 		return runtime.BlobRef{}, err
 	}
 	defer rc.Close()
-	
+
 	if err := s.backend.Put(context.Background(), casPath, rc, -1); err != nil {
 		return runtime.BlobRef{}, err
 	}
@@ -65,7 +77,7 @@ func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 	blob := &model.BlobV2{
 		Algorithm:   "sha256",
 		Digest:      digest,
-		Size:        0,
+		Size:        size,
 		StoragePath: casPath,
 	}
 	if err := s.db.Create(blob).Error; err != nil {
@@ -76,7 +88,7 @@ func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 		BlobID:    blob.ID,
 		Algorithm: "sha256",
 		Digest:    digest,
-		Size:      blob.Size,
+		Size:      size,
 	}, nil
 }
 
@@ -108,10 +120,17 @@ func (s *CASBlobStore) Delete(ref runtime.BlobRef) error {
 		return err
 	}
 
+	var refCount int64
+	if err := s.db.Table("artifact_blobs").Where("blob_id = ?", blob.ID).Count(&refCount).Error; err != nil {
+		return err
+	}
+	if refCount > 0 {
+		return nil
+	}
+
 	if err := s.backend.Delete(context.Background(), blob.StoragePath); err != nil {
 		return err
 	}
-
 	return s.db.Delete(&blob).Error
 }
 

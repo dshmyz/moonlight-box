@@ -155,7 +155,10 @@ async function loadPackages() {
       page: currentPage.value,
       page_size: pageSize.value,
     })
-    packages.value = response.list || []
+    packages.value = (response.list || []).map(pkg => ({
+      ...pkg,
+      type: pkg.type || pkg.package_type || pkg.format || 'generic',
+    }))
     total.value = response.total || 0
   } catch (error) {
     ElMessage.error('加载包列表失败')

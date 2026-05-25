@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/moonlight-box/registry/internal/core/runtime"
 )
@@ -96,9 +98,11 @@ func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime ru
 	}
 
 	var sb strings.Builder
+	seen := make(map[string]bool)
 	for _, artifact := range artifacts {
 		version := artifact.Coordinates["version"]
-		if version != "" {
+		if version != "" && !seen[version] {
+			seen[version] = true
 			sb.WriteString(version + "\n")
 		}
 	}
@@ -117,16 +121,42 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 	}
 
 	modulePath := parts[0]
-	version := parts[1]
+	filename := parts[1]
 
+	// Determine file type and clean version.
+	var fileType string
+	cleanVersion := filename
+	switch {
+	case strings.HasSuffix(filename, ".info"):
+		fileType = "info"
+		cleanVersion = strings.TrimSuffix(filename, ".info")
+	case strings.HasSuffix(filename, ".mod"):
+		fileType = "mod"
+		cleanVersion = strings.TrimSuffix(filename, ".mod")
+	case strings.HasSuffix(filename, ".zip"):
+		fileType = "zip"
+		cleanVersion = strings.TrimSuffix(filename, ".zip")
+	}
+
+	// For .info, generate JSON dynamically so the version is always a valid semver.
+	if fileType == "info" {
+		ctx.Writer.Header().Set("Content-Type", "application/json")
+		ctx.Writer.WriteHeader(http.StatusOK)
+		fmt.Fprintf(ctx.Writer, `{"Version":"%s","Time":"%s"}`, cleanVersion, time.Now().UTC().Format(time.RFC3339))
+		return nil
+	}
+
+	// For .mod and .zip, fetch and stream the stored blob.
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "go",
 		Coordinates: map[string]string{
 			"module":  modulePath,
-			"version": version,
+			"version": cleanVersion,
+			"path":    modulePath + "/@v",
+			"ext":     fileType,
 		},
-		Filename: version,
+		Filename: filename,
 	}
 
 	artifact, err := repoRuntime.GetArtifact(context.Background(), key)
@@ -138,9 +168,15 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 		}
 		return nil
 	}
+	defer artifact.Content.Close()
 
-	ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
+	switch fileType {
+	case "mod":
+		ctx.Writer.Header().Set("Content-Type", "text/plain")
+	case "zip":
+		ctx.Writer.Header().Set("Content-Type", "application/zip")
+	}
 	ctx.Writer.WriteHeader(http.StatusOK)
-	fmt.Fprintf(ctx.Writer, "Artifact: %s", artifact.ID)
+	io.Copy(ctx.Writer, artifact.Content)
 	return nil
 }

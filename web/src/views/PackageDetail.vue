@@ -148,7 +148,11 @@ async function fetchPackageDetail(type: string, name: string) {
       packageApi.getVersions(type, name),
     ])
 
-    const found = searchResult.list?.find(
+    const list = (searchResult.list || []).map(p => ({
+      ...p,
+      type: p.type || p.package_type || p.format || 'generic',
+    }))
+    const found = list.find(
       (p) => p.name === name && p.type === type
     )
 
@@ -219,7 +223,11 @@ async function fetchAndCachePackageDetail(type: string, name: string, showLoadin
       packageApi.getVersions(type, name),
     ])
 
-    const found = searchResult.list?.find(
+    const list = (searchResult.list || []).map(p => ({
+      ...p,
+      type: p.type || p.package_type || p.format || 'generic',
+    }))
+    const found = list.find(
       (p) => p.name === name && p.type === type
     )
 

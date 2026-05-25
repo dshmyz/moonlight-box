@@ -2,8 +2,6 @@ package types
 
 import (
 	"io"
-
-	"github.com/moonlight-box/registry/internal/model"
 )
 
 type PackageType string
@@ -145,9 +143,7 @@ type PublishResult struct {
 	Content        io.Reader
 	Size           int64
 	StorageVersion string
-	FileType       model.AssetKind
 	Metadata       map[string]interface{}
-	Dependencies   []model.ComponentDependency
 	DownloadURL    string
 	Response       interface{}
 }

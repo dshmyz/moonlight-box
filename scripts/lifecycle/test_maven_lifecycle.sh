@@ -49,6 +49,11 @@ check_mvn() {
     return 0
 }
 
+# cleanup
+CLEAN_TEMPS=()
+cleanup() { rm -rf "${CLEAN_TEMPS[@]}" 2>/dev/null || true; }
+trap cleanup EXIT
+
 echo "============================================"
 echo " Maven 生命周期测试"
 echo " 目标: $BASE_URL"
@@ -68,6 +73,7 @@ if [ -z "$TOKEN" ]; then
 fi
 
 TEST_DIR="/tmp/maven-test-$$"
+CLEAN_TEMPS+=("$TEST_DIR")
 mkdir -p "$TEST_DIR"
 
 echo "════════════════════════════════════════"
@@ -102,7 +108,7 @@ cat > "$TEST_DIR/pom.xml" <<'EOF'
 </project>
 EOF
 
-REPO_URL="$BASE_URL/repo/maven-local"
+REPO_URL="$BASE_URL/repository/maven-local"
 sed -i.bak "s|REPO_URL_PLACEHOLDER|$REPO_URL|g" "$TEST_DIR/pom.xml"
 rm -f "$TEST_DIR/pom.xml.bak"
 
@@ -179,7 +185,7 @@ if mvn deploy -DskipTests -s "$SETTINGS_FILE" > /dev/null 2>&1; then
     pass "Maven 项目部署成功"
     
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-        "$BASE_URL/repo/maven-local/com/test/maven-test-artifact/1.0.0/maven-test-artifact-1.0.0.jar")
+        "$BASE_URL/repository/maven-local/com/test/maven-test-artifact/1.0.0/maven-test-artifact-1.0.0.jar")
     
     if [ "$HTTP_CODE" = "200" ]; then
         pass "部署的 JAR 文件可访问 (HTTP 200)"
@@ -196,6 +202,7 @@ echo "  测试 5: 下载依赖"
 echo "════════════════════════════════════════"
 
 DOWNLOAD_DIR="/tmp/maven-download-test-$$"
+CLEAN_TEMPS+=("$DOWNLOAD_DIR")
 mkdir -p "$DOWNLOAD_DIR"
 
 cat > "$DOWNLOAD_DIR/pom.xml" <<EOF
@@ -241,6 +248,7 @@ echo "  测试 6: 代理仓库下载"
 echo "════════════════════════════════════════"
 
 PROXY_DOWNLOAD_DIR="/tmp/maven-proxy-download-test-$$"
+CLEAN_TEMPS+=("$PROXY_DOWNLOAD_DIR")
 mkdir -p "$PROXY_DOWNLOAD_DIR"
 
 cat > "$PROXY_DOWNLOAD_DIR/pom.xml" <<EOF
@@ -258,7 +266,7 @@ cat > "$PROXY_DOWNLOAD_DIR/pom.xml" <<EOF
     <repositories>
         <repository>
             <id>proxy-repo</id>
-            <url>$BASE_URL/repo/maven-proxy-aliyun</url>
+            <url>$BASE_URL/repository/maven-proxy-aliyun</url>
         </repository>
     </repositories>
     

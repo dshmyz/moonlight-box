@@ -41,23 +41,13 @@ type ProxyFetcher interface {
 	FetchFromRemote(ctx context.Context, repo *model.Repository, remoteURL string) (*RouteResult, error)
 }
 
-type DownloadService interface {
-	Download(ctx context.Context, downloadCtx *types.DownloadContext) (*types.DownloadResult, error)
-}
-
 // RepoHandler 负责仓库请求的统一处理
-// 职责：
-// 1. 路径解析 + 仓库解析策略（Local/Proxy/Virtual）
-// 2. 虚拟仓库遍历和解析
-// 3. 并发解析多个代理仓库
-// 4. 调度 Adapter 处理请求和响应格式化
 type RepoHandler struct {
-	repoRepo    *repository.RepositoryRepository
-	groupRepo   *repository.GroupRepository
-	downloadSvc DownloadService
-	repoCache   *RepositoryCache
-	adapters    map[string]RepoRequestHandler
-	virtSem     *semaphore.Weighted // 限制虚拟仓库并发解析数
+	repoRepo  *repository.RepositoryRepository
+	groupRepo *repository.GroupRepository
+	repoCache *RepositoryCache
+	adapters  map[string]RepoRequestHandler
+	virtSem   *semaphore.Weighted
 }
 
 func NewRepoHandler(
@@ -70,17 +60,13 @@ func NewRepoHandler(
 		groupRepo: groupRepo,
 		repoCache: repoCache,
 		adapters:  make(map[string]RepoRequestHandler),
-		virtSem:   semaphore.NewWeighted(50), // 全局最多50个虚拟仓库并发解析
+		virtSem:   semaphore.NewWeighted(50),
 	}
 }
 
 func (r *RepoHandler) GetAdapter(pkgType model.PackageType) (RepoRequestHandler, bool) {
 	adp, ok := r.adapters[string(pkgType)]
 	return adp, ok
-}
-
-func (r *RepoHandler) SetDownloadService(svc DownloadService) {
-	r.downloadSvc = svc
 }
 
 func (r *RepoHandler) RegisterAdapter(pkgType string, handler RepoRequestHandler) {
@@ -130,47 +116,11 @@ func (r *RepoHandler) HandleRepoDelete(c *gin.Context, repo *model.Repository) (
 }
 
 func (r *RepoHandler) resolveLocal(ctx context.Context, downloadCtx *types.DownloadContext) (*RouteResult, error) {
-	if r.downloadSvc == nil {
-		return nil, fmt.Errorf("download service not initialized")
-	}
-
-	result, err := r.downloadSvc.Download(ctx, downloadCtx)
-	if err != nil {
-		return nil, err
-	}
-	return &RouteResult{
-		SourceType:  "local",
-		Content:     result.Content,
-		Size:        result.Size,
-		FromCache:   result.FromCache,
-		Name:        result.Name,
-		Version:     result.Version,
-		Filename:    result.Filename,
-		ContentType: result.ContentType,
-	}, nil
+	return nil, fmt.Errorf("local repository resolution not supported via RepoHandler")
 }
 
 func (r *RepoHandler) resolveProxy(ctx context.Context, downloadCtx *types.DownloadContext) (*RouteResult, error) {
-	if r.downloadSvc == nil {
-		return nil, fmt.Errorf("download service not initialized")
-	}
-
-	result, err := r.downloadSvc.Download(ctx, downloadCtx)
-	if err != nil {
-		return nil, err
-	}
-	return &RouteResult{
-		Source:      downloadCtx.Repo.Name,
-		SourceType:  "proxy",
-		RepoID:      result.RepoID,
-		Content:     result.Content,
-		Size:        result.Size,
-		FromCache:   result.FromCache,
-		Name:        result.Name,
-		Version:     result.Version,
-		Filename:    result.Filename,
-		ContentType: result.ContentType,
-	}, nil
+	return nil, fmt.Errorf("proxy repository resolution not supported via RepoHandler")
 }
 
 func (r *RepoHandler) resolveVirtual(ctx context.Context, downloadCtx *types.DownloadContext) (*RouteResult, error) {

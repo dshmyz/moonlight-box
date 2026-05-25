@@ -57,13 +57,13 @@ func (r *RepositoryRepository) FindByIDContext(ctx context.Context, id uint) (*m
 	return &repo, nil
 }
 
-// List 列出仓库，支持过滤
+// List 列出仓库，支持过滤（不分页）
 func (r *RepositoryRepository) List(filter map[string]interface{}) ([]model.Repository, error) {
-	return r.ListContext(context.Background(), filter)
+	return r.ListContext(context.Background(), filter, 0, 0)
 }
 
-// ListContext 列出仓库，支持过滤
-func (r *RepositoryRepository) ListContext(ctx context.Context, filter map[string]interface{}) ([]model.Repository, error) {
+// ListContext 列出仓库，支持过滤和分页（page=0 或 pageSize=0 表示不分页）
+func (r *RepositoryRepository) ListContext(ctx context.Context, filter map[string]interface{}, page, pageSize int) ([]model.Repository, error) {
 	var repos []model.Repository
 	query := r.db.WithContext(ctx).Model(&model.Repository{})
 
@@ -79,8 +79,32 @@ func (r *RepositoryRepository) ListContext(ctx context.Context, filter map[strin
 	if publicVisible, ok := filter["public_visible"]; ok {
 		query = query.Where("public_visible = ?", publicVisible)
 	}
+	if page > 0 && pageSize > 0 {
+		query = query.Offset((page - 1) * pageSize).Limit(pageSize)
+	}
 	err := query.Order("created_at DESC").Find(&repos).Error
 	return repos, err
+}
+
+// CountContext 统计符合条件的仓库数量
+func (r *RepositoryRepository) CountContext(ctx context.Context, filter map[string]interface{}) (int64, error) {
+	var total int64
+	query := r.db.WithContext(ctx).Model(&model.Repository{})
+
+	if pkgType, ok := filter["package_type"]; ok {
+		query = query.Where("package_type = ?", pkgType)
+	}
+	if repoType, ok := filter["type"]; ok {
+		query = query.Where("type = ?", repoType)
+	}
+	if enabled, ok := filter["enabled"]; ok {
+		query = query.Where("enabled = ?", enabled)
+	}
+	if publicVisible, ok := filter["public_visible"]; ok {
+		query = query.Where("public_visible = ?", publicVisible)
+	}
+	err := query.Count(&total).Error
+	return total, err
 }
 
 // Update 更新仓库

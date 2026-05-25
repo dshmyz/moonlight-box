@@ -4,17 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/moonlight-box/registry/internal/core/cache"
 	"github.com/moonlight-box/registry/internal/core/runtime"
 )
 
-type AptPlugin struct{}
+type AptPlugin struct {
+	cache *cache.MemoryCache
+}
 
 func NewAptPlugin() *AptPlugin {
-	return &AptPlugin{}
+	return &AptPlugin{cache: cache.NewMemoryCache()}
 }
 
 func (p *AptPlugin) Name() string {
@@ -37,7 +42,8 @@ func (p *AptPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Repo
 		return p.handleDebPackage(ctx, repoRuntime, path)
 	}
 
-	return errors.New("invalid apt path")
+	http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+	return nil
 }
 
 func (p *AptPlugin) isInReleaseRequest(path string) bool {
@@ -72,10 +78,18 @@ func (p *AptPlugin) handleInRelease(ctx *runtime.RequestContext, repoRuntime run
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
+	if artifact.Content == nil {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	defer artifact.Content.Close()
 
 	ctx.Writer.Header().Set("Content-Type", "text/plain")
+	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+key.Filename+"\"")
 	ctx.Writer.WriteHeader(http.StatusOK)
-	fmt.Fprintf(ctx.Writer, "Artifact: %s", artifact.ID)
+	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -84,6 +98,7 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 		return errors.New("method not allowed")
 	}
 
+	// Try serve stored Packages file first.
 	filename := filepath.Base(path)
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
@@ -94,15 +109,74 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 		Filename: filename,
 	}
 
-	artifact, err := repoRuntime.GetArtifact(context.Background(), key)
-	if err != nil {
-		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+	if artifact, err := repoRuntime.GetArtifact(context.Background(), key); err == nil && artifact.Content != nil {
+		defer artifact.Content.Close()
+		ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
+		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+key.Filename+"\"")
+		ctx.Writer.WriteHeader(http.StatusOK)
+		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+			return err
+		}
 		return nil
 	}
 
-	ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
+	// Fallback: render lightweight dynamic Packages index from artifact graph.
+	cacheKey := "apt:packages:" + ctx.Repository.ID + ":" + path
+	if p.cache != nil {
+		if v, ok := p.cache.Get(cacheKey); ok {
+			if b, ok := v.([]byte); ok && len(b) > 0 {
+				ctx.Writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				ctx.Writer.WriteHeader(http.StatusOK)
+				_, _ = ctx.Writer.Write(b)
+				return nil
+			}
+		}
+	}
+
+	artifacts, err := repoRuntime.QueryArtifacts(context.Background(), runtime.ArtifactQuery{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "apt",
+	})
+	if err != nil {
+		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		return nil
+	}
+	var b strings.Builder
+	for _, a := range artifacts {
+		name := a.Coordinates["package"]
+		if name == "" {
+			name = a.Coordinates["name"]
+		}
+		version := a.Coordinates["version"]
+		file := a.Coordinates["filename"]
+		if file == "" {
+			file = a.Properties["filename"]
+		}
+		if name == "" || version == "" || file == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "Package: %s\n", name)
+		fmt.Fprintf(&b, "Version: %s\n", version)
+		fmt.Fprintf(&b, "Filename: %s\n", file)
+		if len(a.BlobRefs) > 0 {
+			fmt.Fprintf(&b, "Size: %d\n", a.BlobRefs[0].Size)
+			if a.BlobRefs[0].Algorithm == "sha256" && a.BlobRefs[0].Digest != "" {
+				fmt.Fprintf(&b, "SHA256: %s\n", a.BlobRefs[0].Digest)
+			}
+		}
+		b.WriteString("\n")
+	}
+	if b.Len() == 0 {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	body := []byte(b.String())
+	if p.cache != nil {
+		p.cache.Set(cacheKey, body, 5*time.Minute)
+	}
+	ctx.Writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	ctx.Writer.WriteHeader(http.StatusOK)
-	fmt.Fprintf(ctx.Writer, "Artifact: %s", artifact.ID)
+	_, _ = ctx.Writer.Write(body)
 	return nil
 }
 
@@ -125,9 +199,17 @@ func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime ru
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
 		}
+		if artifact.Content == nil {
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
+		defer artifact.Content.Close()
 		ctx.Writer.Header().Set("Content-Type", "application/vnd.debian.binary-package")
+		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+key.Filename+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
-		fmt.Fprintf(ctx.Writer, "Artifact: %s", artifact.ID)
+		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+			return err
+		}
 		return nil
 	}
 	return errors.New("method not allowed")

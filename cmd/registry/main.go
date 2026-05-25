@@ -18,6 +18,7 @@ import (
 	"github.com/moonlight-box/registry/internal/core/runtime"
 	"github.com/moonlight-box/registry/internal/database"
 	"github.com/moonlight-box/registry/internal/migration"
+	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/plugins/apt"
 	gomod "github.com/moonlight-box/registry/internal/plugins/go"
 	"github.com/moonlight-box/registry/internal/plugins/maven"
@@ -138,7 +139,6 @@ func main() {
 	// 初始化仓库
 	userRepo := repository.NewUserRepository(database.GetDB())
 	roleRepo := repository.NewRoleRepository(database.GetDB())
-	compRepo := repository.NewComponentRepository(database.GetDB())
 	proxyDownloadLogRepo := repository.NewProxyDownloadLogRepository(database.GetDB())
 
 	// 初始化服务
@@ -233,9 +233,6 @@ func main() {
 	// 初始化权限缓存服务（5分钟TTL）
 	permCacheSvc := service.NewPermissionCacheService(roleRepo, 5*time.Minute)
 
-	// 创建 ComponentCache（5分钟TTL）
-	compCache := cache.NewComponentCache(compRepo, 5*time.Minute)
-
 	// 初始化协议插件（新架构）
 	npmPlugin := npm.NewNpmPlugin()
 	mavenPlugin := maven.NewMavenPlugin()
@@ -251,6 +248,7 @@ func main() {
 		Resolvers: []runtime.RepositoryPathResolver{
 			&runtime.Nexus3Resolver{},
 			&runtime.Nexus2Resolver{},
+			&runtime.Nexus2GroupResolver{},
 		},
 	}
 	repositoryRouter := runtime.NewRepositoryRouter(compositeResolver, repoManager)
@@ -262,33 +260,61 @@ func main() {
 	repositoryRouter.RegisterPlugin("yum", yumPlugin)
 	repositoryRouter.RegisterPlugin("apt", aptPlugin)
 
-	// 创建 ProxyDownloader 实例（纯代理下载组件）
-	proxyDownloader := proxy.NewProxyDownloader(cacheSvc, remoteClient)
+	// Wire block rules and audit logging into the repository router
+	repositoryRouter.Blocker = &blockRuleBlocker{svc: blockRuleSvc}
+	repositoryRouter.AuditLog = &auditLoggerAdapter{svc: auditSvc}
 
-	// 注入健康检查服务到 ProxyDownloader
-	proxyDownloader.SetHealthCheckService(healthCheckSvc)
-
-	// 创建 DownloadService
-	downloadSvc := service.NewDownloadService(
-		compRepo,
-		storageSvc,
-		proxyDownloader,
-		proxyDownloadLogRepo,
-		logBatcher,
-		countBatcher,
-	)
+		fetchers := map[string]runtime.RemoteFetcher{
+		"pypi": pypiPlugin,
+		"npm":  npmPlugin,
+	}
+	initRepoRuntimes(repoManager, repoRepo, groupRepo, db, storageSvc, fetchers)
 
 	// 初始化仓库缓存（5分钟TTL）
 	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
 	repoCache.StartCleanup(1 * time.Minute)
 	defer repoCache.Stop()
 
-	// 创建 RepoHandler（负责仓库请求的统一处理）
-	proxyRepoHandler := proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
-	proxyRepoHandler.SetDownloadService(downloadSvc)
-
 	repoSvc := service.NewRepositoryService(repoRepo, groupRepo, db)
 	repoSvc.SetRepoCache(repoCache)
+	repoSvc.SetRepoManager(repoManager)
+	repoSvc.SetRuntimeFactory(func(repo *model.Repository, members []string) (*runtime.Repository, error) {
+		defaultBackend := storageSvc.GetDefaultBackend()
+		if defaultBackend == nil {
+			return nil, fmt.Errorf("no default storage backend available")
+		}
+		repoRuntime, createErr := createRuntimeForRepo(repo, repoRepo, groupRepo, db, defaultBackend, repoManager, fetchers)
+		if createErr != nil {
+			return nil, createErr
+		}
+		config := map[string]interface{}{
+			"allow_overwrite": repo.AllowOverwrite,
+		}
+		if repo.Config != nil {
+			config["remote_url"] = repo.Config.RemoteURL
+			config["auth_type"] = repo.Config.AuthType
+			config["cache_enabled"] = repo.Config.CacheEnabled
+			config["cache_ttl_seconds"] = repo.Config.CacheTTLSeconds
+			config["cache_negative_ttl"] = repo.Config.CacheNegativeTTL
+			config["timeout_seconds"] = repo.Config.TimeoutSeconds
+			config["insecure_skip_verify"] = repo.Config.InsecureSkipVerify
+		}
+			if repo.Type == model.RepoTypeProxy && config["remote_url"] == "" {
+				var dbRemoteURL string
+				db.Raw("SELECT remote_url FROM repositories WHERE id = ?", repo.ID).Scan(&dbRemoteURL)
+				if dbRemoteURL != "" {
+					config["remote_url"] = dbRemoteURL
+				}
+			}
+		return &runtime.Repository{
+			ID:      fmt.Sprintf("%d", repo.ID),
+			Name:    repo.Name,
+			Format:  repo.PackageType,
+			Type:    string(repo.Type),
+			Config:  config,
+			Runtime: repoRuntime,
+		}, nil
+	})
 	blockRuleSvc := service.NewBlockRuleService(blockRuleRepo, auditSvc)
 
 	// 注册所有缓存到缓存管理器
@@ -301,8 +327,6 @@ func main() {
 	permCacheProvider := service.NewPermissionCacheProvider(permCacheSvc, "permission", "权限缓存")
 	cacheMgr.Register(permCacheProvider)
 
-	compCacheProvider := cache.NewComponentCacheProvider(compCache, "package-metadata", "包元数据缓存")
-	cacheMgr.Register(compCacheProvider)
 
 	// 初始化备份服务
 	backupRepo := repository.NewBackupRepository(db)
@@ -347,7 +371,7 @@ func main() {
 
 	// 初始化安全扫描服务
 	scanRepo := repository.NewScanRepository(db)
-	scanner := service.NewSecurityScanner(scanRepo, compRepo, blockRuleRepo)
+	scanner := service.NewSecurityScanner(scanRepo, db, blockRuleRepo)
 	securityHandler := handler.NewSecurityHandler(scanner)
 
 	vulnRuleRepo := repository.NewVulnRuleRepository(db)
@@ -373,7 +397,7 @@ func main() {
 	fileBrowseHandler := handler.NewFileBrowseHandler(storageSvc)
 
 	// 初始化迁移 worker（先传 nil 作为 service）
-	migrationWorker := migration.NewMigrationWorkerV2(nil, storageSvc, compRepo, repoRepo, migrationItemRepo, 5, 3, 50)
+	migrationWorker := migration.NewMigrationWorkerV2(nil, storageSvc, repoRepo, migrationItemRepo, 5, 3, 50)
 
 	// 创建仓库创建器适配器
 	repoCreator := migration.NewRepositoryCreatorAdapter(repoRepo, storageBackendRepo)
@@ -392,6 +416,9 @@ func main() {
 
 	// 初始化健康检查 handler
 	healthCheckHandler := handler.NewHealthCheckHandler(healthCheckSvc)
+
+	// 初始化包版本管理 handler（新架构，读取 artifacts 表）
+	packageVersionHandler := handler.NewPackageVersionHandler(db)
 
 	// 初始化AI服务
 	var aiService *ai.AIService
@@ -448,7 +475,7 @@ func main() {
 	}
 
 	// 创建路由器上下文
-	routerCtx := NewRouterContext(cfg, authService, auditSvc, permCacheSvc, blockRuleSvc, repoSvc, proxyRepoHandler, repositoryRouter, webhookSvc)
+	routerCtx := NewRouterContext(cfg, authService, auditSvc, permCacheSvc, blockRuleSvc, repoSvc, repositoryRouter, webhookSvc)
 	routerCtx.RepoCache = repoCache
 	routerCtx.Handlers.Repo = repoHandler
 	routerCtx.Handlers.PublicRepo = publicRepoHandler
@@ -473,6 +500,7 @@ func main() {
 	routerCtx.Handlers.ProxyDownloadLog = proxyDownloadLogHandler
 	routerCtx.Handlers.HealthCheck = healthCheckHandler
 	routerCtx.Handlers.VulnRule = vulnRuleHandler
+	routerCtx.Handlers.PackageVersion = packageVersionHandler
 
 	router := routerCtx.SetupRouter(version)
 

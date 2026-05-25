@@ -36,13 +36,14 @@ func (a *RepositoryCreatorAdapter) CreateRepo(name, repoType, packageType string
 	}
 
 	if repoType == "proxy" && remoteURL != "" {
-		repo.RemoteURL = remoteURL
-		repo.CacheEnabled = cacheEnabled
-		repo.CacheTTLSeconds = cacheTTLSeconds
+		repo.Config = &model.RepositoryConfig{
+			RemoteURL:       remoteURL,
+			CacheEnabled:    cacheEnabled,
+			CacheTTLSeconds: cacheTTLSeconds,
+		}
 	}
 
 	if repoType == "virtual" {
-		repo.CacheEnabled = false
 		repo.StorageBackendID = nil
 	}
 

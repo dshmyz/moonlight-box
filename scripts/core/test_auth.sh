@@ -32,13 +32,17 @@ info() {
 get_auth_token() {
     local username="$1"
     local password="$2"
-    
     curl -s -X POST "$BASE_URL/api/v1/auth/login" \
         -H "Content-Type: application/json" \
         -d "{\"username\":\"$username\",\"password\":\"$password\"}" | \
         grep -o '"access_token":"[^"]*"' | \
         sed 's/"access_token":"//;s/"//'
 }
+
+# cleanup
+CLEAN_TEMPS=()
+cleanup() { rm -f "${CLEAN_TEMPS[@]}" 2>/dev/null || true; }
+trap cleanup EXIT
 
 echo "============================================"
 echo " 认证与权限测试"
@@ -51,7 +55,6 @@ echo "  测试 1: 管理员登录"
 echo "════════════════════════════════════════"
 
 ADMIN_TOKEN=$(get_auth_token "$ADMIN_USER" "$ADMIN_PASS")
-
 if [ -n "$ADMIN_TOKEN" ]; then
     pass "管理员登录成功，获取到令牌"
 else
@@ -67,7 +70,6 @@ echo "════════════════════════�
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/api/v1/auth/login" \
     -H "Content-Type: application/json" \
     -d '{"username":"invalid_user","password":"invalid_pass"}')
-
 if [ "$HTTP_CODE" = "401" ]; then
     pass "无效凭证返回 401 (符合预期)"
 else
@@ -81,30 +83,33 @@ echo "════════════════════════�
 
 READONLY_USER="readonly_user_$$"
 READONLY_PASS="readonly_pass_$$"
+CLEAN_TEMPS+=("$READONLY_USER")
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/api/v1/users" \
     -H "Authorization: Bearer $ADMIN_TOKEN" \
     -H "Content-Type: application/json" \
     -d "{\"username\":\"$READONLY_USER\",\"password\":\"$READONLY_PASS\",\"email\":\"readonly@test.com\"}")
-
 if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
     pass "只读用户创建成功 (HTTP $HTTP_CODE)"
-    
-    USER_ID=$(curl -s "$BASE_URL/api/v1/users" \
-        -H "Authorization: Bearer $ADMIN_TOKEN" | \
-        grep -o "\"id\":[0-9]*,\"username\":\"$READONLY_USER\"" | \
-        grep -o '"id":[0-9]*' | \
-        grep -o '[0-9]*')
-    
+    USER_CREATED=true
+else
+    info "只读用户创建返回 HTTP $HTTP_CODE (可能已存在)"
+    USER_CREATED=false
+fi
+
+# 获取用户 ID
+USER_ID=""
+if [ "$USER_CREATED" = true ]; then
+    USER_JSON=$(curl -s "$BASE_URL/api/v1/users" -H "Authorization: Bearer $ADMIN_TOKEN")
+    USER_ID=$(echo "$USER_JSON" | grep -o "\"id\":[0-9]*,\"username\":\"$READONLY_USER\"" | grep -o '"id":[0-9]*' | grep -o '[0-9]*' || echo "")
     if [ -n "$USER_ID" ]; then
         info "只读用户 ID: $USER_ID"
-        
+        # assign read-only role
         HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
             "$BASE_URL/api/v1/users/$USER_ID/roles" \
             -H "Authorization: Bearer $ADMIN_TOKEN" \
             -H "Content-Type: application/json" \
             -d '{"role_ids":[3]}')
-        
         if [ "$HTTP_CODE" = "200" ]; then
             pass "只读用户角色分配成功"
         else
@@ -113,103 +118,126 @@ if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
     else
         info "无法获取只读用户 ID"
     fi
-else
-    info "只读用户创建返回 HTTP $HTTP_CODE (可能用户已存在)"
 fi
 
 echo
 echo "════════════════════════════════════════"
-echo "  测试 4: 只读用户上传测试"
+echo "  测试 4: 只读用户权限验证"
 echo "════════════════════════════════════════"
 
+READONLY_TOKEN=""
 if [ -n "$USER_ID" ]; then
     READONLY_TOKEN=$(get_auth_token "$READONLY_USER" "$READONLY_PASS")
-    
     if [ -n "$READONLY_TOKEN" ]; then
         pass "只读用户登录成功"
-        
-        TEST_FILE="/tmp/test-readonly-upload-$$-1.0.0.txt"
-        echo "Readonly test content" > "$TEST_FILE"
-        
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            "$BASE_URL/files/upload" \
+
+        # try uploading to repository (should be 403)
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+            "$BASE_URL/repository/maven-local/com/test/readonly-test/1.0.0/readonly-test-1.0.0.jar" \
             -H "Authorization: Bearer $READONLY_TOKEN" \
-            -F "file=@$TEST_FILE;filename=test-readonly.txt")
-        
+            -H "Content-Type: application/octet-stream" \
+            --data-binary /dev/null)
         if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
             pass "只读用户上传被拒绝 (HTTP $HTTP_CODE)"
         else
             info "只读用户上传返回 HTTP $HTTP_CODE (可能权限配置不同)"
         fi
-        
-        rm -f "$TEST_FILE"
+
+        # GET a public artifact (should be allowed - no auth required for GET)
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "$BASE_URL/repository/maven-local/com/test/test-http/1.0.0/test-http-1.0.0.jar" \
+            -H "Authorization: Bearer $READONLY_TOKEN")
+        if [ "$HTTP_CODE" = "200" ]; then
+            pass "只读用户下载公开制品成功 (HTTP 200)"
+        else
+            info "只读用户下载返回 HTTP $HTTP_CODE"
+        fi
     else
-        info "只读用户登录失败，跳过上传测试"
+        info "只读用户登录失败"
     fi
-else
-    info "只读用户未创建，跳过上传测试"
 fi
 
 echo
 echo "════════════════════════════════════════"
-echo "  测试 5: 只读用户下载测试"
+echo "  测试 5: 无令牌访问受保护资源"
 echo "════════════════════════════════════════"
 
-if [ -n "$READONLY_TOKEN" ]; then
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-        "$BASE_URL/repo/npm-proxy-cn/lodash" \
-        -H "Authorization: Bearer $READONLY_TOKEN")
-    
-    if [ "$HTTP_CODE" = "200" ]; then
-        pass "只读用户下载成功 (HTTP 200)"
-    else
-        info "只读用户下载返回 HTTP $HTTP_CODE"
-    fi
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+    "$BASE_URL/repository/maven-local/com/test/noauth-test/1.0.0/noauth-test-1.0.0.jar" \
+    -H "Content-Type: application/octet-stream" \
+    --data-binary /dev/null)
+if [ "$HTTP_CODE" = "401" ]; then
+    pass "无令牌 PUT 返回 401 (符合预期)"
 else
-    info "只读用户令牌不可用，跳过下载测试"
+    info "无令牌 PUT 返回 HTTP $HTTP_CODE (expected 401)"
 fi
 
 echo
 echo "════════════════════════════════════════"
-echo "  测试 6: 无令牌访问受保护资源"
+echo "  测试 6: 无效令牌访问"
 echo "════════════════════════════════════════"
 
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-    "$BASE_URL/files/upload" \
-    -F "file=@/dev/null;filename=test.txt")
-
-if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
-    pass "无令牌访问受保护资源被拒绝 (HTTP $HTTP_CODE)"
-else
-    info "无令牌访问返回 HTTP $HTTP_CODE"
-fi
-
-echo
-echo "════════════════════════════════════════"
-echo "  测试 7: 无效令牌访问"
-echo "════════════════════════════════════════"
-
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-    "$BASE_URL/files/upload" \
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+    "$BASE_URL/repository/maven-local/com/test/badtoken-test/1.0.0/badtoken-test-1.0.0.jar" \
     -H "Authorization: Bearer invalid_token_12345" \
-    -F "file=@/dev/null;filename=test.txt")
-
-if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
-    pass "无效令牌访问被拒绝 (HTTP $HTTP_CODE)"
+    -H "Content-Type: application/octet-stream" \
+    --data-binary /dev/null)
+if [ "$HTTP_CODE" = "401" ]; then
+    pass "无效令牌 PUT 返回 401 (符合预期)"
 else
-    info "无效令牌访问返回 HTTP $HTTP_CODE"
+    info "无效令牌 PUT 返回 HTTP $HTTP_CODE (expected 401)"
 fi
 
 echo
 echo "════════════════════════════════════════"
-echo "  测试 8: 清理测试用户"
+echo "  测试 7: GET 公开路由无需认证"
+echo "════════════════════════════════════════"
+
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/health")
+if [ "$HTTP_CODE" = "200" ]; then
+    pass "公开 GET /health 无需认证 (HTTP 200)"
+else
+    fail "公开 GET /health 返回 HTTP $HTTP_CODE"
+fi
+
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/v1/ping")
+if [ "$HTTP_CODE" = "200" ]; then
+    pass "公开 GET /api/v1/ping 无需认证 (HTTP 200)"
+else
+    fail "公开 GET /api/v1/ping 返回 HTTP $HTTP_CODE"
+fi
+
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+    "$BASE_URL/repository/maven-local/com/test/test-http/1.0.0/test-http-1.0.0.pom")
+if [ "$HTTP_CODE" = "200" ]; then
+    pass "公开 GET /repository/... POM 无需认证 (HTTP 200)"
+else
+    info "公开 GET 返回 HTTP $HTTP_CODE"
+fi
+
+echo
+echo "════════════════════════════════════════"
+echo "  测试 8: WWW-Authenticate 头检查"
+echo "════════════════════════════════════════"
+
+WWW_AUTH=$(curl -s -o /dev/null -D - \
+    "$BASE_URL/repository/maven-local/com/test/noauth-test/1.0.0/noauth-test-1.0.0.jar" 2>/dev/null | \
+    grep -i "WWW-Authenticate" || echo "")
+if echo "$WWW_AUTH" | grep -qi "Basic"; then
+    pass "401 响应包含 WWW-Authenticate: Basic 头"
+else
+    info "401 响应未返回 WWW-Authenticate 头"
+fi
+
+echo
+echo "════════════════════════════════════════"
+echo "  测试 9: 清理测试用户"
 echo "════════════════════════════════════════"
 
 if [ -n "$USER_ID" ]; then
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
         "$BASE_URL/api/v1/users/$USER_ID" \
         -H "Authorization: Bearer $ADMIN_TOKEN")
-    
     if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
         pass "测试用户清理成功"
     else

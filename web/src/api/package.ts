@@ -5,6 +5,8 @@ export interface Package {
   name: string
   display_name: string
   type: string
+  package_type?: string
+  format?: string
   description: string
   latest_version?: string
   download_count: number

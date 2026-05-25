@@ -106,6 +106,53 @@ make swagger        # 从注释生成 OpenAPI 文档
 ## 注意事项
 
 - **前端构建产物**嵌入到 `cmd/registry/dist/`，运行 `make embed-web` 会先清理再构建
+
+## 架构红线（绝对不可破坏）
+
+**文件**: `docs/new3.md` 定义了最终架构。以下红线在重构或添加功能时不可违反：
+
+### 分层边界
+
+| 层 | 职责 | 不可做的事 |
+|-----|------|-----------|
+| **ProtocolPlugin** | 协议语法：路径解析、请求路由、metadata 解析/渲染、projection 渲染 | **不可**在 Handle 中直接调 HTTP 访问上游。**不可**判断仓库类型（Type=="proxy"/"virtual"）。**不可**做缓存/回源策略决策 |
+| **RepositoryRuntime** | 仓库行为：hosted/proxy/group、缓存策略、回源时机、stale 判断、merge 策略 | 不可感知协议格式（XML/JSON/HTML） |
+| **RemoteFetcher** | Plugin 实现此接口，Runtime 回调它来**拉取远端数据+归一化为 Artifact** | RemoteFetcher 中的 HTTP 调用是唯一合法例外——因为 Runtime 通过它回调 Plugin 做协议相关的远端交互 |
+
+### 请求流程（唯一合法路径）
+
+```
+Plugin.Handle()
+  → 解析协议路径、识别请求语义
+  → runtime.QueryArtifacts(query)       ← 必须带 RemotePath
+  → runtime.GetArtifact(key)
+  → runtime.RenderProjection(query)
+  → runtime.BeginUpload(...)
+  → render 协议响应（JSON/XML/HTML）
+  ❌ 不可: http.Get() / proxyUpstream / UpstreamBaseURL
+```
+
+### 回源流程
+
+```
+Plugin 调用 QueryArtifacts(RemotePath=...)
+  → ProxyRuntime 发现 metadata store 为空
+  → ProxyRuntime 回调 plugin.FetchRemote(remoteURL, path)
+    → Plugin 拉取远端、按协议解析、返回 []*Artifact
+  → ProxyRuntime 缓存到 metadata store
+  → 返回 artifacts
+  → Plugin render
+```
+
+### 检查清单
+
+新增协议或修改现有协议时，确保:
+- [ ] Plugin 的 Handle 方法中没有任何 `http.Get`/`http.Post` 调用
+- [ ] Plugin 的 Handle 方法中没有 `ctx.Repository.Type == "proxy"` 判断
+- [ ] Plugin 的 Handle 方法中没有 `*GroupRuntime`/`*ProxyRuntime` 类型断言
+- [ ] 需要回源的能力通过实现 `RemoteFetcher` 接口提供
+- [ ] QueryArtifacts 调用包含 `RemotePath` 字段
+- [ ] Runtime 层改动不影响任何插件的协议语义
 - **日志初始化顺序**: 配置加载 → 临时日志 → DB 初始化 → 正式日志（DB 必须在日志之后初始化）
 - **缓存 TTL**: 系统内多处使用 5 分钟 TTL 缓存（Package/Repo/Permission），注意缓存一致性
 - **SQLite 默认**: 生产环境建议使用 PostgreSQL，SQLite 仅适合开发/小规模部署

@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -36,6 +37,12 @@ func Initialize(cfg *config.Config) error {
 		dsn := cfg.Database.DSN
 		if err := ensureDataDirectory(dsn); err != nil {
 			return fmt.Errorf("failed to create data directory: %w", err)
+		}
+		connParams := "_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
+		if strings.Contains(dsn, "?") {
+			dsn = dsn + "&" + connParams
+		} else {
+			dsn = dsn + "?" + connParams
 		}
 		dialector = sqlite.Open(dsn)
 	}
@@ -89,12 +96,12 @@ func Initialize(cfg *config.Config) error {
 	DB = db
 
 	util.WithFields(logrus.Fields{
-		util.LogKeyModule:            "database",
-		"driver":                     cfg.Database.Driver,
-		"max_open_conns":             cfg.Database.MaxOpenConns,
-		"max_idle_conns":             cfg.Database.MaxIdleConns,
-		"conn_max_lifetime":          cfg.Database.ConnMaxLifetime,
-		"conn_max_idle_time":         cfg.Database.ConnMaxIdleTime,
+		util.LogKeyModule:    "database",
+		"driver":             cfg.Database.Driver,
+		"max_open_conns":     cfg.Database.MaxOpenConns,
+		"max_idle_conns":     cfg.Database.MaxIdleConns,
+		"conn_max_lifetime":  cfg.Database.ConnMaxLifetime,
+		"conn_max_idle_time": cfg.Database.ConnMaxIdleTime,
 	}).Info("Database connection established")
 
 	return nil
@@ -159,9 +166,9 @@ func (l *gormLogger) Trace(ctx context.Context, begin time.Time, fc func() (sql 
 	sql, rows := fc()
 
 	fields := logrus.Fields{
-		util.LogKeyModule:  "gorm",
-		"duration_ms":      elapsed.Milliseconds(),
-		"rows_affected":    rows,
+		util.LogKeyModule: "gorm",
+		"duration_ms":     elapsed.Milliseconds(),
+		"rows_affected":   rows,
 	}
 
 	// 只在配置允许时记录完整 SQL
@@ -173,6 +180,9 @@ func (l *gormLogger) Trace(ctx context.Context, begin time.Time, fc func() (sql 
 	entry := util.GetLogger(util.LogTypeSQL).WithFields(fields)
 
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return
+		}
 		fields[util.LogKeyError] = err
 		entry.WithFields(fields).Error("SQL execution failed")
 		return

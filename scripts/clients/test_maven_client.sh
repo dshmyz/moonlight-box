@@ -199,10 +199,69 @@ else
 fi
 
 echo
-echo "测试 8: 尝试 mvn deploy (需要仓库配置)..."
-# 注意：完整的 deploy 测试需要正确的仓库 URL 配置
-info "注意: 完整的 mvn deploy 测试需要在 pom.xml 中配置 distributionManagement"
-info "这通常需要管理员配置仓库权限"
+echo "测试 8: 尝试 mvn deploy 到本地仓库..."
+if [ -n "$TOKEN" ]; then
+    # 在 pom.xml 中添加 distributionManagement
+    cat > pom.xml <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.test</groupId>
+    <artifactId>maven-client-test</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <distributionManagement>
+        <repository>
+            <id>maven-local</id>
+            <url>http://localhost:9081/repository/maven-local</url>
+        </repository>
+    </distributionManagement>
+
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+</project>
+EOF
+
+    # mvn deploy 使用 settings.xml 中的认证
+    if mvn deploy -DskipTests &> /tmp/maven-deploy.log 2>&1; then
+        pass "mvn deploy 测试通过"
+
+        # 验证 deploy 后可以通过代理仓库下载
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "$BASE_URL/repository/maven-local/com/test/maven-client-test/1.0.0/maven-client-test-1.0.0.jar")
+        if [ "$HTTP_CODE" = "200" ]; then
+            pass "mvn deploy 后 artifact 可下载 (HTTP 200)"
+
+            JAR_SIZE=$(stat -c%s /tmp/maven-deploy-check.jar 2>/dev/null || stat -f%z /tmp/maven-deploy-check.jar 2>/dev/null)
+            info "deploy 的 JAR 大小: ${JAR_SIZE:-unknown} bytes"
+        else
+            warn "mvn deploy 后 artifact 不可下载 (HTTP $HTTP_CODE)"
+        fi
+
+        # 验证 pom 文件可下载
+        HTTP_CODE=$(curl -s -o /tmp/maven-deploy-pom.xml -w "%{http_code}" \
+            "$BASE_URL/repository/maven-local/com/test/maven-client-test/1.0.0/maven-client-test-1.0.0.pom")
+        if [ "$HTTP_CODE" = "200" ]; then
+            pass "mvn deploy 后 POM 文件可下载"
+        else
+            warn "mvn deploy 后 POM 文件不可下载 (HTTP $HTTP_CODE)"
+        fi
+    else
+        warn "mvn deploy 测试失败"
+        info "错误日志:"
+        tail -10 /tmp/maven-deploy.log
+    fi
+else
+    info "跳过 mvn deploy (无认证令牌)"
+fi
 
 # 清理
 cd /

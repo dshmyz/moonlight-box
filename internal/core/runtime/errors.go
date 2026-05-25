@@ -7,4 +7,5 @@ var (
 	ErrNotImplemented = errors.New("not implemented")
 	ErrReadOnly       = errors.New("read only")
 	ErrNotMatched     = errors.New("not matched")
+	ErrInvalidUpload  = errors.New("invalid upload session state")
 )

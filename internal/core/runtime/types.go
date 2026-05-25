@@ -1,6 +1,9 @@
 package runtime
 
-import "time"
+import (
+	"io"
+	"time"
+)
 
 type ArtifactKey struct {
 	RepositoryID string
@@ -8,6 +11,7 @@ type ArtifactKey struct {
 	Coordinates  map[string]string
 	Filename     string
 	Extension    string
+	RemoteURL    string
 }
 
 func (k *ArtifactKey) String() string {
@@ -20,6 +24,7 @@ type ArtifactQuery struct {
 	Coordinates  map[string]string
 	Limit        int
 	Offset       int
+	RemotePath   string // 远端拉取路径，ProxyRuntime 据此回调 RemoteFetcher
 }
 
 type ProjectionQuery struct {
@@ -27,6 +32,7 @@ type ProjectionQuery struct {
 	Format       string
 	Kind         string
 	Coordinates  map[string]string
+	RemotePath   string // 远端拉取路径，ProxyRuntime 据此回调 RemoteFetcher
 }
 
 type ProjectionResult struct {
@@ -71,6 +77,7 @@ type Artifact struct {
 	Properties   map[string]string
 	Relations    []ArtifactRelation
 	BlobRefs     []BlobRef
+	Content      io.ReadCloser
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }

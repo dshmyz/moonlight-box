@@ -87,6 +87,7 @@ func BadRequest(c *gin.Context, message string, errors interface{}) {
 
 // Unauthorized 返回未授权响应（401 Unauthorized）
 func Unauthorized(c *gin.Context, message string) {
+	c.Header("WWW-Authenticate", `Basic realm="Moonlight Registry"`)
 	c.JSON(http.StatusUnauthorized, Response{
 		Code:    http.StatusUnauthorized,
 		Message: message,

@@ -3,7 +3,7 @@ package raw
 import (
 	"context"
 	"errors"
-	"fmt"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -66,6 +66,11 @@ func (p *GenericPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime 
 		}
 		return nil
 	}
+	if artifact.Content == nil {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	defer artifact.Content.Close()
 
 	contentType := "application/octet-stream"
 	ext := strings.ToLower(key.Extension)
@@ -81,8 +86,11 @@ func (p *GenericPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime 
 	}
 
 	ctx.Writer.Header().Set("Content-Type", contentType)
+	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+key.Filename+"\"")
 	ctx.Writer.WriteHeader(http.StatusOK)
-	fmt.Fprintf(ctx.Writer, "Artifact: %s", artifact.ID)
+	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -91,8 +99,16 @@ func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime ru
 		RepositoryID: ctx.Repository.ID,
 		Format:       "generic",
 		Filename:     key.Filename,
+		Size:         ctx.Request.ContentLength,
 	})
 	if err != nil {
+		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		return nil
+	}
+
+	blobRef, err := session.PutBlob(context.Background(), ctx.Request.Body)
+	if err != nil {
+		session.Abort(context.Background())
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}
@@ -101,6 +117,12 @@ func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime ru
 		RepositoryID: ctx.Repository.ID,
 		Format:       "generic",
 		Coordinates:  key.Coordinates,
+		Kind:         "file",
+		BlobRefs:     []runtime.BlobRef{blobRef},
+		Properties: map[string]string{
+			"filename": key.Filename,
+			"path":     key.Coordinates["path"],
+		},
 	}
 
 	if err := session.PutArtifact(context.Background(), artifact); err != nil {
@@ -119,6 +141,18 @@ func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime ru
 }
 
 func (p *GenericPlugin) handleDelete(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
-	http.Error(ctx.Writer, "Delete not implemented", http.StatusNotImplemented)
+	err := repoRuntime.DeleteArtifact(context.Background(), key)
+	if err != nil {
+		switch {
+		case errors.Is(err, runtime.ErrNotFound):
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		case errors.Is(err, runtime.ErrReadOnly):
+			http.Error(ctx.Writer, "Repository is read only", http.StatusMethodNotAllowed)
+		default:
+			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		}
+		return nil
+	}
+	ctx.Writer.WriteHeader(http.StatusNoContent)
 	return nil
 }

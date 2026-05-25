@@ -177,7 +177,10 @@ const handleSearch = async () => {
     }
 
     const res = await packageApi.search(params as { q?: string; type?: string; sort?: string; page?: number; page_size?: number })
-    packages.value = res.list || []
+    packages.value = (res.list || []).map(pkg => ({
+      ...pkg,
+      type: pkg.type || pkg.package_type || pkg.format || 'generic',
+    }))
     total.value = res.total || 0
     searchTime.value = res.search_time_ms || 0
   } catch {

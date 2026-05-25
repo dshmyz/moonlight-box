@@ -8,10 +8,10 @@ type Nexus3Resolver struct{}
 
 func (r *Nexus3Resolver) Resolve(req *http.Request) (*ResolvedRepository, error) {
 	path := req.URL.Path
-	if len(path) < 11 || path[:11] != "/repository/" {
+	if len(path) < 12 || path[:12] != "/repository/" {
 		return nil, ErrNotMatched
 	}
-	remaining := path[11:]
+	remaining := path[12:]
 	idx := 0
 	for i, c := range remaining {
 		if c == '/' {
@@ -32,10 +32,34 @@ type Nexus2Resolver struct{}
 
 func (r *Nexus2Resolver) Resolve(req *http.Request) (*ResolvedRepository, error) {
 	path := req.URL.Path
-	if len(path) < 21 || path[:21] != "/content/repositories/" {
+	if len(path) < 22 || path[:22] != "/content/repositories/" {
 		return nil, ErrNotMatched
 	}
-	remaining := path[21:]
+	remaining := path[22:]
+	idx := 0
+	for i, c := range remaining {
+		if c == '/' {
+			idx = i
+			break
+		}
+	}
+	repoName := remaining[:idx]
+	remainingPath := remaining[idx:]
+	return &ResolvedRepository{
+		Repository:    &Repository{Name: repoName},
+		RemainingPath: remainingPath,
+		RouteStyle:    Nexus2Route,
+	}, nil
+}
+
+type Nexus2GroupResolver struct{}
+
+func (r *Nexus2GroupResolver) Resolve(req *http.Request) (*ResolvedRepository, error) {
+	path := req.URL.Path
+	if len(path) < 16 || path[:16] != "/content/groups/" {
+		return nil, ErrNotMatched
+	}
+	remaining := path[16:]
 	idx := 0
 	for i, c := range remaining {
 		if c == '/' {
@@ -67,9 +91,11 @@ func (r *CompositeResolver) Resolve(req *http.Request) (*ResolvedRepository, err
 }
 
 type RepositoryRouter struct {
-	Resolver RepositoryPathResolver
-	Manager  RepositoryManager
-	Plugins  map[string]ProtocolPlugin
+	Resolver     RepositoryPathResolver
+	Manager      RepositoryManager
+	Plugins      map[string]ProtocolPlugin
+	Blocker      PackageBlocker
+	AuditLog     AuditLogger
 }
 
 func NewRepositoryRouter(resolver RepositoryPathResolver, manager RepositoryManager) *RepositoryRouter {
@@ -95,6 +121,14 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "Repository not found", http.StatusNotFound)
 		return
 	}
+
+	// Block rule check
+	if r.Blocker != nil && r.Blocker.IsBlocked(resolved.RemainingPath, "", repo.Format) {
+		reason := r.Blocker.BlockReason(resolved.RemainingPath, "", repo.Format)
+		http.Error(w, "Blocked: "+reason, http.StatusForbidden)
+		return
+	}
+
 	ctx := &RequestContext{
 		Writer:         w,
 		Request:        req,
@@ -103,6 +137,18 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		RouteStyle:     resolved.RouteStyle,
 	}
 	r.handleRequest(ctx)
+
+	// Audit log for downloads
+	if r.AuditLog != nil && req.Method == http.MethodGet {
+		r.AuditLog.Log(req.Context(), AuditEntry{
+			Action:         "download",
+			ResourceType:   repo.Format,
+			ResourceName:   resolved.RemainingPath,
+			IPAddress:      req.RemoteAddr,
+			UserAgent:      req.UserAgent(),
+			ResponseStatus: http.StatusOK,
+		})
+	}
 }
 
 func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {

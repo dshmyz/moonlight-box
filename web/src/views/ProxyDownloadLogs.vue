@@ -272,7 +272,9 @@ function formatDateForApi(date: Date): string {
 async function loadRepositories() {
   try {
     const res = await repositoryApi.list()
-    repositories.value = res || []
+    repositories.value = (res && typeof res === 'object' && 'items' in res)
+      ? (res as any).items || []
+      : (res as any[]) || []
   } catch {
     console.error('Failed to load repositories')
   }

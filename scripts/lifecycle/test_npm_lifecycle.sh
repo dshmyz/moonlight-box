@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 BASE_URL="${1:-http://localhost:9081}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASS="${ADMIN_PASS:-admin123}"
@@ -47,6 +49,11 @@ check_npm() {
     return 0
 }
 
+# cleanup
+CLEAN_TEMPS=()
+cleanup() { rm -rf "${CLEAN_TEMPS[@]}" 2>/dev/null || true; }
+trap cleanup EXIT
+
 echo "============================================"
 echo " npm 生命周期测试"
 echo " 目标: $BASE_URL"
@@ -66,6 +73,7 @@ if [ -z "$TOKEN" ]; then
 fi
 
 TEST_DIR="/tmp/npm-test-$$"
+CLEAN_TEMPS+=("$TEST_DIR")
 mkdir -p "$TEST_DIR"
 
 echo "════════════════════════════════════════"
@@ -108,7 +116,7 @@ echo "════════════════════════�
 echo "  测试 2: 配置 npm registry"
 echo "════════════════════════════════════════"
 
-NPM_REGISTRY="$BASE_URL/repo/npm-local"
+NPM_REGISTRY="$BASE_URL/repository/npm-local"
 
 if npm set registry "$NPM_REGISTRY" > /dev/null 2>&1; then
     pass "npm registry 配置成功"
@@ -124,14 +132,14 @@ echo "════════════════════════�
 NPMRC_FILE="$TEST_DIR/.npmrc"
 cat > "$NPMRC_FILE" <<EOF
 registry=$NPM_REGISTRY
-//localhost:9081/repo/npm-local/:_authToken=$TOKEN
+//localhost:9081/repository/npm-local/:_authToken=$TOKEN
 EOF
 
 if npm publish --userconfig "$NPMRC_FILE" > /dev/null 2>&1; then
     pass "npm 包发布成功"
     
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-        "$BASE_URL/repo/npm-local/test-npm-package")
+        "$BASE_URL/repository/npm-local/test-npm-package")
     
     if [ "$HTTP_CODE" = "200" ]; then
         pass "发布的 npm 包可访问 (HTTP 200)"
@@ -148,6 +156,7 @@ echo "  测试 4: 安装 npm 包"
 echo "════════════════════════════════════════"
 
 INSTALL_DIR="/tmp/npm-install-test-$$"
+CLEAN_TEMPS+=("$INSTALL_DIR")
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
@@ -163,7 +172,7 @@ EOF
 
 cat > .npmrc <<EOF
 registry=$NPM_REGISTRY
-//localhost:9081/repo/npm-local/:_authToken=$TOKEN
+//localhost:9081/repository/npm-local/:_authToken=$TOKEN
 EOF
 
 if npm install > /dev/null 2>&1; then
@@ -184,6 +193,7 @@ echo "  测试 5: 代理仓库安装"
 echo "════════════════════════════════════════"
 
 PROXY_INSTALL_DIR="/tmp/npm-proxy-install-test-$$"
+CLEAN_TEMPS+=("$PROXY_INSTALL_DIR")
 mkdir -p "$PROXY_INSTALL_DIR"
 cd "$PROXY_INSTALL_DIR"
 
@@ -197,7 +207,7 @@ cat > package.json <<EOF
 }
 EOF
 
-PROXY_REGISTRY="$BASE_URL/repo/npm-proxy-cn"
+PROXY_REGISTRY="$BASE_URL/repository/npm-proxy-cn"
 
 cat > .npmrc <<EOF
 registry=$PROXY_REGISTRY

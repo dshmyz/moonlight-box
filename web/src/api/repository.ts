@@ -72,9 +72,19 @@ export interface RepositoryWithHealth extends Repository {
   health_info?: RepositoryHealthInfo
 }
 
+export interface PaginatedResponse<T> {
+  items: T[]
+  pagination: {
+    page: number
+    page_size: number
+    total: number
+    total_pages: number
+  }
+}
+
 export const repositoryApi = {
-  list(params?: { package_type?: string; type?: string }) {
-    return request.get<Repository[]>('/repositories', { params })
+  list(params?: { package_type?: string; type?: string; page?: number; page_size?: number }) {
+    return request.get<RepositoryWithHealth[] | PaginatedResponse<RepositoryWithHealth>>('/repositories', { params })
   },
 
   get(name: string) {

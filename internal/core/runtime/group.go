@@ -52,3 +52,10 @@ func (g *GroupRuntime) BeginUpload(ctx context.Context, request UploadRequest) (
 	}
 	return g.Writable.BeginUpload(ctx, request)
 }
+
+func (g *GroupRuntime) DeleteArtifact(ctx context.Context, key ArtifactKey) error {
+	if g.Writable == nil {
+		return ErrReadOnly
+	}
+	return g.Writable.DeleteArtifact(ctx, key)
+}

@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/moonlight-box/registry/internal/core/runtime"
+	"golang.org/x/mod/semver"
 )
 
 type NpmPlugin struct{}
@@ -20,6 +23,49 @@ func NewNpmPlugin() *NpmPlugin {
 
 func (p *NpmPlugin) Name() string {
 	return "npm"
+}
+
+// FetchRemote 实现 RemoteFetcher 接口——Runtime 回调, 负责远端 npm registry 协议交互
+func (p *NpmPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	packageName := strings.TrimPrefix(path, "/")
+	if packageName == "" {
+		return nil, errors.New("npm: empty package path")
+	}
+	fullURL := strings.TrimRight(remoteURL, "/") + "/" + packageName
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return p.parseNpmMetadata(packageName, resp.Body)
+}
+
+// parseNpmMetadata 解析 npm registry JSON, 提取版本列表为 artifact
+func (p *NpmPlugin) parseNpmMetadata(packageName string, body io.Reader) ([]*runtime.Artifact, error) {
+	var raw map[string]interface{}
+	if err := json.NewDecoder(body).Decode(&raw); err != nil {
+		return nil, err
+	}
+	versions, _ := raw["versions"].(map[string]interface{})
+	if versions == nil {
+		return nil, nil
+	}
+	var artifacts []*runtime.Artifact
+	for version := range versions {
+		artifacts = append(artifacts, &runtime.Artifact{
+			Format: "npm",
+			Kind:   "version",
+			Coordinates: map[string]string{
+				"name":    packageName,
+				"version": version,
+			},
+		})
+	}
+	return artifacts, nil
 }
 
 func (p *NpmPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
@@ -75,7 +121,33 @@ func (p *NpmPlugin) handleAllPackages(ctx *runtime.RequestContext, repoRuntime r
 }
 
 func (p *NpmPlugin) handleNpmInternal(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
-	http.Error(ctx.Writer, "Not implemented", http.StatusNotImplemented)
+	if ctx.Request.Method != http.MethodGet && ctx.Request.Method != http.MethodPost {
+		return errors.New("method not allowed")
+	}
+
+	normalized := strings.TrimPrefix(path, "-/npm/")
+
+	// npm registry heartbeat endpoint used by npm CLI.
+	if normalized == "ping" {
+		ctx.Writer.Header().Set("Content-Type", "application/json")
+		ctx.Writer.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(ctx.Writer).Encode(map[string]interface{}{
+			"ok":   true,
+			"pong": time.Now().UTC().Format(time.RFC3339),
+		})
+		return nil
+	}
+
+	// npm audit endpoints: return empty advisory set to keep client flow working.
+	if normalized == "v1/security/advisories/bulk" || normalized == "v1/security/audits/quick" {
+		_, _ = io.Copy(io.Discard, ctx.Request.Body)
+		ctx.Writer.Header().Set("Content-Type", "application/json")
+		ctx.Writer.WriteHeader(http.StatusOK)
+		_, _ = ctx.Writer.Write([]byte(`{}`))
+		return nil
+	}
+
+	http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 	return nil
 }
 
@@ -94,6 +166,7 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 		Format:       "npm",
 		Coordinates: map[string]string{
 			"name": packageName,
+			"path": packageName + "/-",
 		},
 		Filename: filename,
 	}
@@ -107,10 +180,18 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 		}
 		return nil
 	}
+	if artifact.Content == nil {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	defer artifact.Content.Close()
 
 	ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
+	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+key.Filename+"\"")
 	ctx.Writer.WriteHeader(http.StatusOK)
-	fmt.Fprintf(ctx.Writer, "Artifact: %s", artifact.ID)
+	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -126,6 +207,26 @@ func (p *NpmPlugin) handlePackage(ctx *runtime.RequestContext, repoRuntime runti
 	return errors.New("method not allowed")
 }
 
+func (p *NpmPlugin) handleTarballDelete(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
+		parts := strings.Split(path, "/-/")
+		if len(parts) != 2 {
+			http.Error(ctx.Writer, "Invalid path", http.StatusBadRequest)
+			return nil
+		}
+		packageName := parts[0]
+		filename := parts[1]
+		key := runtime.ArtifactKey{
+			RepositoryID: ctx.Repository.ID,
+			Format:       "npm",
+			Coordinates: map[string]string{
+				"name": packageName,
+				"path": packageName + "/-",
+			},
+			Filename: filename,
+		}
+		return deleteArtifact(ctx, repoRuntime, key)
+	}
+
 func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, packageName string) error {
 	artifacts, err := repoRuntime.QueryArtifacts(context.Background(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
@@ -133,26 +234,61 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 		Coordinates: map[string]string{
 			"name": packageName,
 		},
+		RemotePath: packageName,
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
 
+	hasVersions := false
+	for _, a := range artifacts {
+		if a.Coordinates["version"] != "" {
+			hasVersions = true
+			break
+		}
+	}
+	if !hasVersions {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+
+	repoBase := repoBaseURL(ctx.Request, ctx.Repository.Name)
+
 	versions := make(map[string]interface{})
+	var versionList []string
 	for _, artifact := range artifacts {
 		version := artifact.Coordinates["version"]
 		if version == "" {
 			continue
 		}
-		versions[version] = map[string]interface{}{
-			"id": artifact.ID,
+		if _, exists := versions[version]; exists {
+			continue
 		}
+		tarballName := packageName + "-" + version + ".tgz"
+		versions[version] = map[string]interface{}{
+			"name":    packageName,
+			"version": version,
+			"dist": map[string]interface{}{
+				"tarball": repoBase + "/" + packageName + "/-/" + tarballName,
+			},
+		}
+		versionList = append(versionList, version)
+	}
+
+	// Compute dist-tags.
+	distTags := map[string]string{}
+	if len(versionList) > 0 {
+		sort.Slice(versionList, func(i, j int) bool {
+			return semver.Compare(versionList[i], versionList[j]) > 0
+		})
+		distTags["latest"] = versionList[0]
 	}
 
 	data := map[string]interface{}{
-		"name":     packageName,
-		"versions": versions,
+		"name":       packageName,
+		"dist-tags":  distTags,
+		"versions":   versions,
 	}
 
 	ctx.Writer.Header().Set("Content-Type", "application/json")
@@ -161,22 +297,59 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 	return nil
 }
 
-func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, packageName string) error {
-	content, err := io.ReadAll(ctx.Request.Body)
-	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
-		return nil
+// repoBaseURL 构造仓库的基础 URL，支持反向代理 (X-Forwarded-* 头)
+func repoBaseURL(r *http.Request, repoName string) string {
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
 	}
-	_ = content
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	return fmt.Sprintf("%s://%s/repository/%s", scheme, host, repoName)
+}
 
-	artifact := &runtime.Artifact{
+func (p *NpmPlugin) handlePackageDelete(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, packageName string) error {
+	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
 		Coordinates: map[string]string{
 			"name": packageName,
 		},
 	}
+	return deleteArtifact(ctx, repoRuntime, key)
+}
 
+func deleteArtifact(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
+	err := repoRuntime.DeleteArtifact(context.Background(), key)
+	if err != nil {
+		switch {
+		case errors.Is(err, runtime.ErrNotFound):
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		case errors.Is(err, runtime.ErrReadOnly):
+			http.Error(ctx.Writer, "Repository is read only", http.StatusMethodNotAllowed)
+		default:
+			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		}
+		return nil
+	}
+	ctx.Writer.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, packageName string) error {
+	var npmMeta map[string]interface{}
+	if err := json.NewDecoder(ctx.Request.Body).Decode(&npmMeta); err != nil {
+		http.Error(ctx.Writer, "invalid npm metadata: "+err.Error(), http.StatusBadRequest)
+		return nil
+	}
+	version := ""
+	if v, ok := npmMeta["version"].(string); ok {
+		version = v
+	}
+
+	metadataJSON, _ := json.Marshal(npmMeta)
 	session, err := repoRuntime.BeginUpload(context.Background(), runtime.UploadRequest{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
@@ -185,6 +358,28 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 	if err != nil {
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
+	}
+
+	blob, err := session.PutBlob(context.Background(), strings.NewReader(string(metadataJSON)))
+	if err != nil {
+		session.Abort(context.Background())
+		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		return nil
+	}
+
+	artifact := &runtime.Artifact{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "npm",
+		Kind:         "metadata",
+		Coordinates: map[string]string{
+			"name":    packageName,
+			"version": version,
+		},
+		BlobRefs: []runtime.BlobRef{blob},
+		Properties: map[string]string{
+			"package": packageName,
+			"version": version,
+		},
 	}
 
 	if err := session.PutArtifact(context.Background(), artifact); err != nil {

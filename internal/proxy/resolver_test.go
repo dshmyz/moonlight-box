@@ -76,7 +76,9 @@ func createVirtualRepoWithMembers(t *testing.T, db *gorm.DB, virtualName string,
 			Type:        model.RepoTypeProxy,
 			PackageType: pkgType,
 			Enabled:     true,
-			RemoteURL:   "https://example.com/" + memberName,
+			Config: &model.RepositoryConfig{
+				RemoteURL: "https://example.com/" + memberName,
+			},
 		}
 		err := db.Create(memberRepo).Error
 		assert.NoError(t, err)

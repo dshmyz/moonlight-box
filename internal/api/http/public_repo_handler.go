@@ -41,7 +41,7 @@ func (h *PublicRepoHandler) List(c *gin.Context) {
 		filter["type"] = repoType
 	}
 
-	repos, err := h.repoSvc.ListContext(c.Request.Context(), filter)
+	repos, err := h.repoSvc.ListContext(c.Request.Context(), filter, 0, 0)
 	if err != nil {
 		response.InternalError(c, "Failed to list public repositories")
 		return
@@ -70,7 +70,7 @@ func (h *PublicRepoHandler) List(c *gin.Context) {
 			Type:        repo.Type,
 			PackageType: repo.PackageType,
 			Enabled:     repo.Enabled,
-			RemoteURL:   repo.RemoteURL,
+			RemoteURL:   func() string { if repo.Config != nil { return repo.Config.RemoteURL }; return "" }(),
 			RegistryURL: buildRegistryURL(baseURL, &repo),
 		}
 	}
@@ -135,7 +135,7 @@ func (h *PublicRepoHandler) GetRepoConfig(c *gin.Context) {
 		Type:        repo.Type,
 		PackageType: repo.PackageType,
 		Enabled:     repo.Enabled,
-		RemoteURL:   repo.RemoteURL,
+		RemoteURL:   func() string { if repo.Config != nil { return repo.Config.RemoteURL }; return "" }(),
 		RegistryURL: registryURL,
 		ConfigGuide: guide,
 	}

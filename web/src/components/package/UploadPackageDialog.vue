@@ -166,8 +166,11 @@ const uploadStatus = computed(() => {
 
 const loadRepositories = async () => {
   try {
-    const repos = await repositoryApi.list({ type: 'local' })
-    availableRepositories.value = repos.filter(repo => repo.enabled && repo.package_type)
+    const res = await repositoryApi.list({ type: 'local' })
+    const repos: any[] = (res && typeof res === 'object' && 'items' in res)
+      ? (res as any).items
+      : (res as any[]) || []
+    availableRepositories.value = repos.filter((repo: any) => repo.enabled && repo.package_type)
   } catch (error) {
     console.error('Failed to load repositories:', error)
   }

@@ -18,6 +18,7 @@ type RepositoryRuntime interface {
 	QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error)
 	RenderProjection(ctx context.Context, query ProjectionQuery) (*ProjectionResult, error)
 	BeginUpload(ctx context.Context, request UploadRequest) (UploadSession, error)
+	DeleteArtifact(ctx context.Context, key ArtifactKey) error
 }
 
 type RepositoryNode interface {
@@ -25,6 +26,7 @@ type RepositoryNode interface {
 	QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error)
 	RenderProjection(ctx context.Context, query ProjectionQuery) (*ProjectionResult, error)
 	BeginUpload(ctx context.Context, request UploadRequest) (UploadSession, error)
+	DeleteArtifact(ctx context.Context, key ArtifactKey) error
 }
 
 type MetadataStore interface {
@@ -58,6 +60,34 @@ type RepositoryPathResolver interface {
 type ProtocolPlugin interface {
 	Name() string
 	Handle(ctx *RequestContext, runtime RepositoryRuntime) error
+}
+
+// RemoteFetcher 由 ProtocolPlugin 实现，供 ProxyRuntime 回调。
+// Runtime 控制回源时机和缓存策略；Plugin 只负责远端协议交互（HTTP 请求 + 响应解析）。
+type RemoteFetcher interface {
+	FetchRemote(ctx context.Context, remoteURL, path string) ([]*Artifact, error)
+}
+
+// PackageBlocker 阻断规则检查——在请求进入 Plugin 前检查。
+type PackageBlocker interface {
+	IsBlocked(packageName, version, packageType string) bool
+	BlockReason(packageName, version, packageType string) string
+}
+
+// AuditLogger 审计日志记录器。
+type AuditLogger interface {
+	Log(ctx context.Context, entry AuditEntry)
+}
+
+type AuditEntry struct {
+	UserID         uint
+	Username       string
+	Action         string
+	ResourceType   string
+	ResourceName   string
+	IPAddress      string
+	UserAgent      string
+	ResponseStatus int
 }
 
 type RequestContext struct {

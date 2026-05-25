@@ -52,7 +52,7 @@ func TestDependencyOptimizerTool_Parameters(t *testing.T) {
 		t.Fatal("expected properties in schema")
 	}
 
-	expectedParams := []string{"project_name", "package_type", "analysis_scope", "include_transitive", "min_severity"}
+	expectedParams := []string{"project_name", "package_type", "analysis_scope", "min_severity"}
 	for _, param := range expectedParams {
 		if _, ok := properties[param]; !ok {
 			t.Errorf("expected '%s' parameter in schema", param)
@@ -155,27 +155,5 @@ func TestDependencyOptimizerTool_MinSeverityValues(t *testing.T) {
 		if err == nil || err.Error() == "缺少必需参数: project_name" {
 			t.Errorf("unexpected result for min_severity '%s': %v", level, err)
 		}
-	}
-}
-
-func TestDependencyOptimizerTool_IncludeTransitive(t *testing.T) {
-	tool := NewDependencyOptimizerTool()
-	tool.SetContext(&ToolContext{})
-
-	// 测试 include_transitive 参数
-	params := map[string]interface{}{
-		"project_name":        "test",
-		"include_transitive":  true,
-	}
-	_, err := tool.Execute(context.Background(), params)
-	// 期望因数据库未配置而失败
-	if err == nil || err.Error() == "缺少必需参数: project_name" {
-		t.Errorf("unexpected result for include_transitive=true: %v", err)
-	}
-
-	params["include_transitive"] = false
-	_, err = tool.Execute(context.Background(), params)
-	if err == nil || err.Error() == "缺少必需参数: project_name" {
-		t.Errorf("unexpected result for include_transitive=false: %v", err)
 	}
 }

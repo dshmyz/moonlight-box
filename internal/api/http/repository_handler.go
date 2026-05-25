@@ -2,6 +2,7 @@ package http
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -58,6 +59,26 @@ func getSchemeAndHost(c *gin.Context) (string, string) {
 	return scheme, c.Request.Host
 }
 
+// parsePagination 从请求中解析分页参数
+// 只有客户端显式传了 page 或 page_size 时才启用分页（默认 page=1, pageSize=20）
+// 否则返回 0,0 表示不分页，兼容旧前端
+func parsePagination(c *gin.Context) (page, pageSize int) {
+	pageStr := c.Query("page")
+	sizeStr := c.Query("page_size")
+	if pageStr == "" && sizeStr == "" {
+		return 0, 0
+	}
+	page, _ = strconv.Atoi(pageStr)
+	pageSize, _ = strconv.Atoi(sizeStr)
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	return
+}
+
 // getForwardedPrefix 从请求头中获取反向代理路径前缀
 func getForwardedPrefix(c *gin.Context) string {
 	prefix := strings.TrimRight(c.GetHeader("X-Forwarded-Prefix"), "/")
@@ -67,7 +88,7 @@ func getForwardedPrefix(c *gin.Context) string {
 	return prefix
 }
 
-// List 列出仓库，支持按 package_type 和 type 过滤
+// List 列出仓库，支持按 package_type、type 过滤和分页
 func (h *RepositoryHandler) List(c *gin.Context) {
 	filter := make(map[string]interface{})
 	if pkgType := c.Query("package_type"); pkgType != "" {
@@ -77,7 +98,9 @@ func (h *RepositoryHandler) List(c *gin.Context) {
 		filter["type"] = repoType
 	}
 
-	repos, err := h.svc.ListWithHealthContext(c.Request.Context(), filter)
+	page, pageSize := parsePagination(c)
+
+	repos, total, err := h.svc.ListWithHealthContext(c.Request.Context(), filter, page, pageSize)
 	if err != nil {
 		response.InternalError(c, "Failed to list repositories")
 		return
@@ -88,10 +111,14 @@ func (h *RepositoryHandler) List(c *gin.Context) {
 	fillRepositoryListURLs(repos, scheme, host, prefix)
 
 	for i := range repos {
-		repos[i].AuthConfig = repos[i].MaskAuthConfig()
+		repos[i].Config = repos[i].SanitizedConfig()
 	}
 
-	response.Success(c, repos)
+	if page > 0 && pageSize > 0 {
+		response.SuccessWithPagination(c, repos, page, pageSize, total)
+	} else {
+		response.Success(c, repos)
+	}
 }
 
 // Get 根据名称获取仓库详情
@@ -107,7 +134,7 @@ func (h *RepositoryHandler) Get(c *gin.Context) {
 	prefix := getForwardedPrefix(c)
 	fillRepositoryURL(repo, scheme, host, prefix)
 
-	repo.AuthConfig = repo.MaskAuthConfig()
+	repo.Config = repo.SanitizedConfig()
 
 	response.Success(c, repo)
 }
@@ -115,21 +142,14 @@ func (h *RepositoryHandler) Get(c *gin.Context) {
 // Create 创建新仓库
 func (h *RepositoryHandler) Create(c *gin.Context) {
 	var req struct {
-		Name               string   `json:"name" binding:"required"`
-		DisplayName        string   `json:"display_name"`
-		Description        string   `json:"description"`
-		Type               string   `json:"type" binding:"required"`
-		PackageType        string   `json:"package_type" binding:"required"`
-		RemoteURL          string   `json:"remote_url"`
-		AuthType           string   `json:"auth_type"`
-		AuthConfig         string   `json:"auth_config"`
-		ProxyPriority      int      `json:"proxy_priority"`
-		TimeoutSeconds     int      `json:"timeout_seconds"`
-		MaxRedirects       int      `json:"max_redirects"`
-		InsecureSkipVerify bool     `json:"insecure_skip_verify"`
-		FailureCacheRules  string   `json:"failure_cache_rules"`
-		Members            []string `json:"members"`
-		StorageBackendID   *uint    `json:"storage_backend_id"`
+		Name             string                  `json:"name" binding:"required"`
+		DisplayName      string                  `json:"display_name"`
+		Description      string                  `json:"description"`
+		Type             string                  `json:"type" binding:"required"`
+		PackageType      string                  `json:"package_type" binding:"required"`
+		Config           *model.RepositoryConfig `json:"config"`
+		Members          []string                `json:"members"`
+		StorageBackendID *uint                   `json:"storage_backend_id"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -138,21 +158,14 @@ func (h *RepositoryHandler) Create(c *gin.Context) {
 	}
 
 	repo := model.Repository{
-		Name:               req.Name,
-		DisplayName:        req.DisplayName,
-		Description:        req.Description,
-		Type:               model.RepositoryType(req.Type),
-		PackageType:        req.PackageType,
-		RemoteURL:          req.RemoteURL,
-		AuthType:           req.AuthType,
-		AuthConfig:         req.AuthConfig,
-		ProxyPriority:      req.ProxyPriority,
-		TimeoutSeconds:     req.TimeoutSeconds,
-		MaxRedirects:       req.MaxRedirects,
-		InsecureSkipVerify: req.InsecureSkipVerify,
-		FailureCacheRules:  req.FailureCacheRules,
-		Enabled:            true,
-		StorageBackendID:   req.StorageBackendID,
+		Name:             req.Name,
+		DisplayName:      req.DisplayName,
+		Description:      req.Description,
+		Type:             model.RepositoryType(req.Type),
+		PackageType:      req.PackageType,
+		Config:           req.Config,
+		Enabled:          true,
+		StorageBackendID: req.StorageBackendID,
 	}
 
 	if err := h.svc.Create(&repo, req.Members); err != nil {

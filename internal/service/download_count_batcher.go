@@ -70,29 +70,15 @@ func (b *DownloadCountBatcher) flush() {
 
 func (b *DownloadCountBatcher) batchUpdateCounts(ctx context.Context, counts map[DownloadCountKey]int64) {
 	repoMap := make(map[uint]int64)
-	compMap := make(map[uint]int64)
-	assetMap := make(map[uint]int64)
 
 	for key, count := range counts {
 		if key.RepoID > 0 {
 			repoMap[key.RepoID] += count
 		}
-		if key.ComponentID > 0 {
-			compMap[key.ComponentID] += count
-		}
-		if key.AssetID > 0 {
-			assetMap[key.AssetID] += count
-		}
 	}
 
 	if len(repoMap) > 0 {
 		b.batchUpdateWithSQL(ctx, repoMap, "repositories", "download_count")
-	}
-	if len(compMap) > 0 {
-		b.batchUpdateWithSQL(ctx, compMap, "components", "download_count")
-	}
-	if len(assetMap) > 0 {
-		b.batchUpdateWithSQL(ctx, assetMap, "assets", "download_count")
 	}
 }
 

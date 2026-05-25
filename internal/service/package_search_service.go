@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/moonlight-box/registry/internal/model"
@@ -21,12 +24,28 @@ type SearchRequest struct {
 	PageSize   int
 }
 
+// SearchEntry groups artifacts by name for browse/search (one row per name in a repo).
+type SearchEntry struct {
+	ID             uint      `json:"id"`
+	RepositoryID   uint      `json:"repository_id"`
+	Format         string    `json:"format"`
+	Namespace      string    `json:"namespace,omitempty"`
+	Name           string    `json:"name"`
+	DisplayName    string    `json:"display_name"`
+	Description    string    `json:"description,omitempty"`
+	LatestVersion  string    `json:"latest_version,omitempty"`
+	VersionCount   int       `json:"version_count"`
+	DownloadCount  int64     `json:"download_count"`
+	RepositoryName string    `json:"repository_name,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 type SearchResult struct {
-	List         []model.ComponentCatalogEntry `json:"list"`
-	Total        int64                         `json:"total"`
-	Page         int                           `json:"page"`
-	PageSize     int                           `json:"page_size"`
-	SearchTimeMs int64                         `json:"search_time_ms"`
+	List         []SearchEntry `json:"list"`
+	Total        int64         `json:"total"`
+	Page         int           `json:"page"`
+	PageSize     int           `json:"page_size"`
+	SearchTimeMs int64         `json:"search_time_ms"`
 }
 
 type PackageSearchService struct {
@@ -37,110 +56,141 @@ func NewPackageSearchService(db *gorm.DB) *PackageSearchService {
 	return &PackageSearchService{db: db}
 }
 
+// Search 从 artifacts 表搜索包，按 name 聚合
 func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (*SearchResult, error) {
 	start := time.Now()
 
-	subQuery := s.db.WithContext(ctx).Model(&model.Component{}).
-		Select(`MIN(id) as id, repository_id, format, namespace, name,
-			MAX(display_name) as display_name,
-			MAX(description) as description,
-			MAX(updated_at) as updated_at,
-			SUM(download_count) as download_count,
-			COUNT(*) as version_count`)
-
-	if req.Query != "" {
-		switch req.Scope {
-		case "description":
-			subQuery = subQuery.Where("description LIKE ?", "%"+req.Query+"%")
-		case "all":
-			subQuery = subQuery.Where("name LIKE ? OR description LIKE ?", "%"+req.Query+"%", "%"+req.Query+"%")
-		default:
-			subQuery = subQuery.Where("name LIKE ?", "%"+req.Query+"%")
-		}
-	}
+	db := s.db.WithContext(ctx).Model(&model.Artifact{})
 
 	if req.Type != "" {
-		subQuery = subQuery.Where("format IN ?", util.ExpandPackageTypeAliases(req.Type))
+		db = db.Where("format IN ?", util.ExpandPackageTypeAliases(req.Type))
 	}
 	if req.Repository != "" {
-		subQuery = subQuery.Where("repository_id IN (?)",
+		db = db.Where("repository_id IN (?)",
 			s.db.Model(&model.Repository{}).Select("id").Where("name = ?", req.Repository))
 	}
-	if req.Name != "" {
-		subQuery = subQuery.Where("name = ?", req.Name)
-	}
-	if req.Version != "" {
-		subQuery = subQuery.Where("version = ?", req.Version)
-	}
 
-	subQuery = subQuery.Group("repository_id, format, namespace, name")
-
-	var total int64
-	if err := s.db.Table("(?) as grouped", subQuery).Count(&total).Error; err != nil {
+	var artifacts []model.Artifact
+	if err := db.Order("created_at DESC").Find(&artifacts).Error; err != nil {
 		return nil, err
 	}
 
-	order := "download_count DESC"
+	// 在 Go 中按 name 聚合
+	type groupKey struct {
+		repositoryID uint
+		format       string
+		name         string
+	}
+	groups := make(map[groupKey]*groupAcc)
+	var orderedKeys []groupKey
+
+	for _, a := range artifacts {
+		name := coordinateStr(a.Coordinates, "name")
+		if name == "" {
+			name = coordinateStr(a.Coordinates, "package")
+		}
+		if name == "" {
+			continue
+		}
+
+		// 过滤
+		if req.Query != "" {
+			if req.Scope == "all" {
+				if !strings.Contains(strings.ToLower(name), strings.ToLower(req.Query)) {
+					continue
+				}
+			} else {
+				if !strings.Contains(strings.ToLower(name), strings.ToLower(req.Query)) {
+					continue
+				}
+			}
+		}
+		if req.Name != "" && name != req.Name {
+			continue
+		}
+		if req.Version != "" {
+			ver := coordinateStr(a.Coordinates, "version")
+			if ver != req.Version {
+				continue
+			}
+		}
+
+		key := groupKey{a.RepositoryID, a.Format, name}
+		acc, ok := groups[key]
+		if !ok {
+			acc = &groupAcc{name: name, format: a.Format, repositoryID: a.RepositoryID}
+			groups[key] = acc
+			orderedKeys = append(orderedKeys, key)
+		}
+		acc.versionCount++
+		if a.UpdatedAt.After(acc.latestTime) {
+			acc.latestTime = a.UpdatedAt
+		}
+		if acc.firstID == 0 {
+			acc.firstID = a.ID
+		}
+	}
+
+	// 排序
 	switch req.Sort {
 	case "name":
-		order = "name ASC"
-	case "updated_at":
-		order = "updated_at DESC"
+		sort.Slice(orderedKeys, func(i, j int) bool {
+			return groups[orderedKeys[i]].name < groups[orderedKeys[j]].name
+		})
+	default:
+		sort.Slice(orderedKeys, func(i, j int) bool {
+			return groups[orderedKeys[i]].latestTime.After(groups[orderedKeys[j]].latestTime)
+		})
 	}
 
-	type row struct {
-		ID            uint
-		RepositoryID  uint
-		Format        model.PackageType
-		Namespace     string
-		Name          string
-		DisplayName   string
-		Description   string
-		UpdatedAt     time.Time
-		DownloadCount int64
-		VersionCount  int
-	}
+	total := int64(len(orderedKeys))
 
-	var rows []row
+	// 分页
 	offset := (req.Page - 1) * req.PageSize
-	if err := s.db.Table("(?) as grouped", subQuery).
-		Order(order).Offset(offset).Limit(req.PageSize).Find(&rows).Error; err != nil {
-		return nil, err
+	if offset > len(orderedKeys) {
+		offset = len(orderedKeys)
+	}
+	end := offset + req.PageSize
+	if end > len(orderedKeys) {
+		end = len(orderedKeys)
+	}
+	pagedKeys := orderedKeys[offset:end]
+
+	// 收集 repo IDs
+	repoIDs := make(map[uint]bool)
+	for _, k := range pagedKeys {
+		repoIDs[k.repositoryID] = true
+	}
+	repoIDList := make([]uint, 0, len(repoIDs))
+	for id := range repoIDs {
+		repoIDList = append(repoIDList, id)
 	}
 
-	list := make([]model.ComponentCatalogEntry, len(rows))
-	repoIDs := make([]uint, 0, len(rows))
-	for i, r := range rows {
-		list[i] = model.ComponentCatalogEntry{
-			ID:            r.ID,
-			RepositoryID:  r.RepositoryID,
-			Format:        r.Format,
-			Namespace:     r.Namespace,
-			Name:          r.Name,
-			DisplayName:   r.DisplayName,
-			Description:   r.Description,
-			DownloadCount: r.DownloadCount,
-			VersionCount:  r.VersionCount,
-			UpdatedAt:     r.UpdatedAt,
-		}
-		if r.RepositoryID > 0 {
-			repoIDs = append(repoIDs, r.RepositoryID)
-		}
-	}
-
-	if len(repoIDs) > 0 {
-		type RepoName struct {
+	// 批量查仓库名
+	repoNameMap := make(map[uint]string)
+	if len(repoIDList) > 0 {
+		type repoRow struct {
 			ID   uint
 			Name string
 		}
-		var names []RepoName
-		s.db.Model(&model.Repository{}).Select("id, name").Where("id IN ?", repoIDs).Find(&names)
-		m := make(map[uint]string, len(names))
-		for _, n := range names {
-			m[n.ID] = n.Name
+		var repoRows []repoRow
+		s.db.Model(&model.Repository{}).Select("id, name").Where("id IN ?", repoIDList).Find(&repoRows)
+		for _, r := range repoRows {
+			repoNameMap[r.ID] = r.Name
 		}
-		for i := range list {
-			list[i].RepositoryName = m[list[i].RepositoryID]
+	}
+
+	list := make([]SearchEntry, len(pagedKeys))
+	for i, k := range pagedKeys {
+		acc := groups[k]
+		list[i] = SearchEntry{
+			ID:             acc.firstID,
+			RepositoryID:   acc.repositoryID,
+			Format:         acc.format,
+			Name:           acc.name,
+			VersionCount:   acc.versionCount,
+			UpdatedAt:      acc.latestTime,
+			RepositoryName: repoNameMap[acc.repositoryID],
 		}
 	}
 
@@ -151,4 +201,28 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 		PageSize:     req.PageSize,
 		SearchTimeMs: time.Since(start).Milliseconds(),
 	}, nil
+}
+
+type groupAcc struct {
+	name         string
+	format       string
+	repositoryID uint
+	versionCount int
+	latestTime   time.Time
+	firstID      uint
+}
+
+func coordinateStr(coords model.JSONB, key string) string {
+	if coords == nil {
+		return ""
+	}
+	v, ok := coords[key]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Sprintf("%v", v)
+	}
+	return s
 }

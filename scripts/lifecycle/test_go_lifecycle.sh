@@ -42,12 +42,21 @@ get_auth_token() {
 }
 
 check_go() {
-    if ! command -v go &> /dev/null; then
+    if command -v go &> /dev/null; then
+        return 0
+    elif [ -x /usr/local/go/bin/go ]; then
+        export PATH="/usr/local/go/bin:$PATH"
+        return 0
+    else
         warn "go 命令未安装，跳过 Go 模块测试"
         return 1
     fi
-    return 0
 }
+
+# cleanup
+CLEAN_TEMPS=()
+cleanup() { rm -rf "${CLEAN_TEMPS[@]}" 2>/dev/null || true; }
+trap cleanup EXIT
 
 echo "============================================"
 echo " Go 模块完整生命周期测试"
@@ -62,12 +71,15 @@ fi
 
 TOKEN=$(get_auth_token)
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR/../..")"
 if [ -z "$TOKEN" ]; then
     echo -e "${RED}错误: 无法获取认证令牌${NC}"
     exit 1
 fi
 
 TEST_DIR="/tmp/go-module-test-$$"
+CLEAN_TEMPS+=("$TEST_DIR")
 mkdir -p "$TEST_DIR"
 
 echo "════════════════════════════════════════"
@@ -130,6 +142,7 @@ export GONOSUMDB=*
 export GOINSECURE=localhost
 
 CONSUMER_DIR="/tmp/go-consumer-test-$$"
+CLEAN_TEMPS+=("$CONSUMER_DIR")
 mkdir -p "$CONSUMER_DIR"
 cd "$CONSUMER_DIR"
 
@@ -273,6 +286,7 @@ echo "════════════════════════�
 export GOPROXY="$BASE_URL/repository/go-proxy-goproxy-cn"
 
 PROXY_TEST_DIR="/tmp/go-proxy-test-$$"
+CLEAN_TEMPS+=("$PROXY_TEST_DIR")
 mkdir -p "$PROXY_TEST_DIR"
 cd "$PROXY_TEST_DIR"
 
@@ -327,9 +341,7 @@ echo "════════════════════════�
 echo "  测试 10: 验证存储目录结构"
 echo "════════════════════════════════════════"
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-GO_STORAGE="$PROJECT_ROOT/data/packages/go"
+	GO_STORAGE="$PROJECT_ROOT/data/packages/go"
 
 if [ -d "$GO_STORAGE" ]; then
     pass "Go 存储目录存在: $GO_STORAGE"

@@ -80,9 +80,9 @@ echo "测试 4: 验证模块缓存..."
 CACHE_DIR=$(go env GOMODCACHE)
 info "模块缓存目录: $CACHE_DIR"
 
-if [ -d "$CACHE_DIR/github.com/!stretchr/testify@v1.8.4" ]; then
+if [ -d "$CACHE_DIR/github.com/stretchr/testify@v1.8.4" ]; then
     pass "模块已缓存到本地"
-    ls -la "$CACHE_DIR/github.com/!stretchr/testify@v1.8.4" | head -5
+    ls -la "$CACHE_DIR/github.com/stretchr/testify@v1.8.4" | head -5
 else
     warn "模块未缓存"
 fi

@@ -219,19 +219,22 @@ func (h *MigrationHandler) syncNexusRepos(c *gin.Context, client *migration.Nexu
 			if nr.Type == "proxy" {
 				// 获取仓库详细配置以获取正确的远程URL
 				detail, err := client.GetRepositoryDetail(c.Request.Context(), nr.Name)
+				remoteURL := ""
 				if err == nil && detail != nil && detail.Proxy != nil && detail.Proxy.RemoteURL != "" {
-					repo.RemoteURL = detail.Proxy.RemoteURL
+					remoteURL = detail.Proxy.RemoteURL
 				} else if nr.URL != "" {
 					// 如果获取详情失败，使用列表API返回的URL作为备用
-					repo.RemoteURL = nr.URL
+					remoteURL = nr.URL
 				}
-				repo.CacheEnabled = true
-				repo.CacheTTLSeconds = 86400
+				repo.Config = &model.RepositoryConfig{
+					RemoteURL:       remoteURL,
+					CacheEnabled:    true,
+					CacheTTLSeconds: 86400,
+				}
 			}
 
 			// 虚拟仓不需要存储后端
 			if nr.Type == "group" {
-				repo.CacheEnabled = false
 				repo.StorageBackendID = nil
 			}
 

@@ -334,10 +334,10 @@ func (h *HealthCheckService) checkRepoHealth(repo *model.Repository) {
 
 // checkProxyRepo 检查代理仓库的健康状态
 func (h *HealthCheckService) checkProxyRepo(ctx context.Context, repo *model.Repository) (int, error) {
-	if repo.RemoteURL == "" {
+	if repo.Config == nil || repo.Config.RemoteURL == "" {
 		return 0, fmt.Errorf("proxy repository %s (ID: %d) has empty remote_url", repo.Name, repo.ID)
 	}
-	healthURL := repo.RemoteURL
+	healthURL := repo.Config.RemoteURL
 	return h.doHealthCheck(ctx, healthURL)
 }
 

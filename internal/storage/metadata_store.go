@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
-	"github.com/moonlight-box/registry/internal/model"
 	"github.com/moonlight-box/registry/internal/core/runtime"
+	"github.com/moonlight-box/registry/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -23,8 +24,11 @@ func (s *MetadataStore) Get(ctx context.Context, key runtime.ArtifactKey) (*runt
 
 	coordsJSON, _ := json.Marshal(key.Coordinates)
 
+	var repoID uint
+	fmt.Sscanf(key.RepositoryID, "%d", &repoID)
+
 	err := s.db.WithContext(ctx).
-		Where("repository_id = ?", key.RepositoryID).
+		Where("repository_id = ?", repoID).
 		Where("format = ?", key.Format).
 		Where("coordinates = ?", coordsJSON).
 		First(&artifact).Error
@@ -36,47 +40,83 @@ func (s *MetadataStore) Get(ctx context.Context, key runtime.ArtifactKey) (*runt
 		return nil, err
 	}
 
-	return s.toTypesArtifact(&artifact), nil
+	result := s.toTypesArtifact(&artifact)
+	s.fillBlobRefs(ctx, []*runtime.Artifact{result})
+	return result, nil
 }
 
 func (s *MetadataStore) Put(ctx context.Context, artifact *runtime.Artifact) error {
 	modelArtifact := s.toModelArtifact(artifact)
 
-	var existing model.Artifact
-	coordsJSON, _ := json.Marshal(artifact.Coordinates)
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing model.Artifact
+		coordsJSON, _ := json.Marshal(artifact.Coordinates)
 
-	err := s.db.WithContext(ctx).
-		Where("repository_id = ?", artifact.RepositoryID).
-		Where("format = ?", artifact.Format).
-		Where("coordinates = ?", coordsJSON).
-		First(&existing).Error
+		err := tx.Where("repository_id = ?", artifact.RepositoryID).
+			Where("format = ?", artifact.Format).
+			Where("coordinates = ?", coordsJSON).
+			First(&existing).Error
 
-	if err == gorm.ErrRecordNotFound {
-		return s.db.WithContext(ctx).Create(modelArtifact).Error
-	} else if err != nil {
-		return err
-	}
+		if err == gorm.ErrRecordNotFound {
+			if err := tx.Create(modelArtifact).Error; err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		} else {
+			modelArtifact.ID = existing.ID
+			if err := tx.Save(modelArtifact).Error; err != nil {
+				return err
+			}
+		}
 
-	modelArtifact.ID = existing.ID
-	return s.db.WithContext(ctx).Save(modelArtifact).Error
+		if err := tx.Where("artifact_id = ?", modelArtifact.ID).Delete(&model.ArtifactBlob{}).Error; err != nil {
+			return err
+		}
+		for i, ref := range artifact.BlobRefs {
+			if ref.BlobID == 0 {
+				continue
+			}
+			ab := &model.ArtifactBlob{
+				ArtifactID: modelArtifact.ID,
+				BlobID:     ref.BlobID,
+				Position:   i,
+			}
+			if err := tx.Create(ab).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *MetadataStore) Delete(ctx context.Context, key runtime.ArtifactKey) error {
 	coordsJSON, _ := json.Marshal(key.Coordinates)
 
-	result := s.db.WithContext(ctx).
-		Where("repository_id = ?", key.RepositoryID).
-		Where("format = ?", key.Format).
-		Where("coordinates = ?", coordsJSON).
-		Delete(&model.Artifact{})
+	var repoID uint
+	fmt.Sscanf(key.RepositoryID, "%d", &repoID)
 
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return runtime.ErrNotFound
-	}
-	return nil
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var artifact model.Artifact
+		err := tx.Where("repository_id = ?", repoID).
+			Where("format = ?", key.Format).
+			Where("coordinates = ?", coordsJSON).
+			First(&artifact).Error
+		if err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return runtime.ErrNotFound
+			}
+			return err
+		}
+
+		if err := tx.Where("artifact_id = ?", artifact.ID).Delete(&model.ArtifactBlob{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&artifact).Error; err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (s *MetadataStore) List(ctx context.Context, repoID string) ([]*runtime.Artifact, error) {
@@ -94,6 +134,47 @@ func (s *MetadataStore) List(ctx context.Context, repoID string) ([]*runtime.Art
 	for i, a := range artifacts {
 		result[i] = s.toTypesArtifact(&a)
 	}
+	s.fillBlobRefs(ctx, result)
+	return result, nil
+}
+
+func (s *MetadataStore) Query(ctx context.Context, query runtime.ArtifactQuery) ([]*runtime.Artifact, error) {
+	db := s.db.WithContext(ctx).Model(&model.Artifact{})
+
+	if query.RepositoryID != "" {
+		var repoID uint
+		fmt.Sscanf(query.RepositoryID, "%d", &repoID)
+		db = db.Where("repository_id = ?", repoID)
+	}
+
+	if query.Format != "" {
+		db = db.Where("format = ?", query.Format)
+	}
+
+	if len(query.Coordinates) > 0 {
+		for k, v := range query.Coordinates {
+			pattern := fmt.Sprintf("%%\"%s\":\"%s\"%%", k, v)
+			db = db.Where("coordinates LIKE ?", pattern)
+		}
+	}
+
+	if query.Limit > 0 {
+		db = db.Limit(query.Limit)
+	}
+	if query.Offset > 0 {
+		db = db.Offset(query.Offset)
+	}
+
+	var artifacts []model.Artifact
+	if err := db.Find(&artifacts).Error; err != nil {
+		return nil, err
+	}
+
+	result := make([]*runtime.Artifact, len(artifacts))
+	for i, a := range artifacts {
+		result[i] = s.toTypesArtifact(&a)
+	}
+	s.fillBlobRefs(ctx, result)
 	return result, nil
 }
 
@@ -108,11 +189,23 @@ func (s *MetadataStore) toTypesArtifact(m *model.Artifact) *runtime.Artifact {
 		}
 	}
 
+	var props map[string]string
+	if m.Metadata != nil {
+		props = make(map[string]string)
+		for k, v := range m.Metadata {
+			if str, ok := v.(string); ok {
+				props[k] = str
+			}
+		}
+	}
+
 	return &runtime.Artifact{
 		ID:           fmt.Sprintf("%d", m.ID),
 		RepositoryID: fmt.Sprintf("%d", m.RepositoryID),
 		Format:       m.Format,
+		Kind:         m.Kind,
 		Coordinates:  coords,
+		Properties:   props,
 		CreatedAt:    m.CreatedAt,
 		UpdatedAt:    m.UpdatedAt,
 	}
@@ -124,12 +217,60 @@ func (s *MetadataStore) toModelArtifact(t *runtime.Artifact) *model.Artifact {
 		coords[k] = v
 	}
 
+	metadata := make(model.JSONB)
+	for k, v := range t.Properties {
+		metadata[k] = v
+	}
+
 	var repoID uint
 	fmt.Sscanf(t.RepositoryID, "%d", &repoID)
 
 	return &model.Artifact{
 		RepositoryID: repoID,
 		Format:       t.Format,
+		Kind:         t.Kind,
 		Coordinates:  coords,
+		Metadata:     metadata,
+	}
+}
+
+func (s *MetadataStore) fillBlobRefs(ctx context.Context, artifacts []*runtime.Artifact) {
+	for _, a := range artifacts {
+		if a == nil || a.ID == "" {
+			continue
+		}
+		artifactID, err := strconv.ParseUint(a.ID, 10, 64)
+		if err != nil {
+			continue
+		}
+
+		type row struct {
+			BlobID    uint
+			Algorithm string
+			Digest    string
+			Size      int64
+			Position  int
+		}
+		var rows []row
+		err = s.db.WithContext(ctx).
+			Table("artifact_blobs AS ab").
+			Select("ab.blob_id, b.algorithm, b.digest, b.size, ab.position").
+			Joins("JOIN blobs b ON b.id = ab.blob_id").
+			Where("ab.artifact_id = ?", artifactID).
+			Order("ab.position ASC").
+			Scan(&rows).Error
+		if err != nil {
+			continue
+		}
+
+		a.BlobRefs = make([]runtime.BlobRef, 0, len(rows))
+		for _, r := range rows {
+			a.BlobRefs = append(a.BlobRefs, runtime.BlobRef{
+				BlobID:    r.BlobID,
+				Algorithm: r.Algorithm,
+				Digest:    r.Digest,
+				Size:      r.Size,
+			})
+		}
 	}
 }

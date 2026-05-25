@@ -21,7 +21,6 @@ type RouterContext struct {
 	BlockRule        *service.BlockRuleService
 	RepoSvc          *service.RepositoryService
 	RepoCache        *proxy.RepositoryCache
-	RepoResolver     *proxy.RepoHandler
 	WebhookSvc       *service.WebhookService
 	RepositoryRouter http.Handler
 	Handlers         struct {
@@ -49,6 +48,7 @@ type RouterContext struct {
 		ProxyDownloadLog *handler.ProxyDownloadLogHandler
 		HealthCheck      *handler.HealthCheckHandler
 		VulnRule         *handler.VulnRuleHandler
+		PackageVersion   *handler.PackageVersionHandler
 	}
 }
 
@@ -59,13 +59,12 @@ func NewRouterContext(
 	permCache *service.PermissionCacheService,
 	blockRule *service.BlockRuleService,
 	repoSvc *service.RepositoryService,
-	repoResolver *proxy.RepoHandler,
 	repositoryRouter http.Handler,
 	webhookSvc *service.WebhookService,
 ) *RouterContext {
 	ctx := &RouterContext{
 		Config: cfg, AuthSvc: authSvc, AuditSvc: auditSvc, PermCache: permCache,
-		BlockRule: blockRule, RepoSvc: repoSvc, RepoResolver: repoResolver,
+		BlockRule: blockRule, RepoSvc: repoSvc,
 		RepositoryRouter: repositoryRouter, WebhookSvc: webhookSvc,
 	}
 
@@ -123,6 +122,7 @@ func (ctx *RouterContext) setupAPIRoutes(r *gin.Engine) {
 
 func (ctx *RouterContext) setupPackagePublicRoutes(api *gin.RouterGroup) {
 	api.GET("/packages/search", ctx.Handlers.Search.Search)
+	api.GET("/packages/:type/versions", ctx.Handlers.PackageVersion.ListVersions)
 	api.GET("/public/repo/:name", ctx.Handlers.PublicRepo.GetRepoConfig)
 	api.GET("/public/repositories", ctx.Handlers.PublicRepo.List)
 }
@@ -159,6 +159,8 @@ func (ctx *RouterContext) setupProtectedRoutes(api *gin.RouterGroup) {
 		ctx.setupHealthRoutes(protected)
 
 		protected.GET("/dashboard/stats", ctx.Handlers.Dashboard.GetStats)
+
+		ctx.setupPackageRoutes(protected)
 	}
 }
 
@@ -501,4 +503,30 @@ func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.Reposi
 
 func (ctx *RouterContext) requirePermission(resource, action string) gin.HandlerFunc {
 	return middleware.RequirePermission(ctx.PermCache, resource, action)
+}
+
+func (ctx *RouterContext) setupPackageRoutes(protected *gin.RouterGroup) {
+	if ctx.Handlers.PackageVersion == nil {
+		return
+	}
+
+	packages := protected.Group("/packages")
+	packages.Use(ctx.requirePermission("package", "read"))
+	{
+	}
+
+	packageWrite := protected.Group("/packages")
+	packageWrite.Use(ctx.requirePermission("package", "write"))
+	{
+		packageWrite.POST("/versions/:id/deprecate", ctx.Handlers.PackageVersion.DeprecateVersion)
+		packageWrite.POST("/versions/:id/restore", ctx.Handlers.PackageVersion.RestoreVersion)
+		packageWrite.POST("/versions/:id/yank", ctx.Handlers.PackageVersion.YankVersion)
+	}
+
+	packageDelete := protected.Group("/packages")
+	packageDelete.Use(ctx.requirePermission("package", "delete"))
+	{
+		packageDelete.DELETE("/versions/:id", ctx.Handlers.PackageVersion.DeleteVersion)
+		packageDelete.DELETE("/:id", ctx.Handlers.PackageVersion.DeletePackage)
+	}
 }

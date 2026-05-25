@@ -2,6 +2,8 @@ package migration
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,12 +17,12 @@ import (
 	"github.com/moonlight-box/registry/internal/repository"
 	"github.com/moonlight-box/registry/internal/service"
 	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
 )
 
 type MigrationWorkerV2 struct {
 	service     *MigrationService
 	storageSvc  *service.StorageService
-	compRepo     *repository.ComponentRepository
 	repoRepo    *repository.RepositoryRepository
 	itemRepo    *repository.MigrationItemRepository
 	concurrency int
@@ -37,7 +39,6 @@ type migrationTarget struct {
 func NewMigrationWorkerV2(
 	migrationSvc *MigrationService,
 	storageSvc *service.StorageService,
-	compRepo *repository.ComponentRepository,
 	repoRepo *repository.RepositoryRepository,
 	itemRepo *repository.MigrationItemRepository,
 	concurrency int,
@@ -47,7 +48,6 @@ func NewMigrationWorkerV2(
 	return &MigrationWorkerV2{
 		service:     migrationSvc,
 		storageSvc:  storageSvc,
-		compRepo:     compRepo,
 		repoRepo:    repoRepo,
 		itemRepo:    itemRepo,
 		concurrency: concurrency,
@@ -649,35 +649,23 @@ func (w *MigrationWorkerV2) storeMavenAsset(taskID uint, comp NexusComponent, as
 	storageName := groupArtifactToStorageName(comp.Group, comp.Name)
 	storageVersion := comp.Version + "/" + filepath.Base(asset.Path)
 
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "maven", storageName, storageVersion, reader, size, target.backendID)
+	hash := sha256.New()
+	teeReader := io.TeeReader(reader, hash)
+
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "maven", storageName, storageVersion, teeReader, size, target.backendID)
 	if err != nil {
 		return err
 	}
+	digest := hex.EncodeToString(hash.Sum(nil))
 
-	metadata := map[string]any{
-		"groupId":    comp.Group,
-		"artifactId": comp.Name,
+	coordinates := map[string]string{
+		"name":       comp.Group + ":" + comp.Name,
 		"version":    comp.Version,
 		"packaging":  packaging,
 		"filename":   filepath.Base(asset.Path),
 	}
 
-
-	_, _, err = w.compRepo.StoreComponentAsset(context.Background(), &model.Component{
-		Name:           comp.Group + ":" + comp.Name,
-		Format:         model.PackageTypeMaven,
-		RepositoryID:   target.repoID,
-		Description:    comp.Name,
-		Version:        comp.Version,
-		Status:         model.StatusPublished,
-		Metadata:       marshalMetadata(metadata),
-	}, &model.Asset{
-		FileName:    filepath.Base(asset.Path),
-		Kind:        model.AssetKindPrimary,
-		Path:        storageKey,
-	})
-
-	return err
+	return w.storeArtifactAndBlob(context.Background(), target, "maven", "primary", coordinates, digest, size, storageKey)
 }
 
 func (w *MigrationWorkerV2) storeNpmAsset(taskID uint, comp NexusComponent, _ NexusAsset, reader io.Reader, size int64, target migrationTarget) error {
@@ -691,26 +679,22 @@ func (w *MigrationWorkerV2) storeNpmAsset(taskID uint, comp NexusComponent, _ Ne
 	}
 
 	storageVersion := version + "/package.tgz"
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "npm", name, storageVersion, reader, size, target.backendID)
+
+	hash := sha256.New()
+	teeReader := io.TeeReader(reader, hash)
+
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "npm", name, storageVersion, teeReader, size, target.backendID)
 	if err != nil {
 		return err
 	}
+	digest := hex.EncodeToString(hash.Sum(nil))
 
+	coordinates := map[string]string{
+		"name":    name,
+		"version": version,
+	}
 
-	_, _, err = w.compRepo.StoreComponentAsset(context.Background(), &model.Component{
-		Name:           name,
-		Format:         model.PackageTypeNPM,
-		RepositoryID:   target.repoID,
-		Description:    name,
-		Version:        version,
-		Status:         model.StatusPublished,
-	}, &model.Asset{
-		FileName:    "package.tgz",
-		Kind:        model.AssetKindPrimary,
-		Path:        storageKey,
-	})
-
-	return err
+	return w.storeArtifactAndBlob(context.Background(), target, "npm", "primary", coordinates, digest, size, storageKey)
 }
 
 func (w *MigrationWorkerV2) storePypiAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64, target migrationTarget) error {
@@ -724,26 +708,22 @@ func (w *MigrationWorkerV2) storePypiAsset(taskID uint, comp NexusComponent, ass
 	}
 
 	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "pypi", name, storageVersion, reader, size, target.backendID)
+
+	hash := sha256.New()
+	teeReader := io.TeeReader(reader, hash)
+
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "pypi", name, storageVersion, teeReader, size, target.backendID)
 	if err != nil {
 		return err
 	}
+	digest := hex.EncodeToString(hash.Sum(nil))
 
+	coordinates := map[string]string{
+		"name":    name,
+		"version": version,
+	}
 
-	_, _, err = w.compRepo.StoreComponentAsset(context.Background(), &model.Component{Name:           name,
-		Format: model.PackageTypePyPI,
-		RepositoryID:   target.repoID,
-		Description:    name,
-		Version: version,
-		Status:  model.StatusPublished,
-	}, &model.Asset{
-		FileName:    filepath.Base(asset.Path),
-		Kind:    model.AssetKindPrimary,
-		Path: storageKey,
-	
-	})
-
-	return err
+	return w.storeArtifactAndBlob(context.Background(), target, "pypi", "primary", coordinates, digest, size, storageKey)
 }
 
 func (w *MigrationWorkerV2) storeGoAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64, target migrationTarget) error {
@@ -757,26 +737,22 @@ func (w *MigrationWorkerV2) storeGoAsset(taskID uint, comp NexusComponent, asset
 	}
 
 	storageVersion := version + "/" + filepath.Base(asset.Path)
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "go", name, storageVersion, reader, size, target.backendID)
+
+	hash := sha256.New()
+	teeReader := io.TeeReader(reader, hash)
+
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "go", name, storageVersion, teeReader, size, target.backendID)
 	if err != nil {
 		return err
 	}
+	digest := hex.EncodeToString(hash.Sum(nil))
 
+	coordinates := map[string]string{
+		"name":    name,
+		"version": version,
+	}
 
-	_, _, err = w.compRepo.StoreComponentAsset(context.Background(), &model.Component{Name:           name,
-		Format: model.PackageTypeGo,
-		RepositoryID:   target.repoID,
-		Description:    name,
-		Version: version,
-		Status:  model.StatusPublished,
-	}, &model.Asset{
-		FileName:    filepath.Base(asset.Path),
-		Kind:    model.AssetKindPrimary,
-		Path: storageKey,
-	
-	})
-
-	return err
+	return w.storeArtifactAndBlob(context.Background(), target, "go", "primary", coordinates, digest, size, storageKey)
 }
 
 func (w *MigrationWorkerV2) storeGenericAsset(taskID uint, comp NexusComponent, asset NexusAsset, reader io.Reader, size int64, target migrationTarget) error {
@@ -786,26 +762,63 @@ func (w *MigrationWorkerV2) storeGenericAsset(taskID uint, comp NexusComponent, 
 	}
 
 	storageVersion := filepath.Base(path)
-	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "generic", filepath.Dir(path), storageVersion, reader, size, target.backendID)
+
+	hash := sha256.New()
+	teeReader := io.TeeReader(reader, hash)
+
+	storageKey, err := w.storageSvc.StorePackageWithBackend(context.Background(), target.repoName, "generic", filepath.Dir(path), storageVersion, teeReader, size, target.backendID)
 	if err != nil {
 		return err
 	}
+	digest := hex.EncodeToString(hash.Sum(nil))
 
+	coordinates := map[string]string{
+		"name":    path,
+		"version": "1.0.0",
+	}
 
-	_, _, err = w.compRepo.StoreComponentAsset(context.Background(), &model.Component{Name:           path,
-		Format: model.PackageTypeGeneric,
-		RepositoryID:   target.repoID,
-		Description:    path,
-		Version: "1.0.0",
-		Status:  model.StatusPublished,
-	}, &model.Asset{
-		FileName:    filepath.Base(path),
-		Kind:    model.AssetKindPrimary,
-		Path: storageKey,
-	
+	return w.storeArtifactAndBlob(context.Background(), target, "generic", "primary", coordinates, digest, size, storageKey)
+}
+
+func (w *MigrationWorkerV2) storeArtifactAndBlob(ctx context.Context, target migrationTarget, format, kind string, coordinates map[string]string, digest string, size int64, storageKey string) error {
+	return w.service.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		blob := &model.BlobV2{
+			Algorithm:   "sha256",
+			Digest:      digest,
+			Size:        size,
+			StoragePath: storageKey,
+		}
+		if err := tx.Create(blob).Error; err != nil {
+			return err
+		}
+
+		coords := make(model.JSONB)
+		for k, v := range coordinates {
+			coords[k] = v
+		}
+
+		artifact := &model.Artifact{
+			RepositoryID: target.repoID,
+			Format:       format,
+			Kind:         kind,
+			Coordinates:  coords,
+		}
+		if err := tx.Create(artifact).Error; err != nil {
+			return err
+		}
+
+		ab := &model.ArtifactBlob{
+			ArtifactID: artifact.ID,
+			BlobID:     blob.ID,
+			Position:   0,
+			Role:       "primary",
+		}
+		if err := tx.Create(ab).Error; err != nil {
+			return err
+		}
+
+		return nil
 	})
-
-	return err
 }
 
 func (w *MigrationWorkerV2) failTask(taskID uint, errMsg string) error {

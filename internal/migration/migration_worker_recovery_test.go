@@ -482,7 +482,7 @@ func TestResolveMigrationTargetUsesPerTaskRepository(t *testing.T) {
 	assert.NoError(t, db.Create(repoA).Error)
 	assert.NoError(t, db.Create(repoB).Error)
 
-	worker := NewMigrationWorkerV2(nil, nil, nil, repository.NewRepositoryRepository(db), nil, 1, 1, 1)
+	worker := NewMigrationWorkerV2(nil, nil, repository.NewRepositoryRepository(db), nil, 1, 1, 1)
 
 	targetA := worker.resolveMigrationTarget(&model.MigrationTask{ID: 1, TargetRepositoryID: repoA.ID, TargetRepository: "stale-a"})
 	targetB := worker.resolveMigrationTarget(&model.MigrationTask{ID: 2, TargetRepositoryID: repoB.ID, TargetRepository: "stale-b"})
@@ -497,7 +497,7 @@ func TestResolveMigrationTargetUsesPerTaskRepository(t *testing.T) {
 
 func TestResolveMigrationTargetFallsBackToTaskRepositoryName(t *testing.T) {
 	db := setupWorkerRecoveryTestDB(t)
-	worker := NewMigrationWorkerV2(nil, nil, nil, repository.NewRepositoryRepository(db), nil, 1, 1, 1)
+	worker := NewMigrationWorkerV2(nil, nil, repository.NewRepositoryRepository(db), nil, 1, 1, 1)
 
 	target := worker.resolveMigrationTarget(&model.MigrationTask{ID: 1, TargetRepository: "raw-target"})
 

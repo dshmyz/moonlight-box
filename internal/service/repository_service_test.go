@@ -64,7 +64,9 @@ func TestRepositoryService_Create_ProxyRepo(t *testing.T) {
 		Name:        "npm-proxy",
 		Type:        model.RepoTypeProxy,
 		PackageType: "npm",
-		RemoteURL:   "https://registry.npmjs.org",
+		Config: &model.RepositoryConfig{
+			RemoteURL: "https://registry.npmjs.org",
+		},
 		Enabled:     true,
 	}
 
@@ -75,7 +77,7 @@ func TestRepositoryService_Create_ProxyRepo(t *testing.T) {
 	// 验证代理仓库
 	retrieved, err := service.Get("npm-proxy")
 	assert.Nil(t, err)
-	assert.Equal(t, "https://registry.npmjs.org", retrieved.RemoteURL)
+	assert.Equal(t, "https://registry.npmjs.org", retrieved.Config.RemoteURL)
 }
 
 func TestRepositoryService_Create_VirtualRepo(t *testing.T) {
@@ -97,8 +99,10 @@ func TestRepositoryService_Create_VirtualRepo(t *testing.T) {
 		Name:        "npm-proxy",
 		Type:        model.RepoTypeProxy,
 		PackageType: "npm",
-		RemoteURL:   "https://registry.npmjs.org",
 		Enabled:     true,
+		Config: &model.RepositoryConfig{
+			RemoteURL: "https://registry.npmjs.org",
+		},
 	}
 	if err := service.Create(proxyRepo, nil); err != nil {
 		t.Fatalf("failed to create proxy repo: %v", err)
@@ -264,9 +268,10 @@ func TestRepositoryService_Create_VirtualRepoWithNonExistentMember(t *testing.T)
 
 func TestRepositoryService_GetAuthConfig_None(t *testing.T) {
 	repo := &model.Repository{
-		Name:       "test",
-		AuthType:   "none",
-		AuthConfig: "",
+		Name: "test",
+		Config: &model.RepositoryConfig{
+			AuthType: "none",
+		},
 	}
 
 	cfg, err := repo.GetAuthConfig()
@@ -276,9 +281,14 @@ func TestRepositoryService_GetAuthConfig_None(t *testing.T) {
 
 func TestRepositoryService_GetAuthConfig_Basic(t *testing.T) {
 	repo := &model.Repository{
-		Name:       "test",
-		AuthType:   "basic",
-		AuthConfig: `{"type":"basic","basic":{"username":"user","password":"pass"}}`,
+		Name: "test",
+		Config: &model.RepositoryConfig{
+			AuthType: "basic",
+			Auth: &model.ProxyAuthConfig{
+				Type: "basic",
+				Basic: &model.BasicAuth{Username: "user", Password: "pass"},
+			},
+		},
 	}
 
 	cfg, err := repo.GetAuthConfig()
@@ -290,9 +300,14 @@ func TestRepositoryService_GetAuthConfig_Basic(t *testing.T) {
 
 func TestRepositoryService_GetAuthConfig_Bearer(t *testing.T) {
 	repo := &model.Repository{
-		Name:       "test",
-		AuthType:   "bearer",
-		AuthConfig: `{"type":"bearer","bearer":{"token":"test-token"}}`,
+		Name: "test",
+		Config: &model.RepositoryConfig{
+			AuthType: "bearer",
+			Auth: &model.ProxyAuthConfig{
+				Type: "bearer",
+				Bearer: &model.BearerAuth{Token: "test-token"},
+			},
+		},
 	}
 
 	cfg, err := repo.GetAuthConfig()
@@ -303,9 +318,14 @@ func TestRepositoryService_GetAuthConfig_Bearer(t *testing.T) {
 
 func TestRepositoryService_GetAuthConfig_APIKey(t *testing.T) {
 	repo := &model.Repository{
-		Name:       "test",
-		AuthType:   "api_key",
-		AuthConfig: `{"type":"api_key","api_key":{"header_name":"X-API-Key","key_value":"secret"}}`,
+		Name: "test",
+		Config: &model.RepositoryConfig{
+			AuthType: "api_key",
+			Auth: &model.ProxyAuthConfig{
+				Type: "api_key",
+				APIKey: &model.APIKeyAuth{HeaderName: "X-API-Key", KeyValue: "secret"},
+			},
+		},
 	}
 
 	cfg, err := repo.GetAuthConfig()

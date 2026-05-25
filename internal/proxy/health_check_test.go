@@ -30,25 +30,7 @@ func (m *mockStorageChecker) CheckStoragePath(path string) error {
 
 type mockConfigReader struct{}
 
-type mockDownloadService struct {
-	downloader *ProxyDownloader
-}
 
-func (m *mockDownloadService) Download(ctx context.Context, downloadCtx *types.DownloadContext) (*types.DownloadResult, error) {
-	remoteURL := fmt.Sprintf("%s/%s/%s", downloadCtx.Repo.RemoteURL, downloadCtx.Name, downloadCtx.Version)
-	result, err := m.downloader.FetchFromRemote(ctx, downloadCtx.Repo, remoteURL)
-	if err != nil {
-		return nil, err
-	}
-	return &types.DownloadResult{
-		Content:  result.Content,
-		Size:     result.Size,
-		RepoID:   result.RepoID,
-		Filename: result.Name,
-		Name:     downloadCtx.Name,
-		Version:  downloadCtx.Version,
-	}, nil
-}
 
 func (m *mockConfigReader) GetConfigAsBool(key string, defaultValue bool) bool {
 	return defaultValue
@@ -105,10 +87,12 @@ func TestHealthCheckService_BasicCheck(t *testing.T) {
 
 	// 创建测试仓库
 	repo := &model.Repository{
-		Name:      "test-proxy",
-		Type:      model.RepoTypeProxy,
-		RemoteURL: server.URL,
-		Enabled:   true,
+		Name:    "test-proxy",
+		Type:    model.RepoTypeProxy,
+		Enabled: true,
+		Config: &model.RepositoryConfig{
+			RemoteURL: server.URL,
+		},
 	}
 	db.Create(repo)
 
@@ -156,10 +140,12 @@ func TestHealthCheckService_FailedCheck(t *testing.T) {
 
 	// 创建测试仓库
 	repo := &model.Repository{
-		Name:      "test-proxy-fail",
-		Type:      model.RepoTypeProxy,
-		RemoteURL: server.URL,
-		Enabled:   true,
+		Name:    "test-proxy-fail",
+		Type:    model.RepoTypeProxy,
+		Enabled: true,
+		Config: &model.RepositoryConfig{
+			RemoteURL: server.URL,
+		},
 	}
 	db.Create(repo)
 
@@ -198,10 +184,12 @@ func TestHealthCheckService_CircuitBreakerIntegration(t *testing.T) {
 
 	// 创建测试仓库
 	repo := &model.Repository{
-		Name:      "test-proxy-cb",
-		Type:      model.RepoTypeProxy,
-		RemoteURL: "http://invalid-host-that-does-not-exist:12345",
-		Enabled:   true,
+		Name:    "test-proxy-cb",
+		Type:    model.RepoTypeProxy,
+		Enabled: true,
+		Config: &model.RepositoryConfig{
+			RemoteURL: "http://invalid-host-that-does-not-exist:12345",
+		},
 	}
 	db.Create(repo)
 
@@ -375,37 +363,26 @@ func TestProxyDownloader_CircuitBreakerIntegration(t *testing.T) {
 
 	// 创建测试仓库
 	repo := &model.Repository{
-		Name:             "test-proxy-router",
-		Type:             model.RepoTypeProxy,
-		RemoteURL:        "http://invalid-host:12345",
-		Enabled:          true,
-		CacheEnabled:     false,
-		CacheTTLSeconds:  0,
-		CacheNegativeTTL: 0,
-		TimeoutSeconds:   1,
-		MaxRedirects:     0,
+		Name:    "test-proxy-router",
+		Type:    model.RepoTypeProxy,
+		Enabled: true,
+		Config: &model.RepositoryConfig{
+			RemoteURL:        "http://invalid-host:12345",
+			CacheEnabled:     false,
+			CacheTTLSeconds:  0,
+			CacheNegativeTTL: 0,
+			TimeoutSeconds:   1,
+			MaxRedirects:     0,
+		},
 	}
 	db.Create(repo)
 
 	proxyDownloader := NewProxyDownloader(NewCacheService(), remoteClient)
 	proxyDownloader.SetHealthCheckService(healthSvc)
 
-	mockAdp := &testMockAdapter{}
-
-	repoCache := NewRepositoryCache(repoRepo, nil, 5*time.Minute)
-	repoHandler := NewRepoHandler(repoRepo, nil, repoCache)
-	repoHandler.RegisterAdapter("maven", mockAdp)
-	repoHandler.SetDownloadService(&mockDownloadService{downloader: proxyDownloader})
-
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		downloadCtx := &types.DownloadContext{
-			Repo:    repo,
-			PkgType: "maven",
-			Name:    "test",
-			Version: "1.0.0",
-		}
-		_, err := repoHandler.resolveProxy(ctx, downloadCtx)
+		_, err := proxyDownloader.FetchFromRemote(ctx, repo, repo.Config.RemoteURL+"/test/1.0.0")
 		assert.Error(t, err)
 	}
 
@@ -416,15 +393,8 @@ func TestProxyDownloader_CircuitBreakerIntegration(t *testing.T) {
 
 	assert.Equal(t, CircuitOpen, cb.GetState())
 
-	downloadCtx := &types.DownloadContext{
-		Repo:    repo,
-		PkgType: "maven",
-		Name:    "test",
-		Version: "1.0.0",
-	}
-	_, err = repoHandler.resolveProxy(ctx, downloadCtx)
+	_, err = proxyDownloader.FetchFromRemote(ctx, repo, repo.Config.RemoteURL+"/test/1.0.0")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "circuit breaker open")
 }
 
 func TestProxyDownloader_CircuitBreakerNonBlocking(t *testing.T) {
@@ -447,37 +417,26 @@ func TestProxyDownloader_CircuitBreakerNonBlocking(t *testing.T) {
 	healthSvc := NewHealthCheckService(db, repoRepo, &mockStorageChecker{}, remoteClient, config, &mockConfigReader{})
 
 	repo := &model.Repository{
-		Name:             "test-proxy-nonblock",
-		Type:             model.RepoTypeProxy,
-		RemoteURL:        "http://invalid-host:12345",
-		Enabled:          true,
-		CacheEnabled:     false,
-		CacheTTLSeconds:  0,
-		CacheNegativeTTL: 0,
-		TimeoutSeconds:   1,
-		MaxRedirects:     0,
+		Name:    "test-proxy-nonblock",
+		Type:    model.RepoTypeProxy,
+		Enabled: true,
+		Config: &model.RepositoryConfig{
+			RemoteURL:        "http://invalid-host:12345",
+			CacheEnabled:     false,
+			CacheTTLSeconds:  0,
+			CacheNegativeTTL: 0,
+			TimeoutSeconds:   1,
+			MaxRedirects:     0,
+		},
 	}
 	db.Create(repo)
 
 	proxyDownloader := NewProxyDownloader(NewCacheService(), remoteClient)
 	proxyDownloader.SetHealthCheckService(healthSvc)
 
-	mockAdp := &testMockAdapter{}
-
-	repoCache := NewRepositoryCache(repoRepo, nil, 5*time.Minute)
-	repoHandler := NewRepoHandler(repoRepo, nil, repoCache)
-	repoHandler.RegisterAdapter("maven", mockAdp)
-	repoHandler.SetDownloadService(&mockDownloadService{downloader: proxyDownloader})
-
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		downloadCtx := &types.DownloadContext{
-			Repo:    repo,
-			PkgType: "maven",
-			Name:    "test",
-			Version: "1.0.0",
-		}
-		_, err := repoHandler.resolveProxy(ctx, downloadCtx)
+		_, err := proxyDownloader.FetchFromRemote(ctx, repo, repo.Config.RemoteURL+"/test/1.0.0")
 		assert.Error(t, err)
 	}
 

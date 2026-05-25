@@ -1,0 +1,102 @@
+- generic [ref=e3]:
+  - generic [ref=e5]:
+    - link "Moonlight Box" [ref=e6] [cursor=pointer]:
+      - /url: /
+      - img [ref=e7]
+      - generic [ref=e13]: Moonlight Box
+    - generic [ref=e14]:
+      - link "帮助" [ref=e15] [cursor=pointer]:
+        - /url: /help
+        - button "帮助" [ref=e16]:
+          - generic [ref=e17]:
+            - img [ref=e19]
+            - text: 帮助
+      - link "登录" [ref=e21] [cursor=pointer]:
+        - /url: /login
+        - button "登录" [ref=e22]:
+          - generic [ref=e23]:
+            - img [ref=e25]
+            - text: 登录
+  - main [ref=e27]:
+    - generic [ref=e28]:
+      - generic [ref=e29]:
+        - generic:
+          - img
+        - generic [ref=e30]:
+          - generic [ref=e31]:
+            - generic [ref=e34]: Moonlight Box
+            - heading "软件包中心" [level=1] [ref=e35]
+          - paragraph [ref=e36]: 统一管理、搜索和分发多语言软件包
+          - generic [ref=e37]:
+            - generic [ref=e39]:
+              - img [ref=e42]
+              - textbox "搜索包名、描述或标签..." [ref=e44]
+            - button "搜索" [ref=e45] [cursor=pointer]:
+              - img [ref=e47]
+              - text: 搜索
+          - generic [ref=e49]:
+            - button "全部" [ref=e50] [cursor=pointer]: 全部
+            - button "npm" [ref=e52] [cursor=pointer]: npm
+            - button "Maven" [ref=e54] [cursor=pointer]: Maven
+            - button "PyPI" [ref=e56] [cursor=pointer]: PyPI
+            - button "Go" [ref=e58] [cursor=pointer]: Go
+            - button "Yum" [ref=e60] [cursor=pointer]: Yum
+            - button "Apt" [ref=e62] [cursor=pointer]: Apt
+            - button "Generic" [ref=e64] [cursor=pointer]: Generic
+      - generic [ref=e66]:
+        - button "包" [ref=e67] [cursor=pointer]:
+          - img [ref=e69]
+          - text: 包
+        - button "仓库" [ref=e73] [cursor=pointer]:
+          - img [ref=e75]
+          - text: 仓库
+        - generic [ref=e77]:
+          - generic [ref=e79] [cursor=pointer]:
+            - generic:
+              - combobox [ref=e81]
+              - generic [ref=e82]: 按名称
+            - img [ref=e85]
+          - generic [ref=e87]: 1 个包
+      - generic [ref=e88]:
+        - generic [ref=e89]:
+          - img [ref=e91]
+          - text: 1 个包
+        - generic [ref=e95]:
+          - img [ref=e97]
+          - text: 1ms
+      - button "npm lodash 暂无描述 - 0 今天" [ref=e103] [cursor=pointer]:
+        - generic [ref=e104]:
+          - generic [ref=e105]:
+            - generic [ref=e106]: npm
+            - generic [ref=e107]: lodash
+          - paragraph [ref=e108]: 暂无描述
+          - generic [ref=e109]:
+            - generic [ref=e110]:
+              - img [ref=e112]
+              - generic [ref=e115]: "-"
+            - generic [ref=e116]:
+              - img [ref=e118]
+              - generic [ref=e120]: "0"
+            - generic [ref=e121]:
+              - img [ref=e123]
+              - generic [ref=e127]: 今天
+      - generic [ref=e128]:
+        - generic [ref=e129]:
+          - generic [ref=e130]: /
+          - text: 聚焦搜索
+        - generic [ref=e131]:
+          - generic [ref=e132]: Esc
+          - text: 清空
+  - generic [ref=e134]:
+    - generic [ref=e135]:
+      - link "Moonlight Box" [ref=e136] [cursor=pointer]:
+        - /url: /
+        - img [ref=e137]
+        - text: Moonlight Box
+      - generic [ref=e143]: 企业级组件仓库管理平台
+    - generic [ref=e144]:
+      - link "关于" [ref=e145] [cursor=pointer]:
+        - /url: /about
+      - generic [ref=e147]: © 2026 Moonlight Box
+  - button [ref=e148] [cursor=pointer]:
+    - img [ref=e150]
