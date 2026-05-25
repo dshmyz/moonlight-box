@@ -49,7 +49,7 @@ func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 	digest := hex.EncodeToString(hasher.Sum(nil))
 	size := counter.n
 
-	var existingBlob model.BlobV2
+	var existingBlob model.Blob
 	err := s.db.Where("algorithm = ? AND digest = ?", "sha256", digest).First(&existingBlob).Error
 	if err == nil {
 		s.backend.Delete(context.Background(), tempPath)
@@ -74,7 +74,7 @@ func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 	}
 	s.backend.Delete(context.Background(), tempPath)
 
-	blob := &model.BlobV2{
+	blob := &model.Blob{
 		Algorithm:   "sha256",
 		Digest:      digest,
 		Size:        size,
@@ -93,7 +93,7 @@ func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 }
 
 func (s *CASBlobStore) Open(ref runtime.BlobRef) (io.ReadCloser, error) {
-	var blob model.BlobV2
+	var blob model.Blob
 	if err := s.db.First(&blob, ref.BlobID).Error; err != nil {
 		return nil, err
 	}
@@ -101,7 +101,7 @@ func (s *CASBlobStore) Open(ref runtime.BlobRef) (io.ReadCloser, error) {
 }
 
 func (s *CASBlobStore) Stat(ref runtime.BlobRef) (*runtime.BlobMetadata, error) {
-	var blob model.BlobV2
+	var blob model.Blob
 	if err := s.db.First(&blob, ref.BlobID).Error; err != nil {
 		return nil, err
 	}
@@ -115,7 +115,7 @@ func (s *CASBlobStore) Stat(ref runtime.BlobRef) (*runtime.BlobMetadata, error) 
 }
 
 func (s *CASBlobStore) Delete(ref runtime.BlobRef) error {
-	var blob model.BlobV2
+	var blob model.Blob
 	if err := s.db.First(&blob, ref.BlobID).Error; err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func (s *CASBlobStore) buildCASPath(algorithm, digest string) string {
 
 func (s *CASBlobStore) Exists(algorithm, digest string) (bool, error) {
 	var count int64
-	err := s.db.Model(&model.BlobV2{}).
+	err := s.db.Model(&model.Blob{}).
 		Where("algorithm = ? AND digest = ?", algorithm, digest).
 		Count(&count).Error
 	return count > 0, err

@@ -120,13 +120,21 @@ func serveEmbeddedDocs(c *gin.Context) {
 		return
 	}
 
-	// 对模板文件动态替换域名占位符，使客户端配置中的地址与当前请求地址一致
+	// 对模板文件动态替换域名占位符和协议，使客户端配置中的地址与当前请求地址一致
 	if strings.HasPrefix(reqPath, "/templates/") {
 		host := c.GetHeader("X-Forwarded-Host")
 		if host == "" {
 			host = c.Request.Host
 		}
-		content := strings.ReplaceAll(string(data), "your-moonlight-domain", host)
+
+		scheme := "http"
+		if c.GetHeader("X-Forwarded-Proto") == "https" || c.Request.TLS != nil {
+			scheme = "https"
+		}
+
+		content := string(data)
+		content = strings.ReplaceAll(content, "https://your-moonlight-domain", scheme+"://"+host)
+		content = strings.ReplaceAll(content, "your-moonlight-domain", host)
 		data = []byte(content)
 	}
 

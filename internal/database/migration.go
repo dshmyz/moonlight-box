@@ -12,7 +12,7 @@ func AutoMigrate() error {
 		&model.Permission{},
 		&model.UserRole{},
 		&model.RolePermission{},
-		&model.BlobV2{},
+		&model.Blob{},
 		&model.Artifact{},
 		&model.ArtifactBlob{},
 		&model.ArtifactTag{},

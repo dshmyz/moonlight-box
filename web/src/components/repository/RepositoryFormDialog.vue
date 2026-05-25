@@ -110,7 +110,7 @@ import { ref, computed, watch } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage } from 'element-plus'
 import { Document, Link, Setting, Coin, Lock, Connection } from '@element-plus/icons-vue'
-import { repositoryApi, type Repository, type FailureCacheRule } from '@/api/repository'
+import { repositoryApi, type Repository, type ProxyAuthConfig } from '@/api/repository'
 import BasicInfoForm from './BasicInfoForm.vue'
 import AuthConfigForm from './AuthConfigForm.vue'
 import TimeoutConfigForm from './TimeoutConfigForm.vue'
@@ -231,44 +231,74 @@ watch(
   () => props.editData,
   (repo) => {
     if (repo) {
+      const cfg = repo.config || {}
+
       formData.value = {
         name: repo.name,
         display_name: repo.display_name || '',
         description: repo.description || '',
         type: repo.type,
         package_type: repo.package_type || 'npm',
-        remote_url: repo.remote_url || '',
-        auth_type: repo.auth_type || 'none',
-        auth_config: repo.auth_config || '',
-        proxy_priority: repo.proxy_priority ?? 0,
-        timeout_seconds: repo.timeout_seconds ?? 0,
-        max_redirects: repo.max_redirects ?? 0,
-        insecure_skip_verify: repo.insecure_skip_verify ?? false,
-        cache_enabled: repo.cache_enabled ?? true,
-        cache_ttl_seconds: repo.cache_ttl_seconds ?? 86400,
-        cache_negative_ttl: repo.cache_negative_ttl ?? 300,
-        cache_max_size_gb: repo.cache_max_size_gb ?? 10,
-        failure_cache_rules: repo.failure_cache_rules
-          ? JSON.stringify(repo.failure_cache_rules, null, 2)
-          : '',
+        remote_url: cfg.remote_url || '',
+        auth_type: cfg.auth_type || 'none',
+        auth_config: '',
+        proxy_priority: cfg.proxy_priority ?? 0,
+        timeout_seconds: cfg.timeout_seconds ?? 0,
+        max_redirects: cfg.max_redirects ?? 0,
+        insecure_skip_verify: cfg.insecure_skip_verify ?? false,
+        cache_enabled: cfg.cache_enabled ?? true,
+        cache_ttl_seconds: cfg.cache_ttl_seconds ?? 86400,
+        cache_negative_ttl: cfg.cache_negative_ttl ?? 300,
+        cache_max_size_gb: cfg.cache_max_size_gb ?? 10,
+        failure_cache_rules: cfg.failure_cache_rules || '',
         allow_overwrite: repo.allow_overwrite ?? false,
         allow_delete: repo.allow_delete ?? false,
       }
 
       storageBackendId.value = repo.storage_backend_id || null
 
-      if (repo.auth_config) {
-        try {
-          const parsed = JSON.parse(repo.auth_config)
+      if (cfg.auth) {
+        const auth = cfg.auth
+        if (auth.type === 'basic' && auth.basic) {
           authConfig.value = {
-            username: parsed.username || '',
-            password: parsed.password || '',
-            token: parsed.token || '',
-            header_name: parsed.header_name || '',
-            key_value: parsed.key_value || '',
+            username: auth.basic.username || '',
+            password: auth.basic.password || '',
+            token: '',
+            header_name: '',
+            key_value: '',
           }
-        } catch {
-          // ignore
+        } else if (auth.type === 'bearer' && auth.bearer) {
+          authConfig.value = {
+            username: '',
+            password: '',
+            token: auth.bearer.token || '',
+            header_name: '',
+            key_value: '',
+          }
+        } else if (auth.type === 'api_key' && auth.api_key) {
+          authConfig.value = {
+            username: '',
+            password: '',
+            token: '',
+            header_name: auth.api_key.header_name || '',
+            key_value: auth.api_key.key_value || '',
+          }
+        } else {
+          authConfig.value = {
+            username: '',
+            password: '',
+            token: '',
+            header_name: '',
+            key_value: '',
+          }
+        }
+      } else {
+        authConfig.value = {
+          username: '',
+          password: '',
+          token: '',
+          header_name: '',
+          key_value: '',
         }
       }
 
@@ -293,31 +323,44 @@ const handleMembersUpdate = (val: string) => {
   membersText.value = val
 }
 
+const buildProxyAuthConfig = (): ProxyAuthConfig | undefined => {
+  if (!formData.value.auth_type || formData.value.auth_type === 'none') {
+    return undefined
+  }
+
+  if (formData.value.auth_type === 'basic') {
+    return {
+      type: 'basic',
+      basic: {
+        username: authConfig.value.username,
+        password: authConfig.value.password,
+      },
+    }
+  }
+
+  if (formData.value.auth_type === 'bearer') {
+    return {
+      type: 'bearer',
+      bearer: {
+        token: authConfig.value.token,
+      },
+    }
+  }
+
+  if (formData.value.auth_type === 'api_key') {
+    return {
+      type: 'api_key',
+      api_key: {
+        header_name: authConfig.value.header_name,
+        key_value: authConfig.value.key_value,
+      },
+    }
+  }
+
+  return undefined
+}
+
 const buildSubmitData = (): Partial<Repository> => {
-  let authConfigJson = ''
-  if (formData.value.auth_type && formData.value.auth_type !== 'none') {
-    const config: Record<string, string> = {}
-    if (formData.value.auth_type === 'basic') {
-      config.username = authConfig.value.username
-      config.password = authConfig.value.password
-    } else if (formData.value.auth_type === 'bearer') {
-      config.token = authConfig.value.token
-    } else if (formData.value.auth_type === 'api_key') {
-      config.header_name = authConfig.value.header_name
-      config.key_value = authConfig.value.key_value
-    }
-    authConfigJson = JSON.stringify(config)
-  }
-
-  let failureCacheRules: FailureCacheRule[] | undefined
-  if (formData.value.type === 'proxy' && formData.value.failure_cache_rules.trim()) {
-    try {
-      failureCacheRules = JSON.parse(formData.value.failure_cache_rules)
-    } catch {
-      failureCacheRules = undefined
-    }
-  }
-
   const memberNames = formData.value.type === 'virtual'
     ? membersText.value
         .split('\n')
@@ -335,14 +378,26 @@ const buildSubmitData = (): Partial<Repository> => {
   }
 
   if (formData.value.type === 'proxy') {
-    data.remote_url = formData.value.remote_url
-    data.auth_type = formData.value.auth_type
-    data.auth_config = authConfigJson
-    data.proxy_priority = formData.value.proxy_priority
-    data.timeout_seconds = formData.value.timeout_seconds
-    data.max_redirects = formData.value.max_redirects
-    data.insecure_skip_verify = formData.value.insecure_skip_verify
-    data.failure_cache_rules = failureCacheRules
+    data.config = {
+      remote_url: formData.value.remote_url,
+      auth_type: formData.value.auth_type,
+      auth: buildProxyAuthConfig(),
+      proxy_priority: formData.value.proxy_priority,
+      cache_enabled: formData.value.cache_enabled,
+      cache_ttl_seconds: formData.value.cache_ttl_seconds,
+      cache_negative_ttl: formData.value.cache_negative_ttl,
+      cache_max_size_gb: formData.value.cache_max_size_gb,
+      timeout_seconds: formData.value.timeout_seconds,
+      max_redirects: formData.value.max_redirects,
+      insecure_skip_verify: formData.value.insecure_skip_verify,
+      failure_cache_rules: formData.value.failure_cache_rules || '',
+    }
+  } else {
+    data.config = {
+      cache_enabled: formData.value.cache_enabled,
+      cache_ttl_seconds: formData.value.cache_ttl_seconds,
+      cache_max_size_gb: formData.value.cache_max_size_gb,
+    }
   }
 
   if (formData.value.type === 'local' || formData.value.type === 'proxy') {
@@ -352,14 +407,6 @@ const buildSubmitData = (): Partial<Repository> => {
 
   if (formData.value.type === 'virtual') {
     data.members = memberNames
-  }
-
-  data.cache_enabled = formData.value.cache_enabled
-  data.cache_ttl_seconds = formData.value.cache_ttl_seconds
-  data.cache_max_size_gb = formData.value.cache_max_size_gb
-
-  if (formData.value.type === 'proxy') {
-    data.cache_negative_ttl = formData.value.cache_negative_ttl
   }
 
   return data

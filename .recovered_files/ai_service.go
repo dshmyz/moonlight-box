@@ -6,11 +6,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/moonlight-box/registry/internal/ai/models"
-	"github.com/moonlight-box/registry/internal/ai/tools"
-	"github.com/moonlight-box/registry/internal/config"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/ai/models"
+	"github.com/dshmyz/moonlight-box/internal/ai/tools"
+	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 	"gorm.io/gorm"
 )
 
@@ -77,8 +77,8 @@ type ChatRequest struct {
 
 // ChatResponse 聊天响应
 type ChatResponse struct {
-	SessionID string `json:"session_id"`
-	Message   string `json:"message"`
+	SessionID string         `json:"session_id"`
+	Message   string         `json:"message"`
 	ToolCalls []ToolCallInfo `json:"tool_calls,omitempty"`
 	Usage     *UsageInfo     `json:"usage,omitempty"`
 }
@@ -468,8 +468,8 @@ func (s *AIService) GetStats() *ServiceStats {
 
 // ServiceStats 服务统计
 type ServiceStats struct {
-	SessionCount  int          `json:"session_count"`
-	ToolCount     int          `json:"tool_count"`
-	CacheStats    *CacheStats  `json:"cache_stats,omitempty"`
-	AuditLogCount int          `json:"audit_log_count"`
+	SessionCount  int         `json:"session_count"`
+	ToolCount     int         `json:"tool_count"`
+	CacheStats    *CacheStats `json:"cache_stats,omitempty"`
+	AuditLogCount int         `json:"audit_log_count"`
 }

@@ -78,7 +78,7 @@ func (j *GCJob) Run(ctx context.Context) error {
 		return err
 	}
 
-	var unreferencedBlobs []model.BlobV2
+	var unreferencedBlobs []model.Blob
 	if err := j.db.Where("id NOT IN ?", referencedBlobIDs).
 		Find(&unreferencedBlobs).Error; err != nil {
 		return err
@@ -139,7 +139,7 @@ func (j *BlobVerifyJob) Name() string {
 func (j *BlobVerifyJob) Run(ctx context.Context) error {
 	logrus.Info("Starting blob verify job")
 
-	var blobs []model.BlobV2
+	var blobs []model.Blob
 	if err := j.db.Find(&blobs).Error; err != nil {
 		return err
 	}

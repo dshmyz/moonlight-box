@@ -77,23 +77,23 @@
           <div class="info-grid">
             <div class="info-item">
               <label>远程地址</label>
-              <code class="url-text">{{ repo?.remote_url }}</code>
+              <code class="url-text">{{ repo?.config?.remote_url }}</code>
             </div>
             <div class="info-item">
               <label>优先级</label>
-              <span>{{ repo?.proxy_priority || 0 }}</span>
+              <span>{{ repo?.config?.proxy_priority || 0 }}</span>
             </div>
             <div class="info-item">
               <label>超时时间</label>
-              <span>{{ repo?.timeout_seconds || 0 }} 秒</span>
+              <span>{{ repo?.config?.timeout_seconds || 0 }} 秒</span>
             </div>
             <div class="info-item">
               <label>最大重定向次数</label>
-              <span>{{ repo?.max_redirects || 5 }}</span>
+              <span>{{ repo?.config?.max_redirects || 5 }}</span>
             </div>
             <div class="info-item">
               <label>跳过证书验证</label>
-              <span>{{ repo?.insecure_skip_verify ? '是' : '否' }}</span>
+              <span>{{ repo?.config?.insecure_skip_verify ? '是' : '否' }}</span>
             </div>
           </div>
         </el-card>
@@ -118,26 +118,26 @@
           </div>
         </el-card>
 
-        <el-card v-if="repo?.cache_enabled" class="info-card">
+        <el-card v-if="repo?.config?.cache_enabled" class="info-card">
           <template #header>
             <span class="card-title">缓存配置</span>
           </template>
           <div class="info-grid">
             <div class="info-item">
               <label>缓存启用</label>
-              <span>{{ repo?.cache_enabled ? '是' : '否' }}</span>
+              <span>{{ repo?.config?.cache_enabled ? '是' : '否' }}</span>
             </div>
             <div class="info-item">
               <label>缓存有效期</label>
-              <span>{{ repo?.cache_ttl_seconds }} 秒</span>
+              <span>{{ repo?.config?.cache_ttl_seconds }} 秒</span>
             </div>
             <div class="info-item">
               <label>负缓存有效期</label>
-              <span>{{ repo?.cache_negative_ttl }} 秒</span>
+              <span>{{ repo?.config?.cache_negative_ttl }} 秒</span>
             </div>
             <div class="info-item">
               <label>最大缓存大小</label>
-              <span>{{ repo?.cache_max_size_gb }} GB</span>
+              <span>{{ repo?.config?.cache_max_size_gb }} GB</span>
             </div>
           </div>
         </el-card>

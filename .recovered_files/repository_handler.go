@@ -5,16 +5,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 // RepositoryHandler 仓库管理处理器
 type RepositoryHandler struct {
-	svc            *service.RepositoryService
+	svc             *service.RepositoryService
 	metadataSyncSvc *service.MetadataSyncService
-	schedulerSvc   *service.SchedulerService
+	schedulerSvc    *service.SchedulerService
 }
 
 // NewRepositoryHandler 创建仓库管理处理器实例
@@ -65,20 +65,20 @@ func (h *RepositoryHandler) Get(c *gin.Context) {
 // Create 创建新仓库
 func (h *RepositoryHandler) Create(c *gin.Context) {
 	var req struct {
-		Name          string   `json:"name" binding:"required"`
-		DisplayName   string   `json:"display_name"`
-		Description   string   `json:"description"`
-		Type          string   `json:"type" binding:"required"`
-		PackageType   string   `json:"package_type" binding:"required"`
-		RemoteURL     string   `json:"remote_url"`
-		AuthType      string   `json:"auth_type"`
-		AuthConfig    string   `json:"auth_config"`
-		ProxyPriority int      `json:"proxy_priority"`
-		TimeoutSeconds     int    `json:"timeout_seconds"`
-		MaxRedirects       int    `json:"max_redirects"`
-		InsecureSkipVerify bool   `json:"insecure_skip_verify"`
-		FailureCacheRules  string `json:"failure_cache_rules"`
-		Members       []string `json:"members"`
+		Name               string   `json:"name" binding:"required"`
+		DisplayName        string   `json:"display_name"`
+		Description        string   `json:"description"`
+		Type               string   `json:"type" binding:"required"`
+		PackageType        string   `json:"package_type" binding:"required"`
+		RemoteURL          string   `json:"remote_url"`
+		AuthType           string   `json:"auth_type"`
+		AuthConfig         string   `json:"auth_config"`
+		ProxyPriority      int      `json:"proxy_priority"`
+		TimeoutSeconds     int      `json:"timeout_seconds"`
+		MaxRedirects       int      `json:"max_redirects"`
+		InsecureSkipVerify bool     `json:"insecure_skip_verify"`
+		FailureCacheRules  string   `json:"failure_cache_rules"`
+		Members            []string `json:"members"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -87,20 +87,20 @@ func (h *RepositoryHandler) Create(c *gin.Context) {
 	}
 
 	repo := model.Repository{
-		Name:          req.Name,
-		DisplayName:   req.DisplayName,
-		Description:   req.Description,
-		Type:          model.RepositoryType(req.Type),
-		PackageType:   req.PackageType,
-		RemoteURL:     req.RemoteURL,
-		AuthType:      req.AuthType,
-		AuthConfig:    req.AuthConfig,
-		ProxyPriority: req.ProxyPriority,
+		Name:               req.Name,
+		DisplayName:        req.DisplayName,
+		Description:        req.Description,
+		Type:               model.RepositoryType(req.Type),
+		PackageType:        req.PackageType,
+		RemoteURL:          req.RemoteURL,
+		AuthType:           req.AuthType,
+		AuthConfig:         req.AuthConfig,
+		ProxyPriority:      req.ProxyPriority,
 		TimeoutSeconds:     req.TimeoutSeconds,
 		MaxRedirects:       req.MaxRedirects,
 		InsecureSkipVerify: req.InsecureSkipVerify,
 		FailureCacheRules:  req.FailureCacheRules,
-		Enabled:       true,
+		Enabled:            true,
 	}
 
 	if err := h.svc.Create(&repo, req.Members); err != nil {

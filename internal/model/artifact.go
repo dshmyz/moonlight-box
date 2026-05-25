@@ -42,17 +42,17 @@ func (RepositoryMember) TableName() string {
 	return "repository_members"
 }
 
-// BlobV2 CAS 存储的 blob 元数据（新架构）
-type BlobV2 struct {
-	ID           uint      `gorm:"primaryKey" json:"id"`
-	Algorithm    string    `gorm:"not null;size:32;uniqueIndex:idx_blob_digest,priority:1" json:"algorithm"`
-	Digest       string    `gorm:"not null;size:128;uniqueIndex:idx_blob_digest,priority:2" json:"digest"`
-	Size         int64     `gorm:"not null" json:"size"`
-	StoragePath  string    `gorm:"not null;type:text" json:"storage_path"`
-	CreatedAt    time.Time `gorm:"autoCreateTime;not null" json:"created_at"`
+// Blob CAS 存储的 blob 元数据
+type Blob struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	Algorithm   string    `gorm:"not null;size:32;uniqueIndex:idx_blob_digest,priority:1" json:"algorithm"`
+	Digest      string    `gorm:"not null;size:128;uniqueIndex:idx_blob_digest,priority:2" json:"digest"`
+	Size        int64     `gorm:"not null" json:"size"`
+	StoragePath string    `gorm:"not null;type:text" json:"storage_path"`
+	CreatedAt   time.Time `gorm:"autoCreateTime;not null" json:"created_at"`
 }
 
-func (BlobV2) TableName() string {
+func (Blob) TableName() string {
 	return "blobs"
 }
 
@@ -122,8 +122,8 @@ func (ArtifactProperty) TableName() string {
 
 // ArtifactRelation 制品关系
 type ArtifactRelation struct {
-	SourceID     uint `gorm:"not null;index:idx_artifact_source" json:"source_id"`
-	TargetID     uint `gorm:"not null;index:idx_artifact_target" json:"target_id"`
+	SourceID     uint   `gorm:"not null;index:idx_artifact_source" json:"source_id"`
+	TargetID     uint   `gorm:"not null;index:idx_artifact_target" json:"target_id"`
 	RelationType string `gorm:"not null;size:64;index" json:"relation_type"`
 }
 

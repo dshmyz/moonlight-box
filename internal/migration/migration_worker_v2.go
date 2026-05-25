@@ -782,7 +782,7 @@ func (w *MigrationWorkerV2) storeGenericAsset(taskID uint, comp NexusComponent, 
 
 func (w *MigrationWorkerV2) storeArtifactAndBlob(ctx context.Context, target migrationTarget, format, kind string, coordinates map[string]string, digest string, size int64, storageKey string) error {
 	return w.service.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		blob := &model.BlobV2{
+		blob := &model.Blob{
 			Algorithm:   "sha256",
 			Digest:      digest,
 			Size:        size,

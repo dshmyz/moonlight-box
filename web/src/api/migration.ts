@@ -95,3 +95,45 @@ export function syncNexusReposConfig(data: {
 }) {
   return request.post('/migration/nexus/sync-config-only', data)
 }
+
+export interface NexusUser {
+  userId: string
+  firstName: string
+  lastName: string
+  email: string
+  status: string
+  roles: string[]
+  external: boolean
+}
+
+export interface NexusRole {
+  id: string
+  name: string
+  description: string
+  privileges: string[]
+  external: boolean
+}
+
+export function listNexusUsers(data: {
+  url: string
+  username: string
+  password: string
+}) {
+  return request.post<NexusUser[]>('/migration/nexus/users', data)
+}
+
+export function listNexusRoles(data: {
+  url: string
+  username: string
+  password: string
+}) {
+  return request.post<NexusRole[]>('/migration/nexus/roles', data)
+}
+
+export function syncUsersFromNexus(data: {
+  url: string
+  username: string
+  password: string
+}) {
+  return request.post('/migration/nexus/sync-users', data)
+}

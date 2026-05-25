@@ -7,126 +7,137 @@
         </div>
         <div class="header-text">
           <h2>数据迁移</h2>
-          <p class="header-subtitle">从 Nexus 迁移仓库数据</p>
+          <p class="header-subtitle">从 Nexus 迁移仓库数据、用户和角色</p>
         </div>
       </div>
     </header>
 
-    <div class="content-wrapper">
-      <div class="step-container">
-        <el-steps :active="currentStep" finish-status="success" class="step-bar">
-          <el-step title="连接 Nexus" />
-          <el-step title="选择仓库" />
-          <el-step title="执行迁移" />
-        </el-steps>
+    <div class="migration-tabs">
+      <el-tabs v-model="activeTab" type="card" class="tab-bar">
+        <el-tab-pane label="仓库迁移" name="repo">
+          <div class="tab-content">
+            <div class="step-container">
+              <el-steps :active="currentStep" finish-status="success" class="step-bar">
+                <el-step title="连接 Nexus" />
+                <el-step title="选择仓库" />
+                <el-step title="执行迁移" />
+              </el-steps>
 
-        <div class="step-content">
-          <NexusConnectionForm
-            v-if="currentStep === 0"
-            @connected="onConnected"
-          />
-
-          <template v-if="currentStep === 1">
-            <RepositorySelector
-              :repositories="nexusRepos"
-              @selected="onSelected"
-            />
-            <div v-if="!syncConfigOnly" class="target-repo-section">
-              <label class="section-label">目标仓库</label>
-              <el-select
-                v-model="targetRepoId"
-                placeholder="选择目标仓库"
-                class="repo-select"
-              >
-                <el-option
-                  v-for="repo in localRepos"
-                  :key="repo.id"
-                  :label="repo.name"
-                  :value="repo.id"
+              <div class="step-content">
+                <NexusConnectionForm
+                  v-if="currentStep === 0"
+                  @connected="onConnected"
                 />
-              </el-select>
-              <span class="tip">迁移的包将存储到选定的目标仓库</span>
-            </div>
-            <div class="advanced-config">
-              <el-collapse>
-                <el-collapse-item title="高级配置" name="advanced">
-                  <el-form label-width="120px">
-                    <el-form-item label="并发数">
-                      <el-input-number
-                        v-model="workerCount"
-                        :min="1"
-                        :max="50"
-                        :step="1"
-                      />
-                      <span class="config-tip">同时处理的组件数量（默认：10）</span>
-                    </el-form-item>
-                    <el-form-item label="最大重试次数">
-                      <el-input-number
-                        v-model="maxRetries"
-                        :min="1"
-                        :max="10"
-                        :step="1"
-                      />
-                      <span class="config-tip">失败后的重试次数（默认：3）</span>
-                    </el-form-item>
-                    <el-form-item label="批处理大小">
-                      <el-input-number
-                        v-model="batchSize"
-                        :min="10"
-                        :max="500"
-                        :step="10"
-                      />
-                      <span class="config-tip">每批处理的组件数量（默认：50）</span>
-                    </el-form-item>
-                  </el-form>
-                </el-collapse-item>
-              </el-collapse>
-            </div>
-            <div class="sync-mode-section">
-              <el-switch
-                v-model="syncConfigOnly"
-                active-text="仅同步仓库配置"
-                inactive-text="迁移包数据"
-              />
-              <p class="sync-mode-tip" v-if="syncConfigOnly">
-                只会同步仓库配置信息，不会迁移实际的包数据
-              </p>
-            </div>
-            <div class="actions">
-              <el-button 
-                v-if="!syncConfigOnly" 
-                type="primary" 
-                @click="startMigration" 
-                :disabled="selectedRepos.length === 0 || !targetRepoId"
-              >
-                开始迁移
-              </el-button>
-              <el-button 
-                v-else
-                type="primary" 
-                @click="startSyncConfig" 
-                :disabled="selectedRepos.length === 0"
-              >
-                同步仓库配置
-              </el-button>
-            </div>
-          </template>
 
-          <MigrationProgress
-            v-if="currentStep === 2"
-            :status="migrationStatus"
-            :total="totalItems"
-            :processed="processedItems"
-            :failed="failedItems"
-            :logs="logs"
-            @cancel="onCancel"
-          />
-        </div>
-      </div>
+                <template v-if="currentStep === 1">
+                  <RepositorySelector
+                    :repositories="nexusRepos"
+                    @selected="onSelected"
+                  />
+                  <div v-if="!syncConfigOnly" class="target-repo-section">
+                    <label class="section-label">目标仓库</label>
+                    <el-select
+                      v-model="targetRepoId"
+                      placeholder="选择目标仓库"
+                      class="repo-select"
+                    >
+                      <el-option
+                        v-for="repo in localRepos"
+                        :key="repo.id"
+                        :label="repo.name"
+                        :value="repo.id"
+                      />
+                    </el-select>
+                    <span class="tip">迁移的包将存储到选定的目标仓库</span>
+                  </div>
+                  <div class="advanced-config">
+                    <el-collapse>
+                      <el-collapse-item title="高级配置" name="advanced">
+                        <el-form label-width="120px">
+                          <el-form-item label="并发数">
+                            <el-input-number
+                              v-model="workerCount"
+                              :min="1"
+                              :max="50"
+                              :step="1"
+                            />
+                            <span class="config-tip">同时处理的组件数量（默认：10）</span>
+                          </el-form-item>
+                          <el-form-item label="最大重试次数">
+                            <el-input-number
+                              v-model="maxRetries"
+                              :min="1"
+                              :max="10"
+                              :step="1"
+                            />
+                            <span class="config-tip">失败后的重试次数（默认：3）</span>
+                          </el-form-item>
+                          <el-form-item label="批处理大小">
+                            <el-input-number
+                              v-model="batchSize"
+                              :min="10"
+                              :max="500"
+                              :step="10"
+                            />
+                            <span class="config-tip">每批处理的组件数量（默认：50）</span>
+                          </el-form-item>
+                        </el-form>
+                      </el-collapse-item>
+                    </el-collapse>
+                  </div>
+                  <div class="sync-mode-section">
+                    <el-switch
+                      v-model="syncConfigOnly"
+                      active-text="仅同步仓库配置"
+                      inactive-text="迁移包数据"
+                    />
+                    <p class="sync-mode-tip" v-if="syncConfigOnly">
+                      只会同步仓库配置信息，不会迁移实际的包数据
+                    </p>
+                  </div>
+                  <div class="actions">
+                    <el-button
+                      v-if="!syncConfigOnly"
+                      type="primary"
+                      @click="startMigration"
+                      :disabled="selectedRepos.length === 0 || !targetRepoId"
+                    >
+                      开始迁移
+                    </el-button>
+                    <el-button
+                      v-else
+                      type="primary"
+                      @click="startSyncConfig"
+                      :disabled="selectedRepos.length === 0"
+                    >
+                      同步仓库配置
+                    </el-button>
+                  </div>
+                </template>
 
-      <div class="history-section">
-        <MigrationHistory :tasks="historyTasks" :loading="historyLoading" />
-      </div>
+                <MigrationProgress
+                  v-if="currentStep === 2"
+                  :status="migrationStatus"
+                  :total="totalItems"
+                  :processed="processedItems"
+                  :failed="failedItems"
+                  :logs="logs"
+                  @cancel="onCancel"
+                />
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+        <el-tab-pane label="用户迁移" name="user">
+          <div class="tab-content">
+            <UserMigration />
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </div>
+
+    <div class="history-section">
+      <MigrationHistory :tasks="historyTasks" :loading="historyLoading" />
     </div>
   </div>
 </template>
@@ -138,6 +149,7 @@ import NexusConnectionForm from '@/components/migration/NexusConnectionForm.vue'
 import RepositorySelector from '@/components/migration/RepositorySelector.vue'
 import MigrationProgress from '@/components/migration/MigrationProgress.vue'
 import MigrationHistory from '@/components/migration/MigrationHistory.vue'
+import UserMigration from '@/components/migration/UserMigration.vue'
 import {
   listNexusRepositories,
   createMigration,
@@ -149,6 +161,8 @@ import {
   type MigrationTask,
 } from '@/api/migration'
 import { repositoryApi } from '@/api/repository'
+
+const activeTab = ref('repo')
 
 const currentStep = ref(0)
 const nexusRepos = ref<NexusRepo[]>([])
@@ -341,6 +355,42 @@ onUnmounted(() => {
   font-size: 13px;
   color: #9ca3af;
   margin: 4px 0 0;
+}
+
+.migration-tabs {
+  margin-bottom: 24px;
+}
+
+.tab-bar :deep(.el-tabs__header) {
+  margin-bottom: 0;
+}
+
+.tab-bar :deep(.el-tabs__item) {
+  font-size: 14px;
+  font-weight: 500;
+  padding: 0 20px;
+  height: 40px;
+  line-height: 40px;
+  transition: all 0.2s ease;
+}
+
+.tab-bar :deep(.el-tabs__item.is-active) {
+  font-weight: 600;
+  color: #8b5cf6;
+}
+
+.tab-bar :deep(.el-tabs__nav) {
+  border-radius: 10px 10px 0 0;
+  overflow: hidden;
+}
+
+.tab-content {
+  background: #fff;
+  border-radius: 0 0 16px 16px;
+  padding: 24px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  border: 1px solid #e5e7eb;
+  border-top: none;
 }
 
 .content-wrapper {

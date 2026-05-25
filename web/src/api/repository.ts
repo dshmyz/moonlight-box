@@ -6,6 +6,43 @@ export interface FailureCacheRule {
   ttl_seconds: number
 }
 
+export interface BasicAuth {
+  username: string
+  password: string
+}
+
+export interface BearerAuth {
+  token: string
+}
+
+export interface APIKeyAuth {
+  header_name: string
+  key_value: string
+  query_param?: string
+}
+
+export interface ProxyAuthConfig {
+  type: string
+  basic?: BasicAuth
+  bearer?: BearerAuth
+  api_key?: APIKeyAuth
+}
+
+export interface RepositoryConfig {
+  remote_url?: string
+  auth_type?: string
+  auth?: ProxyAuthConfig
+  proxy_priority?: number
+  cache_enabled?: boolean
+  cache_ttl_seconds?: number
+  cache_max_size_gb?: number
+  cache_negative_ttl?: number
+  timeout_seconds?: number
+  max_redirects?: number
+  insecure_skip_verify?: boolean
+  failure_cache_rules?: string
+}
+
 export interface Repository {
   id: number
   name: string
@@ -15,18 +52,7 @@ export interface Repository {
   package_type: string
   enabled: boolean
   public_visible?: boolean
-  remote_url?: string
-  auth_type?: string
-  auth_config?: string
-  proxy_priority?: number
-  timeout_seconds?: number
-  max_redirects?: number
-  insecure_skip_verify?: boolean
-  failure_cache_rules?: FailureCacheRule[]
-  cache_enabled?: boolean
-  cache_ttl_seconds?: number
-  cache_negative_ttl?: number
-  cache_max_size_gb?: number
+  config?: RepositoryConfig
   allow_overwrite?: boolean
   allow_delete?: boolean
   created_at: string

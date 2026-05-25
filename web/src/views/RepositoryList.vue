@@ -105,8 +105,8 @@
               </el-table-column>
               <el-table-column label="代理地址" min-width="200" show-overflow-tooltip>
                 <template #default="{ row }">
-                  <template v-if="row.type === 'proxy' && row.remote_url">
-                    <span class="remote-url">{{ row.remote_url }}</span>
+                  <template v-if="row.type === 'proxy' && row.config?.remote_url">
+                    <span class="remote-url">{{ row.config?.remote_url }}</span>
                   </template>
                   <span v-else class="no-value">-</span>
                 </template>
