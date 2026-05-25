@@ -36,7 +36,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../cmd/registry/dist',
+    outDir: '../cmd/registry/front',
     emptyOutDir: true,
     assetsDir: 'assets',
     minify: 'esbuild',

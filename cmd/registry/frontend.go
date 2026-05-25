@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-//go:embed dist
+//go:embed front
 var frontendFS embed.FS
 
 func setupFrontendRouter(r *gin.Engine, staticDir string) {
@@ -29,10 +29,10 @@ func serveEmbeddedFrontend() gin.HandlerFunc {
 			reqPath = "/index.html"
 		}
 
-		filePath := path.Join("dist", reqPath)
+		filePath := path.Join("front", reqPath)
 		data, err := frontendFS.ReadFile(filePath)
 		if err != nil {
-			fallbackPath := "dist/index.html"
+			fallbackPath := "front/index.html"
 			data, err = frontendFS.ReadFile(fallbackPath)
 			if err != nil {
 				c.Status(http.StatusInternalServerError)
@@ -113,7 +113,7 @@ func serveEmbeddedDocs(c *gin.Context) {
 		reqPath = "/swagger/index.html"
 	}
 
-	filePath := path.Join("dist/docs", reqPath)
+	filePath := path.Join("front/docs", reqPath)
 	data, err := frontendFS.ReadFile(filePath)
 	if err != nil {
 		c.Status(http.StatusNotFound)
