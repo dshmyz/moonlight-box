@@ -91,23 +91,23 @@ func (r *CompositeResolver) Resolve(req *http.Request) (*ResolvedRepository, err
 }
 
 type RepositoryRouter struct {
-	Resolver     RepositoryPathResolver
-	Manager      RepositoryManager
-	Plugins      map[string]ProtocolPlugin
-	Blocker      PackageBlocker
-	AuditLog     AuditLogger
+	Resolver      RepositoryPathResolver
+	Manager       RepositoryManager
+	Plugins       map[string]ProtocolPlugin
+	Blocker       PackageBlocker
+	AuditLog      AuditLogger
+	DownloadCount DownloadCounter
+	ProxyLog      ProxyDownloadLogger
 }
 
-func NewRepositoryRouter(resolver RepositoryPathResolver, manager RepositoryManager) *RepositoryRouter {
-	return &RepositoryRouter{
-		Resolver: resolver,
-		Manager:  manager,
-		Plugins:  make(map[string]ProtocolPlugin),
-	}
+// DownloadCounter 下载计数器接口
+type DownloadCounter interface {
+	IncrementDownload(repoID uint, format, name, version string)
 }
 
-func (r *RepositoryRouter) RegisterPlugin(format string, plugin ProtocolPlugin) {
-	r.Plugins[format] = plugin
+// ProxyDownloadLogger 代理下载日志接口
+type ProxyDownloadLogger interface {
+	LogDownload(repoID uint, packageType, packageName, version, filename string, statusCode int, sizeBytes int64, fromCache bool)
 }
 
 func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -122,9 +122,13 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Block rule check
-	if r.Blocker != nil && r.Blocker.IsBlocked(resolved.RemainingPath, "", repo.Format) {
-		reason := r.Blocker.BlockReason(resolved.RemainingPath, "", repo.Format)
+	// Block rule check — URL 路径匹配，去除前导 /
+	blockPath := resolved.RemainingPath
+	if len(blockPath) > 0 && blockPath[0] == '/' {
+		blockPath = blockPath[1:]
+	}
+	if r.Blocker != nil && r.Blocker.IsBlocked(repo.Format, blockPath, "*") {
+		reason := r.Blocker.BlockReason(repo.Format, blockPath, "*")
 		http.Error(w, "Blocked: "+reason, http.StatusForbidden)
 		return
 	}
@@ -135,8 +139,19 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Repository:     repo,
 		RepositoryPath: resolved.RemainingPath,
 		RouteStyle:     resolved.RouteStyle,
+		Blocker:        r.Blocker,
 	}
 	r.handleRequest(ctx)
+
+	// 下载计数 — 写 repositories.download_count
+	if r.DownloadCount != nil && req.Method == http.MethodGet {
+		r.DownloadCount.IncrementDownload(0, repo.Format, "", "")
+	}
+
+	// 代理下载日志
+	if r.ProxyLog != nil && req.Method == http.MethodGet {
+		r.ProxyLog.LogDownload(0, repo.Format, resolved.RemainingPath, "", "", http.StatusOK, 0, false)
+	}
 
 	// Audit log for downloads
 	if r.AuditLog != nil && req.Method == http.MethodGet {
@@ -149,6 +164,18 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			ResponseStatus: http.StatusOK,
 		})
 	}
+}
+
+func NewRepositoryRouter(resolver RepositoryPathResolver, manager RepositoryManager) *RepositoryRouter {
+	return &RepositoryRouter{
+		Resolver: resolver,
+		Manager:  manager,
+		Plugins:  make(map[string]ProtocolPlugin),
+	}
+}
+
+func (r *RepositoryRouter) RegisterPlugin(format string, plugin ProtocolPlugin) {
+	r.Plugins[format] = plugin
 }
 
 func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
@@ -165,6 +192,10 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 	}
 
 	if err := plugin.Handle(ctx, runtime); err != nil {
+		if err == ErrBlocked {
+			http.Error(ctx.Writer, "Blocked: package is blocked by rule", http.StatusForbidden)
+			return
+		}
 		if err == ErrNotFound {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		} else {

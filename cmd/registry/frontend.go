@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -117,6 +118,16 @@ func serveEmbeddedDocs(c *gin.Context) {
 	if err != nil {
 		c.Status(http.StatusNotFound)
 		return
+	}
+
+	// 对模板文件动态替换域名占位符，使客户端配置中的地址与当前请求地址一致
+	if strings.HasPrefix(reqPath, "/templates/") {
+		host := c.GetHeader("X-Forwarded-Host")
+		if host == "" {
+			host = c.Request.Host
+		}
+		content := strings.ReplaceAll(string(data), "your-moonlight-domain", host)
+		data = []byte(content)
 	}
 
 	c.Header("Content-Type", getContentType(filePath))

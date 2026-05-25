@@ -4,9 +4,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/ai/models"
+	"github.com/dshmyz/moonlight-box/internal/config"
 	"github.com/google/uuid"
-	"github.com/moonlight-box/registry/internal/ai/models"
-	"github.com/moonlight-box/registry/internal/config"
 )
 
 // Session 表示一个用户与AI的对话会话

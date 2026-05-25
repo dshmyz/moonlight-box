@@ -1,11 +1,11 @@
 package migration
 
 import (
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 )
 
 type RepositoryCreatorAdapter struct {
-	repoRepo           interface {
+	repoRepo interface {
 		Create(repo *model.Repository) error
 		FindByName(name string) (*model.Repository, error)
 	}
@@ -27,6 +27,10 @@ func NewRepositoryCreatorAdapter(repoRepo interface {
 }
 
 func (a *RepositoryCreatorAdapter) CreateRepo(name, repoType, packageType string, remoteURL string, cacheEnabled bool, cacheTTLSeconds int, storageBackendID *uint) error {
+	return a.CreateRepoWithConfig(name, repoType, packageType, remoteURL, cacheEnabled, cacheTTLSeconds, storageBackendID, nil, 0, 0, false)
+}
+
+func (a *RepositoryCreatorAdapter) CreateRepoWithConfig(name, repoType, packageType string, remoteURL string, cacheEnabled bool, cacheTTLSeconds int, storageBackendID *uint, authConfig *model.ProxyAuthConfig, timeoutSeconds, maxRedirects int, insecureSkipVerify bool) error {
 	repo := &model.Repository{
 		Name:             name,
 		Type:             model.RepositoryType(repoType),
@@ -37,9 +41,21 @@ func (a *RepositoryCreatorAdapter) CreateRepo(name, repoType, packageType string
 
 	if repoType == "proxy" && remoteURL != "" {
 		repo.Config = &model.RepositoryConfig{
-			RemoteURL:       remoteURL,
-			CacheEnabled:    cacheEnabled,
-			CacheTTLSeconds: cacheTTLSeconds,
+			RemoteURL:          remoteURL,
+			CacheEnabled:       cacheEnabled,
+			CacheTTLSeconds:    cacheTTLSeconds,
+			CacheNegativeTTL:   300,
+			TimeoutSeconds:     timeoutSeconds,
+			MaxRedirects:       maxRedirects,
+			InsecureSkipVerify: insecureSkipVerify,
+		}
+		if authConfig != nil && authConfig.Type != "" && authConfig.Type != "none" {
+			repo.Config.Auth = authConfig
+			if authConfig.Type == "username" {
+				repo.Config.AuthType = "basic"
+			} else {
+				repo.Config.AuthType = authConfig.Type
+			}
 		}
 	}
 

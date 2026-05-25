@@ -175,7 +175,7 @@ internal/
 
 ### 4.1 路径变更规则
 
-**基础路径**：`github.com/moonlight-box/registry/internal`
+**基础路径**：`github.com/dshmyz/moonlight-box/internal`
 
 | 原路径 | 新路径 | 影响范围 |
 |--------|--------|----------|
@@ -192,16 +192,16 @@ internal/
 
 ```bash
 # 更新 types 引用
-find . -name "*.go" -exec sed -i '' 's|github.com/moonlight-box/registry/internal/types|github.com/moonlight-box/registry/internal/core/runtime|g' {} +
+find . -name "*.go" -exec sed -i '' 's|github.com/dshmyz/moonlight-box/internal/types|github.com/dshmyz/moonlight-box/internal/core/runtime|g' {} +
 
 # 更新 adapter 引用
-find . -name "*.go" -exec sed -i '' 's|github.com/moonlight-box/registry/internal/adapter|github.com/moonlight-box/registry/internal/plugins|g' {} +
+find . -name "*.go" -exec sed -i '' 's|github.com/dshmyz/moonlight-box/internal/adapter|github.com/dshmyz/moonlight-box/internal/plugins|g' {} +
 
 # 更新 handler 引用
-find . -name "*.go" -exec sed -i '' 's|github.com/moonlight-box/registry/internal/handler|github.com/moonlight-box/registry/internal/api/http|g' {} +
+find . -name "*.go" -exec sed -i '' 's|github.com/dshmyz/moonlight-box/internal/handler|github.com/dshmyz/moonlight-box/internal/api/http|g' {} +
 
 # 更新 cache 引用
-find . -name "*.go" -exec sed -i '' 's|github.com/moonlight-box/registry/internal/cache|github.com/moonlight-box/registry/internal/core/cache|g' {} +
+find . -name "*.go" -exec sed -i '' 's|github.com/dshmyz/moonlight-box/internal/cache|github.com/dshmyz/moonlight-box/internal/core/cache|g' {} +
 ```
 
 ---

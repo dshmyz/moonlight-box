@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/moonlight-box/registry/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 )
 
 type MavenPlugin struct{}
@@ -297,9 +297,11 @@ func (p *MavenPlugin) parseMavenPath(path string) (runtime.ArtifactKey, error) {
 	return runtime.ArtifactKey{
 		Format: "maven",
 		Coordinates: map[string]string{
+			"name":     group + ":" + artifact,
 			"group":    group,
 			"artifact": artifact,
 			"version":  version,
+			"filename": filename,
 			"path":     strings.TrimSuffix(path, "/"+filename),
 		},
 		Filename:  filename,
@@ -350,6 +352,8 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}
+
+	key.Coordinates["name"] = key.Coordinates["group"] + ":" + key.Coordinates["artifact"]
 
 	artifact := &runtime.Artifact{
 		RepositoryID: ctx.Repository.ID,

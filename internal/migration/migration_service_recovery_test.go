@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/stretchr/testify/assert"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -21,19 +21,19 @@ func setupRecoveryTestDB(t *testing.T) *gorm.DB {
 
 func createMockTask(t *testing.T, db *gorm.DB, status model.MigrationStatus, taskType string) *model.MigrationTask {
 	task := &model.MigrationTask{
-		SourceType:    "nexus",
-		SourceURL:     "http://nexus.example.com",
-		Username:      "admin",
+		SourceType:        "nexus",
+		SourceURL:         "http://nexus.example.com",
+		Username:          "admin",
 		PasswordEncrypted: "encrypted-password",
-		Status:        status,
-		TaskType:      taskType,
-		TotalItems:    100,
-		ProcessedItems: 50,
-		FailedItems:   5,
-		SelectedRepos: "[\"npm-proxy\"]",
-		WorkerCount:   3,
-		MaxRetries:    2,
-		BatchSize:     50,
+		Status:            status,
+		TaskType:          taskType,
+		TotalItems:        100,
+		ProcessedItems:    50,
+		FailedItems:       5,
+		SelectedRepos:     "[\"npm-proxy\"]",
+		WorkerCount:       3,
+		MaxRetries:        2,
+		BatchSize:         50,
 	}
 	err := db.Create(task).Error
 	assert.NoError(t, err)

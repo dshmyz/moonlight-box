@@ -134,7 +134,7 @@ moonlight-box/
 
 ```bash
 cd /Users/gracegaoya/work/project/moonlight-box
-go mod init github.com/moonlight-box/registry
+go mod init github.com/dshmyz/moonlight-box
 ```
 
 - [ ] **步骤 2：创建主入口文件**

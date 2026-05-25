@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -659,10 +659,10 @@ func (w *MigrationWorkerV2) storeMavenAsset(taskID uint, comp NexusComponent, as
 	digest := hex.EncodeToString(hash.Sum(nil))
 
 	coordinates := map[string]string{
-		"name":       comp.Group + ":" + comp.Name,
-		"version":    comp.Version,
-		"packaging":  packaging,
-		"filename":   filepath.Base(asset.Path),
+		"name":      comp.Group + ":" + comp.Name,
+		"version":   comp.Version,
+		"packaging": packaging,
+		"filename":  filepath.Base(asset.Path),
 	}
 
 	return w.storeArtifactAndBlob(context.Background(), target, "maven", "primary", coordinates, digest, size, storageKey)

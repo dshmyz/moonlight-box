@@ -5,10 +5,10 @@ import (
 	"io"
 	"testing"
 
-	"github.com/moonlight-box/registry/internal/core/runtime"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/storage"
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/storage"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )

@@ -4,10 +4,10 @@ import (
 	"errors"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/config"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/util"
+	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/util"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/sirupsen/logrus"

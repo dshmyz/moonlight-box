@@ -8,4 +8,5 @@ var (
 	ErrReadOnly       = errors.New("read only")
 	ErrNotMatched     = errors.New("not matched")
 	ErrInvalidUpload  = errors.New("invalid upload session state")
+	ErrBlocked        = errors.New("blocked by rule")
 )

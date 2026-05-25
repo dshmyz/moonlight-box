@@ -10,26 +10,26 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/ai"
-	"github.com/moonlight-box/registry/internal/ai/tools"
-	handler "github.com/moonlight-box/registry/internal/api/http"
-	"github.com/moonlight-box/registry/internal/config"
-	"github.com/moonlight-box/registry/internal/core/cache"
-	"github.com/moonlight-box/registry/internal/core/runtime"
-	"github.com/moonlight-box/registry/internal/database"
-	"github.com/moonlight-box/registry/internal/migration"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/plugins/apt"
-	gomod "github.com/moonlight-box/registry/internal/plugins/go"
-	"github.com/moonlight-box/registry/internal/plugins/maven"
-	"github.com/moonlight-box/registry/internal/plugins/npm"
-	"github.com/moonlight-box/registry/internal/plugins/pypi"
-	"github.com/moonlight-box/registry/internal/plugins/raw"
-	"github.com/moonlight-box/registry/internal/plugins/yum"
-	"github.com/moonlight-box/registry/internal/proxy"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/service"
-	"github.com/moonlight-box/registry/internal/util"
+	"github.com/dshmyz/moonlight-box/internal/ai"
+	"github.com/dshmyz/moonlight-box/internal/ai/tools"
+	handler "github.com/dshmyz/moonlight-box/internal/api/http"
+	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/core/cache"
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/database"
+	"github.com/dshmyz/moonlight-box/internal/migration"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/plugins/apt"
+	gomod "github.com/dshmyz/moonlight-box/internal/plugins/go"
+	"github.com/dshmyz/moonlight-box/internal/plugins/maven"
+	"github.com/dshmyz/moonlight-box/internal/plugins/npm"
+	"github.com/dshmyz/moonlight-box/internal/plugins/pypi"
+	"github.com/dshmyz/moonlight-box/internal/plugins/raw"
+	"github.com/dshmyz/moonlight-box/internal/plugins/yum"
+	"github.com/dshmyz/moonlight-box/internal/proxy"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 
 	"github.com/gin-gonic/gin"
@@ -260,15 +260,14 @@ func main() {
 	repositoryRouter.RegisterPlugin("yum", yumPlugin)
 	repositoryRouter.RegisterPlugin("apt", aptPlugin)
 
-	// Wire block rules and audit logging into the repository router
-	repositoryRouter.Blocker = &blockRuleBlocker{svc: blockRuleSvc}
-	repositoryRouter.AuditLog = &auditLoggerAdapter{svc: auditSvc}
-
-		fetchers := map[string]runtime.RemoteFetcher{
+	fetchers := map[string]runtime.RemoteFetcher{
 		"pypi": pypiPlugin,
 		"npm":  npmPlugin,
 	}
-	initRepoRuntimes(repoManager, repoRepo, groupRepo, db, storageSvc, fetchers)
+	blockRuleSvc := service.NewBlockRuleService(blockRuleRepo, auditSvc)
+	blocker := &blockRuleBlocker{svc: blockRuleSvc}
+
+	initRepoRuntimes(repoManager, repoRepo, groupRepo, db, storageSvc, fetchers, blocker)
 
 	// 初始化仓库缓存（5分钟TTL）
 	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
@@ -283,7 +282,7 @@ func main() {
 		if defaultBackend == nil {
 			return nil, fmt.Errorf("no default storage backend available")
 		}
-		repoRuntime, createErr := createRuntimeForRepo(repo, repoRepo, groupRepo, db, defaultBackend, repoManager, fetchers)
+		repoRuntime, createErr := createRuntimeForRepo(repo, repoRepo, groupRepo, db, defaultBackend, repoManager, fetchers, blocker)
 		if createErr != nil {
 			return nil, createErr
 		}
@@ -299,13 +298,13 @@ func main() {
 			config["timeout_seconds"] = repo.Config.TimeoutSeconds
 			config["insecure_skip_verify"] = repo.Config.InsecureSkipVerify
 		}
-			if repo.Type == model.RepoTypeProxy && config["remote_url"] == "" {
-				var dbRemoteURL string
-				db.Raw("SELECT remote_url FROM repositories WHERE id = ?", repo.ID).Scan(&dbRemoteURL)
-				if dbRemoteURL != "" {
-					config["remote_url"] = dbRemoteURL
-				}
+		if repo.Type == model.RepoTypeProxy && config["remote_url"] == "" {
+			var dbRemoteURL string
+			db.Raw("SELECT remote_url FROM repositories WHERE id = ?", repo.ID).Scan(&dbRemoteURL)
+			if dbRemoteURL != "" {
+				config["remote_url"] = dbRemoteURL
 			}
+		}
 		return &runtime.Repository{
 			ID:      fmt.Sprintf("%d", repo.ID),
 			Name:    repo.Name,
@@ -315,7 +314,12 @@ func main() {
 			Runtime: repoRuntime,
 		}, nil
 	})
-	blockRuleSvc := service.NewBlockRuleService(blockRuleRepo, auditSvc)
+
+	// Wire block rules and audit logging into the repository router
+	repositoryRouter.Blocker = blocker
+	repositoryRouter.AuditLog = &auditLoggerAdapter{svc: auditSvc}
+	repositoryRouter.DownloadCount = newDownloadCountAdapter(countBatcher)
+	repositoryRouter.ProxyLog = newProxyLogAdapter(logBatcher)
 
 	// 注册所有缓存到缓存管理器
 	cacheSvcProvider := proxy.NewCacheServiceProvider(cacheSvc, "proxy-content", "代理下载内容缓存")
@@ -326,7 +330,6 @@ func main() {
 
 	permCacheProvider := service.NewPermissionCacheProvider(permCacheSvc, "permission", "权限缓存")
 	cacheMgr.Register(permCacheProvider)
-
 
 	// 初始化备份服务
 	backupRepo := repository.NewBackupRepository(db)
@@ -402,8 +405,11 @@ func main() {
 	// 创建仓库创建器适配器
 	repoCreator := migration.NewRepositoryCreatorAdapter(repoRepo, storageBackendRepo)
 
-	// 初始化迁移 service（注入 worker 和 repoCreator，最大并发 1 个任务）
-	migrationSvc := migration.NewMigrationService(db, migrationWorker, repoCreator, 1)
+	// 创建用户创建器适配器
+	userCreator := migration.NewUserCreatorAdapter(userRepo, roleRepo)
+
+	// 初始化迁移 service（注入 worker、repoCreator 和 userCreator，最大并发 1 个任务）
+	migrationSvc := migration.NewMigrationService(db, migrationWorker, repoCreator, userCreator, 1)
 	migrationSvc.StartQueueWithRecovery() // 启动队列处理器并自动恢复中断的任务
 
 	// 设置 worker 的 service 引用

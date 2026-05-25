@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/core/cache"
-	"github.com/moonlight-box/registry/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/core/cache"
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 )
 
 type YumPlugin struct {

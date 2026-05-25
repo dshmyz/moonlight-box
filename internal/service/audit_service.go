@@ -5,15 +5,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/database"
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/database"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/sirupsen/logrus"
 )
 
 type AuditService struct {
-	logChan   chan *model.AuditLog
-	wg        sync.WaitGroup
-	shutdown  chan struct{}
+	logChan  chan *model.AuditLog
+	wg       sync.WaitGroup
+	shutdown chan struct{}
 }
 
 func NewAuditService() *AuditService {

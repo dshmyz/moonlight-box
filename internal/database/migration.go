@@ -1,8 +1,8 @@
 package database
 
 import (
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/util"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/util"
 )
 
 func AutoMigrate() error {

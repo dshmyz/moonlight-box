@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/core/cache"
+	"github.com/dshmyz/moonlight-box/internal/core/cache"
 )
 
 type PermissionCacheProvider struct {

@@ -52,7 +52,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -148,7 +148,7 @@ package handler
 import (
 	"strconv"
 
-	"github.com/moonlight-box/registry/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -224,8 +224,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 	"gorm.io/gorm"
 )
 
@@ -358,7 +358,7 @@ func getDirSize(path string) int64 {
 package handler
 
 import (
-	"github.com/moonlight-box/registry/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/gin-gonic/gin"
 )
 

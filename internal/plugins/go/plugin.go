@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 )
 
 type GoPlugin struct{}
@@ -151,6 +151,7 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 		RepositoryID: ctx.Repository.ID,
 		Format:       "go",
 		Coordinates: map[string]string{
+			"name":    modulePath,
 			"module":  modulePath,
 			"version": cleanVersion,
 			"path":    modulePath + "/@v",

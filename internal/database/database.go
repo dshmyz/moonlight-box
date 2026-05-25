@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/config"
-	"github.com/moonlight-box/registry/internal/util"
+	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"

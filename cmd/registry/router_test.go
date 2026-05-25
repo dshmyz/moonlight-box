@@ -5,10 +5,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	handler "github.com/dshmyz/moonlight-box/internal/api/http"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/gin-gonic/gin"
-	handler "github.com/moonlight-box/registry/internal/api/http"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/service"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )

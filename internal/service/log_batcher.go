@@ -4,20 +4,20 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
-	"github.com/moonlight-box/registry/internal/util"
 )
 
 type LogBatcher struct {
-	mu           sync.Mutex
-	logs         []*model.ProxyDownloadLog
-	logRepo      *repository.ProxyDownloadLogRepository
-	batchSize    int
+	mu            sync.Mutex
+	logs          []*model.ProxyDownloadLog
+	logRepo       *repository.ProxyDownloadLogRepository
+	batchSize     int
 	flushInterval time.Duration
-	stopCh       chan struct{}
-	flushing     bool
+	stopCh        chan struct{}
+	flushing      bool
 }
 
 func NewLogBatcher(logRepo *repository.ProxyDownloadLogRepository, batchSize int, flushInterval time.Duration) *LogBatcher {

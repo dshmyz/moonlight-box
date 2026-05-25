@@ -259,7 +259,7 @@ git commit -m "feat: 添加元数据同步字段的数据库迁移"
 package repository
 
 import (
-    "github.com/moonlight-box/registry/internal/model"
+    "github.com/dshmyz/moonlight-box/internal/model"
     "gorm.io/gorm"
 )
 
@@ -328,9 +328,9 @@ import (
     "sync"
     "time"
 
-    "github.com/moonlight-box/registry/internal/adapter"
-    "github.com/moonlight-box/registry/internal/model"
-    "github.com/moonlight-box/registry/internal/repository"
+    "github.com/dshmyz/moonlight-box/internal/adapter"
+    "github.com/dshmyz/moonlight-box/internal/model"
+    "github.com/dshmyz/moonlight-box/internal/repository"
     "github.com/sirupsen/logrus"
     "gorm.io/gorm"
 )
@@ -1974,7 +1974,7 @@ import (
     "testing"
     "time"
 
-    "github.com/moonlight-box/registry/internal/model"
+    "github.com/dshmyz/moonlight-box/internal/model"
     "github.com/stretchr/testify/assert"
     "github.com/stretchr/testify/mock"
 )
@@ -2064,7 +2064,7 @@ import (
     "testing"
     "time"
 
-    "github.com/moonlight-box/registry/internal/model"
+    "github.com/dshmyz/moonlight-box/internal/model"
     "github.com/stretchr/testify/assert"
 )
 

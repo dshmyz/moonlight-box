@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 )
 
 type BlockLogAnalyzerTool struct {

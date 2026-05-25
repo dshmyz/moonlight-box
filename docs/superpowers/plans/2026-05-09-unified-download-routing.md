@@ -45,9 +45,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/proxy"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/proxy"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 )
 
 type PackageDownloadService struct {

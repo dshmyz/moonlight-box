@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/core/runtime"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/proxy"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/proxy"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 	"gorm.io/gorm"
 )
 
@@ -40,9 +40,9 @@ type RepositoryService struct {
 	runtimeFactory RuntimeFactory
 
 	// 列表缓存
-	listCacheMu   sync.RWMutex
-	listCache     map[string]*listCacheEntry
-	listCacheTTL  time.Duration
+	listCacheMu  sync.RWMutex
+	listCache    map[string]*listCacheEntry
+	listCacheTTL time.Duration
 }
 
 type listCacheEntry struct {
@@ -352,6 +352,7 @@ func (s *RepositoryService) Update(name string, updates map[string]interface{}) 
 	}
 	return err
 }
+
 // Delete 删除仓库
 func (s *RepositoryService) Delete(name string) error {
 	err := s.repoRepo.Delete(name)

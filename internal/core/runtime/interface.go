@@ -70,8 +70,8 @@ type RemoteFetcher interface {
 
 // PackageBlocker 阻断规则检查——在请求进入 Plugin 前检查。
 type PackageBlocker interface {
-	IsBlocked(packageName, version, packageType string) bool
-	BlockReason(packageName, version, packageType string) string
+	IsBlocked(packageType, packageName, version string) bool
+	BlockReason(packageType, packageName, version string) string
 }
 
 // AuditLogger 审计日志记录器。
@@ -97,4 +97,5 @@ type RequestContext struct {
 	Runtime        RepositoryRuntime
 	RepositoryPath string
 	RouteStyle     RouteStyle
+	Blocker        PackageBlocker
 }

@@ -1377,5 +1377,5 @@ curl http://localhost:9081/api/v1/ai/health
 ## 联系支持
 
 如有问题或建议，请联系：
-- 项目地址：https://github.com/moonlight-box/registry
-- 问题反馈：https://github.com/moonlight-box/registry/issues
+- 项目地址：https://github.com/dshmyz/moonlight-box
+- 问题反馈：https://github.com/dshmyz/moonlight-box/issues

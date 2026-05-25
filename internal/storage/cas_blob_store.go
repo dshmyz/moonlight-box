@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/google/uuid"
-	"github.com/moonlight-box/registry/internal/core/runtime"
-	"github.com/moonlight-box/registry/internal/model"
 	"gorm.io/gorm"
 )
 

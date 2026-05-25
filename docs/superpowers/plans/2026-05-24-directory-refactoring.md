@@ -500,8 +500,8 @@ cat internal/storage/cas_blob_store.go
 将 `cas_blob_store.go` 的内容复制到 `blob/cas.go`，修改：
 - package 声明从 `storage` 改为 `blob`
 - import 路径更新：
-  - `github.com/moonlight-box/registry/internal/model` 保持不变
-  - `github.com/moonlight-box/registry/internal/types` 改为 `github.com/moonlight-box/registry/internal/core/blob`
+  - `github.com/dshmyz/moonlight-box/internal/model` 保持不变
+  - `github.com/dshmyz/moonlight-box/internal/types` 改为 `github.com/dshmyz/moonlight-box/internal/core/blob`
 
 - [ ] **步骤 3：Commit CAS 实现**
 
@@ -705,25 +705,25 @@ git commit -m "refactor: 迁移 handler 到 api/http"
 - [ ] **步骤 1：更新 types 引用**
 
 ```bash
-find . -name "*.go" -type f -exec sed -i '' 's|github.com/moonlight-box/registry/internal/types|github.com/moonlight-box/registry/internal/core/runtime|g' {} +
+find . -name "*.go" -type f -exec sed -i '' 's|github.com/dshmyz/moonlight-box/internal/types|github.com/dshmyz/moonlight-box/internal/core/runtime|g' {} +
 ```
 
 - [ ] **步骤 2：更新 adapter 引用**
 
 ```bash
-find . -name "*.go" -type f -exec sed -i '' 's|github.com/moonlight-box/registry/internal/adapter|github.com/moonlight-box/registry/internal/plugins|g' {} +
+find . -name "*.go" -type f -exec sed -i '' 's|github.com/dshmyz/moonlight-box/internal/adapter|github.com/dshmyz/moonlight-box/internal/plugins|g' {} +
 ```
 
 - [ ] **步骤 3：更新 handler 引用**
 
 ```bash
-find . -name "*.go" -type f -exec sed -i '' 's|github.com/moonlight-box/registry/internal/handler|github.com/moonlight-box/registry/internal/api/http|g' {} +
+find . -name "*.go" -type f -exec sed -i '' 's|github.com/dshmyz/moonlight-box/internal/handler|github.com/dshmyz/moonlight-box/internal/api/http|g' {} +
 ```
 
 - [ ] **步骤 4：更新 cache 引用**
 
 ```bash
-find . -name "*.go" -type f -exec sed -i '' 's|github.com/moonlight-box/registry/internal/cache|github.com/moonlight-box/registry/internal/core/cache|g' {} +
+find . -name "*.go" -type f -exec sed -i '' 's|github.com/dshmyz/moonlight-box/internal/cache|github.com/dshmyz/moonlight-box/internal/core/cache|g' {} +
 ```
 
 - [ ] **步骤 5：Commit import 更新**

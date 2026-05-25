@@ -176,7 +176,7 @@ package repository
 import (
 	"fmt"
 
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -256,7 +256,7 @@ func (r *RepositoryRepository) FindVirtualByPackageType(pkgType string) (*model.
 package repository
 
 import (
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -678,7 +678,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -851,9 +851,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/moonlight-box/registry/internal/adapter"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/adapter"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 	"gorm.io/gorm"
 )
 
@@ -1027,8 +1027,8 @@ go build ./internal/proxy/
 package service
 
 import (
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 	"gorm.io/gorm"
 )
 
@@ -1122,7 +1122,7 @@ func (s *RepositoryService) GetMembers(virtualRepoName string) ([]model.Reposito
 package handler
 
 import (
-	"github.com/moonlight-box/registry/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -1280,7 +1280,7 @@ func (h *RepositoryHandler) RemoveMember(c *gin.Context) {
 package handler
 
 import (
-	"github.com/moonlight-box/registry/internal/proxy"
+	"github.com/dshmyz/moonlight-box/internal/proxy"
 	"github.com/gin-gonic/gin"
 )
 

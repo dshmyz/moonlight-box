@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/stretchr/testify/assert"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/stretchr/testify/assert"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )

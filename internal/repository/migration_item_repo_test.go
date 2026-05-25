@@ -3,9 +3,9 @@ package repository
 import (
 	"testing"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/stretchr/testify/assert"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/stretchr/testify/assert"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/config"
 )
 
 // RateLimiter 限制用户请求频率和Token使用量

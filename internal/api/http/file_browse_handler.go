@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dshmyz/moonlight-box/internal/response"
+	"github.com/dshmyz/moonlight-box/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/storage"
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/response"
-	"github.com/moonlight-box/registry/internal/service"
-	"github.com/moonlight-box/registry/internal/storage"
 )
 
 type FileBrowseHandler struct {

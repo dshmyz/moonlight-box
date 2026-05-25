@@ -6,11 +6,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/core/runtime"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/service"
-	"github.com/moonlight-box/registry/internal/storage"
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/storage"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -23,6 +23,7 @@ func initRepoRuntimes(
 	db *gorm.DB,
 	storageSvc *service.StorageService,
 	fetchers map[string]runtime.RemoteFetcher,
+	blocker runtime.PackageBlocker,
 ) {
 	allRepos, err := repoRepo.List(nil)
 	if err != nil {
@@ -38,7 +39,7 @@ func initRepoRuntimes(
 
 	for i := range allRepos {
 		repo := &allRepos[i]
-		repoRuntime, createErr := createRuntimeForRepo(repo, repoRepo, groupRepo, db, defaultBackend, repoManager, fetchers)
+		repoRuntime, createErr := createRuntimeForRepo(repo, repoRepo, groupRepo, db, defaultBackend, repoManager, fetchers, blocker)
 		if createErr != nil {
 			logrus.WithError(createErr).WithField("repo", repo.Name).Warn("Failed to create runtime for repo")
 			continue
@@ -93,6 +94,7 @@ func createRuntimeForRepo(
 	backend storage.Backend,
 	repoManager *runtime.DefaultRepositoryManager,
 	fetchers map[string]runtime.RemoteFetcher,
+	blocker runtime.PackageBlocker,
 ) (runtime.RepositoryRuntime, error) {
 	metadataStore := storage.NewMetadataStore(db)
 	blobStore := storage.NewCASBlobStore(backend, db)
@@ -131,14 +133,16 @@ func createRuntimeForRepo(
 			RepositoryID:  fmt.Sprintf("%d", repo.ID),
 			RemoteBaseURL: remoteBaseURL,
 			CachePolicy:   cachePolicy,
+			Format:        repo.PackageType,
 		}
 		if f, ok := fetchers[repo.PackageType]; ok {
 			pr.Fetcher = f
 		}
+		pr.Blocker = blocker
 		return pr, nil
 
 	case model.RepoTypeVirtual:
-		return createGroupRuntime(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers)
+		return createGroupRuntime(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers, blocker)
 
 	default:
 		return nil, fmt.Errorf("unsupported repo type: %s", repo.Type)
@@ -160,6 +164,7 @@ func createGroupRuntime(
 	backend storage.Backend,
 	repoManager *runtime.DefaultRepositoryManager,
 	fetchers map[string]runtime.RemoteFetcher,
+	blocker runtime.PackageBlocker,
 ) (runtime.RepositoryRuntime, error) {
 	members, err := repoRepo.FindByName(repo.Name)
 	if err != nil {
@@ -201,10 +206,12 @@ func createGroupRuntime(
 				RemoteClient:  runtime.NewHTTPRemoteClient(),
 				RepositoryID:  memberID,
 				RemoteBaseURL: remoteBaseURL,
+				Format:        memberRepo.PackageType,
 			}
 			if f, ok := fetchers[memberRepo.PackageType]; ok {
 				n.Fetcher = f
 			}
+			n.Blocker = blocker
 			node = n
 		default:
 			continue
@@ -246,7 +253,7 @@ type blockRuleBlocker struct {
 	svc *service.BlockRuleService
 }
 
-func (b *blockRuleBlocker) IsBlocked(packageName, version, packageType string) bool {
+func (b *blockRuleBlocker) IsBlocked(packageType, packageName, version string) bool {
 	result, err := b.svc.IsBlocked(packageType, packageName, version)
 	if err != nil {
 		return false
@@ -254,7 +261,7 @@ func (b *blockRuleBlocker) IsBlocked(packageName, version, packageType string) b
 	return result.Blocked
 }
 
-func (b *blockRuleBlocker) BlockReason(packageName, version, packageType string) string {
+func (b *blockRuleBlocker) BlockReason(packageType, packageName, version string) string {
 	result, err := b.svc.IsBlocked(packageType, packageName, version)
 	if err != nil || result.Rule == nil {
 		return "blocked"
@@ -268,4 +275,40 @@ type auditLoggerAdapter struct {
 
 func (a *auditLoggerAdapter) Log(ctx context.Context, entry runtime.AuditEntry) {
 	_ = a.svc.LogWithRequestAndStatus(ctx, &entry.UserID, model.ActionPackageDownload, entry.ResourceType, nil, entry.ResourceName, "", entry.IPAddress, entry.UserAgent, entry.ResponseStatus, 0)
+}
+
+// downloadCountAdapter 将 DownloadCountBatcher 适配为 runtime.DownloadCounter
+type downloadCountAdapter struct {
+	batcher *service.DownloadCountBatcher
+}
+
+func (a *downloadCountAdapter) IncrementDownload(repoID uint, format, name, version string) {
+	a.batcher.Increment(0, 0, repoID)
+}
+
+func newDownloadCountAdapter(batcher *service.DownloadCountBatcher) *downloadCountAdapter {
+	return &downloadCountAdapter{batcher: batcher}
+}
+
+// proxyLogAdapter 将 LogBatcher 适配为 runtime.ProxyDownloadLogger
+type proxyLogAdapter struct {
+	batcher *service.LogBatcher
+}
+
+func (a *proxyLogAdapter) LogDownload(repoID uint, packageType, packageName, version, filename string, statusCode int, sizeBytes int64, fromCache bool) {
+	a.batcher.Record(&model.ProxyDownloadLog{
+		RepositoryID: repoID,
+		PackageType:  packageType,
+		PackageName:  packageName,
+		Version:      version,
+		Filename:     filename,
+		Status:       "success",
+		StatusCode:   statusCode,
+		SizeBytes:    sizeBytes,
+		FromCache:    fromCache,
+	})
+}
+
+func newProxyLogAdapter(batcher *service.LogBatcher) *proxyLogAdapter {
+	return &proxyLogAdapter{batcher: batcher}
 }

@@ -3,7 +3,7 @@ package repository
 import (
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -58,12 +58,12 @@ func (r *AuditRepository) CleanOldLogs(maxAge time.Duration) error {
 }
 
 type BlockStats struct {
-	TotalBlocks     int64             `json:"total_blocks"`
-	UniquePackages  int64             `json:"unique_packages"`
-	TopBlockedPkgs  []TopBlockedItem  `json:"top_blocked_pkgs"`
-	BlocksByHour    []HourlyBlockItem `json:"blocks_by_hour"`
-	UniqueIPs       int64             `json:"unique_ips"`
-	TopIPs          []TopIPItem       `json:"top_ips"`
+	TotalBlocks    int64             `json:"total_blocks"`
+	UniquePackages int64             `json:"unique_packages"`
+	TopBlockedPkgs []TopBlockedItem  `json:"top_blocked_pkgs"`
+	BlocksByHour   []HourlyBlockItem `json:"blocks_by_hour"`
+	UniqueIPs      int64             `json:"unique_ips"`
+	TopIPs         []TopIPItem       `json:"top_ips"`
 }
 
 type TopBlockedItem struct {

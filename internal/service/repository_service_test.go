@@ -3,11 +3,11 @@ package service
 import (
 	"testing"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 	_ "github.com/mattn/go-sqlite3"
-	"gorm.io/driver/sqlite"
 	"github.com/stretchr/testify/assert"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -67,7 +67,7 @@ func TestRepositoryService_Create_ProxyRepo(t *testing.T) {
 		Config: &model.RepositoryConfig{
 			RemoteURL: "https://registry.npmjs.org",
 		},
-		Enabled:     true,
+		Enabled: true,
 	}
 
 	err := service.Create(repo, nil)
@@ -285,7 +285,7 @@ func TestRepositoryService_GetAuthConfig_Basic(t *testing.T) {
 		Config: &model.RepositoryConfig{
 			AuthType: "basic",
 			Auth: &model.ProxyAuthConfig{
-				Type: "basic",
+				Type:  "basic",
 				Basic: &model.BasicAuth{Username: "user", Password: "pass"},
 			},
 		},
@@ -304,7 +304,7 @@ func TestRepositoryService_GetAuthConfig_Bearer(t *testing.T) {
 		Config: &model.RepositoryConfig{
 			AuthType: "bearer",
 			Auth: &model.ProxyAuthConfig{
-				Type: "bearer",
+				Type:   "bearer",
 				Bearer: &model.BearerAuth{Token: "test-token"},
 			},
 		},
@@ -322,7 +322,7 @@ func TestRepositoryService_GetAuthConfig_APIKey(t *testing.T) {
 		Config: &model.RepositoryConfig{
 			AuthType: "api_key",
 			Auth: &model.ProxyAuthConfig{
-				Type: "api_key",
+				Type:   "api_key",
 				APIKey: &model.APIKeyAuth{HeaderName: "X-API-Key", KeyValue: "secret"},
 			},
 		},

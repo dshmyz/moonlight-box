@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/response"
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/response"
 )
 
 type ProxyDownloadLogHandler struct {

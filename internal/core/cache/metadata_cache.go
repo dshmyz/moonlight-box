@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 )
 
 type MetadataCache struct {

@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/moonlight-box/registry/internal/util"
+	"github.com/dshmyz/moonlight-box/internal/util"
 )
 
 type LocalStorage struct {

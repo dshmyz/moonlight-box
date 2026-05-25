@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/moonlight-box/registry/internal/ai"
-	"github.com/moonlight-box/registry/internal/response"
+	"github.com/dshmyz/moonlight-box/internal/ai"
+	"github.com/dshmyz/moonlight-box/internal/response"
 	"github.com/sirupsen/logrus"
 
 	"github.com/gin-gonic/gin"

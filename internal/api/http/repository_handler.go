@@ -5,11 +5,11 @@ import (
 	"strconv"
 	"strings"
 
+	apperr "github.com/dshmyz/moonlight-box/internal/errors"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/response"
+	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/gin-gonic/gin"
-	apperr "github.com/moonlight-box/registry/internal/errors"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/response"
-	"github.com/moonlight-box/registry/internal/service"
 )
 
 // RepositoryHandler 仓库管理处理器

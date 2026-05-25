@@ -1,19 +1,19 @@
 package http
 
 import (
+	"github.com/dshmyz/moonlight-box/internal/response"
+	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/response"
-	"github.com/moonlight-box/registry/internal/service"
 )
 
 type BackupConfigHandler struct {
-	configSvc   *service.SystemConfigService
+	configSvc    *service.SystemConfigService
 	schedulerSvc *service.SchedulerService
 }
 
 func NewBackupConfigHandler(configSvc *service.SystemConfigService, schedulerSvc *service.SchedulerService) *BackupConfigHandler {
 	return &BackupConfigHandler{
-		configSvc:   configSvc,
+		configSvc:    configSvc,
 		schedulerSvc: schedulerSvc,
 	}
 }

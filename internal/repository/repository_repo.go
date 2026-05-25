@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"gorm.io/gorm"
 )
 

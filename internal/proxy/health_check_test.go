@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/types"
 	"github.com/gin-gonic/gin"
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/types"
 	"github.com/stretchr/testify/assert"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -29,8 +29,6 @@ func (m *mockStorageChecker) CheckStoragePath(path string) error {
 }
 
 type mockConfigReader struct{}
-
-
 
 func (m *mockConfigReader) GetConfigAsBool(key string, defaultValue bool) bool {
 	return defaultValue

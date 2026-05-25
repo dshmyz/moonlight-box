@@ -601,7 +601,7 @@ import (
     "context"
     "net/http"
     
-    "github.com/moonlight-box/registry/internal/types"
+    "github.com/dshmyz/moonlight-box/internal/types"
 )
 
 type RequestIntent string
@@ -665,7 +665,7 @@ import (
     "path/filepath"
     "strings"
     
-    "github.com/moonlight-box/registry/internal/types"
+    "github.com/dshmyz/moonlight-box/internal/types"
 )
 
 type MavenAdapter struct{}
@@ -836,7 +836,7 @@ import (
     "context"
     "io"
     
-    "github.com/moonlight-box/registry/internal/types"
+    "github.com/dshmyz/moonlight-box/internal/types"
 )
 
 type RepositoryChain interface {
@@ -866,7 +866,7 @@ import (
     "context"
     "io"
     
-    "github.com/moonlight-box/registry/internal/types"
+    "github.com/dshmyz/moonlight-box/internal/types"
 )
 
 type HostedNode struct {
@@ -947,7 +947,7 @@ import (
     "io"
     "time"
     
-    "github.com/moonlight-box/registry/internal/types"
+    "github.com/dshmyz/moonlight-box/internal/types"
 )
 
 type RemoteArtifactState string
@@ -1083,7 +1083,7 @@ import (
     "context"
     "io"
     
-    "github.com/moonlight-box/registry/internal/types"
+    "github.com/dshmyz/moonlight-box/internal/types"
     "github.com/sirupsen/logrus"
 )
 
@@ -1177,7 +1177,7 @@ import (
     "context"
     "io"
     
-    "github.com/moonlight-box/registry/internal/types"
+    "github.com/dshmyz/moonlight-box/internal/types"
 )
 
 type BlobStore interface {
@@ -1207,7 +1207,7 @@ import (
     "io"
     
     "github.com/google/uuid"
-    "github.com/moonlight-box/registry/internal/types"
+    "github.com/dshmyz/moonlight-box/internal/types"
 )
 
 type CASBlobStore struct {
@@ -1312,7 +1312,7 @@ package storage
 import (
     "context"
     
-    "github.com/moonlight-box/registry/internal/types"
+    "github.com/dshmyz/moonlight-box/internal/types"
 )
 
 type MetadataStore interface {
@@ -1351,7 +1351,7 @@ import (
     "sync"
     "time"
     
-    "github.com/moonlight-box/registry/internal/types"
+    "github.com/dshmyz/moonlight-box/internal/types"
 )
 
 type MetadataCache struct {
@@ -1436,7 +1436,7 @@ import (
     "context"
     "io"
     
-    "github.com/moonlight-box/registry/internal/types"
+    "github.com/dshmyz/moonlight-box/internal/types"
 )
 
 type RemoteClient interface {
@@ -1472,8 +1472,8 @@ package job
 import (
     "context"
     
-    "github.com/moonlight-box/registry/internal/model"
-    "github.com/moonlight-box/registry/internal/storage"
+    "github.com/dshmyz/moonlight-box/internal/model"
+    "github.com/dshmyz/moonlight-box/internal/storage"
     "github.com/sirupsen/logrus"
     "gorm.io/gorm"
 )
@@ -1544,7 +1544,7 @@ import (
     "sync/atomic"
     "time"
     
-    "github.com/moonlight-box/registry/internal/types"
+    "github.com/dshmyz/moonlight-box/internal/types"
 )
 
 type RepositoryManager struct {

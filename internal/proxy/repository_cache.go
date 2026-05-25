@@ -7,8 +7,8 @@ import (
 
 	"log/slog"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 )
 
 type RepositoryCache struct {

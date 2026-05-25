@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 )
 
 type ComponentQueue struct {

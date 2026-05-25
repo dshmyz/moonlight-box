@@ -6,8 +6,8 @@ import (
 	"errors"
 	"net/http"
 
+	apperr "github.com/dshmyz/moonlight-box/internal/errors"
 	"github.com/gin-gonic/gin"
-	apperr "github.com/moonlight-box/registry/internal/errors"
 )
 
 // Response 标准 API 响应结构

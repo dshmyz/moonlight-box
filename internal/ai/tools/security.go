@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 )
 
 // SecurityTool 安全分析工具

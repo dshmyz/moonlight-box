@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/util"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -20,14 +20,23 @@ type MigrationWorkerInterface interface {
 
 type RepositoryCreator interface {
 	CreateRepo(name, repoType, packageType string, remoteURL string, cacheEnabled bool, cacheTTLSeconds int, storageBackendID *uint) error
+	CreateRepoWithConfig(name, repoType, packageType string, remoteURL string, cacheEnabled bool, cacheTTLSeconds int, storageBackendID *uint, authConfig *model.ProxyAuthConfig, timeoutSeconds, maxRedirects int, insecureSkipVerify bool) error
 	RepoExists(name string) bool
 	FindDefaultStorageBackendID() (*uint, error)
+}
+
+type UserCreator interface {
+	CreateRole(name, description string, permissions []string) error
+	RoleExists(name string) bool
+	CreateUser(username, email, displayName string, isActive bool, roleNames []string) error
+	UserExists(username string) bool
 }
 
 type MigrationService struct {
 	db           *gorm.DB
 	worker       MigrationWorkerInterface
 	repoCreator  RepositoryCreator
+	userCreator  UserCreator
 	tasks        map[uint]*MigrationContext
 	mu           sync.RWMutex
 	nexusClients map[uint]*NexusClient
@@ -63,7 +72,7 @@ const (
 	MaxConcurrentTasks = 5
 )
 
-func NewMigrationService(db *gorm.DB, worker MigrationWorkerInterface, repoCreator RepositoryCreator, maxConcurrent int) *MigrationService {
+func NewMigrationService(db *gorm.DB, worker MigrationWorkerInterface, repoCreator RepositoryCreator, userCreator UserCreator, maxConcurrent int) *MigrationService {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1
 	}
@@ -75,6 +84,7 @@ func NewMigrationService(db *gorm.DB, worker MigrationWorkerInterface, repoCreat
 		db:            db,
 		worker:        worker,
 		repoCreator:   repoCreator,
+		userCreator:   userCreator,
 		tasks:         make(map[uint]*MigrationContext),
 		nexusClients:  make(map[uint]*NexusClient),
 		queue:         make(chan uint, 100),
@@ -278,6 +288,11 @@ func (s *MigrationService) runQueuedTask(taskID uint) {
 		return
 	}
 
+	if task.TaskType == model.MigrationTaskUsers {
+		s.executeUserMigrationTask(taskID, task)
+		return
+	}
+
 	// 完整迁移任务
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -415,10 +430,46 @@ func (s *MigrationService) executeSyncConfigTask(taskID uint, task *model.Migrat
 				s.AddLog(taskID, fmt.Sprintf("获取仓库 %s 详细信息失败: %v", nr.Name, err))
 				continue
 			}
+			// 使用 Proxy.RemoteURL 作为远程代理地址，而不是仓库本身的 URL
 			if detail.Proxy != nil && detail.Proxy.RemoteURL != "" {
 				remoteURL = detail.Proxy.RemoteURL
 				cacheEnabled = true
 			}
+
+			// 解析超时配置
+			timeoutSeconds := 30
+			maxRedirects := 5
+			if detail.HTTP != nil && detail.HTTP.Connection != nil {
+				if detail.HTTP.Connection.Timeout > 0 {
+					timeoutSeconds = detail.HTTP.Connection.Timeout
+				}
+				if detail.HTTP.Connection.MaxRedirects > 0 {
+					maxRedirects = detail.HTTP.Connection.MaxRedirects
+				}
+			}
+
+			// 解析认证配置
+			var authConfig *model.ProxyAuthConfig
+			if detail.HTTP != nil && detail.HTTP.Authentication != nil && detail.HTTP.Authentication.Type != "" {
+				authType := detail.HTTP.Authentication.Type
+				if authType == "username" || authType == "basic" {
+					authConfig = &model.ProxyAuthConfig{
+						Type: authType,
+						Basic: &model.BasicAuth{
+							Username: detail.HTTP.Authentication.Username,
+							Password: detail.HTTP.Authentication.Password,
+						},
+					}
+				}
+			}
+
+			if err := s.repoCreator.CreateRepoWithConfig(nr.Name, repoType, util.NormalizePackageType(nr.Format), remoteURL, cacheEnabled, cacheTTL, storageID, authConfig, timeoutSeconds, maxRedirects, false); err != nil {
+				s.AddLog(taskID, fmt.Sprintf("创建仓库失败: %s, 错误: %v", nr.Name, err))
+				continue
+			}
+			s.AddLog(taskID, fmt.Sprintf("同步仓库: %s (%s/%s) -> %s", nr.Name, nr.Format, nr.Type, remoteURL))
+			synced++
+			continue
 		}
 
 		if nr.Type == "group" {
@@ -655,4 +706,140 @@ func (s *MigrationService) ListItems(taskID uint, page, pageSize int) ([]model.M
 
 	err := query.Order("created_at ASC").Find(&items).Error
 	return items, total, err
+}
+
+func (s *MigrationService) CreateUserMigrationTask(sourceURL, username, password string) (*model.MigrationTask, error) {
+	task := &model.MigrationTask{
+		SourceType: "nexus",
+		SourceURL:  sourceURL,
+		Username:   username,
+		Status:     model.MigrationQueued,
+		TaskType:   model.MigrationTaskUsers,
+	}
+
+	if err := task.SetPassword(password); err != nil {
+		return nil, err
+	}
+
+	if err := s.db.Create(task).Error; err != nil {
+		return nil, err
+	}
+
+	if err := s.EnqueueTask(task.ID); err != nil {
+		s.db.Model(&model.MigrationTask{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
+			"status":        model.MigrationFailed,
+			"error_message": "任务入队失败: " + err.Error(),
+		})
+		return nil, err
+	}
+
+	return task, nil
+}
+
+func (s *MigrationService) executeUserMigrationTask(taskID uint, task *model.MigrationTask) {
+	if s.userCreator == nil {
+		s.AddLog(taskID, "用户创建器未初始化")
+		s.db.Model(&model.MigrationTask{}).Where("id = ?", taskID).Updates(map[string]interface{}{
+			"status":        model.MigrationFailed,
+			"error_message": "用户创建器未初始化",
+			"completed_at":  time.Now(),
+		})
+		return
+	}
+
+	password, _ := task.GetPassword()
+	client := NewNexusClient(task.SourceURL, task.Username, password)
+	ctx := context.Background()
+
+	s.AddLog(taskID, "开始迁移用户和角色...")
+
+	roles, err := client.ListRoles(ctx)
+	if err != nil {
+		s.AddLog(taskID, "获取角色列表失败: "+err.Error())
+		s.db.Model(&model.MigrationTask{}).Where("id = ?", taskID).Updates(map[string]interface{}{
+			"status":        model.MigrationFailed,
+			"error_message": err.Error(),
+			"completed_at":  time.Now(),
+		})
+		return
+	}
+
+	s.AddLog(taskID, fmt.Sprintf("发现 %d 个角色", len(roles)))
+
+	rolesSynced := 0
+	rolesSkipped := 0
+	for _, nr := range roles {
+		if nr.External {
+			s.AddLog(taskID, fmt.Sprintf("跳过外部角色: %s", nr.ID))
+			rolesSkipped++
+			continue
+		}
+
+		if s.userCreator.RoleExists(nr.ID) {
+			s.AddLog(taskID, fmt.Sprintf("角色已存在，跳过: %s", nr.ID))
+			rolesSkipped++
+			continue
+		}
+
+		if err := s.userCreator.CreateRole(nr.ID, nr.Description, nr.Privileges); err != nil {
+			s.AddLog(taskID, fmt.Sprintf("创建角色失败: %s, 错误: %v", nr.ID, err))
+			continue
+		}
+
+		s.AddLog(taskID, fmt.Sprintf("创建角色: %s", nr.ID))
+		rolesSynced++
+	}
+
+	users, err := client.ListUsers(ctx)
+	if err != nil {
+		s.AddLog(taskID, "获取用户列表失败: "+err.Error())
+		s.db.Model(&model.MigrationTask{}).Where("id = ?", taskID).Updates(map[string]interface{}{
+			"status":        model.MigrationFailed,
+			"error_message": err.Error(),
+			"completed_at":  time.Now(),
+		})
+		return
+	}
+
+	s.AddLog(taskID, fmt.Sprintf("发现 %d 个用户", len(users)))
+
+	usersSynced := 0
+	usersSkipped := 0
+	for _, nu := range users {
+		if nu.External {
+			s.AddLog(taskID, fmt.Sprintf("跳过外部用户: %s", nu.UserID))
+			usersSkipped++
+			continue
+		}
+
+		if s.userCreator.UserExists(nu.UserID) {
+			s.AddLog(taskID, fmt.Sprintf("用户已存在，跳过: %s", nu.UserID))
+			usersSkipped++
+			continue
+		}
+
+		displayName := nu.FirstName
+		if nu.LastName != "" {
+			displayName += " " + nu.LastName
+		}
+		if displayName == "" {
+			displayName = nu.UserID
+		}
+
+		isActive := nu.Status == "active"
+
+		if err := s.userCreator.CreateUser(nu.UserID, nu.Email, displayName, isActive, nu.Roles); err != nil {
+			s.AddLog(taskID, fmt.Sprintf("创建用户失败: %s, 错误: %v", nu.UserID, err))
+			continue
+		}
+
+		s.AddLog(taskID, fmt.Sprintf("创建用户: %s (%s)", nu.UserID, nu.Email))
+		usersSynced++
+	}
+
+	s.AddLog(taskID, fmt.Sprintf("成功同步 %d 个角色（跳过 %d 个），成功同步 %d 个用户（跳过 %d 个）", rolesSynced, rolesSkipped, usersSynced, usersSkipped))
+	s.db.Model(&model.MigrationTask{}).Where("id = ?", taskID).Updates(map[string]interface{}{
+		"status":       model.MigrationCompleted,
+		"completed_at": time.Now(),
+	})
 }

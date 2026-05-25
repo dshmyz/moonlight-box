@@ -4,12 +4,12 @@ import (
 	"compress/gzip"
 	"net/http"
 
+	handler "github.com/dshmyz/moonlight-box/internal/api/http"
+	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/middleware"
+	"github.com/dshmyz/moonlight-box/internal/proxy"
+	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/gin-gonic/gin"
-	handler "github.com/moonlight-box/registry/internal/api/http"
-	"github.com/moonlight-box/registry/internal/config"
-	"github.com/moonlight-box/registry/internal/middleware"
-	"github.com/moonlight-box/registry/internal/proxy"
-	"github.com/moonlight-box/registry/internal/service"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -430,6 +430,10 @@ func (ctx *RouterContext) setupMigrationRoutes(protected *gin.RouterGroup) {
 		migration.POST("/nexus/sync-repos", ctx.Handlers.Migration.SyncNexusRepos)
 		migration.POST("/nexus/sync-config-only", ctx.Handlers.Migration.SyncConfigOnly)
 		migration.POST("/nexus", ctx.Handlers.Migration.CreateMigration)
+		// 用户迁移相关API
+		migration.POST("/nexus/users", ctx.Handlers.Migration.ListNexusUsers)
+		migration.POST("/nexus/roles", ctx.Handlers.Migration.ListNexusRoles)
+		migration.POST("/nexus/sync-users", ctx.Handlers.Migration.SyncUsersFromNexus)
 		migration.GET("/:id/status", ctx.Handlers.Migration.GetMigrationStatus)
 		migration.POST("/:id/cancel", ctx.Handlers.Migration.CancelMigration)
 		migration.POST("/:id/retry", ctx.Handlers.Migration.RetryFailedMigration)
@@ -510,10 +514,8 @@ func (ctx *RouterContext) setupPackageRoutes(protected *gin.RouterGroup) {
 		return
 	}
 
-	packages := protected.Group("/packages")
-	packages.Use(ctx.requirePermission("package", "read"))
-	{
-	}
+	packagesRead := protected.Group("/packages")
+	packagesRead.Use(ctx.requirePermission("package", "read"))
 
 	packageWrite := protected.Group("/packages")
 	packageWrite.Use(ctx.requirePermission("package", "write"))

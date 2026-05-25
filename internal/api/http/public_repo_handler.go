@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/response"
+	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/response"
-	"github.com/moonlight-box/registry/internal/service"
 )
 
 type PublicRepoHandler struct {
@@ -70,7 +70,12 @@ func (h *PublicRepoHandler) List(c *gin.Context) {
 			Type:        repo.Type,
 			PackageType: repo.PackageType,
 			Enabled:     repo.Enabled,
-			RemoteURL:   func() string { if repo.Config != nil { return repo.Config.RemoteURL }; return "" }(),
+			RemoteURL: func() string {
+				if repo.Config != nil {
+					return repo.Config.RemoteURL
+				}
+				return ""
+			}(),
 			RegistryURL: buildRegistryURL(baseURL, &repo),
 		}
 	}
@@ -135,7 +140,12 @@ func (h *PublicRepoHandler) GetRepoConfig(c *gin.Context) {
 		Type:        repo.Type,
 		PackageType: repo.PackageType,
 		Enabled:     repo.Enabled,
-		RemoteURL:   func() string { if repo.Config != nil { return repo.Config.RemoteURL }; return "" }(),
+		RemoteURL: func() string {
+			if repo.Config != nil {
+				return repo.Config.RemoteURL
+			}
+			return ""
+		}(),
 		RegistryURL: registryURL,
 		ConfigGuide: guide,
 	}

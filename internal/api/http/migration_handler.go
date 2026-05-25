@@ -3,12 +3,12 @@ package http
 import (
 	"fmt"
 
+	"github.com/dshmyz/moonlight-box/internal/migration"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/response"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/migration"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/response"
-	"github.com/moonlight-box/registry/internal/util"
 )
 
 type MigrationHandler struct {
@@ -407,6 +407,72 @@ func (h *MigrationHandler) ListMigrationItems(c *gin.Context) {
 func (h *MigrationHandler) GetQueueStatus(c *gin.Context) {
 	status := h.service.GetQueueStatus()
 	response.Success(c, status)
+}
+
+// 用户迁移相关API
+
+type SyncUsersRequest struct {
+	URL      string `json:"url" binding:"required"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (h *MigrationHandler) SyncUsersFromNexus(c *gin.Context) {
+	var req SyncUsersRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "请求参数错误", err.Error())
+		return
+	}
+
+	task, err := h.service.CreateUserMigrationTask(req.URL, req.Username, req.Password)
+	if err != nil {
+		response.InternalError(c, "创建用户迁移任务失败: "+err.Error())
+		return
+	}
+
+	response.Success(c, task)
+}
+
+func (h *MigrationHandler) ListNexusUsers(c *gin.Context) {
+	var req struct {
+		URL      string `json:"url" binding:"required"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "请求参数错误", err.Error())
+		return
+	}
+
+	client := migration.NewNexusClient(req.URL, req.Username, req.Password)
+	users, err := client.ListUsers(c.Request.Context())
+	if err != nil {
+		response.BadRequest(c, "获取用户列表失败", err.Error())
+		return
+	}
+
+	response.Success(c, users)
+}
+
+func (h *MigrationHandler) ListNexusRoles(c *gin.Context) {
+	var req struct {
+		URL      string `json:"url" binding:"required"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "请求参数错误", err.Error())
+		return
+	}
+
+	client := migration.NewNexusClient(req.URL, req.Username, req.Password)
+	roles, err := client.ListRoles(c.Request.Context())
+	if err != nil {
+		response.BadRequest(c, "获取角色列表失败", err.Error())
+		return
+	}
+
+	response.Success(c, roles)
 }
 
 func parseUint(s string) (uint, error) {

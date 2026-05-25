@@ -832,7 +832,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -989,7 +989,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 )
 
 type MigrationWorker struct {
@@ -1175,8 +1175,8 @@ package handler
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/migration"
-	"github.com/moonlight-box/registry/internal/response"
+	"github.com/dshmyz/moonlight-box/internal/migration"
+	"github.com/dshmyz/moonlight-box/internal/response"
 )
 
 type MigrationHandler struct {
@@ -1392,7 +1392,7 @@ migrationHandler := handler.NewMigrationHandler(migrationSvc, migrationWorker)
 
 在 import 中添加：
 ```go
-"github.com/moonlight-box/registry/internal/migration"
+"github.com/dshmyz/moonlight-box/internal/migration"
 ```
 
 - [ ] **步骤 5：验证编译**

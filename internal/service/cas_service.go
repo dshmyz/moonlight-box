@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/moonlight-box/registry/internal/config"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 )
 
 type CASService struct {

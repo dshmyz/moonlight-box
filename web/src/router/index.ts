@@ -87,6 +87,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '仓库管理', permission: { resource: 'repositories', action: 'read' } },
       },
       {
+        path: 'repositories/:name',
+        name: 'RepositoryDetail',
+        component: () => import('@/views/RepositoryDetail.vue'),
+        meta: { title: '仓库详情', permission: { resource: 'repositories', action: 'read' } },
+      },
+      {
         path: 'block-rules',
         name: 'BlockRules',
         component: () => import('@/views/BlockRuleList.vue'),

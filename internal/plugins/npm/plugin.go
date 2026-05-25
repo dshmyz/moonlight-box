@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"golang.org/x/mod/semver"
 )
 
@@ -160,19 +160,24 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 
 	packageName := parts[0]
 	filename := parts[1]
+	version := strings.TrimSuffix(strings.TrimPrefix(filename, packageName+"-"), ".tgz")
 
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
 		Coordinates: map[string]string{
-			"name": packageName,
-			"path": packageName + "/-",
+			"name":    packageName,
+			"version": version,
+			"path":    packageName + "/-",
 		},
 		Filename: filename,
 	}
 
 	artifact, err := repoRuntime.GetArtifact(context.Background(), key)
 	if err != nil {
+		if errors.Is(err, runtime.ErrBlocked) {
+			return err
+		}
 		if errors.Is(err, runtime.ErrNotFound) {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		} else {
@@ -208,24 +213,26 @@ func (p *NpmPlugin) handlePackage(ctx *runtime.RequestContext, repoRuntime runti
 }
 
 func (p *NpmPlugin) handleTarballDelete(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
-		parts := strings.Split(path, "/-/")
-		if len(parts) != 2 {
-			http.Error(ctx.Writer, "Invalid path", http.StatusBadRequest)
-			return nil
-		}
-		packageName := parts[0]
-		filename := parts[1]
-		key := runtime.ArtifactKey{
-			RepositoryID: ctx.Repository.ID,
-			Format:       "npm",
-			Coordinates: map[string]string{
-				"name": packageName,
-				"path": packageName + "/-",
-			},
-			Filename: filename,
-		}
-		return deleteArtifact(ctx, repoRuntime, key)
+	parts := strings.Split(path, "/-/")
+	if len(parts) != 2 {
+		http.Error(ctx.Writer, "Invalid path", http.StatusBadRequest)
+		return nil
 	}
+	packageName := parts[0]
+	filename := parts[1]
+	version := strings.TrimSuffix(strings.TrimPrefix(filename, packageName+"-"), ".tgz")
+	key := runtime.ArtifactKey{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "npm",
+		Coordinates: map[string]string{
+			"name":    packageName,
+			"version": version,
+			"path":    packageName + "/-",
+		},
+		Filename: filename,
+	}
+	return deleteArtifact(ctx, repoRuntime, key)
+}
 
 func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, packageName string) error {
 	artifacts, err := repoRuntime.QueryArtifacts(context.Background(), runtime.ArtifactQuery{
@@ -237,6 +244,9 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 		RemotePath: packageName,
 	})
 	if err != nil {
+		if errors.Is(err, runtime.ErrBlocked) {
+			return err
+		}
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
@@ -286,9 +296,9 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 	}
 
 	data := map[string]interface{}{
-		"name":       packageName,
-		"dist-tags":  distTags,
-		"versions":   versions,
+		"name":      packageName,
+		"dist-tags": distTags,
+		"versions":  versions,
 	}
 
 	ctx.Writer.Header().Set("Content-Type", "application/json")

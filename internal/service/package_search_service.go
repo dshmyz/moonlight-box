@@ -2,13 +2,14 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/util"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"gorm.io/gorm"
 )
 
@@ -46,6 +47,7 @@ type SearchResult struct {
 	Page         int           `json:"page"`
 	PageSize     int           `json:"page_size"`
 	SearchTimeMs int64         `json:"search_time_ms"`
+	RawCount     int           `json:"raw_count"`
 }
 
 type PackageSearchService struct {
@@ -56,26 +58,50 @@ func NewPackageSearchService(db *gorm.DB) *PackageSearchService {
 	return &PackageSearchService{db: db}
 }
 
-// Search 从 artifacts 表搜索包，按 name 聚合
+// rawArtifact 原始 SQL 查询结果行，避免 GORM JSONB scan 问题
+type rawArtifact struct {
+	ID           uint      `gorm:"column:id"`
+	RepositoryID uint      `gorm:"column:repository_id"`
+	Format       string    `gorm:"column:format"`
+	Coordinates  string    `gorm:"column:coordinates"`
+	CreatedAt    time.Time `gorm:"column:created_at"`
+	UpdatedAt    time.Time `gorm:"column:updated_at"`
+}
+
+// Search 从 artifacts 表搜索包，按 name 聚合。
+// 使用原始 SQL 读取 coordinates 列，手动解析 JSON，绕过 GORM JSONB 扫描器的兼容问题。
 func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (*SearchResult, error) {
 	start := time.Now()
 
-	db := s.db.WithContext(ctx).Model(&model.Artifact{})
+	var conditions []string
+	var args []interface{}
 
 	if req.Type != "" {
-		db = db.Where("format IN ?", util.ExpandPackageTypeAliases(req.Type))
+		types := util.ExpandPackageTypeAliases(req.Type)
+		placeholders := make([]string, len(types))
+		for i, t := range types {
+			placeholders[i] = "?"
+			args = append(args, t)
+		}
+		conditions = append(conditions, fmt.Sprintf("format IN (%s)", strings.Join(placeholders, ",")))
 	}
 	if req.Repository != "" {
-		db = db.Where("repository_id IN (?)",
-			s.db.Model(&model.Repository{}).Select("id").Where("name = ?", req.Repository))
+		conditions = append(conditions, "repository_id = (SELECT id FROM repositories WHERE name = ? LIMIT 1)")
+		args = append(args, req.Repository)
 	}
 
-	var artifacts []model.Artifact
-	if err := db.Order("created_at DESC").Find(&artifacts).Error; err != nil {
+	query := "SELECT id, repository_id, format, coordinates, created_at, updated_at FROM artifacts"
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY created_at DESC"
+
+	var rawRows []rawArtifact
+	if err := s.db.WithContext(ctx).Raw(query, args...).Scan(&rawRows).Error; err != nil {
 		return nil, err
 	}
 
-	// 在 Go 中按 name 聚合
+	// 聚合
 	type groupKey struct {
 		repositoryID uint
 		format       string
@@ -84,50 +110,40 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 	groups := make(map[groupKey]*groupAcc)
 	var orderedKeys []groupKey
 
-	for _, a := range artifacts {
-		name := coordinateStr(a.Coordinates, "name")
-		if name == "" {
-			name = coordinateStr(a.Coordinates, "package")
-		}
+	for _, row := range rawRows {
+		name := extractName("", row.Coordinates)
 		if name == "" {
 			continue
 		}
 
-		// 过滤
 		if req.Query != "" {
-			if req.Scope == "all" {
-				if !strings.Contains(strings.ToLower(name), strings.ToLower(req.Query)) {
-					continue
-				}
-			} else {
-				if !strings.Contains(strings.ToLower(name), strings.ToLower(req.Query)) {
-					continue
-				}
+			if !strings.Contains(strings.ToLower(name), strings.ToLower(req.Query)) {
+				continue
 			}
 		}
 		if req.Name != "" && name != req.Name {
 			continue
 		}
 		if req.Version != "" {
-			ver := coordinateStr(a.Coordinates, "version")
+			ver := extractField(row.Coordinates, "version")
 			if ver != req.Version {
 				continue
 			}
 		}
 
-		key := groupKey{a.RepositoryID, a.Format, name}
+		key := groupKey{row.RepositoryID, row.Format, name}
 		acc, ok := groups[key]
 		if !ok {
-			acc = &groupAcc{name: name, format: a.Format, repositoryID: a.RepositoryID}
+			acc = &groupAcc{name: name, format: row.Format, repositoryID: row.RepositoryID}
 			groups[key] = acc
 			orderedKeys = append(orderedKeys, key)
 		}
 		acc.versionCount++
-		if a.UpdatedAt.After(acc.latestTime) {
-			acc.latestTime = a.UpdatedAt
+		if row.UpdatedAt.After(acc.latestTime) {
+			acc.latestTime = row.UpdatedAt
 		}
 		if acc.firstID == 0 {
-			acc.firstID = a.ID
+			acc.firstID = row.ID
 		}
 	}
 
@@ -156,7 +172,7 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 	}
 	pagedKeys := orderedKeys[offset:end]
 
-	// 收集 repo IDs
+	// 收集 repo ID
 	repoIDs := make(map[uint]bool)
 	for _, k := range pagedKeys {
 		repoIDs[k.repositoryID] = true
@@ -166,7 +182,6 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 		repoIDList = append(repoIDList, id)
 	}
 
-	// 批量查仓库名
 	repoNameMap := make(map[uint]string)
 	if len(repoIDList) > 0 {
 		type repoRow struct {
@@ -200,6 +215,7 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 		Page:         req.Page,
 		PageSize:     req.PageSize,
 		SearchTimeMs: time.Since(start).Milliseconds(),
+		RawCount:     len(rawRows),
 	}, nil
 }
 
@@ -212,11 +228,19 @@ type groupAcc struct {
 	firstID      uint
 }
 
-func coordinateStr(coords model.JSONB, key string) string {
-	if coords == nil {
+// extractName 从原始 coordinates JSON 中提取包名
+// extractName 从原始 coordinates JSON 中提取包名。首选 "name" 键，旧数据回退拼装。
+func extractName(_, coordsJSON string) string {
+	return extractField(coordsJSON, "name")
+}
+
+// extractField 从原始 JSON 字符串中提取单个字段值
+func extractField(coordsJSON, key string) string {
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(coordsJSON), &m); err != nil {
 		return ""
 	}
-	v, ok := coords[key]
+	v, ok := m[key]
 	if !ok {
 		return ""
 	}

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )

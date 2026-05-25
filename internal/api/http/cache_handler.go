@@ -1,11 +1,12 @@
 package http
 
 import (
-	"github.com/moonlight-box/registry/internal/response"
 	"strconv"
 
+	"github.com/dshmyz/moonlight-box/internal/response"
+
+	"github.com/dshmyz/moonlight-box/internal/core/cache"
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/core/cache"
 )
 
 type CacheHandler struct {

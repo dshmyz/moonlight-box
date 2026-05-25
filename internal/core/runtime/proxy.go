@@ -19,6 +19,8 @@ type ProxyRuntime struct {
 	RemoteBaseURL string
 	CachePolicy   CachePolicy
 	Fetcher       RemoteFetcher // 由 Plugin 实现，Runtime 控制回源时机
+	Blocker       PackageBlocker // 阻断规则检查
+	Format        string         // 仓库协议类型，供阻断检查使用
 
 	metadataCacheMu sync.RWMutex
 	metadataCache   map[string]cachedArtifact
@@ -31,7 +33,22 @@ type cachedArtifact struct {
 	negative  bool
 }
 
+func (n *ProxyRuntime) checkBlocked(key ArtifactKey) error {
+	if n.Blocker == nil {
+		return nil
+	}
+	name := key.Coordinates["name"]
+	ver := key.Coordinates["version"]
+	if name != "" && n.Blocker.IsBlocked(n.Format, name, ver) {
+		return ErrBlocked
+	}
+	return nil
+}
+
 func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artifact, error) {
+	if err := n.checkBlocked(key); err != nil {
+		return nil, err
+	}
 	if n.isNegativeCached(key) {
 		return nil, ErrNotFound
 	}
@@ -68,6 +85,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 		return nil, ErrNotFound
 	}
 
+	now := time.Now()
 	artifact = &Artifact{
 		RepositoryID: n.RepositoryID,
 		Format:       key.Format,
@@ -76,6 +94,8 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 			"remote_digest": metadata.Digest,
 			"remote_size":   strconv.FormatInt(metadata.Size, 10),
 		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 
 	if err := n.MetadataStore.Put(ctx, artifact); err != nil {
@@ -93,6 +113,11 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 }
 
 func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
+	if n.Blocker != nil {
+		if name := query.Coordinates["name"]; name != "" && n.Blocker.IsBlocked(n.Format, name, query.Coordinates["version"]) {
+			return nil, ErrBlocked
+		}
+	}
 	query.RepositoryID = n.RepositoryID
 	artifacts, err := n.MetadataStore.Query(ctx, query)
 	if err != nil {

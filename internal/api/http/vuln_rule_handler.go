@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/response"
-	"github.com/moonlight-box/registry/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/response"
+	"github.com/dshmyz/moonlight-box/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -190,8 +190,8 @@ func (h *VulnRuleHandler) TestDataSource(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"status":      resp.StatusCode,
-		"reachable":   true,
-		"valid_json":  true,
+		"status":     resp.StatusCode,
+		"reachable":  true,
+		"valid_json": true,
 	})
 }

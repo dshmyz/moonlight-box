@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/storage"
+	"github.com/dshmyz/moonlight-box/internal/storage"
 	"github.com/stretchr/testify/assert"
 )
 

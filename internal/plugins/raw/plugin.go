@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/moonlight-box/registry/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 )
 
 type GenericPlugin struct{}
@@ -39,6 +39,7 @@ func (p *GenericPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.
 		RepositoryID: ctx.Repository.ID,
 		Format:       "generic",
 		Coordinates: map[string]string{
+			"name": filename,
 			"path": dir,
 		},
 		Filename:  filename,

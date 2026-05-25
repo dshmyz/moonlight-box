@@ -9,9 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/storage"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/storage"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
 )

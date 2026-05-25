@@ -3,7 +3,7 @@ package model
 import (
 	"time"
 
-	"github.com/moonlight-box/registry/internal/util"
+	"github.com/dshmyz/moonlight-box/internal/util"
 )
 
 type MigrationStatus string
@@ -23,6 +23,7 @@ var encryptionKey = []byte("moonlight-box-registry-32bytes!!")
 const (
 	MigrationTaskFull       = "full"
 	MigrationTaskSyncConfig = "sync_config_only"
+	MigrationTaskUsers      = "users_only"
 )
 
 const (

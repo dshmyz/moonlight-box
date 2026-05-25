@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 )
 
 type cachedWildcardRule struct {
-	rule    *model.BlockRule
+	rule     *model.BlockRule
 	compiled *regexp.Regexp
 }
 
@@ -22,11 +22,11 @@ type BlockRuleService struct {
 	repo     *repository.BlockRuleRepository
 	auditSvc *AuditService
 
-	cacheMu          sync.RWMutex
-	cachedAt         time.Time
-	cacheTTL         time.Duration
-	exactRulesCache  map[string][]*model.BlockRule
-	wildcardRules    map[string][]cachedWildcardRule
+	cacheMu         sync.RWMutex
+	cachedAt        time.Time
+	cacheTTL        time.Duration
+	exactRulesCache map[string][]*model.BlockRule
+	wildcardRules   map[string][]cachedWildcardRule
 }
 
 func NewBlockRuleService(repo *repository.BlockRuleRepository, auditSvc *AuditService) *BlockRuleService {
@@ -64,6 +64,14 @@ func (s *BlockRuleService) IsBlocked(pkgType, pkgName, version string) (*BlockRe
 
 	if ok && len(exactRules) > 0 {
 		return &BlockResult{Blocked: true, Rule: exactRules[0]}, nil
+	}
+
+	// Fallback: version="*" 匹配所有版本
+	if version != "*" {
+		wildKey := pkgType + ":" + pkgName + ":*"
+		if rules, ok3 := s.exactRulesCache[wildKey]; ok3 && len(rules) > 0 {
+			return &BlockResult{Blocked: true, Rule: rules[0]}, nil
+		}
 	}
 
 	if ok2 {
@@ -111,7 +119,7 @@ func (s *BlockRuleService) refreshCache() error {
 		}
 		pkgType := string(rule.PackageType)
 		newWildcardCache[pkgType] = append(newWildcardCache[pkgType], cachedWildcardRule{
-			rule:    rule,
+			rule:     rule,
 			compiled: compiled,
 		})
 	}

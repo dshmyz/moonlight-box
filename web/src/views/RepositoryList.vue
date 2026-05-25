@@ -84,7 +84,7 @@
             >
               <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip>
                 <template #default="{ row }">
-                  <div class="repo-info">
+                  <div class="repo-info" @click="goToRepoDetail(row.name)">
                     <div class="repo-icon" :class="`repo-icon--${row.type}`"><i :class="getRepoIcon(row.type)"></i></div>
                     <div class="repo-content">
                       <div class="repo-name">{{ row.display_name || row.name }}</div>
@@ -202,6 +202,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { repositoryApi, type Repository, type RepositoryWithHealth, type PaginatedResponse } from '@/api/repository'
@@ -222,6 +223,8 @@ const repos = ref<LocalRepository[]>([])
 const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
+
+const router = useRouter()
 
 const tabOptions = [
   { name: 'all', label: '全部' },
@@ -323,6 +326,10 @@ const onSizeChange = () => {
 const clearFilter = () => {
   packageTypeFilter.value = ''
   onFilterChange()
+}
+
+const goToRepoDetail = (name: string) => {
+  router.push(`/admin/repositories/${name}`)
 }
 
 const openCreateDialog = () => {
@@ -694,6 +701,16 @@ onMounted(loadRepos)
   align-items: center;
   gap: 12px;
   white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.repo-info:hover {
+  color: #6366f1;
+}
+
+.repo-info:hover .repo-name {
+  color: #6366f1;
 }
 
 .repo-icon {

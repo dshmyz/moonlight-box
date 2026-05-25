@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/moonlight-box/registry/internal/response"
-	"github.com/moonlight-box/registry/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/response"
+	"github.com/dshmyz/moonlight-box/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -56,7 +56,7 @@ func (h *SecurityHandler) TriggerScan(c *gin.Context) {
 	h.securityScanner.TriggerScan(c.Request.Context(), uint(versionID), pkgType, name, version)
 
 	response.Success(c, gin.H{
-		"message":    "scan triggered",
+		"message":      "scan triggered",
 		"component_id": versionID,
 	})
 }

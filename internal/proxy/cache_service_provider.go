@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/core/cache"
+	"github.com/dshmyz/moonlight-box/internal/core/cache"
 )
 
 type CacheServiceProvider struct {
@@ -85,13 +85,13 @@ func (p *CacheServiceProvider) ListItems(offset, limit int, search string) ([]ca
 			expiry, _ = time.Parse(time.RFC3339, expiryStr)
 		}
 		result[i] = cache.CacheItem{
-			Key:         item["key"].(string),
-			Size:        item["size"].(int64),
-			ContentType: item["content_type"].(string),
-			IsNegative:  item["is_negative"].(bool),
-			Expiry:      expiry,
+			Key:          item["key"].(string),
+			Size:         item["size"].(int64),
+			ContentType:  item["content_type"].(string),
+			IsNegative:   item["is_negative"].(bool),
+			Expiry:       expiry,
 			RemainingTTL: int64(item["remaining_ttl"].(int64)),
-			IsExpired:   item["is_expired"].(bool),
+			IsExpired:    item["is_expired"].(bool),
 		}
 	}
 	return result, total

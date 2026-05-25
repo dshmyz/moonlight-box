@@ -6,9 +6,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/response"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/response"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -20,6 +21,12 @@ type PackageVersionHandler struct {
 
 func NewPackageVersionHandler(db *gorm.DB) *PackageVersionHandler {
 	return &PackageVersionHandler{db: db}
+}
+
+type blobInfo struct {
+	ArtifactID uint
+	Size       int64
+	Digest     string
 }
 
 func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
@@ -41,63 +48,11 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		repositoryID = uint(repoID)
 	}
 
-	versions := make([]gin.H, 0)
-
-	// 1. 优先从 packages + package_versions 表查（web 管理层）
-	type pkgRow struct {
-		ID uint
-	}
-	var pkg pkgRow
-	pkgQuery := h.db.Table("packages").
-		Where("name = ? AND type = ?", pkgName, pkgType)
-	if repositoryID > 0 {
-		pkgQuery = pkgQuery.Where("repository_id = ?", repositoryID)
-	}
-	if err := pkgQuery.First(&pkg).Error; err == nil && pkg.ID > 0 {
-
-		type pvRow struct {
-			Version   string
-			Status    string
-			SizeBytes int64  `gorm:"column:size_bytes"`
-			CreatedAt string `gorm:"column:published_at"`
-		}
-		var rows []pvRow
-		h.db.Table("package_versions").
-			Select("version, COALESCE(status,'published') as status, COALESCE(size_bytes,0) as size_bytes, published_at").
-			Where("package_id = ?", pkg.ID).
-			Order("published_at DESC").
-			Scan(&rows)
-
-		for _, r := range rows {
-			versions = append(versions, gin.H{
-				"id":         0,
-				"version":    r.Version,
-				"status":     r.Status,
-				"created_at": r.CreatedAt,
-				"size_bytes": r.SizeBytes,
-			})
-		}
-	}
-
-	// 2. 从 artifacts 表查（runtime 层），去重
-	seenVersions := make(map[string]bool)
-	for _, v := range versions {
-		if ver, ok := v["version"].(string); ok {
-			seenVersions[ver] = true
-		}
-	}
-
 	db := h.db.WithContext(c.Request.Context()).Model(&model.Artifact{}).
 		Where("format = ?", pkgType)
 
-	// 匹配多种坐标 key 模式
-	var nameCond string
-	if pkgType == "maven" || pkgType == "maven2" {
-		nameCond = fmt.Sprintf(`%%"artifact":"%s%%`, pkgName)
-	} else {
-		nameCond = fmt.Sprintf(`%%"name":"%s%%`, pkgName)
-	}
-	db = db.Where("coordinates LIKE ?", nameCond)
+	// 按统一 name 键匹配（所有协议已在 plugin 层标准化）
+	db = db.Where("coordinates LIKE ?", fmt.Sprintf(`%%"name":"%s%%`, pkgName))
 
 	if repositoryID > 0 {
 		db = db.Where("repository_id = ?", repositoryID)
@@ -105,11 +60,8 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 
 	var artifacts []model.Artifact
 	if err := db.Order("created_at DESC").Find(&artifacts).Error; err != nil {
-		// 非致命：已有 packages 数据则忽略
-		if len(versions) == 0 {
-			response.InternalError(c, err.Error())
-			return
-		}
+		response.InternalError(c, err.Error())
+		return
 	}
 
 	// 批量获取 blob refs
@@ -117,57 +69,134 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 	for i, a := range artifacts {
 		artifactIDs[i] = a.ID
 	}
-	blobSizeMap := make(map[uint]int64)
+	blobMap := make(map[uint][]blobInfo)
 	if len(artifactIDs) > 0 {
-		type blobRow struct {
+		var blobRows []struct {
 			ArtifactID uint
 			Size       int64
+			Digest     string
 		}
-		var blobRows []blobRow
 		h.db.Table("artifact_blobs AS ab").
-			Select("ab.artifact_id, SUM(b.size) as size").
+			Select("ab.artifact_id, b.size, b.digest").
 			Joins("JOIN blobs b ON b.id = ab.blob_id").
 			Where("ab.artifact_id IN ?", artifactIDs).
-			Group("ab.artifact_id").
 			Scan(&blobRows)
 		for _, br := range blobRows {
-			blobSizeMap[br.ArtifactID] = br.Size
+			blobMap[br.ArtifactID] = append(blobMap[br.ArtifactID], blobInfo{
+				ArtifactID: br.ArtifactID, Size: br.Size, Digest: br.Digest,
+			})
 		}
 	}
+
+	// 按版本号分组，聚合文件列表
+	type versionGroup struct {
+		latestAt time.Time
+		files    []gin.H
+		blobs    []blobInfo
+	}
+	verGroups := make(map[string]*versionGroup)
+	var verOrder []string
 
 	for _, a := range artifacts {
 		version := coordinateStr(a.Coordinates, "version")
-		if version == "" || seenVersions[version] {
+		if version == "" {
 			continue
 		}
-		seenVersions[version] = true
 
-		status := coordinateStr(a.Metadata, "status")
-		if status == "" {
-			status = "published"
+		vp, ok := verGroups[version]
+		if !ok {
+			vp = &versionGroup{}
+			verGroups[version] = vp
+			verOrder = append(verOrder, version)
+		}
+		if a.CreatedAt.After(vp.latestAt) {
+			vp.latestAt = a.CreatedAt
 		}
 
-		versions = append(versions, gin.H{
-			"id":         a.ID,
-			"version":    version,
-			"status":     status,
-			"created_at": a.CreatedAt,
-			"size_bytes": blobSizeMap[a.ID],
+		filename := coordinateStr(a.Coordinates, "filename")
+		if filename == "" {
+			filename = coordinateStr(a.Coordinates, "ext")
+		}
+		if filename == "" {
+			if v, ok := a.Coordinates["artifact"]; ok {
+				if s, ok2 := v.(string); ok2 {
+					filename = s
+				}
+			}
+		}
+
+		fileType := classifyFileType(a.Format, filename, a.Coordinates)
+
+		blobs := blobMap[a.ID]
+		for _, b := range blobs {
+			vp.blobs = append(vp.blobs, b)
+		}
+		vp.files = append(vp.files, gin.H{
+			"filename":   filename,
+			"file_type":  fileType,
+			"size_bytes": sumBlobSizes(blobs),
 		})
 	}
 
-	name := pkgName
-	if len(artifacts) > 0 {
-		if n := coordinateStr(artifacts[0].Coordinates, "name"); n != "" {
-			name = n
+	versions := make([]gin.H, 0, len(verOrder))
+	for _, ver := range verOrder {
+		vp := verGroups[ver]
+		totalSize := int64(0)
+		for _, b := range vp.blobs {
+			totalSize += b.Size
 		}
+		sha256 := ""
+		if len(vp.blobs) > 0 && vp.blobs[0].Digest != "" {
+			sha256 = vp.blobs[0].Digest
+		}
+
+		versions = append(versions, gin.H{
+			"version":          ver,
+			"status":           "published",
+			"published_at":     vp.latestAt,
+			"size_bytes":       totalSize,
+			"checksum_sha256":  sha256,
+			"files":            vp.files,
+			"files_downloaded": len(vp.blobs) > 0,
+			"download_count":   0,
+		})
 	}
 
 	response.Success(c, gin.H{
-		"package_name": name,
+		"package_name": pkgName,
 		"type":         pkgType,
 		"versions":     versions,
 	})
+}
+
+func classifyFileType(format, filename string, coords model.JSONB) string {
+	if strings.HasSuffix(filename, ".pom") {
+		return "pom"
+	}
+	if strings.HasSuffix(filename, ".jar") {
+		return "primary"
+	}
+	if strings.Contains(filename, "-sources") {
+		return "sources"
+	}
+	if strings.Contains(filename, ".whl") || strings.Contains(filename, ".tar.gz") || strings.Contains(filename, ".tar.bz2") {
+		return "primary"
+	}
+	if strings.HasSuffix(filename, ".mod") {
+		return "metadata"
+	}
+	if strings.HasSuffix(filename, ".zip") {
+		return "primary"
+	}
+	return "other"
+}
+
+func sumBlobSizes(blobs []blobInfo) int64 {
+	var total int64
+	for _, b := range blobs {
+		total += b.Size
+	}
+	return total
 }
 
 func (h *PackageVersionHandler) DeprecateVersion(c *gin.Context) {
@@ -300,7 +329,6 @@ func (h *PackageVersionHandler) DeletePackage(c *gin.Context) {
 		return
 	}
 
-	// 找到该 artifact，然后删除同名的所有 artifacts
 	var artifact model.Artifact
 	if err := h.db.First(&artifact, uint(packageID)).Error; err != nil {
 		response.NotFound(c, "package not found")
@@ -308,9 +336,6 @@ func (h *PackageVersionHandler) DeletePackage(c *gin.Context) {
 	}
 
 	name := coordinateStr(artifact.Coordinates, "name")
-	if name == "" {
-		name = coordinateStr(artifact.Coordinates, "package")
-	}
 
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
 		var allIDs []uint

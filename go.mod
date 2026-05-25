@@ -1,4 +1,4 @@
-module github.com/moonlight-box/registry
+module github.com/dshmyz/moonlight-box
 
 go 1.24
 

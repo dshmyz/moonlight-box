@@ -345,10 +345,10 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/response"
-	"github.com/moonlight-box/registry/internal/service"
-	"github.com/moonlight-box/registry/internal/storage"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/response"
+	"github.com/dshmyz/moonlight-box/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/storage"
 )
 
 type FileBrowseHandler struct {

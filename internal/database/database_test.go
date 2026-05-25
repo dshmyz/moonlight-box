@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/util"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )

@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
-	"github.com/moonlight-box/registry/internal/util"
 )
 
 type cachedMetadata struct {

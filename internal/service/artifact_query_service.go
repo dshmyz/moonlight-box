@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -33,12 +33,12 @@ type ArtifactCatalogEntry struct {
 
 // ArtifactVersion 制品版本信息
 type ArtifactVersion struct {
-	ID        uint              `json:"id"`
-	Version   string            `json:"version"`
-	Format    string            `json:"format"`
-	Kind      string            `json:"kind,omitempty"`
-	SizeBytes int64             `json:"size_bytes"`
-	CreatedAt time.Time         `json:"created_at"`
+	ID        uint               `json:"id"`
+	Version   string             `json:"version"`
+	Format    string             `json:"format"`
+	Kind      string             `json:"kind,omitempty"`
+	SizeBytes int64              `json:"size_bytes"`
+	CreatedAt time.Time          `json:"created_at"`
 	BlobRefs  []ArtifactBlobInfo `json:"blob_refs,omitempty"`
 }
 
@@ -93,9 +93,9 @@ func (s *ArtifactQueryService) GetVersions(ctx context.Context, repoID uint, for
 		for _, br := range blobRows {
 			blobRefMap[br.ArtifactID] = append(blobRefMap[br.ArtifactID], ArtifactBlobInfo{
 				BlobID:    br.BlobID,
-				Algorithm:  br.Algorithm,
-				Digest:     br.Digest,
-				Size:       br.Size,
+				Algorithm: br.Algorithm,
+				Digest:    br.Digest,
+				Size:      br.Size,
 			})
 		}
 	}

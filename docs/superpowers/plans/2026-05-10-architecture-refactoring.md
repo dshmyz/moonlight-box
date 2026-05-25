@@ -50,7 +50,7 @@ package types
 import (
 	"io"
 	
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 )
 
 // DownloadContext 下载上下文
@@ -138,7 +138,7 @@ package types
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 )
 
 // Adapter 定义包类型适配器接口
@@ -597,9 +597,9 @@ import (
 	"context"
 	"fmt"
 	
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/types"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/types"
 )
 
 type DownloadService struct {
@@ -703,9 +703,9 @@ import (
 	"context"
 	"fmt"
 	
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/types"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/types"
 )
 
 type PublishService struct {
@@ -768,12 +768,12 @@ import (
 	"strings"
 	
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/metrics"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/proxy"
-	"github.com/moonlight-box/registry/internal/response"
-	"github.com/moonlight-box/registry/internal/service"
-	"github.com/moonlight-box/registry/internal/types"
+	"github.com/dshmyz/moonlight-box/internal/metrics"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/proxy"
+	"github.com/dshmyz/moonlight-box/internal/response"
+	"github.com/dshmyz/moonlight-box/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/types"
 )
 
 type RepoRouter struct {

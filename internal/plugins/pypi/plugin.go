@@ -11,7 +11,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/moonlight-box/registry/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 )
 
 type PyPIPlugin struct{}
@@ -177,7 +177,10 @@ func (p *PyPIPlugin) handlePackageList(ctx *runtime.RequestContext, repoRuntime 
 	artifacts, err := repoRuntime.QueryArtifacts(context.Background(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
-		RemotePath:   path,
+		Coordinates: map[string]string{
+			"package": packageName,
+		},
+		RemotePath: path,
 	})
 	if err != nil {
 		if errors.Is(err, runtime.ErrNotFound) {
@@ -462,6 +465,7 @@ func (p *PyPIPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runti
 		Format:       "pypi",
 		Kind:         "package",
 		Coordinates: map[string]string{
+			"name":     packageName,
 			"package":  packageName,
 			"version":  version,
 			"filename": key.Filename,
@@ -606,6 +610,7 @@ func (p *PyPIPlugin) parseSimpleIndex(body io.Reader) ([]*runtime.Artifact, erro
 			Format: "pypi",
 			Kind:   "package-index",
 			Coordinates: map[string]string{
+				"name":    pkgName,
 				"package": pkgName,
 			},
 		})
@@ -624,8 +629,8 @@ func (p *PyPIPlugin) parsePackageList(packageName string, body io.Reader) ([]*ru
 	matches := re.FindAllStringSubmatch(html, -1)
 	var artifacts []*runtime.Artifact
 	for _, m := range matches {
-		fullPath := m[1]                                           // e.g. "62/35/.../requests-0.10.0.tar.gz"
-		filename := filepath.Base(fullPath)                         // e.g. "requests-0.10.0.tar.gz"
+		fullPath := m[1]                    // e.g. "62/35/.../requests-0.10.0.tar.gz"
+		filename := filepath.Base(fullPath) // e.g. "requests-0.10.0.tar.gz"
 		if !isValidPyPIFilename(filename) {
 			continue
 		}
@@ -635,6 +640,7 @@ func (p *PyPIPlugin) parsePackageList(packageName string, body io.Reader) ([]*ru
 			Format: "pypi",
 			Kind:   "package-file",
 			Coordinates: map[string]string{
+				"name":     packageName,
 				"package":  packageName,
 				"version":  version,
 				"filename": filename,

@@ -1,14 +1,15 @@
 package http
 
 import (
-	"github.com/moonlight-box/registry/internal/response"
 	"fmt"
 	"net/url"
 	"strconv"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/response"
+
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/service"
 
 	"github.com/gin-gonic/gin"
 )

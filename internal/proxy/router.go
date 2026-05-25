@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/config"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/types"
+	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/types"
 )
 
 var ErrPackageNotFound = fmt.Errorf("package not found")

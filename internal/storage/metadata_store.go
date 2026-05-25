@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/moonlight-box/registry/internal/core/runtime"
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -231,6 +231,8 @@ func (s *MetadataStore) toModelArtifact(t *runtime.Artifact) *model.Artifact {
 		Kind:         t.Kind,
 		Coordinates:  coords,
 		Metadata:     metadata,
+		CreatedAt:    t.CreatedAt,
+		UpdatedAt:    t.UpdatedAt,
 	}
 }
 

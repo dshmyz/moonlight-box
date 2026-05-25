@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/types"
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/types"
 	"golang.org/x/sync/semaphore"
 )
 

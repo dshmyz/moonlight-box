@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/core/cache"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/core/cache"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 )
 
 type PermissionCacheService struct {

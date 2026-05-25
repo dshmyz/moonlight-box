@@ -4,9 +4,9 @@ import (
 	"log/slog"
 	"strconv"
 
+	"github.com/dshmyz/moonlight-box/internal/proxy"
+	"github.com/dshmyz/moonlight-box/internal/response"
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/proxy"
-	"github.com/moonlight-box/registry/internal/response"
 )
 
 // HealthCheckHandler 健康检查API处理器
@@ -44,8 +44,8 @@ func (h *HealthCheckHandler) GetHealthStatus(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"health_status":     status,
-		"circuit_breaker":   cbStats,
+		"health_status":      status,
+		"circuit_breaker":    cbStats,
 		"block_on_unhealthy": h.healthCheckSvc.BlockOnUnhealthy(),
 	})
 }
@@ -71,8 +71,8 @@ func (h *HealthCheckHandler) GetAllHealthStatuses(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"total":             len(result),
-		"items":             result,
+		"total":              len(result),
+		"items":              result,
 		"block_on_unhealthy": h.healthCheckSvc.BlockOnUnhealthy(),
 	})
 }

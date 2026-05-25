@@ -33,10 +33,29 @@ type NexusRepositoryDetail struct {
 	URL     string              `json:"url"`
 	Proxy   *NexusProxyConfig   `json:"proxy"`
 	Storage *NexusStorageConfig `json:"storage"`
+	HTTP    *NexusHTTPConfig    `json:"http"`
 }
 
 type NexusProxyConfig struct {
 	RemoteURL string `json:"remoteUrl"`
+}
+
+type NexusHTTPConfig struct {
+	Connection     *NexusConnectionConfig `json:"connection"`
+	Authentication *NexusAuthConfig       `json:"authentication"`
+}
+
+type NexusConnectionConfig struct {
+	Timeout      int `json:"timeout"`
+	MaxRedirects int `json:"maxRedirects"`
+}
+
+type NexusAuthConfig struct {
+	Type       string `json:"type"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	NtlmHost   string `json:"ntlmHost,omitempty"`
+	NtlmDomain string `json:"ntlmDomain,omitempty"`
 }
 
 type NexusStorageConfig struct {
@@ -64,6 +83,38 @@ type NexusAsset struct {
 type NexusComponentPage struct {
 	Items             []NexusComponent `json:"items"`
 	ContinuationToken *string          `json:"continuationToken"`
+}
+
+// Nexus 用户相关类型
+type NexusUser struct {
+	UserID     string   `json:"userId"`
+	FirstName  string   `json:"firstName"`
+	LastName   string   `json:"lastName"`
+	Email      string   `json:"email"`
+	Status     string   `json:"status"`
+	Roles      []string `json:"roles"`
+	External   bool     `json:"external"`
+	LastLogin  string   `json:"lastLogin,omitempty"`
+	ExternalID string   `json:"externalId,omitempty"`
+}
+
+type NexusRole struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Privileges  []string `json:"privileges"`
+	Roles       []string `json:"roles"`
+	External    bool     `json:"external"`
+}
+
+type NexusPrivilege struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Type        string `json:"type"`
+	Actions     string `json:"actions,omitempty"`
+	Repository  string `json:"repository,omitempty"`
+	Format      string `json:"format,omitempty"`
 }
 
 func NewNexusClient(baseURL, username, password string) *NexusClient {
@@ -297,4 +348,164 @@ func (c *NexusClient) DownloadAsset(ctx context.Context, assetURL string) (io.Re
 	contentLength := resp.ContentLength
 
 	return resp.Body, contentType, contentLength, nil
+}
+
+// 用户管理相关方法
+func (c *NexusClient) ListUsers(ctx context.Context) ([]NexusUser, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/service/rest/v1/security/users", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(c.username, c.password)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		logrus.WithFields(logrus.Fields{
+			"url":    req.URL.String(),
+			"status": resp.StatusCode,
+			"body":   string(body),
+		}).Error("Nexus API returned error status")
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var users []NexusUser
+	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return users, nil
+}
+
+func (c *NexusClient) GetUser(ctx context.Context, userId string) (*NexusUser, error) {
+	url := fmt.Sprintf("%s/service/rest/v1/security/users/%s", c.baseURL, userId)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(c.username, c.password)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		logrus.WithFields(logrus.Fields{
+			"url":    url,
+			"status": resp.StatusCode,
+			"body":   string(body),
+		}).Error("Nexus API returned error status")
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var user NexusUser
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return &user, nil
+}
+
+// 角色管理相关方法
+func (c *NexusClient) ListRoles(ctx context.Context) ([]NexusRole, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/service/rest/v1/security/roles", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(c.username, c.password)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		logrus.WithFields(logrus.Fields{
+			"url":    req.URL.String(),
+			"status": resp.StatusCode,
+			"body":   string(body),
+		}).Error("Nexus API returned error status")
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var roles []NexusRole
+	if err := json.NewDecoder(resp.Body).Decode(&roles); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return roles, nil
+}
+
+func (c *NexusClient) GetRole(ctx context.Context, roleId string) (*NexusRole, error) {
+	url := fmt.Sprintf("%s/service/rest/v1/security/roles/%s", c.baseURL, roleId)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(c.username, c.password)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		logrus.WithFields(logrus.Fields{
+			"url":    url,
+			"status": resp.StatusCode,
+			"body":   string(body),
+		}).Error("Nexus API returned error status")
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var role NexusRole
+	if err := json.NewDecoder(resp.Body).Decode(&role); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return &role, nil
+}
+
+// 权限管理相关方法
+func (c *NexusClient) ListPrivileges(ctx context.Context) ([]NexusPrivilege, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/service/rest/v1/security/privileges", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(c.username, c.password)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		logrus.WithFields(logrus.Fields{
+			"url":    req.URL.String(),
+			"status": resp.StatusCode,
+			"body":   string(body),
+		}).Error("Nexus API returned error status")
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var privileges []NexusPrivilege
+	if err := json.NewDecoder(resp.Body).Decode(&privileges); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return privileges, nil
 }

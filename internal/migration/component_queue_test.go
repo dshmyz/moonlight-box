@@ -3,7 +3,7 @@ package migration
 import (
 	"testing"
 
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/stretchr/testify/assert"
 )
 

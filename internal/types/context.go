@@ -3,8 +3,8 @@ package types
 import (
 	"io"
 
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/model"
 )
 
 type DownloadContext struct {

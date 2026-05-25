@@ -5,10 +5,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/database"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/response"
-	"github.com/moonlight-box/registry/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/database"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/response"
+	"github.com/dshmyz/moonlight-box/internal/service"
 
 	"github.com/gin-gonic/gin"
 )

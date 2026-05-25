@@ -8,11 +8,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/moonlight-box/registry/internal/ai/models"
-	"github.com/moonlight-box/registry/internal/ai/tools"
-	"github.com/moonlight-box/registry/internal/config"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/ai/models"
+	"github.com/dshmyz/moonlight-box/internal/ai/tools"
+	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 	"gorm.io/gorm"
 )
 
