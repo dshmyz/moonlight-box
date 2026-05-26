@@ -25,7 +25,9 @@ func TestCreateRuntimeForProxyRepoAllowsNilConfig(t *testing.T) {
 		PackageType: "npm",
 	}
 
-	repoRuntime, err := createRuntimeForRepo(repo, nil, nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager())
+	nilFetchers := map[string]runtime.RemoteFetcher(nil)
+	var nilBlocker runtime.PackageBlocker
+	repoRuntime, err := createRuntimeForRepo(repo, nil, nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nilFetchers, nilBlocker)
 	if err != nil {
 		t.Fatalf("create runtime: %v", err)
 	}
@@ -43,7 +45,7 @@ func TestCreateGroupRuntimeAllowsProxyMemberWithNilConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Repository{}, &model.RepositoryGroup{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.RepositoryMember{}); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 	group := model.Repository{ID: 1, Name: "public", Type: model.RepoTypeVirtual, PackageType: "npm"}
@@ -54,11 +56,13 @@ func TestCreateGroupRuntimeAllowsProxyMemberWithNilConfig(t *testing.T) {
 	if err := db.Create(&member).Error; err != nil {
 		t.Fatalf("create member: %v", err)
 	}
-	if err := db.Create(&model.RepositoryGroup{VirtualRepoID: group.ID, MemberRepoID: member.ID}).Error; err != nil {
+	if err := db.Create(&model.RepositoryMember{RepositoryID: group.ID, MemberID: member.ID}).Error; err != nil {
 		t.Fatalf("create membership: %v", err)
 	}
 
-	repoRuntime, err := createGroupRuntime(&group, repository.NewRepositoryRepository(db), nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager())
+	nilFetchers := map[string]runtime.RemoteFetcher(nil)
+	var nilBlocker runtime.PackageBlocker
+	repoRuntime, err := createGroupRuntime(&group, repository.NewRepositoryRepository(db), nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nilFetchers, nilBlocker)
 	if err != nil {
 		t.Fatalf("create group runtime: %v", err)
 	}

@@ -250,10 +250,10 @@ func TestHealthCheckService_Recovery(t *testing.T) {
 
 	// 创建测试仓库
 	repo := &model.Repository{
-		Name:      "test-proxy-recovery",
-		Type:      model.RepoTypeProxy,
-		RemoteURL: server.URL,
-		Enabled:   true,
+		Name:    "test-proxy-recovery",
+		Type:    model.RepoTypeProxy,
+		Config:  &model.RepositoryConfig{RemoteURL: server.URL},
+		Enabled: true,
 	}
 	db.Create(repo)
 

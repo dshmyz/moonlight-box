@@ -18,7 +18,7 @@ type ProxyRuntime struct {
 	RepositoryID  string
 	RemoteBaseURL string
 	CachePolicy   CachePolicy
-	Fetcher       RemoteFetcher // 由 Plugin 实现，Runtime 控制回源时机
+	Fetcher       RemoteFetcher  // 由 Plugin 实现，Runtime 控制回源时机
 	Blocker       PackageBlocker // 阻断规则检查
 	Format        string         // 仓库协议类型，供阻断检查使用
 
@@ -59,8 +59,9 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 		return artifact, nil
 	}
 
-	key.RepositoryID = n.RepositoryID
-	artifact, err := n.MetadataStore.Get(ctx, key)
+	searchKey := key
+	searchKey.RepositoryID = n.RepositoryID
+	artifact, err := n.MetadataStore.Get(ctx, searchKey)
 	if err == nil {
 		if refreshErr := n.refreshStaleMetadata(ctx, artifact, key); refreshErr != nil {
 			return nil, refreshErr
