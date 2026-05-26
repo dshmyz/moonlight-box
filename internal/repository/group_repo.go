@@ -17,39 +17,39 @@ func NewGroupRepository(db *gorm.DB) *GroupRepository {
 }
 
 // AddMember 向虚拟仓添加成员
-func (r *GroupRepository) AddMember(virtualRepoID, memberRepoID uint, priority int) error {
-	group := model.RepositoryGroup{
-		VirtualRepoID: virtualRepoID,
-		MemberRepoID:  memberRepoID,
-		Priority:      priority,
+func (r *GroupRepository) AddMember(virtualRepoID, memberRepoID uint, position int) error {
+	member := model.RepositoryMember{
+		RepositoryID: virtualRepoID,
+		MemberID:     memberRepoID,
+		Position:     position,
 	}
-	return r.db.Create(&group).Error
+	return r.db.Create(&member).Error
 }
 
 // RemoveMember 从虚拟仓移除成员
 func (r *GroupRepository) RemoveMember(virtualRepoID, memberRepoID uint) error {
-	return r.db.Where("virtual_repo_id = ? AND member_repo_id = ?",
-		virtualRepoID, memberRepoID).Delete(&model.RepositoryGroup{}).Error
+	return r.db.Where("repository_id = ? AND member_id = ?",
+		virtualRepoID, memberRepoID).Delete(&model.RepositoryMember{}).Error
 }
 
 // GetMembersByVirtualRepo 获取虚拟仓的所有成员
-func (r *GroupRepository) GetMembersByVirtualRepo(virtualRepoID uint) ([]model.RepositoryGroup, error) {
+func (r *GroupRepository) GetMembersByVirtualRepo(virtualRepoID uint) ([]model.RepositoryMember, error) {
 	return r.GetMembersByVirtualRepoContext(context.Background(), virtualRepoID)
 }
 
 // GetMembersByVirtualRepoContext 获取虚拟仓的所有成员
-func (r *GroupRepository) GetMembersByVirtualRepoContext(ctx context.Context, virtualRepoID uint) ([]model.RepositoryGroup, error) {
-	var groups []model.RepositoryGroup
-	err := r.db.WithContext(ctx).Where("virtual_repo_id = ?", virtualRepoID).
+func (r *GroupRepository) GetMembersByVirtualRepoContext(ctx context.Context, virtualRepoID uint) ([]model.RepositoryMember, error) {
+	var members []model.RepositoryMember
+	err := r.db.WithContext(ctx).Where("repository_id = ?", virtualRepoID).
 		Preload("MemberRepo").
-		Order("priority ASC").
-		Find(&groups).Error
-	return groups, err
+		Order("position ASC").
+		Find(&members).Error
+	return members, err
 }
 
-// UpdatePriority 更新成员优先级
-func (r *GroupRepository) UpdatePriority(virtualRepoID, memberRepoID uint, priority int) error {
-	return r.db.Model(&model.RepositoryGroup{}).
-		Where("virtual_repo_id = ? AND member_repo_id = ?", virtualRepoID, memberRepoID).
-		Update("priority", priority).Error
+// UpdatePosition 更新成员顺序
+func (r *GroupRepository) UpdatePosition(virtualRepoID, memberRepoID uint, position int) error {
+	return r.db.Model(&model.RepositoryMember{}).
+		Where("repository_id = ? AND member_id = ?", virtualRepoID, memberRepoID).
+		Update("position", position).Error
 }

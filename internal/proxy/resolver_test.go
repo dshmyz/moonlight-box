@@ -55,7 +55,7 @@ func (m *mockMetadataAdapter) Type() types.PackageType {
 func setupTestDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
-	err = db.AutoMigrate(&model.Repository{}, &model.RepositoryGroup{})
+	err = db.AutoMigrate(&model.Repository{}, &model.RepositoryMember{})
 	assert.NoError(t, err)
 	return db
 }
@@ -83,10 +83,10 @@ func createVirtualRepoWithMembers(t *testing.T, db *gorm.DB, virtualName string,
 		err := db.Create(memberRepo).Error
 		assert.NoError(t, err)
 
-		group := model.RepositoryGroup{
-			VirtualRepoID: virtualRepo.ID,
-			MemberRepoID:  memberRepo.ID,
-			Priority:      i,
+		group := model.RepositoryMember{
+			RepositoryID: virtualRepo.ID,
+			MemberID:  memberRepo.ID,
+			Position:      i,
 		}
 		err = db.Create(&group).Error
 		assert.NoError(t, err)
@@ -242,10 +242,10 @@ func TestResolveMetadata_NoMatchingMembers(t *testing.T) {
 	err = db.Create(npmRepo).Error
 	assert.NoError(t, err)
 
-	group := model.RepositoryGroup{
-		VirtualRepoID: virtualRepo.ID,
-		MemberRepoID:  npmRepo.ID,
-		Priority:      0,
+	group := model.RepositoryMember{
+		RepositoryID: virtualRepo.ID,
+		MemberID:  npmRepo.ID,
+		Position:      0,
 	}
 	err = db.Create(&group).Error
 	assert.NoError(t, err)

@@ -413,8 +413,12 @@ func (r *mockRepositoryCreatorForRecovery) CreateRepo(name, repoType, packageTyp
 	return nil
 }
 
-func (r *mockRepositoryCreatorForRecovery) RepoExists(name string) bool {
-	return false
+func (r *mockRepositoryCreatorForRecovery) CreateRepoWithConfig(name, repoType, packageType string, remoteURL string, cacheEnabled bool, cacheTTLSeconds int, storageBackendID *uint, authConfig *model.ProxyAuthConfig, timeoutSeconds, maxRedirects int, insecureSkipVerify bool) error {
+	return nil
+}
+
+func (r *mockRepositoryCreatorForRecovery) RepoExists(name string) (bool, error) {
+	return false, nil
 }
 
 func (r *mockRepositoryCreatorForRecovery) FindDefaultStorageBackendID() (*uint, error) {
@@ -427,7 +431,7 @@ func TestIntegration_RecoverySkipRescan(t *testing.T) {
 	mockWorker := &mockMigrationWorkerForRecovery{}
 	mockRepoCreator := &mockRepositoryCreatorForRecovery{}
 
-	svc := NewMigrationService(db, mockWorker, mockRepoCreator, 1)
+	svc := NewMigrationService(db, mockWorker, mockRepoCreator, nil, 1)
 
 	task := &model.MigrationTask{
 		SourceType:        "nexus",
@@ -473,7 +477,7 @@ func TestIntegration_RecoverySkipRescan(t *testing.T) {
 
 func TestResolveMigrationTargetUsesPerTaskRepository(t *testing.T) {
 	db := setupWorkerRecoveryTestDB(t)
-	assert.NoError(t, db.AutoMigrate(&model.Repository{}, &model.RepositoryGroup{}))
+	assert.NoError(t, db.AutoMigrate(&model.Repository{}, &model.RepositoryMember{}))
 
 	backendA := uint(11)
 	backendB := uint(22)

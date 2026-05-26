@@ -17,7 +17,11 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/core/cache"
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/database"
-	"github.com/dshmyz/moonlight-box/internal/migration"
+	migv2executor "github.com/dshmyz/moonlight-box/internal/migration/v2/executor"
+	migv2handler "github.com/dshmyz/moonlight-box/internal/migration/v2/handler"
+	migv2repo "github.com/dshmyz/moonlight-box/internal/migration/v2/repository"
+	migv2sched "github.com/dshmyz/moonlight-box/internal/migration/v2/scheduler"
+	migv2svc "github.com/dshmyz/moonlight-box/internal/migration/v2/service"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/plugins/apt"
 	gomod "github.com/dshmyz/moonlight-box/internal/plugins/go"
@@ -151,7 +155,6 @@ func main() {
 	groupRepo := repository.NewGroupRepository(db)
 	blockRuleRepo := repository.NewBlockRuleRepository(db)
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
-	migrationItemRepo := repository.NewMigrationItemRepository(db)
 	// 初始化缓存服务
 	cacheOpts := proxy.CacheServiceOptions{
 		MaxBytes: cfg.Cache.MaxSizeGB * 1024 * 1024 * 1024,
@@ -399,23 +402,17 @@ func main() {
 	// 初始化文件浏览服务
 	fileBrowseHandler := handler.NewFileBrowseHandler(storageSvc)
 
-	// 初始化迁移 worker（先传 nil 作为 service）
-	migrationWorker := migration.NewMigrationWorkerV2(nil, storageSvc, repoRepo, migrationItemRepo, 5, 3, 50)
-
-	// 创建仓库创建器适配器
-	repoCreator := migration.NewRepositoryCreatorAdapter(repoRepo, storageBackendRepo)
-
-	// 创建用户创建器适配器
-	userCreator := migration.NewUserCreatorAdapter(userRepo, roleRepo)
-
-	// 初始化迁移 service（注入 worker、repoCreator 和 userCreator，最大并发 1 个任务）
-	migrationSvc := migration.NewMigrationService(db, migrationWorker, repoCreator, userCreator, 1)
-	migrationSvc.StartQueueWithRecovery() // 启动队列处理器并自动恢复中断的任务
-
-	// 设置 worker 的 service 引用
-	migrationWorker.SetService(migrationSvc)
-
-	migrationHandler := handler.NewMigrationHandler(migrationSvc, migrationWorker, repoRepo, storageBackendRepo)
+	// V2 migration pipeline
+	migV2PlanRepo := migv2repo.NewPlanRepo(db)
+	migV2JobRepo := migv2repo.NewJobRepo(db)
+	migV2ItemRepo := migv2repo.NewItemRepo(db)
+	migV2ConflictRepo := migv2repo.NewConflictRepo(db)
+	migV2EventRepo := migv2repo.NewEventRepo(db)
+	migV2ExecMgr := migv2executor.NewExecutorManager(db, nil, storageSvc, migV2ItemRepo, migV2EventRepo, 5)
+	migV2Scheduler := migv2sched.New(db, migV2PlanRepo, migV2JobRepo, migV2ItemRepo, migV2EventRepo, migV2ExecMgr, 3)
+	migV2Svc := migv2svc.New(db, migV2PlanRepo, migV2JobRepo, migV2ItemRepo, migV2ConflictRepo, migV2EventRepo, migV2Scheduler)
+	migV2Svc.RecoverInterruptedPlans(context.Background())
+	migV2Handler := migv2handler.NewMigrationV2Handler(migV2Svc)
 
 	// 初始化代理下载日志 handler
 	proxyDownloadLogHandler := handler.NewProxyDownloadLogHandler(proxyDownloadLogRepo)
@@ -501,7 +498,7 @@ func main() {
 	routerCtx.Handlers.SystemConfig = systemConfigHandler
 	routerCtx.Handlers.SystemInfo = systemInfoHandler
 	routerCtx.Handlers.FileBrowse = fileBrowseHandler
-	routerCtx.Handlers.Migration = migrationHandler
+	routerCtx.Handlers.MigrationV2 = migV2Handler
 	routerCtx.Handlers.AI = aiHandler
 	routerCtx.Handlers.ProxyDownloadLog = proxyDownloadLogHandler
 	routerCtx.Handlers.HealthCheck = healthCheckHandler

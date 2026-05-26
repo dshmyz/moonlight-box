@@ -24,7 +24,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	}
 	sqlDB.SetMaxOpenConns(1)
 
-	db.AutoMigrate(&model.Repository{}, &model.RepositoryGroup{})
+	db.AutoMigrate(&model.Repository{}, &model.RepositoryMember{})
 	return db
 }
 
@@ -78,6 +78,30 @@ func TestRepositoryService_Create_ProxyRepo(t *testing.T) {
 	retrieved, err := service.Get("npm-proxy")
 	assert.Nil(t, err)
 	assert.Equal(t, "https://registry.npmjs.org", retrieved.Config.RemoteURL)
+}
+
+func TestRepositoryService_Create_VirtualRepo_StoresMembersInRepositoryMembers(t *testing.T) {
+	service, db := setupRepositoryService(t)
+
+	localRepo := &model.Repository{Name: "npm-member-local", Type: model.RepoTypeLocal, PackageType: "npm", Enabled: true}
+	if err := service.Create(localRepo, nil); err != nil {
+		t.Fatalf("failed to create local repo: %v", err)
+	}
+
+	virtualRepo := &model.Repository{Name: "npm-member-virtual", Type: model.RepoTypeVirtual, PackageType: "npm", Enabled: true}
+	if err := service.Create(virtualRepo, []string{"npm-member-local"}); err != nil {
+		t.Fatalf("failed to create virtual repo: %v", err)
+	}
+
+	var members []model.RepositoryMember
+	if err := db.Order("position ASC").Find(&members).Error; err != nil {
+		t.Fatalf("failed to query repository_members: %v", err)
+	}
+
+	assert.Len(t, members, 1)
+	assert.Equal(t, virtualRepo.ID, members[0].RepositoryID)
+	assert.Equal(t, localRepo.ID, members[0].MemberID)
+	assert.Equal(t, 0, members[0].Position)
 }
 
 func TestRepositoryService_Create_VirtualRepo(t *testing.T) {

@@ -33,9 +33,14 @@ func (j *JSONB) Scan(value interface{}) error {
 
 // RepositoryMember 仓库成员关系（用于虚拟仓库）
 type RepositoryMember struct {
-	RepositoryID uint `gorm:"not null;uniqueIndex:idx_repo_member,priority:1" json:"repository_id"`
-	MemberID     uint `gorm:"not null;uniqueIndex:idx_repo_member,priority:2" json:"member_id"`
-	Position     int  `gorm:"not null" json:"position"`
+	ID           uint      `json:"id" gorm:"primaryKey"`
+	RepositoryID uint      `json:"repository_id" gorm:"not null;uniqueIndex:idx_repo_member,priority:1"`
+	MemberID     uint      `json:"member_id" gorm:"not null;uniqueIndex:idx_repo_member,priority:2"`
+	Position     int       `json:"position" gorm:"not null;default:0"`
+	CreatedAt    time.Time `json:"created_at"`
+
+	VirtualRepo Repository `json:"virtual_repo,omitempty" gorm:"foreignKey:RepositoryID"`
+	MemberRepo  Repository `json:"member_repo,omitempty" gorm:"foreignKey:MemberID"`
 }
 
 func (RepositoryMember) TableName() string {

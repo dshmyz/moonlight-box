@@ -150,10 +150,10 @@ func (s *RepositoryService) Create(repo *model.Repository, members []string) err
 				if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
 					return fmt.Errorf("member repository not found: %s", memberName)
 				}
-				group := model.RepositoryGroup{
-					VirtualRepoID: repo.ID,
-					MemberRepoID:  memberRepo.ID,
-					Priority:      i,
+				group := model.RepositoryMember{
+					RepositoryID: repo.ID,
+					MemberID:  memberRepo.ID,
+					Position:      i,
 				}
 				if err := tx.Create(&group).Error; err != nil {
 					return err
@@ -305,7 +305,7 @@ func (s *RepositoryService) Update(name string, updates map[string]interface{}) 
 				return err
 			}
 
-			if err := tx.Where("virtual_repo_id = ?", virtualRepo.ID).Delete(&model.RepositoryGroup{}).Error; err != nil {
+			if err := tx.Where("repository_id = ?", virtualRepo.ID).Delete(&model.RepositoryMember{}).Error; err != nil {
 				return err
 			}
 
@@ -314,10 +314,10 @@ func (s *RepositoryService) Update(name string, updates map[string]interface{}) 
 				if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
 					return fmt.Errorf("member repository not found: %s", memberName)
 				}
-				group := model.RepositoryGroup{
-					VirtualRepoID: virtualRepo.ID,
-					MemberRepoID:  memberRepo.ID,
-					Priority:      i,
+				group := model.RepositoryMember{
+					RepositoryID: virtualRepo.ID,
+					MemberID:  memberRepo.ID,
+					Position:      i,
 				}
 				if err := tx.Create(&group).Error; err != nil {
 					return err
@@ -402,12 +402,12 @@ func (s *RepositoryService) RemoveMember(virtualRepoName, memberRepoName string)
 }
 
 // GetMembers 获取虚拟仓库的所有成员
-func (s *RepositoryService) GetMembers(virtualRepoName string) ([]model.RepositoryGroup, error) {
+func (s *RepositoryService) GetMembers(virtualRepoName string) ([]model.RepositoryMember, error) {
 	return s.GetMembersContext(context.Background(), virtualRepoName)
 }
 
 // GetMembersContext 获取虚拟仓库的所有成员
-func (s *RepositoryService) GetMembersContext(ctx context.Context, virtualRepoName string) ([]model.RepositoryGroup, error) {
+func (s *RepositoryService) GetMembersContext(ctx context.Context, virtualRepoName string) ([]model.RepositoryMember, error) {
 	virtualRepo, err := s.repoRepo.FindByNameContext(ctx, virtualRepoName)
 	if err != nil {
 		return nil, err

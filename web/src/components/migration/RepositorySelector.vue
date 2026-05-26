@@ -2,7 +2,7 @@
   <div class="repository-selector">
     <h3>选择要迁移的仓库</h3>
     <el-checkbox v-model="selectAll" @change="toggleSelectAll">全选</el-checkbox>
-    <el-table :data="repositories" @selection-change="handleSelectionChange">
+    <el-table ref="tableRef" :data="repositories" @selection-change="handleSelectionChange">
       <el-table-column type="selection" width="55" />
       <el-table-column prop="name" label="仓库名称" />
       <el-table-column prop="format" label="格式" />
@@ -14,6 +14,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import type { NexusRepo } from '@/api/migration'
+import type { ElTable } from 'element-plus'
 
 const props = defineProps<{
   repositories: NexusRepo[]
@@ -23,21 +24,23 @@ const emit = defineEmits<{
   selected: [repos: string[]]
 }>()
 
+const tableRef = ref<InstanceType<typeof ElTable>>()
 const selectAll = ref(false)
 const selectedRepos = ref<string[]>([])
 
 function toggleSelectAll() {
   if (selectAll.value) {
-    selectedRepos.value = props.repositories.map((r) => r.name)
+    tableRef.value?.toggleAllSelection()
   } else {
-    selectedRepos.value = []
+    tableRef.value?.clearSelection()
   }
+  selectedRepos.value = selectAll.value ? props.repositories.map((r) => r.name) : []
   emit('selected', selectedRepos.value)
 }
 
 function handleSelectionChange(rows: NexusRepo[]) {
   selectedRepos.value = rows.map((r) => r.name)
-  selectAll.value = rows.length === props.repositories.length
+  selectAll.value = rows.length === props.repositories.length && rows.length > 0
   emit('selected', selectedRepos.value)
 }
 

@@ -1,40 +1,35 @@
 package migration
 
 import (
+	"errors"
+
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/util"
+	"github.com/sirupsen/logrus"
 )
 
-type UserCreatorAdapter struct {
-	userRepo interface {
-		Create(user *model.User) error
-		FindByUsername(username string) (*model.User, error)
-		AssignRoles(userID uint, roleIDs []uint) error
-	}
-	roleRepo interface {
-		Create(role *model.Role) error
-		FindByName(name string) (*model.Role, error)
-		GetRoleIDByName(name string) (uint, error)
-		CreatePermission(resource, action string) (*model.Permission, error)
-		FindPermission(resource, action string) (*model.Permission, error)
-		AssignPermissions(roleID uint, permissionIDs []uint) error
-	}
+type UserMigrationUserRepo interface {
+	Create(user *model.User) error
+	FindByUsername(username string) (*model.User, error)
+	FindByEmail(email string) (*model.User, error)
+	AssignRoles(userID uint, roleIDs []uint) error
 }
 
-func NewUserCreatorAdapter(
-	userRepo interface {
-		Create(user *model.User) error
-		FindByUsername(username string) (*model.User, error)
-		AssignRoles(userID uint, roleIDs []uint) error
-	},
-	roleRepo interface {
-		Create(role *model.Role) error
-		FindByName(name string) (*model.Role, error)
-		GetRoleIDByName(name string) (uint, error)
-		CreatePermission(resource, action string) (*model.Permission, error)
-		FindPermission(resource, action string) (*model.Permission, error)
-		AssignPermissions(roleID uint, permissionIDs []uint) error
-	}) *UserCreatorAdapter {
+type UserMigrationRoleRepo interface {
+	Create(role *model.Role) error
+	FindByName(name string) (*model.Role, error)
+	GetRoleIDByName(name string) (uint, error)
+	CreatePermission(resource, action string) (*model.Permission, error)
+	FindPermission(resource, action string) (*model.Permission, error)
+	AssignPermissions(roleID uint, permissionIDs []uint) error
+}
+
+type UserCreatorAdapter struct {
+	userRepo UserMigrationUserRepo
+	roleRepo UserMigrationRoleRepo
+}
+
+func NewUserCreatorAdapter(userRepo UserMigrationUserRepo, roleRepo UserMigrationRoleRepo) *UserCreatorAdapter {
 	return &UserCreatorAdapter{
 		userRepo: userRepo,
 		roleRepo: roleRepo,
@@ -77,9 +72,15 @@ func (a *UserCreatorAdapter) CreateRole(name, description string, privileges []s
 	return nil
 }
 
-func (a *UserCreatorAdapter) RoleExists(name string) bool {
+func (a *UserCreatorAdapter) RoleExists(name string) (bool, error) {
 	_, err := a.roleRepo.FindByName(name)
-	return err == nil
+	if err != nil {
+		if errors.Is(err, util.ErrRoleNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (a *UserCreatorAdapter) CreateUser(username, email, displayName string, isActive bool, roleNames []string) error {
@@ -101,12 +102,22 @@ func (a *UserCreatorAdapter) CreateUser(username, email, displayName string, isA
 	}
 
 	var roleIDs []uint
+	var skippedRoles []string
 	for _, roleName := range roleNames {
 		roleID, err := a.roleRepo.GetRoleIDByName(roleName)
 		if err != nil {
+			skippedRoles = append(skippedRoles, roleName)
 			continue
 		}
 		roleIDs = append(roleIDs, roleID)
+	}
+
+	if len(skippedRoles) > 0 {
+		logrus.WithFields(logrus.Fields{
+			"module":        "migration",
+			"username":      username,
+			"skipped_roles": skippedRoles,
+		}).Warn("Skipped unresolvable roles during user migration")
 	}
 
 	if len(roleIDs) > 0 {
@@ -118,9 +129,26 @@ func (a *UserCreatorAdapter) CreateUser(username, email, displayName string, isA
 	return nil
 }
 
-func (a *UserCreatorAdapter) UserExists(username string) bool {
+func (a *UserCreatorAdapter) UserExists(username string) (bool, error) {
 	_, err := a.userRepo.FindByUsername(username)
-	return err == nil
+	if err != nil {
+		if errors.Is(err, util.ErrUserNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (a *UserCreatorAdapter) EmailExists(email string) (bool, error) {
+	_, err := a.userRepo.FindByEmail(email)
+	if err != nil {
+		if errors.Is(err, util.ErrUserNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func parsePrivilege(privilege string) (resource, action string) {

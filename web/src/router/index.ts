@@ -195,6 +195,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '迁移详情', permission: { resource: 'system', action: 'admin' } },
       },
       {
+        path: 'migration-v2',
+        name: 'MigrationV2',
+        component: () => import('@/views/MigrationWizardPage.vue'),
+        meta: { title: '数据迁移 V2', permission: { resource: 'system', action: 'admin' } },
+      },
+      {
         path: 'system-config',
         name: 'SystemConfig',
         component: () => import('@/views/SystemConfig.vue'),

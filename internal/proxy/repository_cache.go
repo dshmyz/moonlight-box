@@ -28,7 +28,7 @@ type repositoryCacheEntry struct {
 }
 
 type memberCacheEntry struct {
-	member    *model.RepositoryGroup
+	member    *model.RepositoryMember
 	expiresAt time.Time
 }
 
@@ -152,17 +152,17 @@ func (c *RepositoryCache) GetVirtualRepoContext(ctx context.Context, pkgType str
 	return repo, nil
 }
 
-func (c *RepositoryCache) GetMembers(virtualRepoID uint) ([]model.RepositoryGroup, error) {
+func (c *RepositoryCache) GetMembers(virtualRepoID uint) ([]model.RepositoryMember, error) {
 	return c.GetMembersContext(context.Background(), virtualRepoID)
 }
 
-func (c *RepositoryCache) GetMembersContext(ctx context.Context, virtualRepoID uint) ([]model.RepositoryGroup, error) {
+func (c *RepositoryCache) GetMembersContext(ctx context.Context, virtualRepoID uint) ([]model.RepositoryMember, error) {
 	c.mu.RLock()
 	entries, exists := c.members[virtualRepoID]
 	c.mu.RUnlock()
 
 	if exists {
-		var validMembers []model.RepositoryGroup
+		var validMembers []model.RepositoryMember
 		allValid := true
 		for _, entry := range entries {
 			if time.Now().Before(entry.expiresAt) {
@@ -196,7 +196,7 @@ func (c *RepositoryCache) GetMembersContext(ctx context.Context, virtualRepoID u
 
 	slog.Debug("Cached virtual repository members",
 		"module", "repository_cache",
-		"virtual_repo_id", virtualRepoID,
+		"repository_id", virtualRepoID,
 		"member_count", len(members),
 	)
 

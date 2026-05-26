@@ -1,6 +1,7 @@
 package database
 
 import (
+	"github.com/dshmyz/moonlight-box/internal/migration/v2/domain"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/util"
 )
@@ -36,6 +37,11 @@ func AutoMigrate() error {
 		&model.MigrationTask{},
 		&model.MigrationItem{},
 		&model.ProxyDownloadLog{},
+		&domain.MigrationPlan{},
+		&domain.MigrationJob{},
+		&domain.MigrationItem{},
+		&domain.MigrationConflict{},
+		&domain.MigrationEvent{},
 	); err != nil {
 		return err
 	}

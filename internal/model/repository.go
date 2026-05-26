@@ -26,7 +26,7 @@ type Repository struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
-	Members []RepositoryGroup `json:"members,omitempty" gorm:"foreignKey:VirtualRepoID"`
+	Members []RepositoryMember `json:"members,omitempty" gorm:"foreignKey:RepositoryID"`
 
 	// URL 计算字段，不存储到数据库
 	URL string `json:"url" gorm:"-"`
@@ -86,22 +86,6 @@ func (r *Repository) SanitizedConfig() *RepositoryConfig {
 	sanitizedAuth, _ := r.SanitizedAuthConfig()
 	cfg.Auth = sanitizedAuth
 	return &cfg
-}
-
-// RepositoryGroup 虚拟仓与成员仓的关联关系
-type RepositoryGroup struct {
-	ID            uint      `json:"id" gorm:"primaryKey"`
-	VirtualRepoID uint      `json:"virtual_repo_id" gorm:"uniqueIndex:idx_virtual_member"`
-	MemberRepoID  uint      `json:"member_repo_id" gorm:"uniqueIndex:idx_virtual_member"`
-	Priority      int       `json:"priority" gorm:"default:0"`
-	CreatedAt     time.Time `json:"created_at"`
-
-	VirtualRepo Repository `json:"virtual_repo,omitempty" gorm:"foreignKey:VirtualRepoID"`
-	MemberRepo  Repository `json:"member_repo,omitempty" gorm:"foreignKey:MemberRepoID"`
-}
-
-func (RepositoryGroup) TableName() string {
-	return "repository_groups"
 }
 
 // ProxyAuthConfig 代理仓库认证配置

@@ -68,7 +68,7 @@ func TestRecoverInterruptedTasks_NoInterruptedTasks(t *testing.T) {
 	mockWorker := &mockMigrationWorker{}
 	mockRepoCreator := &mockRepositoryCreator{}
 
-	svc := NewMigrationService(db, mockWorker, mockRepoCreator, 1)
+	svc := NewMigrationService(db, mockWorker, mockRepoCreator, nil, 1)
 
 	recoveredIDs := svc.recoverInterruptedTasks()
 
@@ -81,7 +81,7 @@ func TestRecoverInterruptedTasks_RunningTaskRecovered(t *testing.T) {
 	mockWorker := &mockMigrationWorker{}
 	mockRepoCreator := &mockRepositoryCreator{}
 
-	svc := NewMigrationService(db, mockWorker, mockRepoCreator, 1)
+	svc := NewMigrationService(db, mockWorker, mockRepoCreator, nil, 1)
 
 	task := createMockTask(t, db, model.MigrationRunning, model.MigrationTaskFull)
 	processingItem := createMockItem(t, db, task.ID, model.MigrationItemProcessing)
@@ -120,7 +120,7 @@ func TestRecoverInterruptedTasks_QueuedTaskRecovered(t *testing.T) {
 	mockWorker := &mockMigrationWorker{}
 	mockRepoCreator := &mockRepositoryCreator{}
 
-	svc := NewMigrationService(db, mockWorker, mockRepoCreator, 1)
+	svc := NewMigrationService(db, mockWorker, mockRepoCreator, nil, 1)
 
 	task := createMockTask(t, db, model.MigrationQueued, model.MigrationTaskFull)
 
@@ -140,7 +140,7 @@ func TestRecoverInterruptedTasks_CompletedTaskNotAffected(t *testing.T) {
 	mockWorker := &mockMigrationWorker{}
 	mockRepoCreator := &mockRepositoryCreator{}
 
-	svc := NewMigrationService(db, mockWorker, mockRepoCreator, 1)
+	svc := NewMigrationService(db, mockWorker, mockRepoCreator, nil, 1)
 
 	createMockTask(t, db, model.MigrationCompleted, model.MigrationTaskFull)
 	createMockTask(t, db, model.MigrationFailed, model.MigrationTaskFull)
@@ -165,7 +165,7 @@ func TestRecoverInterruptedTasks_MultipleTasksRecovered(t *testing.T) {
 	mockWorker := &mockMigrationWorker{}
 	mockRepoCreator := &mockRepositoryCreator{}
 
-	svc := NewMigrationService(db, mockWorker, mockRepoCreator, 1)
+	svc := NewMigrationService(db, mockWorker, mockRepoCreator, nil, 1)
 
 	task1 := createMockTask(t, db, model.MigrationRunning, model.MigrationTaskFull)
 	_ = createMockTask(t, db, model.MigrationQueued, model.MigrationTaskSyncConfig)
@@ -189,7 +189,7 @@ func TestRecoverInterruptedTasks_SyncConfigTaskRecovered(t *testing.T) {
 	mockWorker := &mockMigrationWorker{}
 	mockRepoCreator := &mockRepositoryCreator{}
 
-	svc := NewMigrationService(db, mockWorker, mockRepoCreator, 1)
+	svc := NewMigrationService(db, mockWorker, mockRepoCreator, nil, 1)
 
 	task := createMockTask(t, db, model.MigrationRunning, model.MigrationTaskSyncConfig)
 
@@ -209,7 +209,7 @@ func TestStartQueueWithRecovery_NoInterruptedTasks(t *testing.T) {
 	mockWorker := &mockMigrationWorker{}
 	mockRepoCreator := &mockRepositoryCreator{}
 
-	svc := NewMigrationService(db, mockWorker, mockRepoCreator, 1)
+	svc := NewMigrationService(db, mockWorker, mockRepoCreator, nil, 1)
 
 	svc.StartQueueWithRecovery()
 
@@ -225,7 +225,7 @@ func TestStartQueueWithRecovery_WithInterruptedTasks(t *testing.T) {
 	mockWorker := &mockMigrationWorker{}
 	mockRepoCreator := &mockRepositoryCreator{}
 
-	svc := NewMigrationService(db, mockWorker, mockRepoCreator, 1)
+	svc := NewMigrationService(db, mockWorker, mockRepoCreator, nil, 1)
 
 	createMockTask(t, db, model.MigrationRunning, model.MigrationTaskFull)
 	createMockTask(t, db, model.MigrationQueued, model.MigrationTaskSyncConfig)
@@ -247,7 +247,7 @@ func TestRecoverInterruptedTasks_FailedItemsNotAffected(t *testing.T) {
 	mockWorker := &mockMigrationWorker{}
 	mockRepoCreator := &mockRepositoryCreator{}
 
-	svc := NewMigrationService(db, mockWorker, mockRepoCreator, 1)
+	svc := NewMigrationService(db, mockWorker, mockRepoCreator, nil, 1)
 
 	task := createMockTask(t, db, model.MigrationRunning, model.MigrationTaskFull)
 	createMockItem(t, db, task.ID, model.MigrationItemCompleted)
@@ -271,7 +271,7 @@ func TestRecoverInterruptedTasks_EmptyDatabase(t *testing.T) {
 	mockWorker := &mockMigrationWorker{}
 	mockRepoCreator := &mockRepositoryCreator{}
 
-	svc := NewMigrationService(db, mockWorker, mockRepoCreator, 1)
+	svc := NewMigrationService(db, mockWorker, mockRepoCreator, nil, 1)
 
 	recoveredIDs := svc.recoverInterruptedTasks()
 
@@ -283,7 +283,7 @@ func TestStartQueueWithRecovery_DoesNotDoubleStart(t *testing.T) {
 	mockWorker := &mockMigrationWorker{}
 	mockRepoCreator := &mockRepositoryCreator{}
 
-	svc := NewMigrationService(db, mockWorker, mockRepoCreator, 1)
+	svc := NewMigrationService(db, mockWorker, mockRepoCreator, nil, 1)
 
 	svc.StartQueueWithRecovery()
 	time.Sleep(50 * time.Millisecond)
@@ -299,7 +299,7 @@ func TestRecoveryTaskEnqueued(t *testing.T) {
 	mockWorker := &mockMigrationWorker{}
 	mockRepoCreator := &mockRepositoryCreator{}
 
-	svc := NewMigrationService(db, mockWorker, mockRepoCreator, 1)
+	svc := NewMigrationService(db, mockWorker, mockRepoCreator, nil, 1)
 
 	task := createMockTask(t, db, model.MigrationRunning, model.MigrationTaskFull)
 
@@ -318,7 +318,7 @@ func TestRecoverItemsRetryCountReset(t *testing.T) {
 	mockWorker := &mockMigrationWorker{}
 	mockRepoCreator := &mockRepositoryCreator{}
 
-	svc := NewMigrationService(db, mockWorker, mockRepoCreator, 1)
+	svc := NewMigrationService(db, mockWorker, mockRepoCreator, nil, 1)
 
 	task := createMockTask(t, db, model.MigrationRunning, model.MigrationTaskFull)
 
@@ -362,8 +362,12 @@ func (r *mockRepositoryCreator) CreateRepo(name, repoType, packageType string, r
 	return nil
 }
 
-func (r *mockRepositoryCreator) RepoExists(name string) bool {
-	return false
+func (r *mockRepositoryCreator) CreateRepoWithConfig(name, repoType, packageType string, remoteURL string, cacheEnabled bool, cacheTTLSeconds int, storageBackendID *uint, authConfig *model.ProxyAuthConfig, timeoutSeconds, maxRedirects int, insecureSkipVerify bool) error {
+	return nil
+}
+
+func (r *mockRepositoryCreator) RepoExists(name string) (bool, error) {
+	return false, nil
 }
 
 func (r *mockRepositoryCreator) FindDefaultStorageBackendID() (*uint, error) {

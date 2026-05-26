@@ -7,6 +7,7 @@ import (
 	handler "github.com/dshmyz/moonlight-box/internal/api/http"
 	"github.com/dshmyz/moonlight-box/internal/config"
 	"github.com/dshmyz/moonlight-box/internal/middleware"
+	migv2handler "github.com/dshmyz/moonlight-box/internal/migration/v2/handler"
 	"github.com/dshmyz/moonlight-box/internal/proxy"
 	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/gin-gonic/gin"
@@ -44,6 +45,7 @@ type RouterContext struct {
 		SystemInfo       *handler.SystemInfoHandler
 		FileBrowse       *handler.FileBrowseHandler
 		Migration        *handler.MigrationHandler
+		MigrationV2      *migv2handler.MigrationV2Handler
 		AI               *handler.AIHandler
 		ProxyDownloadLog *handler.ProxyDownloadLogHandler
 		HealthCheck      *handler.HealthCheckHandler
@@ -154,7 +156,7 @@ func (ctx *RouterContext) setupProtectedRoutes(api *gin.RouterGroup) {
 		ctx.setupBackupRoutes(protected)
 		ctx.setupWebhookRoutes(protected)
 		ctx.setupSystemRoutes(protected)
-		ctx.setupMigrationRoutes(protected)
+		ctx.setupMigrationV2Routes(protected)
 		ctx.setupAIRoutes(protected)
 		ctx.setupHealthRoutes(protected)
 
@@ -440,6 +442,14 @@ func (ctx *RouterContext) setupMigrationRoutes(protected *gin.RouterGroup) {
 		migration.POST("/:id/start", ctx.Handlers.Migration.StartMigration)
 		migration.GET("/:id/items", ctx.Handlers.Migration.ListMigrationItems)
 	}
+}
+
+func (ctx *RouterContext) setupMigrationV2Routes(protected *gin.RouterGroup) {
+	if ctx.Handlers.MigrationV2 == nil {
+		return
+	}
+	adminMw := ctx.requirePermission("system", "admin")
+	ctx.Handlers.MigrationV2.RegisterRoutes(protected, adminMw)
 }
 
 func (ctx *RouterContext) setupAIRoutes(protected *gin.RouterGroup) {

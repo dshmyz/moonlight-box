@@ -2,9 +2,11 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"gorm.io/gorm"
 )
 
@@ -35,6 +37,9 @@ func (r *RepositoryRepository) FindByNameContext(ctx context.Context, name strin
 		Preload("Members.MemberRepo").
 		First(&repo).Error
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, util.ErrRepoNotFound
+		}
 		return nil, err
 	}
 	return &repo, nil

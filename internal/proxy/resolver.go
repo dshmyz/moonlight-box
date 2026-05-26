@@ -129,7 +129,7 @@ func (r *RepoHandler) resolveVirtual(ctx context.Context, downloadCtx *types.Dow
 		return nil, err
 	}
 
-	var matchingMembers []model.RepositoryGroup
+	var matchingMembers []model.RepositoryMember
 	for _, member := range members {
 		if r.isMemberTypeMatch(&member.MemberRepo, string(downloadCtx.PkgType)) {
 			matchingMembers = append(matchingMembers, member)
@@ -219,7 +219,7 @@ func (r *RepoHandler) ResolveMetadata(ctx context.Context, virtualRepo *model.Re
 		return nil, err
 	}
 
-	var matchingMembers []model.RepositoryGroup
+	var matchingMembers []model.RepositoryMember
 	for _, member := range members {
 		if r.isMemberTypeMatch(&member.MemberRepo, string(adp.Type())) {
 			matchingMembers = append(matchingMembers, member)
@@ -321,7 +321,7 @@ func (r *RepoHandler) ResolveMetadata(ctx context.Context, virtualRepo *model.Re
 	return nil, ErrPackageNotFound
 }
 
-func (r *RepoHandler) getMembers(ctx context.Context, virtualRepoID uint) ([]model.RepositoryGroup, error) {
+func (r *RepoHandler) getMembers(ctx context.Context, virtualRepoID uint) ([]model.RepositoryMember, error) {
 	if r.repoCache != nil {
 		return r.repoCache.GetMembersContext(ctx, virtualRepoID)
 	}

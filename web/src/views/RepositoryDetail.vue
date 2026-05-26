@@ -186,7 +186,7 @@
             </el-button>
           </template>
           <div v-if="members.length > 0" class="members-list">
-            <div v-for="member in members" :key="member.member_repo_id" class="member-item">
+            <div v-for="member in members" :key="member.id" class="member-item">
               <div class="member-info">
                 <div class="member-icon" :class="`repo-icon--${member.member_repo?.type}`">
                   <i :class="getRepoIcon(member.member_repo?.type || '')"></i>
@@ -197,7 +197,7 @@
                 </div>
               </div>
               <div class="member-actions">
-                <span class="member-priority">优先级: {{ member.priority }}</span>
+                <span class="member-position">优先级: {{ member.position }}</span>
                 <el-button size="small" text @click="removeMember(member.member_repo?.name || '')">删除</el-button>
               </div>
             </div>
@@ -234,7 +234,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="优先级">
-          <el-input-number v-model="newMemberPriority" :min="1" :max="100" />
+          <el-input-number v-model="newMemberPosition" :min="1" :max="100" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -249,7 +249,7 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Edit, Plus } from '@element-plus/icons-vue'
-import { repositoryApi, type Repository, type RepositoryWithHealth, type RepositoryGroup } from '@/api/repository'
+import { repositoryApi, type Repository, type RepositoryWithHealth, type RepositoryMember } from '@/api/repository'
 import RepositoryFormDialog from '@/components/repository/RepositoryFormDialog.vue'
 import { success, error } from '@/utils/message'
 
@@ -258,13 +258,13 @@ const router = useRouter()
 
 const loading = ref(false)
 const repo = ref<RepositoryWithHealth | null>(null)
-const members = ref<RepositoryGroup[]>([])
+const members = ref<RepositoryMember[]>([])
 const showEditDialog = ref(false)
 const showMemberDialog = ref(false)
 const editingRepo = ref<Repository | null>(null)
 const availableRepos = ref<Repository[]>([])
 const newMemberName = ref('')
-const newMemberPriority = ref(1)
+const newMemberPosition = ref(1)
 
 const getRepoIcon = (type: string) => {
   switch (type) {
@@ -359,7 +359,7 @@ async function loadMembers() {
   
   try {
     const res = await repositoryApi.getMembers(name)
-    members.value = res as RepositoryGroup[]
+    members.value = res as RepositoryMember[]
   } catch (e) {
     console.error('加载成员仓库失败', e)
   }
@@ -397,7 +397,7 @@ function handleFormSubmit() {
 
 function openMemberDialog() {
   newMemberName.value = ''
-  newMemberPriority.value = 1
+  newMemberPosition.value = 1
   loadAvailableRepos()
   showMemberDialog.value = true
 }
@@ -409,7 +409,7 @@ async function addMember() {
   try {
     await repositoryApi.addMember(name, {
       member_name: newMemberName.value,
-      priority: newMemberPriority.value
+      position: newMemberPosition.value
     })
     success('添加成功')
     showMemberDialog.value = false
@@ -774,7 +774,7 @@ onMounted(() => {
   gap: 12px;
 }
 
-.member-priority {
+.member-position {
   font-size: 12px;
   color: #64748b;
 }

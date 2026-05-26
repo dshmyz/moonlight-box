@@ -1,25 +1,27 @@
 package migration
 
 import (
+	"errors"
+
 	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/util"
 )
 
-type RepositoryCreatorAdapter struct {
-	repoRepo interface {
-		Create(repo *model.Repository) error
-		FindByName(name string) (*model.Repository, error)
-	}
-	storageBackendRepo interface {
-		FindDefault() (*model.StorageBackend, error)
-	}
-}
-
-func NewRepositoryCreatorAdapter(repoRepo interface {
+type RepoCreatorRepoRepo interface {
 	Create(repo *model.Repository) error
 	FindByName(name string) (*model.Repository, error)
-}, storageBackendRepo interface {
+}
+
+type RepoCreatorStorageBackendRepo interface {
 	FindDefault() (*model.StorageBackend, error)
-}) *RepositoryCreatorAdapter {
+}
+
+type RepositoryCreatorAdapter struct {
+	repoRepo           RepoCreatorRepoRepo
+	storageBackendRepo RepoCreatorStorageBackendRepo
+}
+
+func NewRepositoryCreatorAdapter(repoRepo RepoCreatorRepoRepo, storageBackendRepo RepoCreatorStorageBackendRepo) *RepositoryCreatorAdapter {
 	return &RepositoryCreatorAdapter{
 		repoRepo:           repoRepo,
 		storageBackendRepo: storageBackendRepo,
@@ -66,9 +68,15 @@ func (a *RepositoryCreatorAdapter) CreateRepoWithConfig(name, repoType, packageT
 	return a.repoRepo.Create(repo)
 }
 
-func (a *RepositoryCreatorAdapter) RepoExists(name string) bool {
+func (a *RepositoryCreatorAdapter) RepoExists(name string) (bool, error) {
 	_, err := a.repoRepo.FindByName(name)
-	return err == nil
+	if err != nil {
+		if errors.Is(err, util.ErrRepoNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (a *RepositoryCreatorAdapter) FindDefaultStorageBackendID() (*uint, error) {

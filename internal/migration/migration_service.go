@@ -21,15 +21,16 @@ type MigrationWorkerInterface interface {
 type RepositoryCreator interface {
 	CreateRepo(name, repoType, packageType string, remoteURL string, cacheEnabled bool, cacheTTLSeconds int, storageBackendID *uint) error
 	CreateRepoWithConfig(name, repoType, packageType string, remoteURL string, cacheEnabled bool, cacheTTLSeconds int, storageBackendID *uint, authConfig *model.ProxyAuthConfig, timeoutSeconds, maxRedirects int, insecureSkipVerify bool) error
-	RepoExists(name string) bool
+	RepoExists(name string) (bool, error)
 	FindDefaultStorageBackendID() (*uint, error)
 }
 
 type UserCreator interface {
 	CreateRole(name, description string, permissions []string) error
-	RoleExists(name string) bool
+	RoleExists(name string) (bool, error)
 	CreateUser(username, email, displayName string, isActive bool, roleNames []string) error
-	UserExists(username string) bool
+	UserExists(username string) (bool, error)
+	EmailExists(email string) (bool, error)
 }
 
 type MigrationService struct {
@@ -411,7 +412,12 @@ func (s *MigrationService) executeSyncConfigTask(taskID uint, task *model.Migrat
 			continue
 		}
 
-		if s.repoCreator.RepoExists(nr.Name) {
+		exists, err := s.repoCreator.RepoExists(nr.Name)
+		if err != nil {
+			s.AddLog(taskID, fmt.Sprintf("检查仓库是否存在失败: %s, 错误: %v", nr.Name, err))
+			continue
+		}
+		if exists {
 			s.AddLog(taskID, fmt.Sprintf("仓库已存在，跳过: %s", nr.Name))
 			skipped++
 			continue
@@ -427,47 +433,61 @@ func (s *MigrationService) executeSyncConfigTask(taskID uint, task *model.Migrat
 			// 对于代理仓库，需要获取详细信息来获取真正的远程代理地址
 			detail, err := client.GetRepositoryDetail(ctx, nr.Name)
 			if err != nil {
-				s.AddLog(taskID, fmt.Sprintf("获取仓库 %s 详细信息失败: %v", nr.Name, err))
-				continue
-			}
-			// 使用 Proxy.RemoteURL 作为远程代理地址，而不是仓库本身的 URL
-			if detail.Proxy != nil && detail.Proxy.RemoteURL != "" {
-				remoteURL = detail.Proxy.RemoteURL
-				cacheEnabled = true
-			}
-
-			// 解析超时配置
-			timeoutSeconds := 30
-			maxRedirects := 5
-			if detail.HTTP != nil && detail.HTTP.Connection != nil {
-				if detail.HTTP.Connection.Timeout > 0 {
-					timeoutSeconds = detail.HTTP.Connection.Timeout
+				s.AddLog(taskID, fmt.Sprintf("获取仓库 %s 详细信息失败: %v，使用列表API返回的URL作为备用", nr.Name, err))
+				if nr.URL != "" {
+					remoteURL = nr.URL
+					cacheEnabled = true
 				}
-				if detail.HTTP.Connection.MaxRedirects > 0 {
-					maxRedirects = detail.HTTP.Connection.MaxRedirects
+			} else {
+				// 使用 Proxy.RemoteURL 作为远程代理地址，而不是仓库本身的 URL
+				if detail.Proxy != nil && detail.Proxy.RemoteURL != "" {
+					remoteURL = detail.Proxy.RemoteURL
+					cacheEnabled = true
 				}
-			}
 
-			// 解析认证配置
-			var authConfig *model.ProxyAuthConfig
-			if detail.HTTP != nil && detail.HTTP.Authentication != nil && detail.HTTP.Authentication.Type != "" {
-				authType := detail.HTTP.Authentication.Type
-				if authType == "username" || authType == "basic" {
-					authConfig = &model.ProxyAuthConfig{
-						Type: authType,
-						Basic: &model.BasicAuth{
-							Username: detail.HTTP.Authentication.Username,
-							Password: detail.HTTP.Authentication.Password,
-						},
+				// 解析超时配置
+				timeoutSeconds := 30
+				maxRedirects := 5
+				if detail.HTTP != nil && detail.HTTP.Connection != nil {
+					if detail.HTTP.Connection.Timeout > 0 {
+						timeoutSeconds = detail.HTTP.Connection.Timeout
+					}
+					if detail.HTTP.Connection.MaxRedirects > 0 {
+						maxRedirects = detail.HTTP.Connection.MaxRedirects
 					}
 				}
+
+				// 解析认证配置
+				var authConfig *model.ProxyAuthConfig
+				if detail.HTTP != nil && detail.HTTP.Authentication != nil && detail.HTTP.Authentication.Type != "" {
+					authType := detail.HTTP.Authentication.Type
+					if authType == "username" || authType == "basic" {
+						authConfig = &model.ProxyAuthConfig{
+							Type: authType,
+							Basic: &model.BasicAuth{
+								Username: detail.HTTP.Authentication.Username,
+								Password: detail.HTTP.Authentication.Password,
+							},
+						}
+					}
+				}
+
+				if remoteURL != "" {
+					if err := s.repoCreator.CreateRepoWithConfig(nr.Name, repoType, util.NormalizePackageType(nr.Format), remoteURL, cacheEnabled, cacheTTL, storageID, authConfig, timeoutSeconds, maxRedirects, false); err != nil {
+						s.AddLog(taskID, fmt.Sprintf("创建仓库失败: %s, 错误: %v", nr.Name, err))
+						continue
+					}
+					s.AddLog(taskID, fmt.Sprintf("同步仓库: %s (%s/%s) -> %s", nr.Name, nr.Format, nr.Type, remoteURL))
+					synced++
+					continue
+				}
 			}
 
-			if err := s.repoCreator.CreateRepoWithConfig(nr.Name, repoType, util.NormalizePackageType(nr.Format), remoteURL, cacheEnabled, cacheTTL, storageID, authConfig, timeoutSeconds, maxRedirects, false); err != nil {
+			if err := s.repoCreator.CreateRepo(nr.Name, repoType, util.NormalizePackageType(nr.Format), remoteURL, cacheEnabled, cacheTTL, storageID); err != nil {
 				s.AddLog(taskID, fmt.Sprintf("创建仓库失败: %s, 错误: %v", nr.Name, err))
 				continue
 			}
-			s.AddLog(taskID, fmt.Sprintf("同步仓库: %s (%s/%s) -> %s", nr.Name, nr.Format, nr.Type, remoteURL))
+			s.AddLog(taskID, fmt.Sprintf("同步仓库: %s (%s/%s)", nr.Name, nr.Format, nr.Type))
 			synced++
 			continue
 		}
@@ -775,7 +795,12 @@ func (s *MigrationService) executeUserMigrationTask(taskID uint, task *model.Mig
 			continue
 		}
 
-		if s.userCreator.RoleExists(nr.ID) {
+		roleExists, err := s.userCreator.RoleExists(nr.ID)
+		if err != nil {
+			s.AddLog(taskID, fmt.Sprintf("检查角色是否存在失败: %s, 错误: %v", nr.ID, err))
+			continue
+		}
+		if roleExists {
 			s.AddLog(taskID, fmt.Sprintf("角色已存在，跳过: %s", nr.ID))
 			rolesSkipped++
 			continue
@@ -812,10 +837,26 @@ func (s *MigrationService) executeUserMigrationTask(taskID uint, task *model.Mig
 			continue
 		}
 
-		if s.userCreator.UserExists(nu.UserID) {
+		userExists, err := s.userCreator.UserExists(nu.UserID)
+		if err != nil {
+			s.AddLog(taskID, fmt.Sprintf("检查用户是否存在失败: %s, 错误: %v", nu.UserID, err))
+			continue
+		}
+		if userExists {
 			s.AddLog(taskID, fmt.Sprintf("用户已存在，跳过: %s", nu.UserID))
 			usersSkipped++
 			continue
+		}
+
+		email := nu.Email
+		if email != "" {
+			emailExists, emailErr := s.userCreator.EmailExists(email)
+			if emailErr != nil {
+				s.AddLog(taskID, fmt.Sprintf("检查邮箱是否存在失败: %s, 错误: %v", email, emailErr))
+			} else if emailExists {
+				email = fmt.Sprintf("%s-migrated-%s", nu.UserID, email)
+				s.AddLog(taskID, fmt.Sprintf("用户 %s 的邮箱 %s 已存在，使用 %s", nu.UserID, nu.Email, email))
+			}
 		}
 
 		displayName := nu.FirstName
@@ -828,7 +869,7 @@ func (s *MigrationService) executeUserMigrationTask(taskID uint, task *model.Mig
 
 		isActive := nu.Status == "active"
 
-		if err := s.userCreator.CreateUser(nu.UserID, nu.Email, displayName, isActive, nu.Roles); err != nil {
+		if err := s.userCreator.CreateUser(nu.UserID, email, displayName, isActive, nu.Roles); err != nil {
 			s.AddLog(taskID, fmt.Sprintf("创建用户失败: %s, 错误: %v", nu.UserID, err))
 			continue
 		}

@@ -1,7 +1,10 @@
 package repository
 
 import (
+	"errors"
+
 	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/util"
 
 	"gorm.io/gorm"
 )
@@ -27,6 +30,9 @@ func (r *RoleRepository) FindByName(name string) (*model.Role, error) {
 	var role model.Role
 	result := r.db.Preload("Permissions").Where("name = ?", name).First(&role)
 	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, util.ErrRoleNotFound
+		}
 		return nil, result.Error
 	}
 	return &role, nil
@@ -141,6 +147,9 @@ func (r *RoleRepository) GetRoleIDByName(name string) (uint, error) {
 	var role model.Role
 	result := r.db.Select("id").Where("name = ?", name).First(&role)
 	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return 0, util.ErrRoleNotFound
+		}
 		return 0, result.Error
 	}
 	return role.ID, nil

@@ -57,16 +57,16 @@ export interface Repository {
   allow_delete?: boolean
   created_at: string
   updated_at: string
-  members?: RepositoryGroup[] | string[]
+  members?: RepositoryMember[] | string[]
   url?: string
   storage_backend_id?: number
 }
 
-export interface RepositoryGroup {
+export interface RepositoryMember {
   id: number
-  virtual_repo_id: number
-  member_repo_id: number
-  priority: number
+  repository_id: number
+  member_id: number
+  position: number
   member_repo: Repository
 }
 
@@ -130,10 +130,10 @@ export const repositoryApi = {
   },
 
   getMembers(name: string) {
-    return request.get<RepositoryGroup[]>(`/repositories/${name}/members`)
+    return request.get<RepositoryMember[]>(`/repositories/${name}/members`)
   },
 
-  addMember(name: string, data: { member_name: string; priority: number }) {
+  addMember(name: string, data: { member_name: string; position: number }) {
     return request.post(`/repositories/${name}/members`, data)
   },
 

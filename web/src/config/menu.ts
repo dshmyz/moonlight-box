@@ -154,6 +154,12 @@ export const menuConfig: MenuItem[] = [
         icon: 'fa-solid fa-upload',
         permission: { resource: 'system', action: 'admin' },
       },
+      {
+        index: '/admin/migration-v2',
+        title: '数据迁移 V2',
+        icon: 'fa-solid fa-arrow-right-arrow-left',
+        permission: { resource: 'system', action: 'admin' },
+      },
     ],
   },
 ]

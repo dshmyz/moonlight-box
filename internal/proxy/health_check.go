@@ -416,8 +416,8 @@ func (h *HealthCheckService) checkStoragePath(basePath string) (int, error) {
 func (h *HealthCheckService) checkVirtualRepo(repo *model.Repository) (int, error) {
 	// 检查虚拟仓库是否有成员
 	var memberCount int64
-	if err := h.db.Model(&model.RepositoryGroup{}).
-		Where("virtual_repo_id = ?", repo.ID).
+	if err := h.db.Model(&model.RepositoryMember{}).
+		Where("repository_id = ?", repo.ID).
 		Count(&memberCount).Error; err != nil {
 		return 0, fmt.Errorf("failed to check members: %w", err)
 	}
@@ -428,9 +428,9 @@ func (h *HealthCheckService) checkVirtualRepo(repo *model.Repository) (int, erro
 
 	// 检查成员仓库是否都启用
 	var disabledMembers int64
-	if err := h.db.Table("repository_groups rg").
-		Joins("JOIN repositories r ON rg.member_repo_id = r.id").
-		Where("rg.virtual_repo_id = ? AND r.enabled = ?", repo.ID, false).
+	if err := h.db.Table("repository_members rm").
+		Joins("JOIN repositories r ON rm.member_id = r.id").
+		Where("rm.repository_id = ? AND r.enabled = ?", repo.ID, false).
 		Count(&disabledMembers).Error; err != nil {
 		return 0, fmt.Errorf("failed to check member status: %w", err)
 	}
