@@ -62,14 +62,13 @@ func (r *ScanRepository) ListVulnerabilitiesPaginated(page, pageSize int, severi
 
 	query := r.db.Model(&model.Vulnerability{}).
 		Joins("JOIN scan_results ON scan_results.id = vulnerabilities.scan_result_id").
-		Joins("JOIN package_versions ON package_versions.id = scan_results.component_id").
-		Joins("JOIN packages ON packages.id = package_versions.package_id")
+		Joins("JOIN artifacts ON artifacts.id = scan_results.component_id")
 
 	if severity != "" {
 		query = query.Where("vulnerabilities.severity = ?", severity)
 	}
 	if pkgType != "" {
-		query = query.Where("packages.type = ?", pkgType)
+		query = query.Where("artifacts.format = ?", pkgType)
 	}
 
 	err := query.Count(&total).Error
@@ -89,14 +88,13 @@ func (r *ScanRepository) ListScanResults(page, pageSize int, status string, pkgT
 	var total int64
 
 	query := r.db.Model(&model.ScanResult{}).
-		Joins("JOIN package_versions ON package_versions.id = scan_results.component_id").
-		Joins("JOIN packages ON packages.id = package_versions.package_id")
+		Joins("JOIN artifacts ON artifacts.id = scan_results.component_id")
 
 	if status != "" {
 		query = query.Where("scan_results.scan_status = ?", status)
 	}
 	if pkgType != "" {
-		query = query.Where("packages.type = ?", pkgType)
+		query = query.Where("artifacts.format = ?", pkgType)
 	}
 
 	err := query.Count(&total).Error

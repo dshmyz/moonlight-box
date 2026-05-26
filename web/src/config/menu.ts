@@ -149,14 +149,8 @@ export const menuConfig: MenuItem[] = [
         permission: { resource: 'webhooks', action: 'read' },
       },
       {
-        index: '/admin/migration',
-        title: '数据迁移',
-        icon: 'fa-solid fa-upload',
-        permission: { resource: 'system', action: 'admin' },
-      },
-      {
         index: '/admin/migration-v2',
-        title: '数据迁移 V2',
+        title: '数据迁移',
         icon: 'fa-solid fa-arrow-right-arrow-left',
         permission: { resource: 'system', action: 'admin' },
       },

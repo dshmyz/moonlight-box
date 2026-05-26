@@ -44,7 +44,6 @@ type RouterContext struct {
 		SystemConfig     *handler.SystemConfigHandler
 		SystemInfo       *handler.SystemInfoHandler
 		FileBrowse       *handler.FileBrowseHandler
-		Migration        *handler.MigrationHandler
 		MigrationV2      *migv2handler.MigrationV2Handler
 		AI               *handler.AIHandler
 		ProxyDownloadLog *handler.ProxyDownloadLogHandler
@@ -418,29 +417,6 @@ func (ctx *RouterContext) setupSystemRoutes(protected *gin.RouterGroup) {
 		files.GET("/browse", ctx.Handlers.FileBrowse.ListDirectory)
 		files.GET("/stats", ctx.Handlers.FileBrowse.GetFileStats)
 		files.GET("/download", ctx.Handlers.FileBrowse.DownloadFile)
-	}
-}
-
-func (ctx *RouterContext) setupMigrationRoutes(protected *gin.RouterGroup) {
-	migration := protected.Group("/migration")
-	migration.Use(ctx.requirePermission("system", "admin"))
-	{
-		migration.GET("/queue/status", ctx.Handlers.Migration.GetQueueStatus)
-		migration.GET("", ctx.Handlers.Migration.ListMigrations)
-		migration.POST("/nexus/test", ctx.Handlers.Migration.TestNexusConnection)
-		migration.POST("/nexus/repositories", ctx.Handlers.Migration.ListNexusRepositories)
-		migration.POST("/nexus/sync-repos", ctx.Handlers.Migration.SyncNexusRepos)
-		migration.POST("/nexus/sync-config-only", ctx.Handlers.Migration.SyncConfigOnly)
-		migration.POST("/nexus", ctx.Handlers.Migration.CreateMigration)
-		// 用户迁移相关API
-		migration.POST("/nexus/users", ctx.Handlers.Migration.ListNexusUsers)
-		migration.POST("/nexus/roles", ctx.Handlers.Migration.ListNexusRoles)
-		migration.POST("/nexus/sync-users", ctx.Handlers.Migration.SyncUsersFromNexus)
-		migration.GET("/:id/status", ctx.Handlers.Migration.GetMigrationStatus)
-		migration.POST("/:id/cancel", ctx.Handlers.Migration.CancelMigration)
-		migration.POST("/:id/retry", ctx.Handlers.Migration.RetryFailedMigration)
-		migration.POST("/:id/start", ctx.Handlers.Migration.StartMigration)
-		migration.GET("/:id/items", ctx.Handlers.Migration.ListMigrationItems)
 	}
 }
 

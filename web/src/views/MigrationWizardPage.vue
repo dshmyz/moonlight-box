@@ -30,7 +30,10 @@
             <el-form-item label="密码"><el-input v-model="connForm.password" type="password" show-password /></el-form-item>
             <el-form-item>
               <el-button type="primary" @click="testConnection" :loading="testing">测试连接</el-button>
-              <el-button @click="nextStep" :disabled="!connForm.url">下一步</el-button>
+              <el-tag v-if="connectionSuccess" type="success">✓ 连接成功</el-tag>
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" @click="nextStep" :disabled="!connectionSuccess">下一步</el-button>
             </el-form-item>
           </el-form>
         </div>
@@ -61,14 +64,22 @@
               <el-input v-model="scope.target_repo_name" placeholder="输入目标仓库名" />
             </el-form-item>
           </div>
-          <div class="actions"><el-button type="primary" @click="createAndScan">创建计划并扫描</el-button></div>
+          <div class="actions">
+            <el-button @click="prevStep">上一步</el-button>
+            <el-button type="primary" @click="createAndScan">创建计划并扫描</el-button>
+          </div>
         </div>
 
         <!-- Step 2: Scan Progress -->
         <div v-if="step === 2" class="step-panel">
           <h3>扫描中...</h3>
           <p v-if="currentPlan">Plan #{{ currentPlan.id }} - 状态: {{ currentPlan.status }}</p>
-          <el-button type="primary" @click="runPrecheck" :disabled="scanRunning">执行预检</el-button>
+          <el-alert v-if="currentPlan?.status === 'failed'" type="error" title="扫描失败" :description="scanError" show-icon closable />
+          <div class="actions">
+            <el-button @click="prevStep">上一步</el-button>
+            <el-button v-if="currentPlan?.status !== 'failed'" type="primary" @click="runPrecheck" :disabled="scanRunning">执行预检</el-button>
+            <el-button v-else type="primary" @click="retryScan" :loading="scanRunning">重新扫描</el-button>
+          </div>
         </div>
 
         <!-- Step 3: Conflicts -->
@@ -84,7 +95,10 @@
               <el-radio value="map_existing">map_existing</el-radio>
             </el-radio-group>
           </div>
-          <el-button type="primary" @click="applyConflicts">应用策略</el-button>
+          <div class="actions">
+            <el-button @click="prevStep">上一步</el-button>
+            <el-button type="primary" @click="applyConflicts">应用策略并开始执行</el-button>
+          </div>
         </div>
 
         <!-- Step 4: Execution -->
@@ -102,8 +116,9 @@
             <p v-for="e in recentEvents" :key="e.id" class="event-line">{{ e.message }}</p>
           </div>
           <div class="actions">
-            <el-button @click="pausePlan" :disabled="!isRunning">暂停</el-button>
-            <el-button @click="cancelPlan" :disabled="!isRunning">取消</el-button>
+            <el-button v-if="currentPlan?.status === 'paused'" type="primary" @click="resumePlan">继续执行</el-button>
+            <el-button v-else @click="pausePlan" :disabled="!isRunning">暂停</el-button>
+            <el-button @click="cancelPlan" :disabled="!isRunning && currentPlan?.status !== 'paused'">取消</el-button>
           </div>
         </div>
 
@@ -111,6 +126,17 @@
         <div v-if="step === 5" class="step-panel">
           <h3>迁移结果</h3>
           <p>状态: {{ currentPlan?.status }}</p>
+          <div v-if="jobs.length">
+            <p>完成: {{ completedJobs }}/{{ jobs.length }}</p>
+            <div v-for="j in jobs" :key="j.id" class="job-row">
+              <span>{{ j.kind }}/{{ j.source_key }}</span>
+              <el-tag :type="jobTagType(j.status)" size="small">{{ j.status }}</el-tag>
+            </div>
+          </div>
+          <div class="actions">
+            <el-button @click="prevStep">上一步</el-button>
+            <el-button type="primary" @click="resetWizard">重新开始</el-button>
+          </div>
         </div>
       </div>
     </div>
@@ -118,14 +144,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { migrationV2Api, type MigrationPlan, type MigrationJob, type MigrationConflict, type MigrationEvent, type ConflictPolicy, type ScopeSelection } from '@/api/migrationV2'
 
 const step = ref(0)
 const testing = ref(false)
 const scanRunning = ref(false)
+const scanError = ref('')
 const pollTimer = ref<number | null>(null)
+const connectionSuccess = ref(false)
 
 const connForm = ref({ url: '', username: 'admin', password: '' })
 const currentPlan = ref<MigrationPlan | null>(null)
@@ -141,9 +169,9 @@ const scope = ref<ScopeSelection>({
   target_strategy: 'keep_structure', target_repo_id: 0, target_repo_name: '',
 })
 
-const isRunning = computed(() => currentPlan.value?.status === 'running')
+const isRunning = computed(() => currentPlan.value?.status === 'running' || currentPlan.value?.status === 'verifying')
 const completedJobs = computed(() => jobs.value.filter(j => j.status === 'completed').length)
-const recentEvents = computed(() => events.value.slice(-10))
+const recentEvents = computed(() => events.value.slice(0, 10))
 
 function jobTagType(s: string) {
   const m: Record<string, string> = { completed: 'success', failed: 'danger', running: 'warning', pending: 'info', skipped: '' }
@@ -155,11 +183,37 @@ async function testConnection() {
   try {
     await migrationV2Api.testSource({ source_type: 'nexus', ...connForm.value })
     ElMessage.success('连接成功')
-  } catch (e: any) { ElMessage.error('连接失败: ' + e.message) }
+    connectionSuccess.value = true
+  } catch (e: any) { 
+    ElMessage.error('连接失败: ' + e.message)
+    connectionSuccess.value = false
+  }
   finally { testing.value = false }
 }
 
-function nextStep() { step.value = 1 }
+function nextStep() { 
+  if (step.value < 5) {
+    step.value++
+  }
+}
+
+function prevStep() {
+  if (step.value > 0) {
+    step.value--
+  }
+}
+
+function resetWizard() {
+  step.value = 0
+  connectionSuccess.value = false
+  currentPlan.value = null
+  jobs.value = []
+  conflicts.value = []
+  events.value = []
+  conflictPolicies.value = {}
+  connForm.value = { url: '', username: 'admin', password: '' }
+  stopPolling()
+}
 
 function onRepoConfigChange(v: boolean) { if (!v) { scope.value.hosted_repos = scope.value.proxy_repos = scope.value.group_repos = scope.value.group_memberships = false } }
 function onArtifactsChange(v: boolean) { if (!v) scope.value.artifact_repos = [] }
@@ -176,35 +230,64 @@ async function createAndScan() {
     currentPlan.value = res as any
     step.value = 2
     scanRunning.value = true
+    scanError.value = ''
     try {
       await migrationV2Api.scanPlan(currentPlan.value!.id)
       ElMessage.success('扫描完成')
-    } catch (e: any) { ElMessage.error('扫描失败: ' + e.message) }
-    finally {
-      scanRunning.value = false
       await refreshPlan()
+    } catch (e: any) {
+      scanError.value = e.message || '扫描失败'
+      ElMessage.error('扫描失败: ' + scanError.value)
+      await refreshPlan()
+    } finally {
+      scanRunning.value = false
     }
   } catch (e: any) { ElMessage.error('创建失败: ' + e.message) }
+}
+
+async function retryScan() {
+  if (!currentPlan.value) return
+  scanRunning.value = true
+  scanError.value = ''
+  try {
+    await migrationV2Api.scanPlan(currentPlan.value.id)
+    ElMessage.success('扫描完成')
+    await refreshPlan()
+  } catch (e: any) {
+    scanError.value = e.message || '扫描失败'
+    ElMessage.error('扫描失败: ' + scanError.value)
+    await refreshPlan()
+  } finally {
+    scanRunning.value = false
+  }
 }
 
 async function runPrecheck() {
   if (!currentPlan.value) return
   try {
     await migrationV2Api.precheckPlan(currentPlan.value.id)
-    const res = await migrationV2Api.getConflicts(currentPlan.value.id)
-    conflicts.value = (res as any)?.list || (res as any)?.data || res || []
+    const res: MigrationConflict[] = await migrationV2Api.getConflicts(currentPlan.value.id) as any
+    conflicts.value = res || []
     conflicts.value.forEach(c => { conflictPolicies.value[c.id] = c.suggested_policy })
-    step.value = 3
+    if (conflicts.value.length === 0) {
+      step.value = 4
+      await migrationV2Api.startPlan(currentPlan.value.id)
+      startPolling()
+    } else {
+      step.value = 3
+    }
   } catch (e: any) { ElMessage.error('预检失败: ' + e.message) }
 }
 
 async function applyConflicts() {
   if (!currentPlan.value) return
   try {
-    const resolutions = Object.entries(conflictPolicies.value).map(([id, policy]) => ({
-      conflict_id: Number(id), policy,
-    }))
-    await migrationV2Api.applyConflicts(currentPlan.value.id, resolutions)
+    if (conflicts.value.length > 0) {
+      const resolutions = Object.entries(conflictPolicies.value).map(([id, policy]) => ({
+        conflict_id: Number(id), policy,
+      }))
+      await migrationV2Api.applyConflicts(currentPlan.value.id, resolutions)
+    }
     await migrationV2Api.startPlan(currentPlan.value.id)
     step.value = 4
     startPolling()
@@ -215,6 +298,16 @@ async function pausePlan() {
   if (!currentPlan.value) return
   await migrationV2Api.pausePlan(currentPlan.value.id)
   await refreshPlan()
+}
+
+async function resumePlan() {
+  if (!currentPlan.value) return
+  try {
+    await migrationV2Api.resumePlan(currentPlan.value.id)
+    startPolling()
+  } catch (e: any) {
+    ElMessage.error('恢复失败: ' + e.message)
+  }
 }
 
 async function cancelPlan() {
@@ -249,6 +342,75 @@ function startPolling() {
 function stopPolling() {
   if (pollTimer.value) { clearInterval(pollTimer.value); pollTimer.value = null }
 }
+
+async function loadRecentPlan() {
+  try {
+    const res = await migrationV2Api.listPlans()
+    if (!res || !Array.isArray(res) || res.length === 0) return
+    
+    const recentPlan = res[0]
+    currentPlan.value = recentPlan
+    
+    switch (recentPlan.status) {
+      case 'draft':
+        step.value = 1
+        break
+      case 'scanning':
+      case 'prechecking':
+        step.value = 2
+        break
+      case 'precheck_failed':
+        step.value = 3
+        conflicts.value = (await migrationV2Api.getConflicts(recentPlan.id) as MigrationConflict[]) || []
+        conflicts.value.forEach(c => { conflictPolicies.value[c.id] = c.suggested_policy })
+        break
+      case 'ready':
+        conflicts.value = (await migrationV2Api.getConflicts(recentPlan.id) as MigrationConflict[]) || []
+        conflicts.value.forEach(c => { conflictPolicies.value[c.id] = c.suggested_policy })
+        if (conflicts.value.length === 0) {
+          step.value = 4
+          await migrationV2Api.startPlan(recentPlan.id)
+          startPolling()
+        } else {
+          step.value = 3
+        }
+        break
+      case 'running':
+      case 'verifying':
+        step.value = 4
+        await loadPlanData(recentPlan.id)
+        startPolling()
+        break
+      case 'paused':
+        step.value = 4
+        await loadPlanData(recentPlan.id)
+        break
+      case 'completed':
+      case 'failed':
+      case 'cancelled':
+        step.value = 5
+        await loadPlanData(recentPlan.id)
+        break
+    }
+  } catch (e) {
+    console.error('Failed to load recent plan:', e)
+  }
+}
+
+async function loadPlanData(planID: number) {
+  try {
+    jobs.value = (await migrationV2Api.getJobs(planID) as MigrationJob[]) || []
+    events.value = (await migrationV2Api.getEvents(planID, 20) as MigrationEvent[]) || []
+    conflicts.value = (await migrationV2Api.getConflicts(planID) as MigrationConflict[]) || []
+    conflicts.value.forEach(c => { conflictPolicies.value[c.id] = c.suggested_policy })
+  } catch (e) {
+    console.error('Failed to load plan data:', e)
+  }
+}
+
+onMounted(() => {
+  loadRecentPlan()
+})
 
 onUnmounted(() => stopPolling())
 </script>

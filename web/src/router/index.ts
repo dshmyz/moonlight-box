@@ -183,22 +183,10 @@ const routes: RouteRecordRaw[] = [
         meta: { title: 'Webhook 管理', permission: { resource: 'webhooks', action: 'read' } },
       },
       {
-        path: 'migration',
-        name: 'Migration',
-        component: () => import('@/views/MigrationPage.vue'),
-        meta: { title: '数据迁移', permission: { resource: 'system', action: 'admin' } },
-      },
-      {
-        path: 'migration/:id',
-        name: 'MigrationDetail',
-        component: () => import('@/views/MigrationDetailPage.vue'),
-        meta: { title: '迁移详情', permission: { resource: 'system', action: 'admin' } },
-      },
-      {
         path: 'migration-v2',
         name: 'MigrationV2',
         component: () => import('@/views/MigrationWizardPage.vue'),
-        meta: { title: '数据迁移 V2', permission: { resource: 'system', action: 'admin' } },
+        meta: { title: '数据迁移', permission: { resource: 'system', action: 'admin' } },
       },
       {
         path: 'system-config',

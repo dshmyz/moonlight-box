@@ -34,8 +34,6 @@ func AutoMigrate() error {
 		&model.Webhook{},
 		&model.WebhookDelivery{},
 		&model.Backup{},
-		&model.MigrationTask{},
-		&model.MigrationItem{},
 		&model.ProxyDownloadLog{},
 		&domain.MigrationPlan{},
 		&domain.MigrationJob{},
