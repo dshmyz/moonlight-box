@@ -36,8 +36,18 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../cmd/registry/dist',
+    outDir: '../cmd/registry/front',
     emptyOutDir: true,
     assetsDir: 'assets',
+    minify: 'esbuild',
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          elementPlus: ['element-plus', '@element-plus/icons-vue'],
+          mermaid: ['mermaid'],
+          vendor: ['vue', 'vue-router', 'pinia', 'axios'],
+        },
+      },
+    },
   },
 })

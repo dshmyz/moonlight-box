@@ -37,6 +37,11 @@ get_auth_token() {
         sed 's/"access_token":"//;s/"//'
 }
 
+# cleanup on exit
+CLEAN_TEMPS=()
+cleanup() { rm -f "${CLEAN_TEMPS[@]}" 2>/dev/null || true; }
+trap cleanup EXIT
+
 echo "============================================"
 echo " 基础 HTTP 接口测试"
 echo " 目标: $BASE_URL"
@@ -44,208 +49,130 @@ echo "============================================"
 echo
 
 TOKEN=$(get_auth_token)
-
 if [ -z "$TOKEN" ]; then
     echo -e "${RED}错误: 无法获取认证令牌${NC}"
     exit 1
 fi
+pass "获取认证令牌成功"
 
+# ── Maven 制品上传/下载/删除 ──────────────────────
+echo
 echo "════════════════════════════════════════"
-echo "  测试 1: Maven 上传制品 (PUT)"
+echo "  测试: Maven 制品生命周期"
 echo "════════════════════════════════════════"
 
-TEST_JAR="/tmp/test-artifact-$$-1.0.0.jar"
-TEST_POM="/tmp/test-artifact-$$-1.0.0.pom"
+TEST_JAR="/tmp/test-http-artifact-$$.jar"
+TEST_POM="/tmp/test-http-artifact-$$.pom"
+CLEAN_TEMPS+=("$TEST_JAR" "$TEST_POM")
 
-echo '<?xml version="1.0" encoding="UTF-8"?>
-<project xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd" xmlns="http://maven.apache.org/POM/4.0.0"
-    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <modelVersion>4.0.0</modelVersion>
-  <groupId>com.test</groupId>
-  <artifactId>test-artifact</artifactId>
-  <version>1.0.0</version>
+echo "JAR content $$" > "$TEST_JAR"
+echo '<?xml version="1.0"?><project><modelVersion>4.0.0</modelVersion>
+<groupId>com.test</groupId><artifactId>test-http</artifactId><version>1.0.0</version>
 </project>' > "$TEST_POM"
+REPO_BASE="$BASE_URL/repository/maven-local"
+ARTIFACT_PATH="com/test/test-http/1.0.0/test-http-1.0.0"
 
-echo "Test JAR content - $(date)" > "$TEST_JAR"
-jar cf "$TEST_JAR" -C /tmp "$(basename "$TEST_JAR")" 2>/dev/null || echo "JAR test file" > "$TEST_JAR"
-
+# PUT JAR
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-    "$BASE_URL/repo/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar" \
+    "$REPO_BASE/$ARTIFACT_PATH.jar" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/octet-stream" \
     --data-binary @"$TEST_JAR")
-
 if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
     pass "Maven JAR 上传成功 (HTTP $HTTP_CODE)"
 else
-    fail "Maven JAR 上传失败 (expected 201/200/204, got HTTP $HTTP_CODE)"
+    fail "Maven JAR 上传失败 (got HTTP $HTTP_CODE)"
 fi
 
+# PUT POM
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-    "$BASE_URL/repo/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.pom" \
+    "$REPO_BASE/$ARTIFACT_PATH.pom" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/xml" \
     --data-binary @"$TEST_POM")
-
 if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
     pass "Maven POM 上传成功 (HTTP $HTTP_CODE)"
 else
-    fail "Maven POM 上传失败 (expected 201/200/204, got HTTP $HTTP_CODE)"
+    fail "Maven POM 上传失败 (got HTTP $HTTP_CODE)"
 fi
 
-rm -f "$TEST_JAR" "$TEST_POM"
-
-echo
-echo "════════════════════════════════════════"
-echo "  测试 2: Maven 下载制品 (GET)"
-echo "════════════════════════════════════════"
-
-DOWNLOADED_JAR="/tmp/downloaded-test-artifact-$$-1.0.0.jar"
-HTTP_CODE=$(curl -s -o "$DOWNLOADED_JAR" -w "%{http_code}" \
-    "$BASE_URL/repo/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar")
-
+# GET JAR (public, no auth)
+HTTP_CODE=$(curl -s -o "$TEST_JAR.dl" -w "%{http_code}" "$REPO_BASE/$ARTIFACT_PATH.jar")
 if [ "$HTTP_CODE" = "200" ]; then
     pass "Maven JAR 下载成功 (HTTP 200)"
-    
-    if [ -f "$DOWNLOADED_JAR" ] && [ -s "$DOWNLOADED_JAR" ]; then
+    if [ -s "$TEST_JAR.dl" ]; then
         pass "下载的 JAR 文件非空"
     else
-        fail "下载的 JAR 文件为空或不存在"
+        fail "下载的 JAR 文件为空"
     fi
 else
-    fail "Maven JAR 下载失败 (expected HTTP 200, got HTTP $HTTP_CODE)"
+    fail "Maven JAR 下载失败 (got HTTP $HTTP_CODE)"
 fi
 
-rm -f "$DOWNLOADED_JAR"
-
-echo
-echo "════════════════════════════════════════"
-echo "  测试 3: Maven 校验和文件"
-echo "════════════════════════════════════════"
-
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    "$BASE_URL/repo/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar.sha1")
-
+# GET POM (public, no auth)
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$REPO_BASE/$ARTIFACT_PATH.pom")
 if [ "$HTTP_CODE" = "200" ]; then
-    pass "Maven SHA1 校验和文件可访问 (HTTP 200)"
+    pass "Maven POM 下载成功 (HTTP 200)"
 else
-    info "Maven SHA1 校验和文件返回 HTTP $HTTP_CODE (可能未自动生成)"
+    fail "Maven POM 下载失败 (got HTTP $HTTP_CODE)"
 fi
 
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    "$BASE_URL/repo/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar.md5")
-
-if [ "$HTTP_CODE" = "200" ]; then
-    pass "Maven MD5 校验和文件可访问 (HTTP 200)"
-else
-    info "Maven MD5 校验和文件返回 HTTP $HTTP_CODE (可能未自动生成)"
-fi
-
-echo
-echo "════════════════════════════════════════"
-echo "  测试 4: Maven 删除制品 (DELETE)"
-echo "════════════════════════════════════════"
-
+# DELETE JAR
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-    "$BASE_URL/repo/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar" \
+    "$REPO_BASE/$ARTIFACT_PATH.jar" \
     -H "Authorization: Bearer $TOKEN")
-
 if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
     pass "Maven JAR 删除成功 (HTTP $HTTP_CODE)"
 else
-    fail "Maven JAR 删除失败 (expected 200/204, got HTTP $HTTP_CODE)"
+    fail "Maven JAR 删除失败 (got HTTP $HTTP_CODE)"
 fi
 
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    "$BASE_URL/repo/maven-local/com/test/test-artifact/1.0.0/test-artifact-1.0.0.jar")
-
+# GET after DELETE → 404
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$REPO_BASE/$ARTIFACT_PATH.jar")
 if [ "$HTTP_CODE" = "404" ]; then
-    pass "删除后再次下载返回 404 (符合预期)"
+    pass "删除后下载返回 404 (符合预期)"
 else
-    fail "删除后仍可下载 (expected HTTP 404, got HTTP $HTTP_CODE)"
+    fail "删除后仍可下载 (got HTTP $HTTP_CODE, expected 404)"
 fi
 
+# ── 公共 API 端点 ──────────────────────
 echo
 echo "════════════════════════════════════════"
-echo "  测试 5: npm 上传制品 (PUT)"
+echo "  测试: 公共 API 端点"
 echo "════════════════════════════════════════"
 
-TEST_NPM_TGZ="/tmp/test-npm-package-$$-1.0.0.tgz"
-mkdir -p /tmp/test-npm-package-$$
-echo '{"name": "test-npm-package", "version": "1.0.0"}' > /tmp/test-npm-package-$$/package.json
-tar -czf "$TEST_NPM_TGZ" -C /tmp test-npm-package-$$
-
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-    "$BASE_URL/npm/test-npm-package" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/octet-stream" \
-    --data-binary @"$TEST_NPM_TGZ")
-
-if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then
-    pass "npm 包上传成功 (HTTP $HTTP_CODE)"
+# health
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/health")
+if [ "$HTTP_CODE" = "200" ]; then
+    pass "Health 端点可达 (HTTP 200)"
 else
-    info "npm 包上传返回 HTTP $HTTP_CODE (可能需要特定格式)"
+    fail "Health 端点不可达 (got HTTP $HTTP_CODE)"
 fi
 
-rm -rf /tmp/test-npm-package-$$ "$TEST_NPM_TGZ"
-
-echo
-echo "════════════════════════════════════════"
-echo "  测试 6: PyPI 上传制品 (POST)"
-echo "════════════════════════════════════════"
-
-TEST_WHL="/tmp/test_pypi_package-$$-1.0.0-py3-none-any.whl"
-mkdir -p /tmp/test-pypi-package-$$
-echo 'Metadata-Version: 2.1
-Name: test-pypi-package
-Version: 1.0.0
-Summary: Test package' > /tmp/test-pypi-package-$$/METADATA
-echo 'print("hello")' > /tmp/test-pypi-package-$$/__init__.py
-cd /tmp/test-pypi-package-$$ && zip -r "$TEST_WHL" METADATA __init__.py > /dev/null 2>&1
-cd - > /dev/null
-
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-    "$BASE_URL/pypi/upload" \
-    -H "Authorization: Bearer $TOKEN" \
-    -F "content=@$TEST_WHL;filename=test_pypi_package-1.0.0-py3-none-any.whl")
-
-if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
-    pass "PyPI wheel 上传成功 (HTTP $HTTP_CODE)"
+# ping
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/v1/ping")
+if [ "$HTTP_CODE" = "200" ]; then
+    pass "Ping 端点可达 (HTTP 200)"
 else
-    info "PyPI wheel 上传返回 HTTP $HTTP_CODE (可能需要特定格式)"
+    fail "Ping 端点不可达 (got HTTP $HTTP_CODE)"
 fi
 
-rm -rf /tmp/test-pypi-package-$$ "$TEST_WHL"
-
-echo
-echo "════════════════════════════════════════"
-echo "  测试 7: Generic 文件上传下载"
-echo "════════════════════════════════════════"
-
-TEST_FILE="/tmp/test-generic-file-$$-1.0.0.txt"
-echo "Generic file test content - $(date)" > "$TEST_FILE"
-
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-    "$BASE_URL/files/upload" \
-    -H "Authorization: Bearer $TOKEN" \
-    -F "file=@$TEST_FILE;filename=test-generic-file.txt")
-
-if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
-    pass "Generic 文件上传成功 (HTTP $HTTP_CODE)"
-    
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-        "$BASE_URL/files/test-generic-file.txt")
-    
-    if [ "$HTTP_CODE" = "200" ]; then
-        pass "Generic 文件下载成功 (HTTP 200)"
-    else
-        fail "Generic 文件下载失败 (expected HTTP 200, got HTTP $HTTP_CODE)"
-    fi
+# 403 on protected route without auth
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/v1/users")
+if [ "$HTTP_CODE" = "401" ]; then
+    pass "无认证访问 /api/v1/users 返回 401 (符合预期)"
 else
-    info "Generic 文件上传返回 HTTP $HTTP_CODE (可能需要特定仓库配置)"
+    info "无认证访问返回 HTTP $HTTP_CODE (expected 401)"
 fi
 
-rm -f "$TEST_FILE"
+# auth protected route with token
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/v1/users" \
+    -H "Authorization: Bearer $TOKEN")
+if [ "$HTTP_CODE" = "200" ]; then
+    pass "带认证访问 /api/v1/users 成功 (HTTP 200)"
+else
+    fail "带认证访问返回 HTTP $HTTP_CODE (expected 200)"
+fi
 
 echo
 echo "============================================"

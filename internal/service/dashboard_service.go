@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/proxy"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/proxy"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 	"gorm.io/gorm"
 )
 
@@ -176,7 +176,7 @@ func (s *DashboardService) computeStats(ctx context.Context) (*DashboardStats, e
 		Count        int64
 	}
 	if len(repoIDs) > 0 {
-		s.db.Model(&model.Package{}).
+		s.db.Model(&model.Artifact{}).
 			Select("repository_id, COUNT(*) as count").
 			Where("repository_id IN ?", repoIDs).
 			Group("repository_id").
@@ -196,7 +196,7 @@ func (s *DashboardService) computeStats(ctx context.Context) (*DashboardStats, e
 		todayStart := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 0, 0, 0, 0, time.Now().Location())
 		s.db.Model(&model.ProxyDownloadLog{}).
 			Select("repository_id, COUNT(*) as count").
-			Where("repository_id IN ? AND created_at >= ?", repoIDs, todayStart).
+			Where("repository_id IN ? AND created_at >= ? AND status = ?", repoIDs, todayStart, model.DownloadStatusSuccess).
 			Group("repository_id").
 			Scan(&todayDownloads)
 	}
@@ -314,23 +314,36 @@ func (s *DashboardService) getDirStorageBytes(path string) int64 {
 	return calculateDirSize(path)
 }
 
-// getTopPackages 获取下载量最高的包
+// getTopPackages 获取下载量最多的包
 func (s *DashboardService) getTopPackages(limit int) []PackageTop {
-	var packages []model.Package
-	if err := s.db.Order("download_count DESC").Limit(limit).Find(&packages).Error; err != nil {
+	type DownloadStats struct {
+		PackageName   string `gorm:"column:package_name"`
+		PackageType   string `gorm:"column:package_type"`
+		DownloadCount int64  `gorm:"column:download_count"`
+	}
+
+	var downloadStats []DownloadStats
+	err := s.db.Model(&model.ProxyDownloadLog{}).
+		Select("package_name, package_type, COUNT(*) as download_count").
+		Where("status = ?", model.DownloadStatusSuccess).
+		Group("package_name, package_type").
+		Order("download_count DESC").
+		Limit(limit).
+		Scan(&downloadStats)
+
+	if err != nil {
 		return []PackageTop{}
 	}
 
-	topPackages := make([]PackageTop, 0, len(packages))
-	for _, pkg := range packages {
+	topPackages := make([]PackageTop, 0, limit)
+	for _, ds := range downloadStats {
 		topPackages = append(topPackages, PackageTop{
-			Name:          pkg.Name,
-			Type:          string(pkg.Type),
-			DownloadCount: pkg.DownloadCount,
-			Description:   pkg.Description,
-			License:       pkg.License,
+			Name:          ds.PackageName,
+			Type:          ds.PackageType,
+			DownloadCount: ds.DownloadCount,
 		})
 	}
+
 	return topPackages
 }
 
@@ -443,7 +456,7 @@ func (s *DashboardService) getDownloadsLast7Days() []int64 {
 	var dailyCounts []DailyCount
 	s.db.Model(&model.ProxyDownloadLog{}).
 		Select("DATE(created_at) as date, COUNT(*) as count").
-		Where("created_at >= ?", sevenDaysAgo).
+		Where("created_at >= ? AND status = ?", sevenDaysAgo, model.DownloadStatusSuccess).
 		Group("DATE(created_at)").
 		Scan(&dailyCounts)
 

@@ -124,7 +124,7 @@ package adapter
 
 import (
     "github.com/gin-gonic/gin"
-    "github.com/moonlight-box/registry/internal/model"
+    "github.com/dshmyz/moonlight-box/internal/model"
 )
 
 // Adapter 定义包类型适配器接口
@@ -161,9 +161,9 @@ package handler
 
 import (
     "github.com/gin-gonic/gin"
-    "github.com/moonlight-box/registry/internal/adapter"
-    "github.com/moonlight-box/registry/internal/proxy"
-    "github.com/moonlight-box/registry/internal/service"
+    "github.com/dshmyz/moonlight-box/internal/adapter"
+    "github.com/dshmyz/moonlight-box/internal/proxy"
+    "github.com/dshmyz/moonlight-box/internal/service"
 )
 
 type RepoRouter struct {
@@ -360,9 +360,9 @@ import (
     "context"
     "fmt"
     
-    "github.com/moonlight-box/registry/internal/adapter"
-    "github.com/moonlight-box/registry/internal/model"
-    "github.com/moonlight-box/registry/internal/repository"
+    "github.com/dshmyz/moonlight-box/internal/adapter"
+    "github.com/dshmyz/moonlight-box/internal/model"
+    "github.com/dshmyz/moonlight-box/internal/repository"
 )
 
 type DownloadService struct {

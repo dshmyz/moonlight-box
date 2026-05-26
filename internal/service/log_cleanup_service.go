@@ -3,7 +3,7 @@ package service
 import (
 	"time"
 
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 	"github.com/sirupsen/logrus"
 )
 
@@ -63,8 +63,8 @@ func (s *LogCleanupService) cleanup() {
 	maxAge := time.Duration(s.retentionDays) * 24 * time.Hour
 
 	logrus.WithFields(logrus.Fields{
-		"module":       "log_cleanup",
-		"retention":    maxAge,
+		"module":         "log_cleanup",
+		"retention":      maxAge,
 		"retention_days": s.retentionDays,
 	}).Info("Starting log cleanup")
 

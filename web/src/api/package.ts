@@ -5,6 +5,8 @@ export interface Package {
   name: string
   display_name: string
   type: string
+  package_type?: string
+  format?: string
   description: string
   latest_version?: string
   download_count: number
@@ -54,6 +56,15 @@ export interface PackageVersion {
   checksum_sha256?: string
   checksum_md5?: string
   files?: PackageFile[]
+  dependencies?: Array<{
+    id: number
+    version_id: number
+    dep_name: string
+    dep_version_constraint: string
+    dep_type: string
+    package_type: string
+    is_optional: boolean
+  }>
   files_downloaded?: boolean
 }
 
@@ -86,5 +97,9 @@ export const packageApi = {
 
   deleteVersion(versionId: number) {
     return request.delete(`/packages/versions/${versionId}`)
+  },
+
+  deletePackage(packageId: number) {
+    return request.delete(`/packages/${packageId}`)
   },
 }

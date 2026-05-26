@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"math/big"
 )
 
 var (
@@ -64,4 +65,15 @@ func DecryptString(encryptedText string, key []byte) (string, error) {
 	}
 
 	return string(plaintext), nil
+}
+
+var randomStringChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+func GenerateRandomString(length int) string {
+	result := make([]byte, length)
+	for i := 0; i < length; i++ {
+		num, _ := rand.Int(rand.Reader, big.NewInt(int64(len(randomStringChars))))
+		result[i] = randomStringChars[num.Int64()]
+	}
+	return string(result)
 }

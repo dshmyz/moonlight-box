@@ -1,34 +1,44 @@
 <template>
-  <div class="package-card" @click="$emit('click')">
-    <div class="card-top">
-      <el-tag :type="getTypeColor(pkg.type)" size="small" effect="plain">
-        {{ getPackageTypeLabel(pkg.type) }}
-      </el-tag>
-      <span class="package-name">{{ pkg.name }}</span>
-    </div>
-    <p class="package-desc">{{ pkg.description || '暂无描述' }}</p>
-    <div class="card-bottom">
-      <div class="meta-item">
-        <el-icon><PriceTag /></el-icon>
-        <span>{{ pkg.latest_version || '-' }}</span>
+  <div
+    class="package-card"
+    role="button"
+    tabindex="0"
+    @click="$emit('click')"
+    @keydown.enter="$emit('click')"
+    @keydown.space.prevent="$emit('click')"
+  >
+    <div class="card-inner" v-memo="[pkg.id, pkg.name, pkg.description, pkg.type, pkg.latest_version, pkg.download_count, pkg.updated_at]">
+      <div class="card-top">
+        <span class="type-badge" :style="typeBadgeStyle">{{ getPackageTypeLabel(pkg.type) }}</span>
+        <span class="package-name">{{ pkg.name }}</span>
       </div>
-      <div class="meta-item">
-        <el-icon><Download /></el-icon>
-        <span>{{ formatNumber(pkg.download_count || 0) }}</span>
-      </div>
-      <div class="meta-item">
-        <el-icon><Clock /></el-icon>
-        <span>{{ formatRelativeTime(pkg.updated_at) }}</span>
+      <p class="package-desc">{{ pkg.description || '暂无描述' }}</p>
+      <div class="card-bottom">
+        <div class="meta-item">
+          <el-icon><PriceTag /></el-icon>
+          <span>{{ pkg.latest_version || '-' }}</span>
+        </div>
+        <div class="meta-item">
+          <el-icon><Download /></el-icon>
+          <span>{{ formatNumber(pkg.download_count || 0) }}</span>
+        </div>
+        <div class="meta-item">
+          <el-icon><Clock /></el-icon>
+          <span>{{ formatRelativeTime(pkg.updated_at) }}</span>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { Download, PriceTag, Clock } from '@element-plus/icons-vue'
 import type { Package } from '@/api/package'
+import { formatNumber, formatRelativeTime } from '@/utils/format'
+import { getPackageTypeLabel, getPackageTypeHexColor, getPackageTypeHexColorRGB } from '@/constants/package'
 
-defineProps<{
+const props = defineProps<{
   pkg: Package
 }>()
 
@@ -36,92 +46,81 @@ defineEmits<{
   click: []
 }>()
 
-function getTypeColor(type: string) {
-  const t = type === 'maven' ? 'maven2' : type
-  const colors: Record<string, string> = {
-    npm: '',
-    maven2: 'success',
-    pypi: 'warning',
-    go: 'info',
+const typeBadgeStyle = computed(() => {
+  const color = getPackageTypeHexColor(props.pkg.type)
+  const rgb = getPackageTypeHexColorRGB(props.pkg.type)
+  return {
+    background: `rgba(${rgb}, 0.12)`,
+    color: color,
+    borderColor: `rgba(${rgb}, 0.25)`,
   }
-  return colors[t] || 'info'
-}
-
-function getPackageTypeLabel(type: string) {
-  const t = type === 'maven' ? 'maven2' : type
-  const labels: Record<string, string> = {
-    npm: 'npm',
-    maven2: 'Maven',
-    pypi: 'PyPI',
-    go: 'Go',
-  }
-  return labels[t] || type
-}
-
-function formatNumber(num: number) {
-  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`
-  return String(num)
-}
-
-function formatRelativeTime(timeStr: string) {
-  const date = new Date(timeStr)
-  const now = new Date()
-  const diffMs = now.getTime() - date.getTime()
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
-
-  if (diffDays < 0) return date.toLocaleDateString('zh-CN')
-  if (diffDays === 0) return '今天'
-  if (diffDays === 1) return '昨天'
-  if (diffDays < 30) return `${diffDays} 天前`
-  if (diffDays < 365) return `${Math.floor(diffDays / 30)} 个月前`
-  return `${Math.floor(diffDays / 365)} 年前`
-}
+})
 </script>
 
 <style scoped>
 .package-card {
-  background: #fff;
-  border-radius: 8px;
-  padding: 20px;
+  position: relative;
+  border-radius: 10px;
   cursor: pointer;
-  transition: all 0.2s;
+  overflow: hidden;
+  transition: all 0.3s ease;
+  outline: none;
 }
 
-.package-card:hover {
-  background: #fafbfc;
+.package-card:focus-visible {
+  outline: 2px solid var(--lunar-accent);
+  outline-offset: 2px;
+}
+
+.card-inner {
+  padding: 20px 24px;
+  background: var(--lunar-bg-card);
+  border: 1px solid var(--lunar-border);
+  border-radius: 10px;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+  transform: translateZ(0);
+}
+
+.package-card:hover .card-inner {
+  border-color: var(--lunar-border-hover);
+  box-shadow: var(--lunar-shadow-glow);
 }
 
 .card-top {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
-.card-top :deep(.el-tag) {
+.type-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
   border-radius: 4px;
   font-size: 11px;
-  padding: 0 6px;
-  height: 20px;
-  line-height: 18px;
+  font-weight: 700;
+  border: 1px solid;
+  letter-spacing: 0.5px;
 }
 
 .package-name {
   font-size: 15px;
-  font-weight: 500;
-  color: #1f2937;
+  font-weight: 600;
+  color: var(--lunar-silver);
   letter-spacing: -0.2px;
 }
 
 .package-desc {
-  color: #6b7280;
+  color: var(--lunar-silver-muted);
   font-size: 13px;
   margin: 0 0 14px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .card-bottom {
@@ -135,10 +134,11 @@ function formatRelativeTime(timeStr: string) {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--lunar-silver-dim);
 }
 
 .meta-item .el-icon {
   font-size: 14px;
+  color: var(--lunar-accent-soft);
 }
 </style>

@@ -1,7 +1,10 @@
 package repository
 
 import (
-	"github.com/moonlight-box/registry/internal/model"
+	"errors"
+
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/util"
 
 	"gorm.io/gorm"
 )
@@ -27,6 +30,9 @@ func (r *RoleRepository) FindByName(name string) (*model.Role, error) {
 	var role model.Role
 	result := r.db.Preload("Permissions").Where("name = ?", name).First(&role)
 	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, util.ErrRoleNotFound
+		}
 		return nil, result.Error
 	}
 	return &role, nil
@@ -135,4 +141,47 @@ func (r *RoleRepository) CloneRole(sourceRoleID uint, newName string, newDescrip
 	}
 
 	return r.FindByID(newRole.ID)
+}
+
+func (r *RoleRepository) GetRoleIDByName(name string) (uint, error) {
+	var role model.Role
+	result := r.db.Select("id").Where("name = ?", name).First(&role)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return 0, util.ErrRoleNotFound
+		}
+		return 0, result.Error
+	}
+	return role.ID, nil
+}
+
+func (r *RoleRepository) FindPermission(resource, action string) (*model.Permission, error) {
+	var perm model.Permission
+	result := r.db.Where("resource = ? AND action = ?", resource, action).First(&perm)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return &perm, nil
+}
+
+func (r *RoleRepository) CreatePermission(resource, action string) (*model.Permission, error) {
+	perm := &model.Permission{
+		Resource: resource,
+		Action:   action,
+	}
+	result := r.db.Create(perm)
+	return perm, result.Error
+}
+
+func (r *RoleRepository) AssignPermissions(roleID uint, permissionIDs []uint) error {
+	for _, permID := range permissionIDs {
+		rp := model.RolePermission{
+			RoleID:       roleID,
+			PermissionID: permID,
+		}
+		if err := r.db.Where(rp).FirstOrCreate(&rp).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }

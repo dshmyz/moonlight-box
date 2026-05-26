@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/moonlight-box/registry/internal/ai/models"
-	"github.com/moonlight-box/registry/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/ai/models"
+	"github.com/dshmyz/moonlight-box/internal/config"
 )
 
 // AIClient 是 AI 服务的客户端

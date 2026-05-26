@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 	"github.com/sirupsen/logrus"
 )
 
@@ -56,10 +56,10 @@ func (s *BackupService) CreateBackup(name string, backupType model.BackupType, d
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"module":     "backup",
-		"backup_id":  backup.ID,
+		"module":      "backup",
+		"backup_id":   backup.ID,
 		"backup_name": name,
-		"type":       backupType,
+		"type":        backupType,
 	}).Info("Backup created, starting execution")
 
 	go s.executeBackup(backup)
@@ -179,16 +179,16 @@ func (s *BackupService) RestoreBackup(backupID uint) error {
 
 	if backup.Status != model.BackupStatusCompleted {
 		logrus.WithFields(logrus.Fields{
-			"module":       "backup",
-			"backup_id":    backupID,
+			"module":         "backup",
+			"backup_id":      backupID,
 			"current_status": backup.Status,
 		}).Warn("Restore backup failed: backup not completed")
 		return fmt.Errorf("backup is not completed, current status: %s", backup.Status)
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"module":    "backup",
-		"backup_id": backupID,
+		"module":      "backup",
+		"backup_id":   backupID,
 		"backup_name": backup.Name,
 	}).Info("Backup restoration started")
 
@@ -267,8 +267,8 @@ func (s *BackupService) RestoreBackup(backupID uint) error {
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"module":    "backup",
-		"backup_id": backupID,
+		"module":      "backup",
+		"backup_id":   backupID,
 		"backup_name": backup.Name,
 	}).Info("Backup restoration completed successfully")
 

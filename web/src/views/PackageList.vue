@@ -34,14 +34,14 @@
 
       <div class="type-filters">
         <el-radio-group v-model="filterType" @change="handleFilter">
-          <el-radio-button label="">全部</el-radio-button>
-          <el-radio-button label="npm">npm</el-radio-button>
-          <el-radio-button label="maven">Maven</el-radio-button>
-          <el-radio-button label="pypi">PyPI</el-radio-button>
-          <el-radio-button label="go">Go</el-radio-button>
-          <el-radio-button label="yum">Yum</el-radio-button>
-          <el-radio-button label="apt">Apt</el-radio-button>
-          <el-radio-button label="generic">Generic</el-radio-button>
+          <el-radio-button value="">全部</el-radio-button>
+          <el-radio-button value="npm">npm</el-radio-button>
+          <el-radio-button value="maven">Maven</el-radio-button>
+          <el-radio-button value="pypi">PyPI</el-radio-button>
+          <el-radio-button value="go">Go</el-radio-button>
+          <el-radio-button value="yum">Yum</el-radio-button>
+          <el-radio-button value="apt">Apt</el-radio-button>
+          <el-radio-button value="generic">Generic</el-radio-button>
         </el-radio-group>
       </div>
 
@@ -68,6 +68,7 @@
         :loading="loading"
         @view-versions="handleViewVersions"
         @view-detail="handleViewDetail"
+        @delete-package="handleDeletePackage"
       />
 
       <PackageCards
@@ -76,6 +77,7 @@
         :loading="loading"
         @view-versions="handleViewVersions"
         @view-detail="handleViewDetail"
+        @delete-package="handleDeletePackage"
       />
 
       <div class="list-footer" v-if="total > 0">
@@ -117,7 +119,7 @@ import PackageCards from '@/components/package/PackageCards.vue'
 import VersionDrawer from '@/components/package/VersionDrawer.vue'
 import UploadPackageDialog from '@/components/package/UploadPackageDialog.vue'
 import { packageApi, type Package } from '@/api/package'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const router = useRouter()
 const loading = ref(false)
@@ -153,7 +155,10 @@ async function loadPackages() {
       page: currentPage.value,
       page_size: pageSize.value,
     })
-    packages.value = response.list || []
+    packages.value = (response.list || []).map(pkg => ({
+      ...pkg,
+      type: pkg.type || pkg.package_type || pkg.format || 'generic',
+    }))
     total.value = response.total || 0
   } catch (error) {
     ElMessage.error('加载包列表失败')
@@ -206,6 +211,30 @@ function handleViewDetail(pkg: Package) {
 
 function handleUploadSuccess() {
   loadPackages()
+}
+
+async function handleDeletePackage(pkg: Package) {
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除包 "${pkg.display_name || pkg.name}" 及其所有版本吗？此操作不可恢复！`,
+      '删除确认',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger',
+      }
+    )
+
+    await packageApi.deletePackage(pkg.id)
+    ElMessage.success('包已删除')
+    loadPackages()
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('删除包失败')
+      console.error('Failed to delete package:', error)
+    }
+  }
 }
 
 onMounted(() => {

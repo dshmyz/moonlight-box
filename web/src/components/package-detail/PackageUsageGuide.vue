@@ -53,8 +53,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { CopyDocument } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
 import { normalizePackageType } from '@/constants/package'
+import { copyToClipboard } from '@/utils/clipboard'
 
 interface CommandItem {
   label: string
@@ -215,13 +215,8 @@ const usageExamples = computed<CodeItem[]>(() => {
   }
 })
 
-async function copyCommand(text: string) {
-  try {
-    await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制到剪贴板')
-  } catch {
-    ElMessage.error('复制失败')
-  }
+function copyCommand(text: string) {
+  copyToClipboard(text)
 }
 </script>
 
@@ -239,7 +234,7 @@ async function copyCommand(text: string) {
 .card-title {
   font-size: 16px;
   font-weight: 600;
-  color: #303133;
+  color: var(--lunar-silver);
 }
 
 .version-tag {
@@ -257,7 +252,7 @@ async function copyCommand(text: string) {
 .section-title {
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
+  color: var(--lunar-silver);
   margin: 0 0 12px;
 }
 
@@ -271,7 +266,7 @@ async function copyCommand(text: string) {
 
 .command-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--lunar-silver-dim);
   margin-bottom: 4px;
 }
 
@@ -279,7 +274,8 @@ async function copyCommand(text: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: #f5f7fa;
+  background: var(--lunar-bg-glass);
+  border: 1px solid var(--lunar-border);
   border-radius: 6px;
   padding: 8px 12px;
   gap: 8px;
@@ -288,14 +284,15 @@ async function copyCommand(text: string) {
 .command-row code {
   font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   font-size: 13px;
-  color: #303133;
+  color: var(--lunar-silver);
   word-break: break-all;
   flex: 1;
 }
 
 .code-block {
   position: relative;
-  background: #1e1e1e;
+  background: var(--lunar-bg-surface);
+  border: 1px solid var(--lunar-border);
   border-radius: 6px;
   padding: 12px 40px 12px 16px;
   overflow-x: auto;
@@ -308,7 +305,7 @@ async function copyCommand(text: string) {
 .code-block code {
   font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   font-size: 13px;
-  color: #d4d4d4;
+  color: var(--lunar-silver-muted);
   line-height: 1.6;
   white-space: pre;
 }
@@ -317,10 +314,10 @@ async function copyCommand(text: string) {
   position: absolute;
   top: 8px;
   right: 8px;
-  color: #909399 !important;
+  color: var(--lunar-silver-dim) !important;
 }
 
 .copy-btn:hover {
-  color: #d4d4d4 !important;
+  color: var(--lunar-accent) !important;
 }
 </style>

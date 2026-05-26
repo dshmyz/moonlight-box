@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/config"
 )
 
 // ResponseCache 响应缓存，用于缓存相似问题的答案

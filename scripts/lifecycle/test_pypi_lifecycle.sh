@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 BASE_URL="${1:-http://localhost:9081}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASS="${ADMIN_PASS:-admin123}"
@@ -40,12 +42,25 @@ get_auth_token() {
 }
 
 check_pip() {
-    if ! command -v pip &> /dev/null; then
-        warn "pip 命令未安装，跳过 PyPI 生命周期测试"
+    PIP_CMD=""
+    if command -v pip3 &> /dev/null; then
+        PIP_CMD="pip3"
+    elif command -v pip &> /dev/null; then
+        PIP_CMD="pip"
+    elif python3 -m pip --version &> /dev/null; then
+        PIP_CMD="python3 -m pip"
+    fi
+    if [ -z "$PIP_CMD" ]; then
+        warn "pip/pip3 命令未安装，跳过 PyPI 生命周期测试"
         return 1
     fi
     return 0
 }
+
+# cleanup
+CLEAN_TEMPS=()
+cleanup() { rm -rf "${CLEAN_TEMPS[@]}" 2>/dev/null || true; }
+trap cleanup EXIT
 
 echo "============================================"
 echo " PyPI 生命周期测试"
@@ -66,6 +81,7 @@ if [ -z "$TOKEN" ]; then
 fi
 
 TEST_DIR="/tmp/pypi-test-$$"
+CLEAN_TEMPS+=("$TEST_DIR")
 mkdir -p "$TEST_DIR"
 
 echo "════════════════════════════════════════"
@@ -116,7 +132,7 @@ echo "════════════════════════�
 echo "  测试 2: 构建 Python 包"
 echo "════════════════════════════════════════"
 
-if python3 -m build > /dev/null 2>&1 || python setup.py sdist bdist_wheel > /dev/null 2>&1; then
+if python3 -m build > /dev/null 2>&1 || python3 setup.py sdist bdist_wheel > /dev/null 2>&1; then
     pass "Python 包构建成功"
     
     WHEEL_FILE=$(find dist -name "*.whl" | head -n 1)
@@ -141,7 +157,7 @@ if [ -d "dist" ] && [ "$(ls -A dist 2>/dev/null)" ]; then
             pass "Python 包上传成功"
             
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-                "$BASE_URL/repo/pypi-local/simple/test-pypi-package/")
+                "$BASE_URL/repository/pypi-local/simple/test-pypi-package/")
             
             if [ "$HTTP_CODE" = "200" ]; then
                 pass "上传的包在 Simple Index 中可访问 (HTTP 200)"
@@ -164,10 +180,11 @@ echo "  测试 4: 从本地仓库安装"
 echo "════════════════════════════════════════"
 
 INSTALL_DIR="/tmp/pypi-install-test-$$"
+CLEAN_TEMPS+=("$INSTALL_DIR")
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-if pip install --index-url "$BASE_URL/repo/pypi-local/simple/" \
+if $PIP_CMD install --index-url "$BASE_URL/repository/pypi-local/simple/" \
     --trusted-host localhost test-pypi-package > /dev/null 2>&1; then
     pass "从本地仓库安装 Python 包成功"
     
@@ -186,10 +203,11 @@ echo "  测试 5: 从代理仓库安装"
 echo "════════════════════════════════════════"
 
 PROXY_INSTALL_DIR="/tmp/pypi-proxy-install-test-$$"
+CLEAN_TEMPS+=("$PROXY_INSTALL_DIR")
 mkdir -p "$PROXY_INSTALL_DIR"
 cd "$PROXY_INSTALL_DIR"
 
-if pip install --index-url "$BASE_URL/repo/pypi-proxy-tuna/simple/" \
+if $PIP_CMD install --index-url "$BASE_URL/repository/pypi-proxy-tuna/simple/" \
     --trusted-host localhost requests > /dev/null 2>&1; then
     pass "从代理仓库安装 requests 成功"
     
@@ -210,7 +228,7 @@ echo "════════════════════════�
 cd /
 rm -rf "$TEST_DIR" "$INSTALL_DIR" "$PROXY_INSTALL_DIR"
 
-pip uninstall -y test-pypi-package > /dev/null 2>&1 || true
+$PIP_CMD uninstall -y test-pypi-package > /dev/null 2>&1 || true
 
 if [ ! -d "$TEST_DIR" ] && [ ! -d "$INSTALL_DIR" ] && [ ! -d "$PROXY_INSTALL_DIR" ]; then
     pass "测试文件清理成功"

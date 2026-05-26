@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/sirupsen/logrus"
 )
 

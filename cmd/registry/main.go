@@ -10,19 +10,30 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/adapter"
-	"github.com/moonlight-box/registry/internal/ai"
-	"github.com/moonlight-box/registry/internal/ai/tools"
-	"github.com/moonlight-box/registry/internal/cache"
-	"github.com/moonlight-box/registry/internal/config"
-	"github.com/moonlight-box/registry/internal/database"
-	"github.com/moonlight-box/registry/internal/handler"
-	"github.com/moonlight-box/registry/internal/migration"
-	"github.com/moonlight-box/registry/internal/proxy"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/service"
-	"github.com/moonlight-box/registry/internal/types"
-	"github.com/moonlight-box/registry/internal/util"
+	"github.com/dshmyz/moonlight-box/internal/ai"
+	"github.com/dshmyz/moonlight-box/internal/ai/tools"
+	handler "github.com/dshmyz/moonlight-box/internal/api/http"
+	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/core/cache"
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/database"
+	migv2executor "github.com/dshmyz/moonlight-box/internal/migration/v2/executor"
+	migv2handler "github.com/dshmyz/moonlight-box/internal/migration/v2/handler"
+	migv2repo "github.com/dshmyz/moonlight-box/internal/migration/v2/repository"
+	migv2sched "github.com/dshmyz/moonlight-box/internal/migration/v2/scheduler"
+	migv2svc "github.com/dshmyz/moonlight-box/internal/migration/v2/service"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/plugins/apt"
+	gomod "github.com/dshmyz/moonlight-box/internal/plugins/go"
+	"github.com/dshmyz/moonlight-box/internal/plugins/maven"
+	"github.com/dshmyz/moonlight-box/internal/plugins/npm"
+	"github.com/dshmyz/moonlight-box/internal/plugins/pypi"
+	"github.com/dshmyz/moonlight-box/internal/plugins/raw"
+	"github.com/dshmyz/moonlight-box/internal/plugins/yum"
+	"github.com/dshmyz/moonlight-box/internal/proxy"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 
 	"github.com/gin-gonic/gin"
@@ -54,12 +65,13 @@ func main() {
 		return
 	}
 
+	// 加载配置（先加载配置，再初始化日志）
+	// 使用临时日志记录配置加载过程
 	logrus.WithFields(logrus.Fields{
 		"version":    version,
 		"build_time": buildTime,
 	}).Info("Moonlight Registry starting")
 
-	// 加载配置
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
@@ -74,18 +86,29 @@ func main() {
 		}
 	}
 
-	logrus.WithFields(logrus.Fields{
+	// 初始化日志系统（使用配置中的日志设置）
+	// 注意：日志初始化必须在数据库初始化之前
+	{
+		// 转换配置格式
+		// 注意：如果日志配置变更，需要同步更新此处
+		_ = util.InitLogger(&util.LoggerConfig{
+			Level:            cfg.Logging.Level,
+			Format:           cfg.Logging.Format,
+			Output:           cfg.Logging.Output,
+			EnableSplitFiles: cfg.Logging.EnableSplitFiles,
+			SqlLogFile:       cfg.Logging.SqlLogFile,
+			ErrorLogFile:     cfg.Logging.ErrorLogFile,
+			AccessLogFile:    cfg.Logging.AccessLogFile,
+			LogRetentionDays: cfg.Logging.LogRetentionDays,
+		})
+	}
+
+	util.WithFields(logrus.Fields{
 		"server_port": cfg.Server.Port,
 		"db_driver":   cfg.Database.Driver,
 		"storage":     cfg.Storage.Backend,
 		"ai_enabled":  cfg.AI.Enabled,
 	}).Info("Configuration loaded")
-
-	// 初始化日志
-	if err := util.InitLogger(&cfg.Logging); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
-		os.Exit(1)
-	}
 
 	// 初始化数据库
 	if err := database.Initialize(cfg); err != nil {
@@ -120,7 +143,6 @@ func main() {
 	// 初始化仓库
 	userRepo := repository.NewUserRepository(database.GetDB())
 	roleRepo := repository.NewRoleRepository(database.GetDB())
-	packageRepo := repository.NewPackageRepository(database.GetDB())
 	proxyDownloadLogRepo := repository.NewProxyDownloadLogRepository(database.GetDB())
 
 	// 初始化服务
@@ -133,7 +155,6 @@ func main() {
 	groupRepo := repository.NewGroupRepository(db)
 	blockRuleRepo := repository.NewBlockRuleRepository(db)
 	storageBackendRepo := repository.NewStorageBackendRepository(db)
-	migrationItemRepo := repository.NewMigrationItemRepository(db)
 	// 初始化缓存服务
 	cacheOpts := proxy.CacheServiceOptions{
 		MaxBytes: cfg.Cache.MaxSizeGB * 1024 * 1024 * 1024,
@@ -148,6 +169,7 @@ func main() {
 		Interval:         cfg.Proxy.HealthCheck.Interval,
 		Timeout:          cfg.Proxy.HealthCheck.Timeout,
 		FailureThreshold: cfg.Proxy.HealthCheck.FailureThreshold,
+		BlockOnUnhealthy: cfg.Proxy.HealthCheck.BlockOnUnhealthy,
 	}
 
 	// 从系统配置中读取健康检查配置（覆盖配置文件中的值）
@@ -165,6 +187,7 @@ func main() {
 	if threshold := configInitializer.GetConfigAsInt("health_check.failure_threshold", 0); threshold > 0 {
 		healthCheckCfg.FailureThreshold = threshold
 	}
+	healthCheckCfg.BlockOnUnhealthy = configInitializer.GetConfigAsBool("health_check.block_on_unhealthy", false)
 
 	// 使用默认值填充未配置的值
 	if healthCheckCfg.Interval == 0 {
@@ -213,70 +236,93 @@ func main() {
 	// 初始化权限缓存服务（5分钟TTL）
 	permCacheSvc := service.NewPermissionCacheService(roleRepo, 5*time.Minute)
 
-	// 创建 PackageCache（5分钟TTL）
-	pkgCache := cache.NewPackageCache(packageRepo, 5*time.Minute)
+	// 初始化协议插件（新架构）
+	npmPlugin := npm.NewNpmPlugin()
+	mavenPlugin := maven.NewMavenPlugin()
+	goPlugin := gomod.NewGoPlugin()
+	pypiPlugin := pypi.NewPyPIPlugin()
+	genericPlugin := raw.NewGenericPlugin()
+	yumPlugin := yum.NewYumPlugin()
+	aptPlugin := apt.NewAptPlugin()
 
-	// 初始化适配器（传入 pkgCache）
-	npmAdapter := adapter.NewNpmAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
-	mavenAdapter := adapter.NewMavenAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
-	pypiAdapter := adapter.NewPyPIAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
-	goAdapter := adapter.NewGoAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
-	genericAdapter := adapter.NewGenericAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
-	yumAdapter := adapter.NewYumAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
-	aptAdapter := adapter.NewAptAdapter(packageRepo, repoRepo, storageSvc, auditSvc, pkgCache)
-
-	// 构建 adapter map 用于 DownloadService
-	adapterMap := map[string]types.Adapter{
-		string(types.NpmType):     npmAdapter,
-		string(types.MavenType):   mavenAdapter,
-		string(types.PyPIType):    pypiAdapter,
-		string(types.GoType):      goAdapter,
-		string(types.GenericType): genericAdapter,
-		string(types.YumType):     yumAdapter,
-		string(types.AptType):     aptAdapter,
+	// 创建新架构 RepositoryRouter
+	repoManager := runtime.NewDefaultRepositoryManager()
+	compositeResolver := &runtime.CompositeResolver{
+		Resolvers: []runtime.RepositoryPathResolver{
+			&runtime.Nexus3Resolver{},
+			&runtime.Nexus2Resolver{},
+			&runtime.Nexus2GroupResolver{},
+		},
 	}
+	repositoryRouter := runtime.NewRepositoryRouter(compositeResolver, repoManager)
+	repositoryRouter.RegisterPlugin("maven", mavenPlugin)
+	repositoryRouter.RegisterPlugin("npm", npmPlugin)
+	repositoryRouter.RegisterPlugin("go", goPlugin)
+	repositoryRouter.RegisterPlugin("pypi", pypiPlugin)
+	repositoryRouter.RegisterPlugin("generic", genericPlugin)
+	repositoryRouter.RegisterPlugin("yum", yumPlugin)
+	repositoryRouter.RegisterPlugin("apt", aptPlugin)
 
-	// 创建 ProxyDownloader 实例（纯代理下载组件）
-	proxyDownloader := proxy.NewProxyDownloader(cacheSvc, remoteClient, adapterMap)
+	fetchers := map[string]runtime.RemoteFetcher{
+		"pypi": pypiPlugin,
+		"npm":  npmPlugin,
+	}
+	blockRuleSvc := service.NewBlockRuleService(blockRuleRepo, auditSvc)
+	blocker := &blockRuleBlocker{svc: blockRuleSvc}
 
-	// 注入健康检查服务到 ProxyDownloader
-	proxyDownloader.SetHealthCheckService(healthCheckSvc)
-
-	// 创建 DownloadService
-	downloadSvc := service.NewDownloadService(
-		repoRepo,
-		groupRepo,
-		adapterMap,
-		packageRepo,
-		storageSvc,
-		proxyDownloader,
-		proxyDownloadLogRepo,
-		logBatcher,
-		countBatcher,
-	)
+	initRepoRuntimes(repoManager, repoRepo, groupRepo, db, storageSvc, fetchers, blocker)
 
 	// 初始化仓库缓存（5分钟TTL）
 	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
 	repoCache.StartCleanup(1 * time.Minute)
 	defer repoCache.Stop()
 
-	// 创建 RepoHandler（负责仓库请求的统一处理）
-	proxyRepoHandler := proxy.NewRepoHandler(repoRepo, groupRepo, repoCache)
-	proxyRepoHandler.SetDownloadService(downloadSvc)
-
-	adapters := []types.Adapter{
-		npmAdapter,
-		mavenAdapter,
-		pypiAdapter,
-		goAdapter,
-		genericAdapter,
-		yumAdapter,
-		aptAdapter,
-	}
-
 	repoSvc := service.NewRepositoryService(repoRepo, groupRepo, db)
 	repoSvc.SetRepoCache(repoCache)
-	blockRuleSvc := service.NewBlockRuleService(blockRuleRepo, auditSvc)
+	repoSvc.SetRepoManager(repoManager)
+	repoSvc.SetRuntimeFactory(func(repo *model.Repository, members []string) (*runtime.Repository, error) {
+		defaultBackend := storageSvc.GetDefaultBackend()
+		if defaultBackend == nil {
+			return nil, fmt.Errorf("no default storage backend available")
+		}
+		repoRuntime, createErr := createRuntimeForRepo(repo, repoRepo, groupRepo, db, defaultBackend, repoManager, fetchers, blocker)
+		if createErr != nil {
+			return nil, createErr
+		}
+		config := map[string]interface{}{
+			"allow_overwrite": repo.AllowOverwrite,
+		}
+		if repo.Config != nil {
+			config["remote_url"] = repo.Config.RemoteURL
+			config["auth_type"] = repo.Config.AuthType
+			config["cache_enabled"] = repo.Config.CacheEnabled
+			config["cache_ttl_seconds"] = repo.Config.CacheTTLSeconds
+			config["cache_negative_ttl"] = repo.Config.CacheNegativeTTL
+			config["timeout_seconds"] = repo.Config.TimeoutSeconds
+			config["insecure_skip_verify"] = repo.Config.InsecureSkipVerify
+		}
+		if repo.Type == model.RepoTypeProxy && config["remote_url"] == "" {
+			var dbRemoteURL string
+			db.Raw("SELECT remote_url FROM repositories WHERE id = ?", repo.ID).Scan(&dbRemoteURL)
+			if dbRemoteURL != "" {
+				config["remote_url"] = dbRemoteURL
+			}
+		}
+		return &runtime.Repository{
+			ID:      fmt.Sprintf("%d", repo.ID),
+			Name:    repo.Name,
+			Format:  repo.PackageType,
+			Type:    string(repo.Type),
+			Config:  config,
+			Runtime: repoRuntime,
+		}, nil
+	})
+
+	// Wire block rules and audit logging into the repository router
+	repositoryRouter.Blocker = blocker
+	repositoryRouter.AuditLog = &auditLoggerAdapter{svc: auditSvc}
+	repositoryRouter.DownloadCount = newDownloadCountAdapter(countBatcher)
+	repositoryRouter.ProxyLog = newProxyLogAdapter(logBatcher)
 
 	// 注册所有缓存到缓存管理器
 	cacheSvcProvider := proxy.NewCacheServiceProvider(cacheSvc, "proxy-content", "代理下载内容缓存")
@@ -287,16 +333,6 @@ func main() {
 
 	permCacheProvider := service.NewPermissionCacheProvider(permCacheSvc, "permission", "权限缓存")
 	cacheMgr.Register(permCacheProvider)
-
-	pkgCacheProvider := cache.NewPackageCacheProvider(pkgCache, "package-metadata", "包元数据缓存")
-	cacheMgr.Register(pkgCacheProvider)
-
-	// 注入 Fetcher 到所有适配器
-	for _, adap := range adapters {
-		if repoAdap, ok := adap.(adapter.RepoAwareAdapter); ok {
-			repoAdap.SetFetcher(proxyDownloader)
-		}
-	}
 
 	// 初始化备份服务
 	backupRepo := repository.NewBackupRepository(db)
@@ -334,7 +370,6 @@ func main() {
 	blockRuleHandler := handler.NewBlockRuleHandler(blockRuleSvc, auditSvc, auditRepo)
 	userHandler := handler.NewUserHandler(userRepo, roleRepo, auditSvc)
 	roleHandler := handler.NewRoleHandler(roleRepo, auditSvc)
-	pkgVersionHandler := handler.NewPackageVersionHandler(packageRepo)
 
 	// 初始化 CAS 认证服务
 	casSvc := service.NewCASService(&cfg.Auth, userRepo, roleRepo, authService, systemConfigSvc)
@@ -342,7 +377,7 @@ func main() {
 
 	// 初始化安全扫描服务
 	scanRepo := repository.NewScanRepository(db)
-	scanner := service.NewSecurityScanner(scanRepo, packageRepo, blockRuleRepo)
+	scanner := service.NewSecurityScanner(scanRepo, db, blockRuleRepo)
 	securityHandler := handler.NewSecurityHandler(scanner)
 
 	vulnRuleRepo := repository.NewVulnRuleRepository(db)
@@ -365,28 +400,28 @@ func main() {
 	systemInfoHandler := handler.NewSystemInfoHandler(version, buildTime, gitCommit, time.Now().Unix())
 
 	// 初始化文件浏览服务
-	fileBrowseHandler := handler.NewFileBrowseHandler(cfg.Storage.Local.BasePath)
+	fileBrowseHandler := handler.NewFileBrowseHandler(storageSvc)
 
-	// 初始化迁移 worker（先传 nil 作为 service）
-	migrationWorker := migration.NewMigrationWorkerV2(nil, storageSvc, packageRepo, repoRepo, migrationItemRepo, 5, 3, 50)
-
-	// 创建仓库创建器适配器
-	repoCreator := migration.NewRepositoryCreatorAdapter(repoRepo, storageBackendRepo)
-
-	// 初始化迁移 service（注入 worker 和 repoCreator，最大并发 1 个任务）
-	migrationSvc := migration.NewMigrationService(db, migrationWorker, repoCreator, 1)
-	migrationSvc.StartQueue() // 启动队列处理器
-
-	// 设置 worker 的 service 引用
-	migrationWorker.SetService(migrationSvc)
-
-	migrationHandler := handler.NewMigrationHandler(migrationSvc, migrationWorker, repoRepo, storageBackendRepo)
+	// V2 migration pipeline
+	migV2PlanRepo := migv2repo.NewPlanRepo(db)
+	migV2JobRepo := migv2repo.NewJobRepo(db)
+	migV2ItemRepo := migv2repo.NewItemRepo(db)
+	migV2ConflictRepo := migv2repo.NewConflictRepo(db)
+	migV2EventRepo := migv2repo.NewEventRepo(db)
+	migV2ExecMgr := migv2executor.NewExecutorManager(db, nil, storageSvc, migV2ItemRepo, migV2EventRepo, 5)
+	migV2Scheduler := migv2sched.New(db, migV2PlanRepo, migV2JobRepo, migV2ItemRepo, migV2EventRepo, migV2ExecMgr, 3)
+	migV2Svc := migv2svc.New(db, migV2PlanRepo, migV2JobRepo, migV2ItemRepo, migV2ConflictRepo, migV2EventRepo, migV2Scheduler)
+	migV2Svc.RecoverInterruptedPlans(context.Background())
+	migV2Handler := migv2handler.NewMigrationV2Handler(migV2Svc)
 
 	// 初始化代理下载日志 handler
 	proxyDownloadLogHandler := handler.NewProxyDownloadLogHandler(proxyDownloadLogRepo)
 
 	// 初始化健康检查 handler
 	healthCheckHandler := handler.NewHealthCheckHandler(healthCheckSvc)
+
+	// 初始化包版本管理 handler（新架构，读取 artifacts 表）
+	packageVersionHandler := handler.NewPackageVersionHandler(db)
 
 	// 初始化AI服务
 	var aiService *ai.AIService
@@ -431,6 +466,10 @@ func main() {
 		codeGenTool := tools.NewCodeGenTool()
 		codeGenTool.SetContext(toolContext)
 		aiService.RegisterTool(codeGenTool, []string{})
+		// 依赖优化分析工具 - 所有用户可用
+		depOptimizerTool := tools.NewDependencyOptimizerTool()
+		depOptimizerTool.SetContext(toolContext)
+		aiService.RegisterTool(depOptimizerTool, []string{})
 
 		// 创建AI处理器
 		aiHandler = handler.NewAIHandler(aiService)
@@ -439,7 +478,7 @@ func main() {
 	}
 
 	// 创建路由器上下文
-	routerCtx := NewRouterContext(cfg, authService, auditSvc, permCacheSvc, blockRuleSvc, repoSvc, proxyRepoHandler, adapters, webhookSvc)
+	routerCtx := NewRouterContext(cfg, authService, auditSvc, permCacheSvc, blockRuleSvc, repoSvc, repositoryRouter, webhookSvc)
 	routerCtx.RepoCache = repoCache
 	routerCtx.Handlers.Repo = repoHandler
 	routerCtx.Handlers.PublicRepo = publicRepoHandler
@@ -453,18 +492,18 @@ func main() {
 	routerCtx.Handlers.AuditLog = auditLogHandler
 	routerCtx.Handlers.User = userHandler
 	routerCtx.Handlers.Role = roleHandler
-	routerCtx.Handlers.PackageVersion = pkgVersionHandler
 	routerCtx.Handlers.Backup = backupHandler
 	routerCtx.Handlers.BackupConfig = backupConfigHandler
 	routerCtx.Handlers.Webhook = webhookHandler
 	routerCtx.Handlers.SystemConfig = systemConfigHandler
 	routerCtx.Handlers.SystemInfo = systemInfoHandler
 	routerCtx.Handlers.FileBrowse = fileBrowseHandler
-	routerCtx.Handlers.Migration = migrationHandler
+	routerCtx.Handlers.MigrationV2 = migV2Handler
 	routerCtx.Handlers.AI = aiHandler
 	routerCtx.Handlers.ProxyDownloadLog = proxyDownloadLogHandler
 	routerCtx.Handlers.HealthCheck = healthCheckHandler
 	routerCtx.Handlers.VulnRule = vulnRuleHandler
+	routerCtx.Handlers.PackageVersion = packageVersionHandler
 
 	router := routerCtx.SetupRouter(version)
 

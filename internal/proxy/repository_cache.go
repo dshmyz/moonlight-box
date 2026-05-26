@@ -1,13 +1,14 @@
 package proxy
 
 import (
+	"context"
 	"sync"
 	"time"
 
 	"log/slog"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 )
 
 type RepositoryCache struct {
@@ -27,7 +28,7 @@ type repositoryCacheEntry struct {
 }
 
 type memberCacheEntry struct {
-	member    *model.RepositoryGroup
+	member    *model.RepositoryMember
 	expiresAt time.Time
 }
 
@@ -48,6 +49,10 @@ func NewRepositoryCache(repoRepo *repository.RepositoryRepository, groupRepo *re
 }
 
 func (c *RepositoryCache) GetByName(name string) (*model.Repository, error) {
+	return c.GetByNameContext(context.Background(), name)
+}
+
+func (c *RepositoryCache) GetByNameContext(ctx context.Context, name string) (*model.Repository, error) {
 	c.mu.RLock()
 	entry, exists := c.repos[name]
 	c.mu.RUnlock()
@@ -56,7 +61,7 @@ func (c *RepositoryCache) GetByName(name string) (*model.Repository, error) {
 		return entry.repo, nil
 	}
 
-	repo, err := c.repoRepo.FindByName(name)
+	repo, err := c.repoRepo.FindByNameContext(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +80,10 @@ func (c *RepositoryCache) GetByName(name string) (*model.Repository, error) {
 }
 
 func (c *RepositoryCache) GetByID(id uint) (*model.Repository, error) {
+	return c.GetByIDContext(context.Background(), id)
+}
+
+func (c *RepositoryCache) GetByIDContext(ctx context.Context, id uint) (*model.Repository, error) {
 	c.mu.RLock()
 	entry, exists := c.reposByID[id]
 	c.mu.RUnlock()
@@ -83,7 +92,7 @@ func (c *RepositoryCache) GetByID(id uint) (*model.Repository, error) {
 		return entry.repo, nil
 	}
 
-	repo, err := c.repoRepo.FindByID(id)
+	repo, err := c.repoRepo.FindByIDContext(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -111,6 +120,10 @@ func (c *RepositoryCache) setCacheEntry(repo *model.Repository) {
 }
 
 func (c *RepositoryCache) GetVirtualRepo(pkgType string) (*model.Repository, error) {
+	return c.GetVirtualRepoContext(context.Background(), pkgType)
+}
+
+func (c *RepositoryCache) GetVirtualRepoContext(ctx context.Context, pkgType string) (*model.Repository, error) {
 	c.mu.RLock()
 	for _, entry := range c.repos {
 		if entry.repo.Type == model.RepoTypeVirtual && entry.repo.PackageType == pkgType && entry.repo.Enabled {
@@ -121,7 +134,7 @@ func (c *RepositoryCache) GetVirtualRepo(pkgType string) (*model.Repository, err
 	}
 	c.mu.RUnlock()
 
-	repo, err := c.repoRepo.FindVirtualByPackageType(pkgType)
+	repo, err := c.repoRepo.FindVirtualByPackageTypeContext(ctx, pkgType)
 	if err != nil {
 		return nil, err
 	}
@@ -139,13 +152,17 @@ func (c *RepositoryCache) GetVirtualRepo(pkgType string) (*model.Repository, err
 	return repo, nil
 }
 
-func (c *RepositoryCache) GetMembers(virtualRepoID uint) ([]model.RepositoryGroup, error) {
+func (c *RepositoryCache) GetMembers(virtualRepoID uint) ([]model.RepositoryMember, error) {
+	return c.GetMembersContext(context.Background(), virtualRepoID)
+}
+
+func (c *RepositoryCache) GetMembersContext(ctx context.Context, virtualRepoID uint) ([]model.RepositoryMember, error) {
 	c.mu.RLock()
 	entries, exists := c.members[virtualRepoID]
 	c.mu.RUnlock()
 
 	if exists {
-		var validMembers []model.RepositoryGroup
+		var validMembers []model.RepositoryMember
 		allValid := true
 		for _, entry := range entries {
 			if time.Now().Before(entry.expiresAt) {
@@ -160,7 +177,7 @@ func (c *RepositoryCache) GetMembers(virtualRepoID uint) ([]model.RepositoryGrou
 		}
 	}
 
-	members, err := c.groupRepo.GetMembersByVirtualRepo(virtualRepoID)
+	members, err := c.groupRepo.GetMembersByVirtualRepoContext(ctx, virtualRepoID)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +196,7 @@ func (c *RepositoryCache) GetMembers(virtualRepoID uint) ([]model.RepositoryGrou
 
 	slog.Debug("Cached virtual repository members",
 		"module", "repository_cache",
-		"virtual_repo_id", virtualRepoID,
+		"repository_id", virtualRepoID,
 		"member_count", len(members),
 	)
 

@@ -53,6 +53,6 @@ export const authApi = {
     return request.put<UserProfile>('/auth/profile', payload)
   },
   changePassword(payload: ChangePasswordPayload) {
-    return request.post('/auth/password', payload)
+    return request.put('/auth/password', payload)
   },
 }

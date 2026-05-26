@@ -6,8 +6,8 @@ import (
 	"errors"
 	"net/http"
 
+	apperr "github.com/dshmyz/moonlight-box/internal/errors"
 	"github.com/gin-gonic/gin"
-	apperr "github.com/moonlight-box/registry/internal/errors"
 )
 
 // Response 标准 API 响应结构
@@ -87,6 +87,7 @@ func BadRequest(c *gin.Context, message string, errors interface{}) {
 
 // Unauthorized 返回未授权响应（401 Unauthorized）
 func Unauthorized(c *gin.Context, message string) {
+	c.Header("WWW-Authenticate", `Basic realm="Moonlight Registry"`)
 	c.JSON(http.StatusUnauthorized, Response{
 		Code:    http.StatusUnauthorized,
 		Message: message,

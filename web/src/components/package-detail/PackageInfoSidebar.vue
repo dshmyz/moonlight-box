@@ -54,9 +54,9 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ElMessage } from 'element-plus'
 import { formatNumber, formatSize, formatDate } from '@/utils/format'
 import { getPackageTypeColor, getPackageTypeLabel, normalizePackageType, getVersionStatusColor, getVersionStatusLabel } from '@/constants/package'
+import { copyToClipboard } from '@/utils/clipboard'
 import type { PackageVersion } from '@/api/package'
 
 const props = defineProps<{
@@ -81,11 +81,11 @@ const registryUrl = computed(() => {
   const repo = props.pkg.repository || 'default'
   switch (normalizePackageType(props.pkg.type)) {
     case 'npm':
-      return `${base}/repo/${repo}/`
+      return `${base}/repository/${repo}/`
     case 'pypi':
-      return `${base}/repo/${repo}/simple`
+      return `${base}/repository/${repo}/simple`
     default:
-      return `${base}/repo/${repo}/`
+      return `${base}/repository/${repo}/`
   }
 })
 
@@ -105,14 +105,9 @@ const configCommand = computed(() => {
   }
 })
 
-async function copyText(text: string) {
+function copyText(text: string) {
   if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制到剪贴板')
-  } catch {
-    ElMessage.error('复制失败')
-  }
+  copyToClipboard(text)
 }
 </script>
 
@@ -125,19 +120,19 @@ async function copyText(text: string) {
 .card-title {
   font-size: 16px;
   font-weight: 600;
-  color: #303133;
+  color: var(--lunar-silver);
 }
 
 .version-detail {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #e4e7ed;
+  border-top: 1px solid var(--lunar-border);
 }
 
 .section-title {
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
+  color: var(--lunar-silver);
   margin: 0 0 12px;
   display: flex;
   align-items: center;
@@ -151,19 +146,19 @@ async function copyText(text: string) {
 .checksum-text {
   font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   font-size: 12px;
-  color: #909399;
+  color: var(--lunar-silver-dim);
   cursor: pointer;
   word-break: break-all;
 }
 
 .checksum-text:hover {
-  color: #409eff;
+  color: var(--lunar-accent);
 }
 
 .repo-config-section {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #e4e7ed;
+  border-top: 1px solid var(--lunar-border);
 }
 
 .config-item {
@@ -177,7 +172,7 @@ async function copyText(text: string) {
 .config-label {
   display: block;
   font-size: 12px;
-  color: #909399;
+  color: var(--lunar-silver-dim);
   margin-bottom: 4px;
 }
 
@@ -185,8 +180,9 @@ async function copyText(text: string) {
   display: block;
   font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   font-size: 12px;
-  color: #409eff;
-  background: #f5f7fa;
+  color: var(--lunar-accent);
+  background: var(--lunar-bg-glass);
+  border: 1px solid var(--lunar-border);
   border-radius: 4px;
   padding: 6px 10px;
   word-break: break-all;
@@ -195,6 +191,6 @@ async function copyText(text: string) {
 }
 
 .config-value:hover {
-  background: #ecf5ff;
+  background: rgba(196, 181, 253, 0.12);
 }
 </style>

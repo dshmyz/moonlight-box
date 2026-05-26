@@ -1,7 +1,6 @@
 package model
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -14,22 +13,11 @@ type Repository struct {
 	Type             RepositoryType `json:"type" gorm:"size:20;index:idx_repo_type_pkg"`
 	PackageType      string         `json:"package_type" gorm:"size:50;index:idx_repo_type_pkg"`
 	Enabled          bool           `json:"enabled" gorm:"default:true;index"`
+	PublicVisible    bool           `json:"public_visible" gorm:"default:true;index"`
 	StorageBackendID *uint          `json:"storage_backend_id,omitempty"`
 
-	RemoteURL     string `json:"remote_url,omitempty"`
-	AuthType      string `json:"auth_type" gorm:"default:none"`
-	AuthConfig    string `json:"auth_config" gorm:"type:text"`
-	ProxyPriority int    `json:"proxy_priority" gorm:"default:0"`
-
-	CacheEnabled     bool    `json:"cache_enabled" gorm:"default:true"`
-	CacheTTLSeconds  int     `json:"cache_ttl_seconds" gorm:"default:86400"`
-	CacheMaxSizeGB   float64 `json:"cache_max_size_gb" gorm:"default:10"`
-	CacheNegativeTTL int     `json:"cache_negative_ttl" gorm:"default:300"`
-
-	TimeoutSeconds     int    `json:"timeout_seconds" gorm:"default:0"`
-	MaxRedirects       int    `json:"max_redirects" gorm:"default:0"`
-	InsecureSkipVerify bool   `json:"insecure_skip_verify" gorm:"default:false"`
-	FailureCacheRules  string `json:"failure_cache_rules" gorm:"type:text"`
+	// Config JSONB 字段存储代理仓库相关配置（RemoteURL、认证、缓存策略等）
+	Config *RepositoryConfig `json:"config,omitempty" gorm:"serializer:json;type:text"`
 
 	AllowOverwrite bool  `json:"allow_overwrite" gorm:"default:false"`
 	AllowDelete    bool  `json:"allow_delete" gorm:"default:false"`
@@ -38,7 +26,7 @@ type Repository struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
-	Members []RepositoryGroup `json:"members,omitempty" gorm:"foreignKey:VirtualRepoID"`
+	Members []RepositoryMember `json:"members,omitempty" gorm:"foreignKey:RepositoryID"`
 
 	// URL 计算字段，不存储到数据库
 	URL string `json:"url" gorm:"-"`
@@ -48,75 +36,56 @@ func (Repository) TableName() string {
 	return "repositories"
 }
 
-// GetAuthConfig 解析认证配置JSON字符串为结构体
+// GetAuthConfig 解析认证配置
 func (r *Repository) GetAuthConfig() (*ProxyAuthConfig, error) {
-	if r.AuthConfig == "" {
+	if r.Config == nil || r.Config.Auth == nil {
 		return &ProxyAuthConfig{Type: "none"}, nil
 	}
-	var cfg ProxyAuthConfig
-	err := json.Unmarshal([]byte(r.AuthConfig), &cfg)
-	return &cfg, err
+	return r.Config.Auth, nil
 }
 
-// SanitizedAuthConfig 返回脱敏后的认证配置，用于 API 响应
+// SanitizedAuthConfig 返回脱敏后的认证配置
 func (r *Repository) SanitizedAuthConfig() (*ProxyAuthConfig, error) {
 	cfg, err := r.GetAuthConfig()
 	if err != nil {
 		return nil, err
 	}
 
-	if cfg.Basic != nil && cfg.Basic.Password != "" {
-		cfg.Basic.Password = "******"
+	sanitized := *cfg
+	if sanitized.Basic != nil {
+		b := *sanitized.Basic
+		if b.Password != "" {
+			b.Password = "******"
+		}
+		sanitized.Basic = &b
 	}
-	if cfg.Bearer != nil && cfg.Bearer.Token != "" {
-		cfg.Bearer.Token = "******"
+	if sanitized.Bearer != nil {
+		b := *sanitized.Bearer
+		if b.Token != "" {
+			b.Token = "******"
+		}
+		sanitized.Bearer = &b
 	}
-	if cfg.APIKey != nil && cfg.APIKey.KeyValue != "" {
-		cfg.APIKey.KeyValue = "******"
+	if sanitized.APIKey != nil {
+		k := *sanitized.APIKey
+		if k.KeyValue != "" {
+			k.KeyValue = "******"
+		}
+		sanitized.APIKey = &k
 	}
 
-	return cfg, nil
+	return &sanitized, nil
 }
 
-// MaskAuthConfig 返回脱敏后的 AuthConfig JSON 字符串，用于 API 响应
-func (r *Repository) MaskAuthConfig() string {
-	if r.AuthConfig == "" {
-		return ""
+// SanitizedConfig 返回脱敏后的深拷贝 Config（API 响应使用）
+func (r *Repository) SanitizedConfig() *RepositoryConfig {
+	if r.Config == nil {
+		return nil
 	}
-
-	cfg, err := r.GetAuthConfig()
-	if err != nil {
-		return r.AuthConfig
-	}
-
-	if cfg.Basic != nil && cfg.Basic.Password != "" {
-		cfg.Basic.Password = "******"
-	}
-	if cfg.Bearer != nil && cfg.Bearer.Token != "" {
-		cfg.Bearer.Token = "******"
-	}
-	if cfg.APIKey != nil && cfg.APIKey.KeyValue != "" {
-		cfg.APIKey.KeyValue = "******"
-	}
-
-	masked, _ := json.Marshal(cfg)
-	return string(masked)
-}
-
-// RepositoryGroup 虚拟仓与成员仓的关联关系
-type RepositoryGroup struct {
-	ID            uint      `json:"id" gorm:"primaryKey"`
-	VirtualRepoID uint      `json:"virtual_repo_id" gorm:"uniqueIndex:idx_virtual_member"`
-	MemberRepoID  uint      `json:"member_repo_id" gorm:"uniqueIndex:idx_virtual_member"`
-	Priority      int       `json:"priority" gorm:"default:0"`
-	CreatedAt     time.Time `json:"created_at"`
-
-	VirtualRepo Repository `json:"virtual_repo,omitempty" gorm:"foreignKey:VirtualRepoID"`
-	MemberRepo  Repository `json:"member_repo,omitempty" gorm:"foreignKey:MemberRepoID"`
-}
-
-func (RepositoryGroup) TableName() string {
-	return "repository_groups"
+	cfg := *r.Config
+	sanitizedAuth, _ := r.SanitizedAuthConfig()
+	cfg.Auth = sanitizedAuth
+	return &cfg
 }
 
 // ProxyAuthConfig 代理仓库认证配置
@@ -143,4 +112,20 @@ type APIKeyAuth struct {
 	HeaderName string `json:"header_name"`
 	KeyValue   string `json:"key_value"`
 	QueryParam string `json:"query_param,omitempty"`
+}
+
+// RepositoryConfig 仓库配置 JSONB，替代原有的独立代理字段
+type RepositoryConfig struct {
+	RemoteURL         string           `json:"remote_url,omitempty"`
+	AuthType          string           `json:"auth_type,omitempty"`
+	Auth              *ProxyAuthConfig `json:"auth,omitempty"`
+	ProxyPriority     int              `json:"proxy_priority,omitempty"`
+	CacheEnabled      bool             `json:"cache_enabled,omitempty"`
+	CacheTTLSeconds   int              `json:"cache_ttl_seconds,omitempty"`
+	CacheMaxSizeGB    float64          `json:"cache_max_size_gb,omitempty"`
+	CacheNegativeTTL  int              `json:"cache_negative_ttl,omitempty"`
+	TimeoutSeconds    int              `json:"timeout_seconds,omitempty"`
+	MaxRedirects      int              `json:"max_redirects,omitempty"`
+	InsecureSkipVerify bool            `json:"insecure_skip_verify,omitempty"`
+	FailureCacheRules string           `json:"failure_cache_rules,omitempty"`
 }

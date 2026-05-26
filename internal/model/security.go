@@ -25,7 +25,7 @@ const (
 
 type ScanResult struct {
 	ID                   uint            `gorm:"primaryKey" json:"id"`
-	VersionID            uint            `gorm:"not null;uniqueIndex" json:"version_id"`
+	ComponentID          uint            `gorm:"not null;uniqueIndex" json:"component_id"`
 	ScanStatus           ScanStatus      `gorm:"not null;index" json:"scan_status"`
 	ScannerVersion       string          `gorm:"size:50" json:"scanner_version"`
 	TotalVulnerabilities int             `gorm:"default:0" json:"total_vulnerabilities"`

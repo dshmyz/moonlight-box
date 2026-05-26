@@ -4,8 +4,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/util"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/util"
 
 	"gorm.io/gorm"
 )
@@ -122,4 +122,17 @@ func (r *UserRepository) FindOrCreateCASUser(username string) (*model.User, erro
 	}
 
 	return r.FindByUsername(username)
+}
+
+func (r *UserRepository) AssignRoles(userID uint, roleIDs []uint) error {
+	for _, roleID := range roleIDs {
+		userRole := model.UserRole{
+			UserID: userID,
+			RoleID: roleID,
+		}
+		if err := r.db.Where(userRole).FirstOrCreate(&userRole).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }

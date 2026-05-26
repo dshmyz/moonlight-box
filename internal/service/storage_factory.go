@@ -3,8 +3,8 @@ package service
 import (
 	"fmt"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/storage"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/storage"
 )
 
 func CreateStorageBackend(backend *model.StorageBackend) (storage.Backend, error) {

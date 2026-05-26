@@ -87,6 +87,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '仓库管理', permission: { resource: 'repositories', action: 'read' } },
       },
       {
+        path: 'repositories/:name',
+        name: 'RepositoryDetail',
+        component: () => import('@/views/RepositoryDetail.vue'),
+        meta: { title: '仓库详情', permission: { resource: 'repositories', action: 'read' } },
+      },
+      {
         path: 'block-rules',
         name: 'BlockRules',
         component: () => import('@/views/BlockRuleList.vue'),
@@ -177,16 +183,10 @@ const routes: RouteRecordRaw[] = [
         meta: { title: 'Webhook 管理', permission: { resource: 'webhooks', action: 'read' } },
       },
       {
-        path: 'migration',
-        name: 'Migration',
-        component: () => import('@/views/MigrationPage.vue'),
+        path: 'migration-v2',
+        name: 'MigrationV2',
+        component: () => import('@/views/MigrationWizardPage.vue'),
         meta: { title: '数据迁移', permission: { resource: 'system', action: 'admin' } },
-      },
-      {
-        path: 'migration/:id',
-        name: 'MigrationDetail',
-        component: () => import('@/views/MigrationDetailPage.vue'),
-        meta: { title: '迁移详情', permission: { resource: 'system', action: 'admin' } },
       },
       {
         path: 'system-config',

@@ -2,7 +2,7 @@
   <div class="quick-start">
     <div class="section-header">
       <h2><i class="fa-solid fa-rocket"></i> 快速开始</h2>
-      <p class="section-desc">按照以下步骤配置您的客户端，开始使用 Moonlight Registry</p>
+      <p class="section-desc">按照以下步骤配置您的客户端，开始使用 Moonlight Box</p>
     </div>
 
     <el-steps :active="activeStep" finish-status="success" align-center class="steps-container">
@@ -48,19 +48,19 @@
         <div class="step-icon"><i class="fa-solid fa-box"></i></div>
         <h3>选择您的包管理器</h3>
         <el-radio-group v-model="selectedManager" size="large" class="manager-selector">
-          <el-radio-button label="npm">
+          <el-radio-button value="npm">
             <i class="fa-brands fa-npm"></i>
             <span>NPM</span>
           </el-radio-button>
-          <el-radio-button label="maven">
+          <el-radio-button value="maven">
             <i class="fa-brands fa-java"></i>
             <span>Maven</span>
           </el-radio-button>
-          <el-radio-button label="pypi">
+          <el-radio-button value="pypi">
             <i class="fa-brands fa-python"></i>
             <span>PyPI</span>
           </el-radio-button>
-          <el-radio-button label="go">
+          <el-radio-button value="go">
             <i class="fa-brands fa-golang"></i>
             <span>Go</span>
           </el-radio-button>
@@ -87,7 +87,7 @@
       <div class="step-card final-step">
         <div class="success-icon">🎉</div>
         <h3>配置完成！</h3>
-        <p class="success-desc">您现在可以开始使用 Moonlight Registry 仓库了</p>
+        <p class="success-desc">您现在可以开始使用 Moonlight Box 仓库了</p>
         
         <div class="next-steps">
           <h4>下一步操作</h4>
@@ -135,8 +135,8 @@ const managerConfig = computed(() => {
   const configs: Record<string, string> = {
     npm: `
       <p>创建或编辑 <code>~/.npmrc</code> 文件：</p>
-      <pre><code>registry=${registry}/repo/npm-virtual/
-//${window.location.host}/repo/npm-virtual/:_authToken=YOUR_TOKEN_HERE</code></pre>
+      <pre><code>registry=${registry}/repository/npm-virtual/
+//${window.location.host}/repository/npm-virtual/:_authToken=YOUR_TOKEN_HERE</code></pre>
       <p style="margin-top: 10px">
         <el-button size="small" @click="downloadTemplate('npmrc')">
           下载 .npmrc 模板
@@ -157,7 +157,7 @@ const managerConfig = computed(() => {
     &lt;mirror&gt;
       &lt;id&gt;moonlight&lt;/id&gt;
       &lt;mirrorOf&gt;central&lt;/mirrorOf&gt;
-      &lt;url&gt;${registry}/repo/maven-virtual/&lt;/url&gt;
+      &lt;url&gt;${registry}/repository/maven-virtual/&lt;/url&gt;
     &lt;/mirror&gt;
   &lt;/mirrors&gt;
 &lt;/settings&gt;</code></pre>
@@ -170,7 +170,7 @@ const managerConfig = computed(() => {
     pypi: `
       <p>创建 <code>~/.pip/pip.conf</code> 文件：</p>
       <pre><code>[global]
-index-url = ${registry}/repo/pypi-virtual/simple/
+index-url = ${registry}/repository/pypi-virtual/simple/
 trusted-host = ${window.location.host}</code></pre>
       <p style="margin-top: 10px">
         <el-button size="small" @click="downloadTemplate('pip.conf')">

@@ -202,6 +202,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { cacheApi, type CacheListItem, type CacheStats } from '@/api/cache'
+import { formatSize } from '@/utils/format'
 
 const loading = ref(false)
 const clearing = ref(false)
@@ -245,14 +246,6 @@ const selectCache = (name: string) => {
   selectedCache.value = name
   currentPage.value = 1
   loadItems()
-}
-
-const formatSize = (bytes: number) => {
-  if (!bytes || bytes < 0) return '0 B'
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
 const formatTTL = (seconds: number) => {

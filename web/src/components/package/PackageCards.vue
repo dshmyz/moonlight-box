@@ -54,6 +54,9 @@
             <el-button class="btn-view-detail" size="small" type="primary" @click="$emit('view-detail', pkg)">
               查看详情
             </el-button>
+            <el-button class="btn-delete" size="small" type="danger" @click="$emit('delete-package', pkg)">
+              删除
+            </el-button>
           </div>
         </div>
       </div>
@@ -74,6 +77,7 @@ defineProps<{
 defineEmits<{
   'view-versions': [pkg: Package]
   'view-detail': [pkg: Package]
+  'delete-package': [pkg: Package]
 }>()
 </script>
 
@@ -280,5 +284,17 @@ defineEmits<{
 .btn-view-detail:hover {
   transform: translateY(-2px);
   box-shadow: 0 6px 16px rgba(99, 102, 241, 0.4);
+}
+
+.btn-delete {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  border: none;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+  transition: all 0.2s ease;
+}
+
+.btn-delete:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(239, 68, 68, 0.4);
 }
 </style>

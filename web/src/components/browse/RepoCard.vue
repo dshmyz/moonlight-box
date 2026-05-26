@@ -3,18 +3,18 @@
     class="repo-card"
     :class="{ 'repo-disabled': !repo.enabled }"
   >
-    <div class="repo-card-header">
-      <span class="repo-card-name">{{ repo.display_name || repo.name }}</span>
-      <el-tag :type="typeColor" size="small" effect="plain">
-        {{ typeLabel }}
-      </el-tag>
-    </div>
-    <p v-if="repo.description" class="repo-card-desc">{{ repo.description }}</p>
-    <div class="repo-card-config">
-      <code class="config-cmd" @click="$emit('copy', configCommand)">{{ configCommand }}</code>
-      <el-button size="small" text @click="$emit('copy', configCommand)">
-        <el-icon><CopyDocument /></el-icon>
-      </el-button>
+    <div class="card-inner">
+      <div class="repo-card-header">
+        <span class="repo-card-name">{{ repo.display_name || repo.name }}</span>
+        <span class="repo-type-badge" :class="`badge-${repo.type}`">{{ typeLabel }}</span>
+      </div>
+      <p v-if="repo.description" class="repo-card-desc">{{ repo.description }}</p>
+      <div class="repo-card-config">
+        <code class="config-cmd" @click="$emit('copy', configCommand)">{{ configCommand }}</code>
+        <el-button size="small" text class="copy-btn" @click="$emit('copy', configCommand)">
+          <el-icon><CopyDocument /></el-icon>
+        </el-button>
+      </div>
     </div>
   </div>
 </template>
@@ -22,21 +22,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { CopyDocument } from '@element-plus/icons-vue'
-import type { Repository } from '@/api/repository'
+import type { PublicRepoListItem } from '@/api/public'
 
 const props = defineProps<{
-  repo: Repository
+  repo: PublicRepoListItem
   configCommand: string
 }>()
 
 defineEmits<{
   'copy': [text: string]
 }>()
-
-const typeColor = computed(() => {
-  const map: Record<string, string> = { local: '', proxy: 'success', virtual: 'warning' }
-  return map[props.repo.type] || 'info'
-})
 
 const typeLabel = computed(() => {
   const map: Record<string, string> = { local: '本地', proxy: '代理', virtual: '虚拟' }
@@ -46,16 +41,23 @@ const typeLabel = computed(() => {
 
 <style scoped>
 .repo-card {
-  padding: 16px 20px;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  transition: all 0.2s ease;
+  position: relative;
+  border-radius: 10px;
+  overflow: hidden;
+  transition: all 0.3s ease;
 }
 
-.repo-card:hover {
-  border-color: #0f172a;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+.card-inner {
+  padding: 16px 20px;
+  background: var(--lunar-bg-card);
+  border: 1px solid var(--lunar-border);
+  border-radius: 10px;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.repo-card:hover .card-inner {
+  border-color: var(--lunar-border-hover);
+  box-shadow: var(--lunar-shadow-glow);
 }
 
 .repo-disabled {
@@ -72,15 +74,43 @@ const typeLabel = computed(() => {
 .repo-card-name {
   font-size: 16px;
   font-weight: 700;
-  color: #0f172a;
-  white-space: nowrap;
+  color: var(--lunar-silver);
   letter-spacing: -0.2px;
+}
+
+.repo-type-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid;
+  letter-spacing: 0.5px;
+}
+
+.badge-local {
+  background: rgba(196, 181, 253, 0.15);
+  color: var(--lunar-accent);
+  border-color: rgba(196, 181, 253, 0.3);
+}
+
+.badge-proxy {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.badge-virtual {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.3);
 }
 
 .repo-card-desc {
   font-size: 13px;
-  color: #909399;
-  margin: 0 0 10px 0;
+  color: var(--lunar-silver-muted);
+  margin: 0 0 10px;
   line-height: 1.4;
 }
 
@@ -89,15 +119,15 @@ const typeLabel = computed(() => {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: #fff;
+  background: var(--lunar-bg-glass);
+  border: 1px solid var(--lunar-border);
   border-radius: 6px;
-  border: 1px solid #ebeef5;
 }
 
 .config-cmd {
   font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   font-size: 12px;
-  color: #409eff;
+  color: var(--lunar-accent);
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -108,5 +138,13 @@ const typeLabel = computed(() => {
 
 .config-cmd:hover {
   text-decoration: underline;
+}
+
+.copy-btn {
+  color: var(--lunar-silver-muted);
+}
+
+.copy-btn:hover {
+  color: var(--lunar-accent);
 }
 </style>

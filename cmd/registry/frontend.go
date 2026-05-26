@@ -6,11 +6,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
-//go:embed dist
+//go:embed front
 var frontendFS embed.FS
 
 func setupFrontendRouter(r *gin.Engine, staticDir string) {
@@ -28,10 +29,10 @@ func serveEmbeddedFrontend() gin.HandlerFunc {
 			reqPath = "/index.html"
 		}
 
-		filePath := path.Join("dist", reqPath)
+		filePath := path.Join("front", reqPath)
 		data, err := frontendFS.ReadFile(filePath)
 		if err != nil {
-			fallbackPath := "dist/index.html"
+			fallbackPath := "front/index.html"
 			data, err = frontendFS.ReadFile(fallbackPath)
 			if err != nil {
 				c.Status(http.StatusInternalServerError)
@@ -112,11 +113,29 @@ func serveEmbeddedDocs(c *gin.Context) {
 		reqPath = "/swagger/index.html"
 	}
 
-	filePath := path.Join("dist/docs", reqPath)
+	filePath := path.Join("front/docs", reqPath)
 	data, err := frontendFS.ReadFile(filePath)
 	if err != nil {
 		c.Status(http.StatusNotFound)
 		return
+	}
+
+	// 对模板文件动态替换域名占位符和协议，使客户端配置中的地址与当前请求地址一致
+	if strings.HasPrefix(reqPath, "/templates/") {
+		host := c.GetHeader("X-Forwarded-Host")
+		if host == "" {
+			host = c.Request.Host
+		}
+
+		scheme := "http"
+		if c.GetHeader("X-Forwarded-Proto") == "https" || c.Request.TLS != nil {
+			scheme = "https"
+		}
+
+		content := string(data)
+		content = strings.ReplaceAll(content, "https://your-moonlight-domain", scheme+"://"+host)
+		content = strings.ReplaceAll(content, "your-moonlight-domain", host)
+		data = []byte(content)
 	}
 
 	c.Header("Content-Type", getContentType(filePath))

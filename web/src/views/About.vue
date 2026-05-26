@@ -16,7 +16,7 @@
           <circle cx="56" cy="60" r="2.4" fill="#c4b5fd" opacity="0.4"/>
         </svg>
       </div>
-      <h1>Moonlight Registry</h1>
+      <h1>Moonlight Box</h1>
       <p class="version">版本 1.0.0</p>
     </div>
 

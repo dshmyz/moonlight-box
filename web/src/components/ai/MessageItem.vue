@@ -10,7 +10,12 @@
       </div>
       
       <div class="message-text">
-        <MarkdownRenderer v-if="message.role === 'assistant'" :content="message.content" />
+        <MarkdownRenderer 
+          v-if="message.role === 'assistant'" 
+          :content="message.content" 
+          @node-click="handleNodeClick"
+          @optimize="handleOptimize"
+        />
         <template v-else>{{ message.content }}</template>
       </div>
       
@@ -32,6 +37,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { ElMessage } from 'element-plus'
 import { User, ChatDotRound } from '@element-plus/icons-vue'
 import { ElCollapse, ElCollapseItem } from 'element-plus'
 import type { ToolCallResult } from '@/api/ai'
@@ -54,6 +60,9 @@ interface Props {
 }
 
 const props = defineProps<Props>()
+const emit = defineEmits<{
+  (e: 'optimize', pkgName: string, pkgType?: string): void
+}>()
 
 const roleIcon = computed(() => 
   props.message.role === 'user' ? User : ChatDotRound
@@ -69,6 +78,16 @@ const formatTime = (timestamp?: number) => {
     hour: '2-digit',
     minute: '2-digit'
   })
+}
+
+const handleNodeClick = (node: { name: string; type: string }) => {
+  // 节点点击：显示轻量提示，详情由弹窗处理
+  ElMessage.info(`📦 ${node.name} (${node.type}) - 点击节点查看完整详情`)
+}
+
+const handleOptimize = (pkgName: string, _pkgType?: string) => {
+  ElMessage.success(`✨ 正在分析 ${pkgName} 的优化方案...`)
+  emit('optimize', pkgName, _pkgType)
 }
 </script>
 

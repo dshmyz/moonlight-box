@@ -1,5 +1,0 @@
-[moonlight]
-name=Moonlight Registry
-baseurl=https://your-moonlight-domain/repo/yum-virtual/$basearch/
-enabled=1
-gpgcheck=0

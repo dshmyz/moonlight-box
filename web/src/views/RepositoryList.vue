@@ -22,8 +22,8 @@
           <i class="fa-solid fa-folder"></i>
         </div>
         <div class="stat-info">
-          <span class="stat-value">{{ localCount }}</span>
-          <span class="stat-label">Local 仓库</span>
+          <span class="stat-value">{{ total }}</span>
+          <span class="stat-label">仓库总数</span>
         </div>
       </div>
       <div class="stat-card stat-card--proxy">
@@ -31,34 +31,60 @@
           <i class="fa-solid fa-rotate"></i>
         </div>
         <div class="stat-info">
-          <span class="stat-value">{{ proxyCount }}</span>
-          <span class="stat-label">Proxy 仓库</span>
-        </div>
-      </div>
-      <div class="stat-card stat-card--virtual">
-        <div class="stat-icon">
-          <i class="fa-solid fa-wand-magic-sparkles"></i>
-        </div>
-        <div class="stat-info">
-          <span class="stat-value">{{ virtualCount }}</span>
-          <span class="stat-label">Virtual 仓库</span>
+          <span class="stat-value">{{ pageSize }}</span>
+          <span class="stat-label">每页数量</span>
         </div>
       </div>
     </div>
 
-    <div class="content-panel" v-loading="loading">
-      <el-tabs v-model="activeTab" class="type-tabs">
+    <div class="content-panel">
+      <div class="panel-filter-bar">
+        <div class="filter-left">
+          <i class="fa-solid fa-code filter-icon"></i>
+          <span class="filter-label">语言类型</span>
+          <el-select
+            v-model="packageTypeFilter"
+            placeholder="全部语言"
+            clearable
+            class="filter-select"
+            @change="onFilterChange"
+          >
+            <el-option label="全部" value="" />
+            <el-option v-for="pt in packageTypeOptions" :key="pt.value" :label="pt.label" :value="pt.value" />
+          </el-select>
+          <el-tag
+            v-if="packageTypeFilter"
+            class="filter-tag"
+            size="small"
+            closable
+            @close="clearFilter"
+          >
+            {{ packageTypeFilter }}
+          </el-tag>
+        </div>
+        <div class="filter-right">
+          <span class="result-count">{{ total }} 个仓库</span>
+        </div>
+      </div>
+      <el-tabs v-model="activeTab" class="type-tabs" @tab-change="onTabChange">
         <el-tab-pane v-for="tab in tabOptions" :key="tab.name" :label="tab.label" :name="tab.name">
           <div class="tab-content">
-            <el-table 
-              :data="filteredRepos" 
-              row-key="name" 
+            <!-- 骨架屏 -->
+            <div v-if="loading" class="skeleton-rows">
+              <div v-for="n in 5" :key="n" class="skeleton-row">
+                <el-skeleton :rows="1" animated />
+              </div>
+            </div>
+            <el-table
+              v-else
+              :data="repos"
+              row-key="name"
               style="width: 100%"
               :header-cell-style="{ background: '#fafbfc' }"
             >
               <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip>
                 <template #default="{ row }">
-                  <div class="repo-info">
+                  <div class="repo-info" @click="goToRepoDetail(row.name)">
                     <div class="repo-icon" :class="`repo-icon--${row.type}`"><i :class="getRepoIcon(row.type)"></i></div>
                     <div class="repo-content">
                       <div class="repo-name">{{ row.display_name || row.name }}</div>
@@ -79,8 +105,8 @@
               </el-table-column>
               <el-table-column label="代理地址" min-width="200" show-overflow-tooltip>
                 <template #default="{ row }">
-                  <template v-if="row.type === 'proxy' && row.remote_url">
-                    <span class="remote-url">{{ row.remote_url }}</span>
+                  <template v-if="row.type === 'proxy' && row.config?.remote_url">
+                    <span class="remote-url">{{ row.config?.remote_url }}</span>
                   </template>
                   <span v-else class="no-value">-</span>
                 </template>
@@ -108,6 +134,15 @@
                     :model-value="row.enabled"
                     size="small"
                     @change="(val: boolean) => toggleEnabled(row, val)"
+                  />
+                </template>
+              </el-table-column>
+              <el-table-column label="公开可见" width="100" align="center">
+                <template #default="{ row }">
+                  <el-switch
+                    :model-value="row.public_visible ?? true"
+                    size="small"
+                    @change="(val: boolean) => togglePublicVisible(row, val)"
                   />
                 </template>
               </el-table-column>
@@ -140,6 +175,18 @@
                 </template>
               </el-table-column>
             </el-table>
+            <div v-if="!loading && total > 0" class="pagination-wrapper">
+              <el-pagination
+                v-model:current-page="page"
+                v-model:page-size="pageSize"
+                :total="total"
+                :page-sizes="[10, 20, 50, 100]"
+                layout="total, sizes, prev, pager, next, jumper"
+                background
+                @current-change="loadRepos"
+                @size-change="onSizeChange"
+              />
+            </div>
           </div>
         </el-tab-pane>
       </el-tabs>
@@ -154,12 +201,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { repositoryApi, type Repository, type RepositoryWithHealth } from '@/api/repository'
+import { repositoryApi, type Repository, type RepositoryWithHealth, type PaginatedResponse } from '@/api/repository'
 import RepositoryFormDialog from '@/components/repository/RepositoryFormDialog.vue'
 import { confirm, success, error } from '@/utils/message'
+import { PACKAGE_TYPE_OPTIONS } from '@/constants/package'
 
 interface LocalRepository extends RepositoryWithHealth {
   syncing?: boolean
@@ -167,9 +216,15 @@ interface LocalRepository extends RepositoryWithHealth {
 
 const loading = ref(false)
 const activeTab = ref('all')
+const packageTypeFilter = ref('')
 const showDialog = ref(false)
 const editingRepo = ref<Repository | null>(null)
 const repos = ref<LocalRepository[]>([])
+const page = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
+
+const router = useRouter()
 
 const tabOptions = [
   { name: 'all', label: '全部' },
@@ -178,14 +233,7 @@ const tabOptions = [
   { name: 'virtual', label: 'Virtual' },
 ]
 
-const localCount = computed(() => repos.value.filter(r => r.type === 'local').length)
-const proxyCount = computed(() => repos.value.filter(r => r.type === 'proxy').length)
-const virtualCount = computed(() => repos.value.filter(r => r.type === 'virtual').length)
-
-const filteredRepos = computed(() => {
-  if (activeTab.value === 'all') return repos.value
-  return repos.value.filter(r => r.type === activeTab.value)
-})
+const packageTypeOptions = PACKAGE_TYPE_OPTIONS
 
 const getRepoIcon = (type: string) => {
   switch (type) {
@@ -198,24 +246,24 @@ const getRepoIcon = (type: string) => {
 
 const getHealthClass = (row: LocalRepository) => {
   if (!row.enabled) return 'health-dot--disabled'
-  
+
   if (row.health_info?.health_status) {
     const health = row.health_info.health_status
     if (!health.is_healthy) return 'health-dot--error'
     if (health.consecutive_failures > 0) return 'health-dot--warning'
     return 'health-dot--healthy'
   }
-  
+
   return 'health-dot--unknown'
 }
 
 const getHealthTooltip = (row: LocalRepository) => {
   if (!row.enabled) return '仓库已禁用，健康检查未运行'
-  
+
   if (row.health_info?.health_status) {
     const health = row.health_info.health_status
     const responseTimeMs = Math.round(health.response_time / 1_000_000)
-    
+
     if (!health.is_healthy) {
       return `不健康 | 错误: ${health.last_check_error || '未知错误'} | 连续失败: ${health.consecutive_failures}次`
     }
@@ -224,15 +272,35 @@ const getHealthTooltip = (row: LocalRepository) => {
     }
     return `健康 | 响应时间: ${responseTimeMs}ms | 最后检查: ${new Date(health.last_check_time).toLocaleString('zh-CN')}`
   }
-  
+
   return '健康状态未知，等待首次检查完成'
 }
 
 const loadRepos = async () => {
   loading.value = true
   try {
-    const res = await repositoryApi.list()
-    repos.value = res || []
+    const params: { package_type?: string; type?: string; page: number; page_size: number } = {
+      page: page.value,
+      page_size: pageSize.value,
+    }
+    if (packageTypeFilter.value) {
+      params.package_type = packageTypeFilter.value
+    }
+    if (activeTab.value !== 'all') {
+      params.type = activeTab.value
+    }
+    const res = await repositoryApi.list(params)
+
+    // 判断是否为分页响应
+    if (res && typeof res === 'object' && 'items' in res) {
+      const paginated = res as PaginatedResponse<LocalRepository>
+      repos.value = paginated.items || []
+      total.value = paginated.pagination?.total ?? 0
+    } else {
+      // 兼容不分页的返回
+      repos.value = (res as LocalRepository[]) || []
+      total.value = repos.value.length
+    }
     loading.value = false
   } catch (err) {
     ElMessage.error('加载仓库列表失败')
@@ -240,13 +308,42 @@ const loadRepos = async () => {
   }
 }
 
+const onTabChange = () => {
+  page.value = 1
+  loadRepos()
+}
+
+const onFilterChange = () => {
+  page.value = 1
+  loadRepos()
+}
+
+const onSizeChange = () => {
+  page.value = 1
+  loadRepos()
+}
+
+const clearFilter = () => {
+  packageTypeFilter.value = ''
+  onFilterChange()
+}
+
+const goToRepoDetail = (name: string) => {
+  router.push(`/admin/repositories/${name}`)
+}
+
 const openCreateDialog = () => {
   editingRepo.value = null
   showDialog.value = true
 }
 
-const openEditDialog = (repo: Repository) => {
-  editingRepo.value = { ...repo }
+const openEditDialog = async (repo: Repository) => {
+  if (repo.type === 'virtual') {
+    const detail = await repositoryApi.get(repo.name)
+    editingRepo.value = { ...detail }
+  } else {
+    editingRepo.value = { ...repo }
+  }
   showDialog.value = true
 }
 
@@ -282,6 +379,16 @@ const toggleEnabled = async (repo: Repository, enabled: boolean) => {
     loadRepos()
   } catch (err) {
     ElMessage.error('状态更新失败')
+  }
+}
+
+const togglePublicVisible = async (repo: Repository, publicVisible: boolean) => {
+  try {
+    await repositoryApi.update(repo.name, { public_visible: publicVisible })
+    ElMessage.success(publicVisible ? '已设为公开可见' : '已设为仅内部可见')
+    loadRepos()
+  } catch (err) {
+    ElMessage.error('公开状态更新失败')
   }
 }
 
@@ -438,6 +545,78 @@ onMounted(loadRepos)
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
 }
 
+.panel-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.filter-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.filter-icon {
+  color: #6366f1;
+  font-size: 15px;
+}
+
+.filter-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #475569;
+  white-space: nowrap;
+}
+
+.filter-select {
+  width: 150px;
+  border-radius: 10px;
+}
+
+.filter-select :deep(.el-input__wrapper) {
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px #e2e8f0;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.filter-select :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px #cbd5e1;
+}
+
+.filter-select :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 1px #6366f1, 0 0 0 3px rgba(99, 102, 241, 0.1);
+}
+
+.filter-tag {
+  border-radius: 8px;
+  background: linear-gradient(135deg, #ede9fe 0%, #e0e7ff 100%);
+  color: #6366f1;
+  border: none;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.filter-tag :deep(.el-tag__close) {
+  color: #6366f1;
+}
+
+.filter-tag :deep(.el-tag__close:hover) {
+  background: rgba(99, 102, 241, 0.15);
+}
+
+.filter-right {
+  margin-left: auto;
+}
+
+.result-count {
+  font-size: 13px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
 .type-tabs {
   height: 100%;
 }
@@ -522,6 +701,16 @@ onMounted(loadRepos)
   align-items: center;
   gap: 12px;
   white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.repo-info:hover {
+  color: #6366f1;
+}
+
+.repo-info:hover .repo-name {
+  color: #6366f1;
 }
 
 .repo-icon {
@@ -798,5 +987,25 @@ onMounted(loadRepos)
 
 .btn-delete:hover {
   background: #fef2f2;
+}
+
+/* 骨架屏 */
+.skeleton-rows {
+  padding: 16px 24px;
+}
+.skeleton-row {
+  padding: 18px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+.skeleton-row:last-child {
+  border-bottom: none;
+}
+
+/* 分页 */
+.pagination-wrapper {
+  display: flex;
+  justify-content: flex-end;
+  padding: 20px 24px;
+  border-top: 1px solid #f1f5f9;
 }
 </style>

@@ -3,16 +3,16 @@ package service
 import (
 	"testing"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
-	_ "github.com/ncruces/go-sqlite3/embed"
-	"github.com/ncruces/go-sqlite3/gormlite"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 func setupTestDB(t *testing.T) *gorm.DB {
-	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("failed to connect database: %v", err)
 	}
@@ -24,7 +24,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	}
 	sqlDB.SetMaxOpenConns(1)
 
-	db.AutoMigrate(&model.Repository{}, &model.RepositoryGroup{})
+	db.AutoMigrate(&model.Repository{}, &model.RepositoryMember{})
 	return db
 }
 
@@ -64,8 +64,10 @@ func TestRepositoryService_Create_ProxyRepo(t *testing.T) {
 		Name:        "npm-proxy",
 		Type:        model.RepoTypeProxy,
 		PackageType: "npm",
-		RemoteURL:   "https://registry.npmjs.org",
-		Enabled:     true,
+		Config: &model.RepositoryConfig{
+			RemoteURL: "https://registry.npmjs.org",
+		},
+		Enabled: true,
 	}
 
 	err := service.Create(repo, nil)
@@ -75,7 +77,31 @@ func TestRepositoryService_Create_ProxyRepo(t *testing.T) {
 	// 验证代理仓库
 	retrieved, err := service.Get("npm-proxy")
 	assert.Nil(t, err)
-	assert.Equal(t, "https://registry.npmjs.org", retrieved.RemoteURL)
+	assert.Equal(t, "https://registry.npmjs.org", retrieved.Config.RemoteURL)
+}
+
+func TestRepositoryService_Create_VirtualRepo_StoresMembersInRepositoryMembers(t *testing.T) {
+	service, db := setupRepositoryService(t)
+
+	localRepo := &model.Repository{Name: "npm-member-local", Type: model.RepoTypeLocal, PackageType: "npm", Enabled: true}
+	if err := service.Create(localRepo, nil); err != nil {
+		t.Fatalf("failed to create local repo: %v", err)
+	}
+
+	virtualRepo := &model.Repository{Name: "npm-member-virtual", Type: model.RepoTypeVirtual, PackageType: "npm", Enabled: true}
+	if err := service.Create(virtualRepo, []string{"npm-member-local"}); err != nil {
+		t.Fatalf("failed to create virtual repo: %v", err)
+	}
+
+	var members []model.RepositoryMember
+	if err := db.Order("position ASC").Find(&members).Error; err != nil {
+		t.Fatalf("failed to query repository_members: %v", err)
+	}
+
+	assert.Len(t, members, 1)
+	assert.Equal(t, virtualRepo.ID, members[0].RepositoryID)
+	assert.Equal(t, localRepo.ID, members[0].MemberID)
+	assert.Equal(t, 0, members[0].Position)
 }
 
 func TestRepositoryService_Create_VirtualRepo(t *testing.T) {
@@ -97,8 +123,10 @@ func TestRepositoryService_Create_VirtualRepo(t *testing.T) {
 		Name:        "npm-proxy",
 		Type:        model.RepoTypeProxy,
 		PackageType: "npm",
-		RemoteURL:   "https://registry.npmjs.org",
 		Enabled:     true,
+		Config: &model.RepositoryConfig{
+			RemoteURL: "https://registry.npmjs.org",
+		},
 	}
 	if err := service.Create(proxyRepo, nil); err != nil {
 		t.Fatalf("failed to create proxy repo: %v", err)
@@ -258,20 +286,16 @@ func TestRepositoryService_Create_VirtualRepoWithNonExistentMember(t *testing.T)
 
 	members := []string{"non-existent-repo"}
 	err := service.Create(virtualRepo, members)
-	assert.Nil(t, err)
-	assert.NotZero(t, virtualRepo.ID)
-
-	// 验证没有成员被添加
-	memberList, err := service.GetMembers("npm-virtual-empty")
-	assert.Nil(t, err)
-	assert.Equal(t, 0, len(memberList))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "member repository not found")
 }
 
 func TestRepositoryService_GetAuthConfig_None(t *testing.T) {
 	repo := &model.Repository{
-		Name:       "test",
-		AuthType:   "none",
-		AuthConfig: "",
+		Name: "test",
+		Config: &model.RepositoryConfig{
+			AuthType: "none",
+		},
 	}
 
 	cfg, err := repo.GetAuthConfig()
@@ -281,9 +305,14 @@ func TestRepositoryService_GetAuthConfig_None(t *testing.T) {
 
 func TestRepositoryService_GetAuthConfig_Basic(t *testing.T) {
 	repo := &model.Repository{
-		Name:       "test",
-		AuthType:   "basic",
-		AuthConfig: `{"type":"basic","basic":{"username":"user","password":"pass"}}`,
+		Name: "test",
+		Config: &model.RepositoryConfig{
+			AuthType: "basic",
+			Auth: &model.ProxyAuthConfig{
+				Type:  "basic",
+				Basic: &model.BasicAuth{Username: "user", Password: "pass"},
+			},
+		},
 	}
 
 	cfg, err := repo.GetAuthConfig()
@@ -295,9 +324,14 @@ func TestRepositoryService_GetAuthConfig_Basic(t *testing.T) {
 
 func TestRepositoryService_GetAuthConfig_Bearer(t *testing.T) {
 	repo := &model.Repository{
-		Name:       "test",
-		AuthType:   "bearer",
-		AuthConfig: `{"type":"bearer","bearer":{"token":"test-token"}}`,
+		Name: "test",
+		Config: &model.RepositoryConfig{
+			AuthType: "bearer",
+			Auth: &model.ProxyAuthConfig{
+				Type:   "bearer",
+				Bearer: &model.BearerAuth{Token: "test-token"},
+			},
+		},
 	}
 
 	cfg, err := repo.GetAuthConfig()
@@ -308,9 +342,14 @@ func TestRepositoryService_GetAuthConfig_Bearer(t *testing.T) {
 
 func TestRepositoryService_GetAuthConfig_APIKey(t *testing.T) {
 	repo := &model.Repository{
-		Name:       "test",
-		AuthType:   "api_key",
-		AuthConfig: `{"type":"api_key","api_key":{"header_name":"X-API-Key","key_value":"secret"}}`,
+		Name: "test",
+		Config: &model.RepositoryConfig{
+			AuthType: "api_key",
+			Auth: &model.ProxyAuthConfig{
+				Type:   "api_key",
+				APIKey: &model.APIKeyAuth{HeaderName: "X-API-Key", KeyValue: "secret"},
+			},
+		},
 	}
 
 	cfg, err := repo.GetAuthConfig()

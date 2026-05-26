@@ -11,9 +11,9 @@ vi.mock('@/api/repository', () => ({
 }))
 
 const mockRepos = [
-  { name: 'repo1', display_name: '仓库1', type: 'local' },
-  { name: 'repo2', display_name: '仓库2', type: 'proxy' },
-  { name: 'repo3', display_name: '', type: 'local' },
+  { name: 'repo1', display_name: '仓库1', type: 'local', package_type: 'group' },
+  { name: 'repo2', display_name: '仓库2', type: 'proxy', package_type: 'group' },
+  { name: 'repo3', display_name: '', type: 'local', package_type: 'group' },
 ]
 
 const createWrapper = (props = {}) => {
@@ -65,17 +65,19 @@ describe('VirtualMembersForm', () => {
 
   it('adds new member when clicking add button', async () => {
     ;(repositoryApi.list as Mock).mockResolvedValue(mockRepos)
-    
+
     const wrapper = createWrapper({
       membersText: '',
     })
-    
+
+    // Wait for async data load to complete
+    await new Promise(resolve => setTimeout(resolve, 50))
     await wrapper.vm.$nextTick()
-    await new Promise(resolve => setTimeout(resolve, 10))
-    
+
     const addButton = wrapper.find('button')
     await addButton.trigger('click')
-    
+    await wrapper.vm.$nextTick()
+
     const memberSelects = wrapper.findAll('.member-item .el-select')
     expect(memberSelects.length).toBeGreaterThan(0)
   })
@@ -135,20 +137,21 @@ describe('VirtualMembersForm', () => {
 
   it('updates membersText when adding multiple members', async () => {
     ;(repositoryApi.list as Mock).mockResolvedValue(mockRepos)
-    
+
     const wrapper = createWrapper({
       membersText: '',
     })
-    
+
+    // Wait for async data load to complete
+    await new Promise(resolve => setTimeout(resolve, 50))
     await wrapper.vm.$nextTick()
-    await new Promise(resolve => setTimeout(resolve, 10))
-    
+
     const addButton = wrapper.find('button')
     await addButton.trigger('click')
     await wrapper.vm.$nextTick()
     await addButton.trigger('click')
     await wrapper.vm.$nextTick()
-    
+
     const selects = wrapper.findAll('.member-item .el-select')
     expect(selects.length).toBe(2)
   })

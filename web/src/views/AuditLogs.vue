@@ -93,11 +93,12 @@
         </div>
         <el-pagination
           v-model:current-page="page"
-          :page-size="pageSize"
+          v-model:page-size="pageSize"
           :total="total"
           :page-sizes="[20, 50, 100]"
           layout="sizes, prev, pager, next"
           @current-change="handlePageChange"
+          @size-change="handleSizeChange"
         />
       </div>
     </div>
@@ -107,6 +108,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { auditApi } from '@/api/audit'
+import { formatDate } from '@/utils/format'
+import { useTableRowHover } from '@/composables/useTableRowHover'
+
+const { tableRowClass, handleRowEnter, handleRowLeave } = useTableRowHover()
 
 const loading = ref(false)
 const logs = ref<any[]>([])
@@ -115,7 +120,6 @@ const pageSize = ref(20)
 const total = ref(0)
 const filterAction = ref('')
 const filterIP = ref('')
-const hoveredRow = ref<number | null>(null)
 
 const actionOptions = [
   { label: '登录', value: 'login' },
@@ -128,23 +132,6 @@ const actionOptions = [
   { label: '更新用户', value: 'user_update' },
   { label: '配置变更', value: 'config_change' },
 ]
-
-function tableRowClass({ rowIndex }: { rowIndex: number }) {
-  return rowIndex === hoveredRow.value ? 'row-hovered' : ''
-}
-
-function handleRowEnter({ rowIndex }: { rowIndex: number }) {
-  hoveredRow.value = rowIndex
-}
-
-function handleRowLeave() {
-  hoveredRow.value = null
-}
-
-function formatDate(d: string): string {
-  if (!d) return '-'
-  return new Date(d).toLocaleString('zh-CN')
-}
 
 function actionLabel(action: string): string {
   const map: Record<string, string> = {
@@ -180,6 +167,11 @@ async function loadLogs() {
 
 function handlePageChange(p: number) {
   page.value = p
+  loadLogs()
+}
+
+function handleSizeChange() {
+  page.value = 1
   loadLogs()
 }
 

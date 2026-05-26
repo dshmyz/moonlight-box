@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/metrics"
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/metrics"
 )
 
 func PrometheusMiddleware() gin.HandlerFunc {

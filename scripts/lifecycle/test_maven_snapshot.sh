@@ -49,6 +49,11 @@ check_mvn() {
     return 0
 }
 
+# cleanup
+CLEAN_TEMPS=()
+cleanup() { rm -rf "${CLEAN_TEMPS[@]}" 2>/dev/null || true; }
+trap cleanup EXIT
+
 echo "============================================"
 echo " Maven SNAPSHOT 版本测试"
 echo " 目标: $BASE_URL"
@@ -68,6 +73,7 @@ if [ -z "$TOKEN" ]; then
 fi
 
 TEST_DIR="/tmp/maven-snapshot-test-$$"
+CLEAN_TEMPS+=("$TEST_DIR")
 mkdir -p "$TEST_DIR"
 
 echo "════════════════════════════════════════"
@@ -104,7 +110,7 @@ cat > pom.xml <<'EOF'
 </project>
 EOF
 
-REPO_URL="$BASE_URL/repo/maven-snapshots"
+REPO_URL="$BASE_URL/repository/maven-snapshots"
 sed -i.bak "s|SNAPSHOT_REPO_URL_PLACEHOLDER|$REPO_URL|g" pom.xml
 rm -f pom.xml.bak
 
@@ -177,12 +183,12 @@ echo "  测试 4: 验证 SNAPSHOT 文件存储结构"
 echo "════════════════════════════════════════"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    "$BASE_URL/repo/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/maven-metadata.xml")
+    "$BASE_URL/repository/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/maven-metadata.xml")
 
 if [ "$HTTP_CODE" = "200" ]; then
     pass "maven-metadata.xml 可访问 (HTTP 200)"
     
-    METADATA_CONTENT=$(curl -s "$BASE_URL/repo/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/maven-metadata.xml")
+    METADATA_CONTENT=$(curl -s "$BASE_URL/repository/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/maven-metadata.xml")
     
     if echo "$METADATA_CONTENT" | grep -q "<snapshot>"; then
         pass "maven-metadata.xml 包含 <snapshot> 标签"
@@ -214,7 +220,7 @@ echo "  测试 5: 验证 SNAPSHOT JAR 文件可下载"
 echo "════════════════════════════════════════"
 
 if [ -n "$TIMESTAMP" ]; then
-    SNAPSHOT_JAR_URL="$BASE_URL/repo/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/snapshot-lib-1.0-${TIMESTAMP}-1.jar"
+    SNAPSHOT_JAR_URL="$BASE_URL/repository/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/snapshot-lib-1.0-${TIMESTAMP}-1.jar"
     
     HTTP_CODE=$(curl -s -o /tmp/snapshot-download-test.jar -w "%{http_code}" "$SNAPSHOT_JAR_URL")
     
@@ -255,10 +261,10 @@ if mvn package deploy -DskipTests -s "$SETTINGS_FILE" > /dev/null 2>&1; then
     pass "SNAPSHOT 版本第二次部署成功"
     
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-        "$BASE_URL/repo/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/maven-metadata.xml")
+        "$BASE_URL/repository/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/maven-metadata.xml")
     
     if [ "$HTTP_CODE" = "200" ]; then
-        UPDATED_METADATA=$(curl -s "$BASE_URL/repo/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/maven-metadata.xml")
+        UPDATED_METADATA=$(curl -s "$BASE_URL/repository/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/maven-metadata.xml")
         
         if echo "$UPDATED_METADATA" | grep -q "<buildNumber>2</buildNumber>"; then
             pass "buildNumber 已更新为 2"
@@ -276,6 +282,7 @@ echo "  测试 7: 从仓库下载 SNAPSHOT 依赖"
 echo "════════════════════════════════════════"
 
 DOWNLOAD_DIR="/tmp/maven-snapshot-download-test-$$"
+CLEAN_TEMPS+=("$DOWNLOAD_DIR")
 mkdir -p "$DOWNLOAD_DIR"
 cd "$DOWNLOAD_DIR"
 
@@ -323,7 +330,7 @@ echo "  测试 8: 验证 SNAPSHOT 校验和文件"
 echo "════════════════════════════════════════"
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    "$BASE_URL/repo/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/maven-metadata.xml.sha1")
+    "$BASE_URL/repository/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/maven-metadata.xml.sha1")
 
 if [ "$HTTP_CODE" = "200" ]; then
     pass "maven-metadata.xml.sha1 可访问 (HTTP 200)"
@@ -332,7 +339,7 @@ else
 fi
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    "$BASE_URL/repo/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/maven-metadata.xml.md5")
+    "$BASE_URL/repository/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/maven-metadata.xml.md5")
 
 if [ "$HTTP_CODE" = "200" ]; then
     pass "maven-metadata.xml.md5 可访问 (HTTP 200)"

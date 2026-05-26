@@ -72,4 +72,11 @@ export const aiApi = {
   clearSession(sessionId: string) {
     return request.delete(`/ai/sessions/${sessionId}`)
   },
+
+  /**
+   * 检查 AI 服务是否可用
+   */
+  healthCheck() {
+    return request.get<{ status: string }>('/ai/health')
+  },
 }

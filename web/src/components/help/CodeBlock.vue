@@ -18,7 +18,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { CopyDocument } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { copyToClipboard } from '@/utils/clipboard'
 
 interface Props {
   code: string
@@ -31,17 +31,15 @@ const props = withDefaults(defineProps<Props>(), {
 
 const copied = ref(false)
 
-const copyCode = async () => {
-  try {
-    await navigator.clipboard.writeText(props.code)
-    copied.value = true
-    ElMessage.success('已复制到剪贴板')
-    setTimeout(() => {
-      copied.value = false
-    }, 2000)
-  } catch (err) {
-    ElMessage.error('复制失败')
-  }
+const copyCode = () => {
+  copyToClipboard(props.code).then((success) => {
+    if (success) {
+      copied.value = true
+      setTimeout(() => {
+        copied.value = false
+      }, 2000)
+    }
+  })
 }
 </script>
 

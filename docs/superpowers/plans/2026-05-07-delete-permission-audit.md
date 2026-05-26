@@ -142,7 +142,7 @@ func (a *BaseAdapter) LogDeleteAudit(c *gin.Context, repoName, pkgName, version 
 
 - [ ] **步骤 4：添加必要的 import**
 
-确保 import 中包含 `"fmt"` 和 `"github.com/moonlight-box/registry/internal/model"`
+确保 import 中包含 `"fmt"` 和 `"github.com/dshmyz/moonlight-box/internal/model"`
 
 - [ ] **步骤 5：验证编译**
 
@@ -344,7 +344,7 @@ if pkg != nil {
 a.LogDeleteAudit(c, repo.Name, identity.Name, identity.Version, pkgID)
 ```
 
-需要添加 import `"github.com/moonlight-box/registry/internal/model"`（如果还没有）。
+需要添加 import `"github.com/dshmyz/moonlight-box/internal/model"`（如果还没有）。
 
 - [ ] **步骤 2：更新 npm_adapter.go 的 HandleRepoDelete**
 

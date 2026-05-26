@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/moonlight-box/registry/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/model"
 )
 
 // SecurityTool 安全分析工具
@@ -95,18 +95,17 @@ func (t *SecurityTool) analyzePackageScan(packageName string) (string, error) {
 		return "", fmt.Errorf("缺少包名称参数")
 	}
 
-	// 查找包
-	var pkg model.Package
-	if err := db.Where("name = ?", packageName).First(&pkg).Error; err != nil {
-		return "", fmt.Errorf("未找到包: %s", packageName)
+	// 查询 artifacts 表中包名匹配的记录（从 coordinates JSONB 提取）
+	var artifacts []model.Artifact
+	namePattern := fmt.Sprintf(`%%"name":%%"%s"%%`, packageName)
+	if err := db.Where("coordinates LIKE ?", namePattern).
+		Order("created_at DESC").
+		Find(&artifacts).Error; err != nil {
+		return "", fmt.Errorf("查询版本信息失败: %v", err)
 	}
 
-	// 查询所有版本的扫描结果
-	var versions []model.PackageVersion
-	if err := db.Where("package_id = ?", pkg.ID).
-		Order("published_at DESC").
-		Find(&versions).Error; err != nil {
-		return "", fmt.Errorf("查询版本信息失败: %v", err)
+	if len(artifacts) == 0 {
+		return fmt.Sprintf("🔒 未找到包 **%s** 的相关记录", packageName), nil
 	}
 
 	var sb strings.Builder
@@ -118,9 +117,29 @@ func (t *SecurityTool) analyzePackageScan(packageName string) (string, error) {
 	mediumCount := 0
 	lowCount := 0
 
-	for _, version := range versions {
+	// 按 version 去重聚合
+	type versionAgg struct {
+		id      uint
+		version string
+	}
+	seen := make(map[string]bool)
+	var uniqueVersions []versionAgg
+
+	for _, a := range artifacts {
+		ver := coordinateStr(a.Coordinates, "version")
+		if ver == "" {
+			continue
+		}
+		if seen[ver] {
+			continue
+		}
+		seen[ver] = true
+		uniqueVersions = append(uniqueVersions, versionAgg{id: a.ID, version: ver})
+	}
+
+	for _, v := range uniqueVersions {
 		var scanResult model.ScanResult
-		if err := db.Where("version_id = ?", version.ID).
+		if err := db.Where("component_id = ?", v.id).
 			Preload("Vulnerabilities").
 			First(&scanResult).Error; err != nil {
 			continue
@@ -137,7 +156,7 @@ func (t *SecurityTool) analyzePackageScan(packageName string) (string, error) {
 		lowCount += scanResult.LowCount
 
 		if scanResult.TotalVulnerabilities > 0 {
-			sb.WriteString(fmt.Sprintf("📦 版本 **%s**:\n", version.Version))
+			sb.WriteString(fmt.Sprintf("📦 版本 **%s**:\n", v.version))
 			sb.WriteString(fmt.Sprintf("   扫描时间: %s\n", scanResult.ScannedAt.Format("2006-01-02 15:04:05")))
 			sb.WriteString(fmt.Sprintf("   漏洞数: %d (严重: %d, 高危: %d, 中危: %d, 低危: %d)\n\n",
 				scanResult.TotalVulnerabilities, scanResult.CriticalCount,
@@ -162,7 +181,7 @@ func (t *SecurityTool) analyzePackageScan(packageName string) (string, error) {
 
 	// 汇总统计
 	sb.WriteString("📊 汇总统计:\n")
-	sb.WriteString(fmt.Sprintf("   扫描版本数: %d\n", len(versions)))
+	sb.WriteString(fmt.Sprintf("   扫描版本数: %d\n", len(uniqueVersions)))
 	sb.WriteString(fmt.Sprintf("   总漏洞数: %d\n", totalVulns))
 	if totalVulns > 0 {
 		sb.WriteString(fmt.Sprintf("   严重: %d, 高危: %d, 中危: %d, 低危: %d\n",
@@ -409,4 +428,19 @@ func (t *SecurityTool) getSeverityEmoji(severity model.VulnerabilitySeverity) st
 	default:
 		return "⚪"
 	}
+}
+
+func coordinateStr(coords model.JSONB, key string) string {
+	if coords == nil {
+		return ""
+	}
+	v, ok := coords[key]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Sprintf("%v", v)
+	}
+	return s
 }

@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/config"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/types"
+	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/types"
 )
 
 var ErrPackageNotFound = fmt.Errorf("package not found")
@@ -18,7 +18,6 @@ var ErrPackageNotFound = fmt.Errorf("package not found")
 type ProxyDownloader struct {
 	cache              *CacheService
 	client             *RemoteClient
-	adapters           map[string]types.Adapter
 	healthCheckSvc     *HealthCheckService
 	largeFileThreshold int64
 }
@@ -26,12 +25,10 @@ type ProxyDownloader struct {
 func NewProxyDownloader(
 	cache *CacheService,
 	client *RemoteClient,
-	adapters map[string]types.Adapter,
 ) *ProxyDownloader {
 	return &ProxyDownloader{
-		cache:    cache,
-		client:   client,
-		adapters: adapters,
+		cache:  cache,
+		client: client,
 	}
 }
 
@@ -43,13 +40,6 @@ func (r *ProxyDownloader) SetHealthCheckService(svc *HealthCheckService) {
 	r.healthCheckSvc = svc
 }
 
-func (r *ProxyDownloader) RegisterAdapter(pkgType string, adapter types.Adapter) {
-	if r.adapters == nil {
-		r.adapters = make(map[string]types.Adapter)
-	}
-	r.adapters[pkgType] = adapter
-}
-
 type RouteResult = types.RouteResult
 
 // FetchFromRemote 从远程代理仓库拉取包
@@ -58,25 +48,17 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 	cacheKey := fmt.Sprintf("proxy:%s:%s", repo.Name, remoteURL)
 
 	cached, err := r.cache.Get(ctx, cacheKey)
-	if err == nil && cached != nil {
-		if cached.IsNegative {
-			return nil, ErrPackageNotFound
-		}
-		return &RouteResult{
-			Source:     repo.Name,
-			SourceType: "proxy",
-			RepoID:     repo.ID,
-			Content:    io.NopCloser(bytes.NewReader(cached.Content)),
-			Size:       cached.Size,
-			FromCache:  true,
-			CacheTTL:   repo.CacheTTLSeconds,
-		}, nil
+	if err == nil && cached != nil && cached.IsNegative {
+		return nil, ErrPackageNotFound
 	}
 
 	if r.healthCheckSvc != nil && r.healthCheckSvc.ShouldSkipRequest(repo.ID) {
 		retryAfter := r.healthCheckSvc.GetRetryAfter(repo.ID)
-		slog.Warn("circuit breaker open, skipping request", "repo", repo.Name, "retry_after", retryAfter)
-		return nil, fmt.Errorf("circuit breaker open for repo %s, retry after %d seconds", repo.Name, retryAfter)
+		if r.healthCheckSvc.BlockOnUnhealthy() {
+			slog.Warn("circuit breaker open, blocking request", "repo", repo.Name, "retry_after", retryAfter)
+			return nil, fmt.Errorf("circuit breaker open for repo %s, retry after %d seconds", repo.Name, retryAfter)
+		}
+		slog.Warn("circuit breaker open, request allowed (block_on_unhealthy=false)", "repo", repo.Name, "retry_after", retryAfter)
 	}
 
 	if remoteURL == "" {
@@ -89,15 +71,22 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 	}
 
 	readTimeout := r.calcReadTimeout(repo, -1)
-	failureRules, _ := ParseFailureCacheRules(repo.FailureCacheRules)
+	failureRules, _ := ParseFailureCacheRules("")
+	if repo.Config != nil {
+		failureRules, _ = ParseFailureCacheRules(repo.Config.FailureCacheRules)
+	}
 
 	opts := RequestOptions{
 		ReadTimeout:        readTimeout,
-		MaxRedirects:       repo.MaxRedirects,
-		InsecureSkipVerify: repo.InsecureSkipVerify,
+		MaxRedirects:       0,
+		InsecureSkipVerify: false,
+	}
+	if repo.Config != nil {
+		opts.MaxRedirects = repo.Config.MaxRedirects
+		opts.InsecureSkipVerify = repo.Config.InsecureSkipVerify
 	}
 
-	content, contentType, err := r.client.GetBytes(ctx, remoteURL, opts, toProxyAuthConfig(authCfg))
+	resp, err := r.client.GetStream(ctx, remoteURL, opts, toProxyAuthConfig(authCfg))
 	if err != nil {
 		if r.healthCheckSvc != nil {
 			r.healthCheckSvc.GetOrCreateCircuitBreaker(repo.ID).RecordFailure()
@@ -108,7 +97,7 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 				ttl := failureRules.Match(remoteErr.StatusCode)
 				r.cache.SetNegative(ctx, cacheKey, time.Duration(ttl)*time.Second)
 			} else if remoteErr.IsNotFound() {
-				r.cache.SetNegative(ctx, cacheKey, time.Duration(repo.CacheNegativeTTL)*time.Second)
+				r.cache.SetNegative(ctx, cacheKey, time.Duration(repo.Config.CacheNegativeTTL)*time.Second)
 			}
 		}
 		return nil, err
@@ -118,34 +107,57 @@ func (r *ProxyDownloader) FetchFromRemote(ctx context.Context, repo *model.Repos
 		r.healthCheckSvc.GetOrCreateCircuitBreaker(repo.ID).RecordSuccess()
 	}
 
-	size := int64(len(content))
-	shouldCache := r.largeFileThreshold == 0 || size <= r.largeFileThreshold
+	contentLength := resp.ContentLength
+	isLargeFile := r.largeFileThreshold > 0 && contentLength > r.largeFileThreshold
 
-	if shouldCache {
-		r.cache.Set(ctx, &CacheItem{
-			Key:         cacheKey,
-			Content:     content,
-			ContentType: contentType,
-			Size:        size,
-		}, time.Duration(repo.CacheTTLSeconds)*time.Second)
+	if isLargeFile {
+		retTTL := 0
+		if repo.Config != nil {
+			retTTL = repo.Config.CacheTTLSeconds
+		}
+		return &RouteResult{
+			Source:     repo.Name,
+			SourceType: "proxy",
+			RepoID:     repo.ID,
+			Content:    resp.Body,
+			Size:       contentLength,
+			FromCache:  false,
+			CacheTTL:   retTTL,
+			IsLarge:    true,
+		}, nil
 	}
 
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		if r.healthCheckSvc != nil {
+			r.healthCheckSvc.GetOrCreateCircuitBreaker(repo.ID).RecordFailure()
+		}
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	cacheTTL := 0
+	if repo.Config != nil {
+		cacheTTL = repo.Config.CacheTTLSeconds
+	}
+	size := int64(len(body))
 	return &RouteResult{
 		Source:     repo.Name,
 		SourceType: "proxy",
 		RepoID:     repo.ID,
-		Content:    io.NopCloser(bytes.NewReader(content)),
+		Content:    io.NopCloser(bytes.NewReader(body)),
 		Size:       size,
 		FromCache:  false,
-		CacheTTL:   repo.CacheTTLSeconds,
+		CacheTTL:   cacheTTL,
+		IsLarge:    false,
 	}, nil
 }
 
 func (r *ProxyDownloader) calcReadTimeout(repo *model.Repository, contentLength int64) time.Duration {
 	var baseTimeout time.Duration
 
-	if repo.TimeoutSeconds > 0 {
-		baseTimeout = time.Duration(repo.TimeoutSeconds) * time.Second
+	if repo.Config != nil && repo.Config.TimeoutSeconds > 0 {
+		baseTimeout = time.Duration(repo.Config.TimeoutSeconds) * time.Second
 	} else {
 		cfg := config.Get()
 		if cfg != nil {

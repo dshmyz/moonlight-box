@@ -154,6 +154,10 @@
 import { ref, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { backupApi, type Backup } from '@/api/backup'
+import { formatDate, formatSize } from '@/utils/format'
+import { useTableRowHover } from '@/composables/useTableRowHover'
+
+const { tableRowClass, handleRowEnter, handleRowLeave } = useTableRowHover()
 
 const loading = ref(false)
 const creating = ref(false)
@@ -161,7 +165,6 @@ const savingConfig = ref(false)
 const backups = ref<Backup[]>([])
 const createVisible = ref(false)
 const createFormRef = ref<FormInstance>()
-const hoveredRow = ref<number | null>(null)
 const scheduleTime = ref('02:00')
 
 const createForm = ref({
@@ -187,31 +190,6 @@ const createRules: FormRules = {
     { required: true, message: '请输入备份名称', trigger: 'blur' },
     { min: 2, max: 100, message: '长度在 2 到 100 个字符', trigger: 'blur' },
   ],
-}
-
-function tableRowClass({ rowIndex }: { rowIndex: number }) {
-  return rowIndex === hoveredRow.value ? 'row-hovered' : ''
-}
-
-function handleRowEnter({ rowIndex }: { rowIndex: number }) {
-  hoveredRow.value = rowIndex
-}
-
-function handleRowLeave() {
-  hoveredRow.value = null
-}
-
-const formatSize = (bytes: number): string => {
-  if (!bytes || bytes < 0) return '0 B'
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
-}
-
-const formatDate = (date: string): string => {
-  if (!date) return '-'
-  return new Date(date).toLocaleString('zh-CN')
 }
 
 const getStatusText = (status: string): string => {

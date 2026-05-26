@@ -8,6 +8,34 @@ export const PACKAGE_TYPE_COLORS: Record<string, string> = {
   generic: 'info',
 }
 
+export const PACKAGE_TYPE_HEX_COLORS: Record<string, string> = {
+  npm: '#cb3837',
+  maven: '#e65100',
+  pypi: '#3775a9',
+  go: '#00add8',
+  yum: '#2e6da4',
+  apt: '#d70a53',
+  generic: '#64748b',
+}
+
+export const PACKAGE_TYPE_HEX_COLORS_RGB: Record<string, string> = {
+  npm: '203, 56, 55',
+  maven: '230, 81, 0',
+  pypi: '55, 117, 169',
+  go: '0, 173, 216',
+  yum: '46, 109, 164',
+  apt: '215, 10, 83',
+  generic: '100, 116, 139',
+}
+
+export const getPackageTypeHexColor = (type: string): string => {
+  return PACKAGE_TYPE_HEX_COLORS[normalizePackageType(type)] || PACKAGE_TYPE_HEX_COLORS.generic
+}
+
+export const getPackageTypeHexColorRGB = (type: string): string => {
+  return PACKAGE_TYPE_HEX_COLORS_RGB[normalizePackageType(type)] || PACKAGE_TYPE_HEX_COLORS_RGB.generic
+}
+
 export const PACKAGE_TYPE_LABELS: Record<string, string> = {
   npm: 'npm',
   maven: 'Maven',
@@ -49,9 +77,19 @@ export const getVersionStatusLabel = (status: string): string => {
 }
 
 export function normalizePackageType(type: string): string {
-  if (type === 'maven2') return 'maven'
-  return type
+	if (type === 'maven2') return 'maven'
+	return type
 }
+
+export const PACKAGE_TYPE_OPTIONS = [
+  { value: 'npm', label: 'npm' },
+  { value: 'maven', label: 'Maven' },
+  { value: 'pypi', label: 'PyPI' },
+  { value: 'go', label: 'Go' },
+  { value: 'yum', label: 'Yum' },
+  { value: 'apt', label: 'Apt' },
+  { value: 'generic', label: 'Generic' },
+] as const
 
 export function formatPackageName(name: string, pkgType: string): string {
   if (!name) return ''

@@ -1,16 +1,18 @@
 package database
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/config"
-	_ "github.com/ncruces/go-sqlite3/embed"
-	"github.com/ncruces/go-sqlite3/gormlite"
-
+	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -20,9 +22,9 @@ var DB *gorm.DB
 func Initialize(cfg *config.Config) error {
 	var dialector gorm.Dialector
 
-	logrus.WithFields(logrus.Fields{
-		"module": "database",
-		"driver": cfg.Database.Driver,
+	util.WithFields(logrus.Fields{
+		util.LogKeyModule: "database",
+		"driver":          cfg.Database.Driver,
 	}).Info("Initializing database connection")
 
 	switch cfg.Database.Driver {
@@ -33,18 +35,16 @@ func Initialize(cfg *config.Config) error {
 		fallthrough
 	default:
 		dsn := cfg.Database.DSN
-		// SQLite 配置优化
-		// - _journal_mode=WAL: 启用 Write-Ahead Logging 提高并发性能
-		// - _busy_timeout: 设置锁等待超时时间（毫秒），增加到 30 秒以应对高并发写入
-		// - _synchronous=NORMAL: 平衡性能和安全性
-		// - _cache_size: 页面缓存大小（KB），负数表示 KB，正数表示页数
-		// - _txlock=immediate: 事务开始时立即获取写锁，减少死锁
-		if !strings.Contains(dsn, "?") {
-			dsn += "?_journal_mode=WAL&_busy_timeout=30000&_synchronous=NORMAL&_cache_size=-64000&_txlock=immediate"
-		} else if !strings.Contains(dsn, "_journal_mode") {
-			dsn += "&_journal_mode=WAL&_busy_timeout=30000&_synchronous=NORMAL&_cache_size=-64000&_txlock=immediate"
+		if err := ensureDataDirectory(dsn); err != nil {
+			return fmt.Errorf("failed to create data directory: %w", err)
 		}
-		dialector = gormlite.Open(dsn)
+		connParams := "_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
+		if strings.Contains(dsn, "?") {
+			dsn = dsn + "&" + connParams
+		} else {
+			dsn = dsn + "?" + connParams
+		}
+		dialector = sqlite.Open(dsn)
 	}
 
 	gormConfig := &gorm.Config{
@@ -56,32 +56,29 @@ func Initialize(cfg *config.Config) error {
 
 	db, err := gorm.Open(dialector, gormConfig)
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"module": "database",
-			"driver": cfg.Database.Driver,
-			"error":  err,
+		util.WithFields(logrus.Fields{
+			util.LogKeyModule: "database",
+			"driver":          cfg.Database.Driver,
+			util.LogKeyError:  err,
 		}).Error("Failed to connect to database")
 		return fmt.Errorf("failed to connect database: %w", err)
 	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"module": "database",
-			"error":  err,
+		util.WithFields(logrus.Fields{
+			util.LogKeyModule: "database",
+			util.LogKeyError:  err,
 		}).Error("Failed to get underlying sql.DB")
 		return fmt.Errorf("failed to get sql.DB: %w", err)
 	}
 
 	if cfg.Database.Driver == "sqlite" {
-		// SQLite WAL 模式下支持并发读，写入仍然串行
-		// 100 人使用场景：提升连接数以支持并发读操作
 		sqlDB.SetMaxOpenConns(8)
 		sqlDB.SetMaxIdleConns(4)
 		sqlDB.SetConnMaxLifetime(time.Hour)
 		sqlDB.SetConnMaxIdleTime(30 * time.Minute)
 
-		// 运行时 PRAGMA 优化
 		sqlDB.Exec("PRAGMA journal_mode=WAL")
 		sqlDB.Exec("PRAGMA synchronous=NORMAL")
 		sqlDB.Exec("PRAGMA cache_size=-64000")
@@ -98,8 +95,8 @@ func Initialize(cfg *config.Config) error {
 
 	DB = db
 
-	logrus.WithFields(logrus.Fields{
-		"module":             "database",
+	util.WithFields(logrus.Fields{
+		util.LogKeyModule:    "database",
 		"driver":             cfg.Database.Driver,
 		"max_open_conns":     cfg.Database.MaxOpenConns,
 		"max_idle_conns":     cfg.Database.MaxIdleConns,
@@ -108,6 +105,99 @@ func Initialize(cfg *config.Config) error {
 	}).Info("Database connection established")
 
 	return nil
+}
+
+func ensureDataDirectory(dsn string) error {
+	if strings.HasPrefix(dsn, "file:") {
+		dsn = strings.TrimPrefix(dsn, "file:")
+	}
+	idx := strings.Index(dsn, "?")
+	if idx != -1 {
+		dsn = dsn[:idx]
+	}
+	dir := dsn
+	if strings.HasSuffix(dir, ".db") {
+		dir = strings.TrimSuffix(dir, "/registry.db")
+	}
+	if dir == "." || dir == "./" || dir == "" {
+		return nil
+	}
+	return os.MkdirAll(dir, 0755)
+}
+
+// gormLogger 自定义 GORM 日志记录器，支持分文件输出
+type gormLogger struct {
+	LogLevel logger.LogLevel
+}
+
+func (l *gormLogger) LogMode(level logger.LogLevel) logger.Interface {
+	return &gormLogger{LogLevel: level}
+}
+
+func (l *gormLogger) Info(ctx context.Context, msg string, data ...interface{}) {
+	if l.LogLevel >= logger.Info {
+		util.GetLogger(util.LogTypeSQL).WithFields(logrus.Fields{
+			util.LogKeyModule: "gorm",
+		}).Infof(msg, data...)
+	}
+}
+
+func (l *gormLogger) Warn(ctx context.Context, msg string, data ...interface{}) {
+	if l.LogLevel >= logger.Warn {
+		util.GetLogger(util.LogTypeSQL).WithFields(logrus.Fields{
+			util.LogKeyModule: "gorm",
+		}).Warnf(msg, data...)
+	}
+}
+
+func (l *gormLogger) Error(ctx context.Context, msg string, data ...interface{}) {
+	util.GetLogger(util.LogTypeSQL).WithFields(logrus.Fields{
+		util.LogKeyModule: "gorm",
+		util.LogKeyError:  fmt.Errorf(msg, data...),
+	}).Error("GORM error")
+}
+
+func (l *gormLogger) Trace(ctx context.Context, begin time.Time, fc func() (sql string, rowsAffected int64), err error) {
+	if l.LogLevel <= logger.Silent {
+		return
+	}
+
+	elapsed := time.Since(begin)
+	sql, rows := fc()
+
+	fields := logrus.Fields{
+		util.LogKeyModule: "gorm",
+		"duration_ms":     elapsed.Milliseconds(),
+		"rows_affected":   rows,
+	}
+
+	// 只在配置允许时记录完整 SQL
+	// 生产环境建议关闭或采样记录，避免日志过大
+	if l.LogLevel >= logger.Info {
+		fields["sql"] = sql
+	}
+
+	entry := util.GetLogger(util.LogTypeSQL).WithFields(fields)
+
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return
+		}
+		fields[util.LogKeyError] = err
+		entry.WithFields(fields).Error("SQL execution failed")
+		return
+	}
+
+	// 慢查询日志（>1秒）
+	if elapsed > time.Second {
+		entry.WithFields(fields).Warn("Slow query detected")
+		return
+	}
+
+	// 普通查询日志（仅在 debug/info 级别记录）
+	if l.LogLevel >= logger.Info {
+		entry.WithFields(fields).Debug("SQL executed")
+	}
 }
 
 func buildGormLogger(level string) logger.Interface {
@@ -121,10 +211,12 @@ func buildGormLogger(level string) logger.Interface {
 		logLevel = logger.Warn
 	case "info":
 		logLevel = logger.Info
+	case "debug":
+		logLevel = logger.Info // GORM debug 会输出大量参数，用 info 级别控制
 	default:
 		logLevel = logger.Warn
 	}
-	return logger.Default.LogMode(logLevel)
+	return &gormLogger{LogLevel: logLevel}
 }
 
 func GetDB() *gorm.DB {
@@ -132,6 +224,7 @@ func GetDB() *gorm.DB {
 }
 
 func Close() error {
+	util.CloseLoggers()
 	if DB != nil {
 		sqlDB, err := DB.DB()
 		if err != nil {
@@ -170,13 +263,13 @@ func GetPoolStats() *PoolStats {
 		newWaits := s.WaitCount - lastWaitCount
 		lastWaitCount = s.WaitCount
 
-		logrus.WithFields(logrus.Fields{
-			"module":        "database",
-			"wait_count":    newWaits,
-			"wait_duration": s.WaitDuration.String(),
-			"open_conns":    s.OpenConnections,
-			"in_use":        s.InUse,
-			"idle":          s.Idle,
+		util.WithFields(logrus.Fields{
+			util.LogKeyModule: "database",
+			"wait_count":      newWaits,
+			"wait_duration":   s.WaitDuration.String(),
+			"open_conns":      s.OpenConnections,
+			"in_use":          s.InUse,
+			"idle":            s.Idle,
 		}).Warn("Database connection pool wait detected, consider increasing max_open_conns or migrating to PostgreSQL")
 	}
 

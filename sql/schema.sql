@@ -1,6 +1,7 @@
 -- Moonlight-Box Registry 数据库建表语句
 -- 数据库：MySQL 8.0+
--- 生成时间：2026-05-07
+-- 生成时间：2026-05-25
+-- 版本：v2.0 (新架构 - Blob + Artifact 模型)
 
 -- ========================================
 -- 基础表
@@ -15,19 +16,9 @@ CREATE TABLE `repositories` (
   `type` VARCHAR(20) NOT NULL DEFAULT 'local',
   `package_type` VARCHAR(50) NOT NULL DEFAULT '',
   `enabled` TINYINT(1) NOT NULL DEFAULT 1,
+  `public_visible` TINYINT(1) NOT NULL DEFAULT 1,
   `storage_backend_id` INT UNSIGNED DEFAULT NULL,
-  `remote_url` VARCHAR(500) NOT NULL DEFAULT '',
-  `auth_type` VARCHAR(20) NOT NULL DEFAULT 'none',
-  `auth_config` TEXT,
-  `proxy_priority` INT NOT NULL DEFAULT 0,
-  `cache_enabled` TINYINT(1) NOT NULL DEFAULT 1,
-  `cache_ttl_seconds` INT NOT NULL DEFAULT 86400,
-  `cache_max_size_gb` DOUBLE NOT NULL DEFAULT 10,
-  `cache_negative_ttl` INT NOT NULL DEFAULT 300,
-  `timeout_seconds` INT NOT NULL DEFAULT 0,
-  `max_redirects` INT NOT NULL DEFAULT 0,
-  `insecure_skip_verify` TINYINT(1) NOT NULL DEFAULT 0,
-  `failure_cache_rules` TEXT,
+  `config` TEXT,
   `allow_overwrite` TINYINT(1) NOT NULL DEFAULT 0,
   `allow_delete` TINYINT(1) NOT NULL DEFAULT 0,
   `download_count` BIGINT NOT NULL DEFAULT 0,
@@ -51,81 +42,64 @@ CREATE TABLE `repository_groups` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='虚拟仓库与成员仓库关联表';
 
 -- ========================================
--- 包管理相关表
+-- 新架构：Blob + Artifact 模型
 -- ========================================
 
--- 包表
-CREATE TABLE `packages` (
+-- Blob 表 - CAS 存储的 blob 元数据
+CREATE TABLE `blobs` (
   `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  `name` VARCHAR(200) NOT NULL,
-  `display_name` VARCHAR(255) NOT NULL DEFAULT '',
-  `type` VARCHAR(20) NOT NULL,
-  `description` VARCHAR(500) NOT NULL DEFAULT '',
+  `algorithm` VARCHAR(32) NOT NULL,
+  `digest` VARCHAR(128) NOT NULL,
+  `size` BIGINT NOT NULL,
+  `storage_path` TEXT NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY `idx_blob_digest` (`algorithm`, `digest`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Blob 元数据表';
+
+-- Artifact 表 - 制品元数据
+CREATE TABLE `artifacts` (
+  `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `repository_id` INT UNSIGNED NOT NULL,
-  `repository_type` VARCHAR(20) NOT NULL DEFAULT 'local',
-  `homepage` VARCHAR(500) NOT NULL DEFAULT '',
-  `license` VARCHAR(100) NOT NULL DEFAULT '',
-  `download_count` BIGINT NOT NULL DEFAULT 0,
-  `created_by` INT UNSIGNED DEFAULT NULL,
+  `format` VARCHAR(64) NOT NULL,
+  `kind` VARCHAR(64) DEFAULT '',
+  `coordinates` JSON NOT NULL,
+  `metadata` JSON DEFAULT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY `idx_pkg_name_type` (`name`, `type`),
-  INDEX `idx_display_name` (`display_name`),
-  INDEX `idx_repository_id` (`repository_id`),
-  INDEX `idx_repository_type` (`repository_type`),
-  INDEX `idx_repo_id_type` (`repository_id`, `type`),
-  INDEX `idx_download_count` (`download_count`),
-  INDEX `idx_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='包表';
+  INDEX `idx_artifacts_repo` (`repository_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='制品元数据表';
 
--- 包版本表
-CREATE TABLE `package_versions` (
-  `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  `package_id` INT UNSIGNED NOT NULL,
-  `version` VARCHAR(100) NOT NULL,
-  `status` VARCHAR(20) NOT NULL DEFAULT 'published',
-  `storage_path` VARCHAR(500) NOT NULL DEFAULT '',
-  `published_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `published_by` INT UNSIGNED DEFAULT NULL,
-  `metadata` TEXT,
-  `download_count` BIGINT NOT NULL DEFAULT 0,
-  `size_bytes` BIGINT NOT NULL DEFAULT 0,
-  `checksum_md5` VARCHAR(32) NOT NULL DEFAULT '',
-  `checksum_sha256` VARCHAR(64) NOT NULL DEFAULT '',
-  `files_downloaded` TINYINT(1) NOT NULL DEFAULT 0,
-  UNIQUE KEY `idx_ver_pkg_version` (`package_id`, `version`),
-  INDEX `idx_status` (`status`),
-  FOREIGN KEY (`package_id`) REFERENCES `packages` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='包版本表';
+-- ArtifactBlob 表 - 制品与 blob 的关联关系
+CREATE TABLE `artifact_blobs` (
+  `artifact_id` INT UNSIGNED NOT NULL,
+  `blob_id` INT UNSIGNED NOT NULL,
+  `position` INT NOT NULL,
+  `role` VARCHAR(64) DEFAULT '',
+  PRIMARY KEY (`artifact_id`, `blob_id`, `position`),
+  FOREIGN KEY (`artifact_id`) REFERENCES `artifacts` (`id`) ON DELETE CASCADE,
+  FOREIGN KEY (`blob_id`) REFERENCES `blobs` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='制品与Blob关联表';
 
--- 包文件表
-CREATE TABLE `package_files` (
+-- ArtifactTag 表 - 制品标签
+CREATE TABLE `artifact_tags` (
   `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  `version_id` INT UNSIGNED NOT NULL,
-  `filename` VARCHAR(255) NOT NULL,
-  `file_type` VARCHAR(20) NOT NULL,
-  `storage_path` VARCHAR(500) NOT NULL,
-  `size_bytes` BIGINT NOT NULL DEFAULT 0,
-  `checksum_sha256` VARCHAR(64) NOT NULL DEFAULT '',
-  `checksum_md5` VARCHAR(32) NOT NULL DEFAULT '',
-  `download_count` BIGINT NOT NULL DEFAULT 0,
-  UNIQUE KEY `idx_file_ver_filename` (`version_id`, `filename`),
-  INDEX `idx_file_type` (`file_type`),
-  FOREIGN KEY (`version_id`) REFERENCES `package_versions` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='包文件表';
+  `artifact_id` INT UNSIGNED NOT NULL,
+  `tag` VARCHAR(255) NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX `idx_artifact_tags` (`artifact_id`, `tag`),
+  FOREIGN KEY (`artifact_id`) REFERENCES `artifacts` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='制品标签表';
 
--- 包依赖表
-CREATE TABLE `package_dependencies` (
+-- ArtifactVersion 表 - 制品版本
+CREATE TABLE `artifact_versions` (
   `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  `version_id` INT UNSIGNED NOT NULL,
-  `dep_name` VARCHAR(200) NOT NULL,
-  `dep_version_constraint` VARCHAR(200) NOT NULL,
-  `dep_type` VARCHAR(50) NOT NULL,
-  `package_type` VARCHAR(20) NOT NULL,
-  `is_optional` TINYINT(1) NOT NULL DEFAULT 0,
-  INDEX `idx_version_id` (`version_id`),
-  INDEX `idx_dep_name` (`dep_name`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='包依赖表';
+  `artifact_id` INT UNSIGNED NOT NULL,
+  `version` VARCHAR(255) NOT NULL,
+  `normalized` VARCHAR(255) DEFAULT '',
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX `idx_artifact_versions` (`artifact_id`, `version`),
+  FOREIGN KEY (`artifact_id`) REFERENCES `artifacts` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='制品版本表';
 
 -- ========================================
 -- 用户权限相关表
@@ -422,9 +396,31 @@ CREATE TABLE `migration_tasks` (
   `failed_items` INT NOT NULL DEFAULT 0,
   `selected_repos` TEXT,
   `error_message` TEXT,
+  `task_type` VARCHAR(20) NOT NULL DEFAULT 'migration',
+  `phase` VARCHAR(20) NOT NULL DEFAULT 'scanning',
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `started_at` TIMESTAMP NULL DEFAULT NULL,
   `completed_at` TIMESTAMP NULL DEFAULT NULL,
   INDEX `idx_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='迁移任务表';
+
+-- 迁移任务项表
+CREATE TABLE `migration_items` (
+  `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `task_id` INT UNSIGNED NOT NULL,
+  `component_id` VARCHAR(200) NOT NULL,
+  `repository` VARCHAR(100) NOT NULL,
+  `format` VARCHAR(20) NOT NULL,
+  `namespace` VARCHAR(255) DEFAULT '',
+  `name` VARCHAR(500) NOT NULL,
+  `version` VARCHAR(255) NOT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'pending',
+  `error_message` TEXT,
+  `retry_count` INT NOT NULL DEFAULT 0,
+  `migrated_at` TIMESTAMP NULL DEFAULT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX `idx_task_id` (`task_id`),
+  INDEX `idx_status` (`status`),
+  FOREIGN KEY (`task_id`) REFERENCES `migration_tasks` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='迁移任务项表';

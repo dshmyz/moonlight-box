@@ -12,6 +12,8 @@ var (
 	ErrAccessDenied       = errors.New("access denied")
 	ErrPackageNotFound    = errors.New("package not found")
 	ErrVersionNotFound    = errors.New("version not found")
+	ErrRoleNotFound       = errors.New("role not found")
+	ErrRepoNotFound       = errors.New("repository not found")
 )
 
 // IsErr 检查错误是否是目标错误

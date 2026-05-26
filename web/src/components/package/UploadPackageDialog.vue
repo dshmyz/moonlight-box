@@ -166,8 +166,11 @@ const uploadStatus = computed(() => {
 
 const loadRepositories = async () => {
   try {
-    const repos = await repositoryApi.list({ type: 'local' })
-    availableRepositories.value = repos.filter(repo => repo.enabled && repo.package_type)
+    const res = await repositoryApi.list({ type: 'local' })
+    const repos: any[] = (res && typeof res === 'object' && 'items' in res)
+      ? (res as any).items
+      : (res as any[]) || []
+    availableRepositories.value = repos.filter((repo: any) => repo.enabled && repo.package_type)
   } catch (error) {
     console.error('Failed to load repositories:', error)
   }
@@ -440,7 +443,7 @@ const uploadMaven = async (file: File) => {
 
   let path = `/maven2/${groupId}/${artifactId}/${version}/${filename}`
   if (form.value.repositoryName) {
-    path = `/repo/${form.value.repositoryName}${path}`
+    path = `/repository/${form.value.repositoryName}${path}`
   }
   const token = localStorage.getItem('token')
 
@@ -479,19 +482,17 @@ const uploadApt = async (file: File) => {
 }
 
 const uploadGeneric = async (file: File) => {
-  const formData = new FormData()
-  formData.append('file', file)
-  if (form.value.genericPath) {
-    formData.append('path', form.value.genericPath)
-  }
+  let path = form.value.genericPath || file.name
   if (form.value.repositoryName) {
-    formData.append('repository', form.value.repositoryName)
+    path = `/repository/${form.value.repositoryName}/${path}`
+  } else {
+    path = `/repository/generic-local/${path}`
   }
   const token = localStorage.getItem('token')
 
-  await axios.post('/files/upload', formData, {
+  await axios.put(path, file, {
     headers: {
-      'Content-Type': 'multipart/form-data',
+      'Content-Type': 'application/octet-stream',
       ...(token ? { 'Authorization': `Bearer ${token}` } : {})
     },
     onUploadProgress: (progressEvent) => {

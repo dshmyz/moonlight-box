@@ -83,23 +83,48 @@ echo "============================================"
 
 setup
 
+# 清理可能残留的阻断规则（避免影响代理测试）
+TOKEN=$(curl -s -X POST "$BASE_URL/api/v1/auth/login" \
+    -H "Content-Type: application/json" \
+    -d '{"username":"admin","password":"admin123"}' | \
+    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('access_token',''))" 2>/dev/null)
+if [ -n "$TOKEN" ]; then
+    EXISTING_RULES=$(curl -s "$BASE_URL/api/v1/block-rules" \
+        -H "Authorization: Bearer $TOKEN")
+    echo "$EXISTING_RULES" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+rules=d.get('data',[])
+for r in rules:
+    pid=r.get('id')
+    pkg=r.get('package_name','')
+    reason=r.get('reason','')
+    if reason == 'test' or pkg == 'lodash' or pkg.startswith('test-block'):
+        print(pid)
+" 2>/dev/null | while read rid; do
+        [ -n "$rid" ] && curl -s -X DELETE "$BASE_URL/api/v1/block-rules/$rid" \
+            -H "Authorization: Bearer $TOKEN" > /dev/null 2>&1
+    done
+    sleep 1
+fi
+
 # ============================================================
 log_section "测试 1: NPM 代理回源"
 # ============================================================
 
 # 测试 npm 元数据请求
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_npm_meta.json -w "%{http_code}" "$BASE_URL/repo/npm-proxy-cn/lodash")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_npm_meta.json -w "%{http_code}" "$BASE_URL/repository/npm-proxy-cn/lodash")
 assert_status "NPM 元数据请求 (lodash)" "200" "$HTTP_CODE"
 if [ "$HTTP_CODE" = "200" ]; then
     assert_body_contains "返回 JSON 包含 name" '"name"' "$(cat /tmp/test_proxy_npm_meta.json)"
 fi
 
 # 测试 npm 作用域包
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_npm_scope.json -w "%{http_code}" "$BASE_URL/repo/npm-proxy-cn/@babel/core")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_npm_scope.json -w "%{http_code}" "$BASE_URL/repository/npm-proxy-cn/@babel/core")
 assert_status "NPM 作用域包 (@babel/core)" "200" "$HTTP_CODE"
 
 # 测试 npm tarball 下载
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_npm_tgz.tgz -w "%{http_code}" "$BASE_URL/repo/npm-proxy-cn/lodash/-/tarball/lodash-4.17.21.tgz")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_npm_tgz.tgz -w "%{http_code}" "$BASE_URL/repository/npm-proxy-cn/lodash/-/lodash-4.17.21.tgz")
 assert_status "NPM tarball 下载" "200" "$HTTP_CODE"
 if [ "$HTTP_CODE" = "200" ]; then
     assert_file_not_empty "NPM tarball 文件非空" "/tmp/test_proxy_npm_tgz.tgz"
@@ -129,14 +154,14 @@ log_section "测试 2: PyPI 代理回源"
 # ============================================================
 
 # 测试 PyPI Simple Index
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_pypi_simple.html -w "%{http_code}" "$BASE_URL/repo/pypi-proxy-tuna/simple/requests/")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_pypi_simple.html -w "%{http_code}" "$BASE_URL/repository/pypi-proxy-tuna/simple/requests/")
 assert_status "PyPI Simple Index (requests)" "200" "$HTTP_CODE"
 if [ "$HTTP_CODE" = "200" ]; then
     assert_body_contains "PyPI 返回 HTML 包含 links" "href=" "$(cat /tmp/test_proxy_pypi_simple.html)"
 fi
 
 # 测试 PyPI JSON API (可选 - 不是所有镜像源都支持)
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_pypi_json.json -w "%{http_code}" "$BASE_URL/repo/pypi-proxy-tuna/pypi/requests/2.31.0/json")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_pypi_json.json -w "%{http_code}" "$BASE_URL/repository/pypi-proxy-tuna/pypi/requests/2.31.0/json")
 if [ "$HTTP_CODE" = "200" ]; then
     log_pass "PyPI JSON API (requests 2.31.0) - HTTP 200"
     assert_body_contains "PyPI JSON 包含 info" '"info"' "$(cat /tmp/test_proxy_pypi_json.json)"
@@ -145,7 +170,7 @@ else
 fi
 
 # 测试 PyPI wheel 包下载
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_pypi_wheel.whl -w "%{http_code}" "$BASE_URL/repo/pypi-proxy-tuna/packages/requests/2.31.0/requests-2.31.0-py3-none-any.whl")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_pypi_wheel.whl -w "%{http_code}" "$BASE_URL/repository/pypi-proxy-tuna/packages/requests/2.31.0/requests-2.31.0-py3-none-any.whl")
 if [ "$HTTP_CODE" = "200" ]; then
     assert_status "PyPI wheel 下载" "200" "$HTTP_CODE"
     assert_file_not_empty "PyPI wheel 文件非空" "/tmp/test_proxy_pypi_wheel.whl"
@@ -175,7 +200,7 @@ log_section "测试 3: Maven 代理回源"
 # ============================================================
 
 # 测试 Maven jar 下载
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_maven_jar.jar -w "%{http_code}" "$BASE_URL/repo/maven-proxy-aliyun/com/google/guava/guava/32.1.3-jre/guava-32.1.3-jre.jar")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_maven_jar.jar -w "%{http_code}" "$BASE_URL/repository/maven-proxy-aliyun/com/google/guava/guava/32.1.3-jre/guava-32.1.3-jre.jar")
 assert_status "Maven jar 下载 (guava)" "200" "$HTTP_CODE"
 if [ "$HTTP_CODE" = "200" ]; then
     assert_file_not_empty "Maven jar 文件非空" "/tmp/test_proxy_maven_jar.jar"
@@ -189,14 +214,14 @@ if [ "$HTTP_CODE" = "200" ]; then
 fi
 
 # 测试 Maven metadata.xml
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_maven_meta.xml -w "%{http_code}" "$BASE_URL/repo/maven-proxy-aliyun/com/google/guava/guava/maven-metadata.xml")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_maven_meta.xml -w "%{http_code}" "$BASE_URL/repository/maven-proxy-aliyun/com/google/guava/guava/maven-metadata.xml")
 assert_status "Maven metadata.xml" "200" "$HTTP_CODE"
 if [ "$HTTP_CODE" = "200" ]; then
     assert_body_contains "Maven metadata 包含 version" "version" "$(cat /tmp/test_proxy_maven_meta.xml)"
 fi
 
 # 测试 Maven pom 文件下载 (可选 - 不是所有镜像源都提供 pom 文件)
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_maven_pom.pom -w "%{http_code}" "$BASE_URL/repo/maven-proxy-aliyun/com/google/guava/guava/32.1.3-jre/guava-32.1.3-jre.pom")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_maven_pom.pom -w "%{http_code}" "$BASE_URL/repository/maven-proxy-aliyun/com/google/guava/guava/32.1.3-jre/guava-32.1.3-jre.pom")
 if [ "$HTTP_CODE" = "200" ]; then
     log_pass "Maven POM 下载 - HTTP 200"
     assert_file_not_empty "Maven POM 文件非空" "/tmp/test_proxy_maven_pom.pom"
@@ -251,7 +276,7 @@ log_section "测试 4: Yum 代理回源"
 # ============================================================
 
 # 测试 Yum repomd.xml (可选 - 路径可能因镜像源而异)
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_yum_repomd.xml -w "%{http_code}" "$BASE_URL/repo/yum-proxy-baseos/repodata/repomd.xml")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_yum_repomd.xml -w "%{http_code}" "$BASE_URL/repository/yum-proxy-baseos/repodata/repomd.xml")
 if [ "$HTTP_CODE" = "200" ]; then
     log_pass "Yum repomd.xml 下载 - HTTP 200"
     assert_body_contains "Yum repomd.xml 包含 xml" "repomd" "$(cat /tmp/test_proxy_yum_repomd.xml)"
@@ -277,25 +302,25 @@ log_section "测试 5: Go 代理回源"
 # ============================================================
 
 # 测试 Go @v/list
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_go_list.txt -w "%{http_code}" "$BASE_URL/repo/go-proxy-goproxy-cn/github.com/stretchr/testify/@v/list")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_go_list.txt -w "%{http_code}" "$BASE_URL/repository/go-proxy-goproxy-cn/github.com/stretchr/testify/@v/list")
 assert_status "Go @v/list" "200" "$HTTP_CODE"
 
 # 测试 Go @v/VERSION.info
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_go_info.json -w "%{http_code}" "$BASE_URL/repo/go-proxy-goproxy-cn/github.com/stretchr/testify/@v/v1.8.4.info")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_go_info.json -w "%{http_code}" "$BASE_URL/repository/go-proxy-goproxy-cn/github.com/stretchr/testify/@v/v1.8.4.info")
 assert_status "Go .info 文件" "200" "$HTTP_CODE"
 if [ "$HTTP_CODE" = "200" ]; then
     assert_body_contains "Go .info 包含 Version" '"Version"' "$(cat /tmp/test_proxy_go_info.json)"
 fi
 
 # 测试 Go @v/VERSION.mod
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_go_mod.txt -w "%{http_code}" "$BASE_URL/repo/go-proxy-goproxy-cn/github.com/stretchr/testify/@v/v1.8.4.mod")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_go_mod.txt -w "%{http_code}" "$BASE_URL/repository/go-proxy-goproxy-cn/github.com/stretchr/testify/@v/v1.8.4.mod")
 assert_status "Go .mod 文件" "200" "$HTTP_CODE"
 if [ "$HTTP_CODE" = "200" ]; then
     assert_body_contains "Go .mod 包含 module" "module" "$(cat /tmp/test_proxy_go_mod.txt)"
 fi
 
 # 测试 Go @v/VERSION.zip
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_go_zip.zip -w "%{http_code}" "$BASE_URL/repo/go-proxy-goproxy-cn/github.com/stretchr/testify/@v/v1.8.4.zip")
+HTTP_CODE=$(curl -s -o /tmp/test_proxy_go_zip.zip -w "%{http_code}" "$BASE_URL/repository/go-proxy-goproxy-cn/github.com/stretchr/testify/@v/v1.8.4.zip")
 assert_status "Go .zip 文件" "200" "$HTTP_CODE"
 if [ "$HTTP_CODE" = "200" ]; then
     assert_file_not_empty "Go zip 文件非空" "/tmp/test_proxy_go_zip.zip"
@@ -363,7 +388,7 @@ if [ -n "$NUGET_PROXY_EXISTS" ]; then
     log_info "检测到 NuGet 代理仓库"
     
     # 测试 NuGet 包下载 (使用 Newtonsoft.Json 作为测试包)
-    HTTP_CODE=$(curl -s -o /tmp/test_proxy_nuget.nupkg -w "%{http_code}" "$BASE_URL/repo/nuget-proxy-official/newtonsoft.json/13.0.3")
+    HTTP_CODE=$(curl -s -o /tmp/test_proxy_nuget.nupkg -w "%{http_code}" "$BASE_URL/repository/nuget-proxy-official/newtonsoft.json/13.0.3")
     if [ "$HTTP_CODE" = "200" ]; then
         assert_status "NuGet nupkg 下载" "200" "$HTTP_CODE"
         assert_file_not_empty "NuGet nupkg 文件非空" "/tmp/test_proxy_nuget.nupkg"
@@ -406,13 +431,13 @@ HTTP_CODE=$(curl -s -o /tmp/test_proxy_generic_upload_result.json -w "%{http_cod
     -X PUT \
     -H "Content-Type: application/octet-stream" \
     --data-binary @/tmp/test_proxy_generic_upload.txt \
-    "$BASE_URL/repo/$GENERIC_REPO/$TEST_FILE_NAME")
+    "$BASE_URL/repository/$GENERIC_REPO/$TEST_FILE_NAME")
 
 if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then
     log_pass "Generic 文件上传 (HTTP $HTTP_CODE)"
     
     # 下载文件
-    HTTP_CODE=$(curl -s -o /tmp/test_proxy_generic_download.txt -w "%{http_code}" "$BASE_URL/repo/$GENERIC_REPO/$TEST_FILE_NAME")
+    HTTP_CODE=$(curl -s -o /tmp/test_proxy_generic_download.txt -w "%{http_code}" "$BASE_URL/repository/$GENERIC_REPO/$TEST_FILE_NAME")
     assert_status "Generic 文件下载" "200" "$HTTP_CODE"
     
     if [ "$HTTP_CODE" = "200" ]; then

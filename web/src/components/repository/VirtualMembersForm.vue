@@ -72,8 +72,10 @@ const loadAvailableRepos = async () => {
   loading.value = true
   try {
     const res = await repositoryApi.list()
-    const allRepos = res || []
-    availableRepos.value = allRepos.filter(repo => 
+    const allRepos: any[] = (res && typeof res === 'object' && 'items' in res)
+      ? (res as any).items
+      : (res as any[]) || []
+    availableRepos.value = allRepos.filter((repo: any) =>
       repo.type !== 'virtual' && 
       (!props.packageType || repo.package_type === props.packageType)
     )

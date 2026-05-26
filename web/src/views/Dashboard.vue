@@ -59,6 +59,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { dashboardApi, type DashboardStats } from '@/api/dashboard'
+import { ElMessage } from 'element-plus'
 import RepoStatusCard from '@/components/dashboard/RepoStatusCard.vue'
 import DownloadChart from '@/components/dashboard/DownloadChart.vue'
 import StorageCard from '@/components/dashboard/StorageCard.vue'
@@ -96,16 +97,16 @@ const activities = ref<Activity[]>([
 const loadStats = async () => {
   loading.value = true
   try {
-    const res = await dashboardApi.getStats()
-    const data = res as any
+    const data = await dashboardApi.getStats()
     stats.value = {
-      repositories: data?.repositories ?? [],
-      storage: data?.storage ?? { total_bytes: 0, used_bytes: 0, usage_percent: 0 },
-      cache: data?.cache ?? { hit_rate: 0, total_entries: 0 },
-      downloads_last_7_days: data?.downloads_last_7_days ?? [],
-      top_packages: data?.top_packages ?? [],
+      repositories: data.repositories ?? [],
+      storage: data.storage ?? { total_bytes: 0, used_bytes: 0, usage_percent: 0 },
+      cache: data.cache ?? { hit_rate: 0, total_entries: 0 },
+      downloads_last_7_days: data.downloads_last_7_days ?? [],
+      top_packages: data.top_packages ?? [],
     }
   } catch (err) {
+    ElMessage.error('获取仪表盘数据失败')
     console.error('获取仪表盘统计数据失败:', err)
   } finally {
     loading.value = false

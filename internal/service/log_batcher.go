@@ -4,19 +4,20 @@ import (
 	"sync"
 	"time"
 
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 )
 
 type LogBatcher struct {
-	mu           sync.Mutex
-	logs         []*model.ProxyDownloadLog
-	logRepo      *repository.ProxyDownloadLogRepository
-	batchSize    int
+	mu            sync.Mutex
+	logs          []*model.ProxyDownloadLog
+	logRepo       *repository.ProxyDownloadLogRepository
+	batchSize     int
 	flushInterval time.Duration
-	stopCh       chan struct{}
-	flushing     bool
+	stopCh        chan struct{}
+	flushing      bool
 }
 
 func NewLogBatcher(logRepo *repository.ProxyDownloadLogRepository, batchSize int, flushInterval time.Duration) *LogBatcher {
@@ -79,9 +80,17 @@ func (b *LogBatcher) flush() {
 	}
 
 	if err := b.logRepo.BatchCreate(logs); err != nil {
-		logrus.Errorf("failed to batch create proxy download logs: %v", err)
+		util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
+			util.LogKeyModule:  "service",
+			util.LogKeyPkgType: "go",
+			util.LogKeyError:   err,
+		}).Error("failed to batch create proxy download logs")
 	} else {
-		logrus.Debugf("batch created %d proxy download logs", len(logs))
+		util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
+			util.LogKeyModule:  "service",
+			util.LogKeyPkgType: "go",
+			"count":            len(logs),
+		}).Debug("batch created proxy download logs")
 	}
 }
 

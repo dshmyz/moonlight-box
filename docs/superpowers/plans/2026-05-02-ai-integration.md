@@ -328,8 +328,8 @@ import (
     "context"
     "encoding/json"
     
-    "github.com/moonlight-box/registry/internal/model"
-    "github.com/moonlight-box/registry/internal/config"
+    "github.com/dshmyz/moonlight-box/internal/model"
+    "github.com/dshmyz/moonlight-box/internal/config"
     "gorm.io/gorm"
 )
 
@@ -388,8 +388,8 @@ import (
     "net/http"
     "time"
     
-    "github.com/moonlight-box/registry/internal/ai/models"
-    "github.com/moonlight-box/registry/internal/config"
+    "github.com/dshmyz/moonlight-box/internal/ai/models"
+    "github.com/dshmyz/moonlight-box/internal/config"
 )
 
 type AIClient struct {
@@ -529,8 +529,8 @@ import (
     "time"
     
     "github.com/google/uuid"
-    "github.com/moonlight-box/registry/internal/ai/models"
-    "github.com/moonlight-box/registry/internal/config"
+    "github.com/dshmyz/moonlight-box/internal/ai/models"
+    "github.com/dshmyz/moonlight-box/internal/config"
 )
 
 type Session struct {
@@ -658,7 +658,7 @@ import (
     "sync"
     "time"
     
-    "github.com/moonlight-box/registry/internal/config"
+    "github.com/dshmyz/moonlight-box/internal/config"
 )
 
 type RateLimit struct {
@@ -849,7 +849,7 @@ import (
     "sync"
     "time"
     
-    "github.com/moonlight-box/registry/internal/config"
+    "github.com/dshmyz/moonlight-box/internal/config"
 )
 
 type CacheEntry struct {
@@ -1009,10 +1009,10 @@ import (
     "fmt"
     "time"
     
-    "github.com/moonlight-box/registry/internal/ai/models"
-    "github.com/moonlight-box/registry/internal/ai/tools"
-    "github.com/moonlight-box/registry/internal/model"
-    "github.com/moonlight-box/registry/internal/repository"
+    "github.com/dshmyz/moonlight-box/internal/ai/models"
+    "github.com/dshmyz/moonlight-box/internal/ai/tools"
+    "github.com/dshmyz/moonlight-box/internal/model"
+    "github.com/dshmyz/moonlight-box/internal/repository"
 )
 
 type ToolManager struct {
@@ -1401,7 +1401,7 @@ import (
     "strings"
     "time"
     
-    "github.com/moonlight-box/registry/internal/model"
+    "github.com/dshmyz/moonlight-box/internal/model"
 )
 
 type DatabaseQueryTool struct {
@@ -1764,7 +1764,7 @@ import (
     "fmt"
     "strings"
     
-    "github.com/moonlight-box/registry/internal/model"
+    "github.com/dshmyz/moonlight-box/internal/model"
 )
 
 type PackageInfoTool struct {
@@ -2473,10 +2473,10 @@ import (
     "fmt"
     "time"
     
-    "github.com/moonlight-box/registry/internal/ai/models"
-    "github.com/moonlight-box/registry/internal/config"
-    "github.com/moonlight-box/registry/internal/model"
-    "github.com/moonlight-box/registry/internal/repository"
+    "github.com/dshmyz/moonlight-box/internal/ai/models"
+    "github.com/dshmyz/moonlight-box/internal/config"
+    "github.com/dshmyz/moonlight-box/internal/model"
+    "github.com/dshmyz/moonlight-box/internal/repository"
     "github.com/sirupsen/logrus"
 )
 
@@ -2826,8 +2826,8 @@ import (
     "net/http"
     
     "github.com/gin-gonic/gin"
-    "github.com/moonlight-box/registry/internal/ai"
-    "github.com/moonlight-box/registry/internal/middleware"
+    "github.com/dshmyz/moonlight-box/internal/ai"
+    "github.com/dshmyz/moonlight-box/internal/middleware"
 )
 
 type AIHandler struct {
@@ -3013,8 +3013,8 @@ if aiService != nil {
 ```go
 import (
     // ... 现有的 import
-    "github.com/moonlight-box/registry/internal/ai"
-    "github.com/moonlight-box/registry/internal/ai/tools"
+    "github.com/dshmyz/moonlight-box/internal/ai"
+    "github.com/dshmyz/moonlight-box/internal/ai/tools"
 )
 ```
 
@@ -3042,8 +3042,8 @@ import (
     "testing"
     "time"
     
-    "github.com/moonlight-box/registry/internal/config"
-    "github.com/moonlight-box/registry/internal/model"
+    "github.com/dshmyz/moonlight-box/internal/config"
+    "github.com/dshmyz/moonlight-box/internal/model"
     "github.com/stretchr/testify/assert"
 )
 
@@ -3189,11 +3189,11 @@ import (
     "testing"
     
     "github.com/gin-gonic/gin"
-    "github.com/moonlight-box/registry/internal/ai"
-    "github.com/moonlight-box/registry/internal/config"
-    "github.com/moonlight-box/registry/internal/middleware"
-    "github.com/moonlight-box/registry/internal/model"
-    "github.com/moonlight-box/registry/internal/repository"
+    "github.com/dshmyz/moonlight-box/internal/ai"
+    "github.com/dshmyz/moonlight-box/internal/config"
+    "github.com/dshmyz/moonlight-box/internal/middleware"
+    "github.com/dshmyz/moonlight-box/internal/model"
+    "github.com/dshmyz/moonlight-box/internal/repository"
     "github.com/stretchr/testify/assert"
     "gorm.io/driver/sqlite"
     "gorm.io/gorm"

@@ -1,29 +1,30 @@
 package main
 
 import (
+	"compress/gzip"
+	"net/http"
+
+	handler "github.com/dshmyz/moonlight-box/internal/api/http"
+	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/middleware"
+	migv2handler "github.com/dshmyz/moonlight-box/internal/migration/v2/handler"
+	"github.com/dshmyz/moonlight-box/internal/proxy"
+	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/adapter"
-	"github.com/moonlight-box/registry/internal/config"
-	"github.com/moonlight-box/registry/internal/handler"
-	"github.com/moonlight-box/registry/internal/middleware"
-	"github.com/moonlight-box/registry/internal/proxy"
-	"github.com/moonlight-box/registry/internal/service"
-	"github.com/moonlight-box/registry/internal/types"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type RouterContext struct {
-	Config       *config.Config
-	AuthSvc      *service.AuthService
-	AuditSvc     *service.AuditService
-	PermCache    *service.PermissionCacheService
-	BlockRule    *service.BlockRuleService
-	RepoSvc      *service.RepositoryService
-	RepoCache    *proxy.RepositoryCache
-	RepoResolver *proxy.RepoHandler
-	WebhookSvc   *service.WebhookService
-
-	Handlers struct {
+	Config           *config.Config
+	AuthSvc          *service.AuthService
+	AuditSvc         *service.AuditService
+	PermCache        *service.PermissionCacheService
+	BlockRule        *service.BlockRuleService
+	RepoSvc          *service.RepositoryService
+	RepoCache        *proxy.RepositoryCache
+	WebhookSvc       *service.WebhookService
+	RepositoryRouter http.Handler
+	Handlers         struct {
 		Auth             *handler.AuthHandler
 		Repo             *handler.RepositoryHandler
 		PublicRepo       *handler.PublicRepoHandler
@@ -37,21 +38,19 @@ type RouterContext struct {
 		AuditLog         *handler.AuditLogHandler
 		User             *handler.UserHandler
 		Role             *handler.RoleHandler
-		PackageVersion   *handler.PackageVersionHandler
 		Backup           *handler.BackupHandler
 		BackupConfig     *handler.BackupConfigHandler
 		Webhook          *handler.WebhookHandler
 		SystemConfig     *handler.SystemConfigHandler
 		SystemInfo       *handler.SystemInfoHandler
 		FileBrowse       *handler.FileBrowseHandler
-		Migration        *handler.MigrationHandler
+		MigrationV2      *migv2handler.MigrationV2Handler
 		AI               *handler.AIHandler
 		ProxyDownloadLog *handler.ProxyDownloadLogHandler
 		HealthCheck      *handler.HealthCheckHandler
 		VulnRule         *handler.VulnRuleHandler
+		PackageVersion   *handler.PackageVersionHandler
 	}
-
-	Adapters []types.Adapter
 }
 
 func NewRouterContext(
@@ -61,20 +60,13 @@ func NewRouterContext(
 	permCache *service.PermissionCacheService,
 	blockRule *service.BlockRuleService,
 	repoSvc *service.RepositoryService,
-	repoResolver *proxy.RepoHandler,
-	adapters []types.Adapter,
+	repositoryRouter http.Handler,
 	webhookSvc *service.WebhookService,
 ) *RouterContext {
 	ctx := &RouterContext{
-		Config:       cfg,
-		AuthSvc:      authSvc,
-		AuditSvc:     auditSvc,
-		PermCache:    permCache,
-		BlockRule:    blockRule,
-		RepoSvc:      repoSvc,
-		RepoResolver: repoResolver,
-		Adapters:     adapters,
-		WebhookSvc:   webhookSvc,
+		Config: cfg, AuthSvc: authSvc, AuditSvc: auditSvc, PermCache: permCache,
+		BlockRule: blockRule, RepoSvc: repoSvc,
+		RepositoryRouter: repositoryRouter, WebhookSvc: webhookSvc,
 	}
 
 	ctx.Handlers.Auth = handler.NewAuthHandler(authSvc, auditSvc)
@@ -89,6 +81,10 @@ func (ctx *RouterContext) SetupRouter(version string) *gin.Engine {
 	r.Use(middleware.RequestID())
 	r.Use(middleware.CORS())
 	r.Use(middleware.PrometheusMiddleware())
+	r.Use(middleware.Gzip(gzip.DefaultCompression))
+	if ctx.Config != nil && ctx.Config.Server.MaxUploadSize > 0 {
+		r.Use(middleware.BodySizeLimit(ctx.Config.Server.MaxUploadSize))
+	}
 	r.Use(gin.Logger())
 
 	ctx.setupPublicRoutes(r, version)
@@ -129,6 +125,7 @@ func (ctx *RouterContext) setupPackagePublicRoutes(api *gin.RouterGroup) {
 	api.GET("/packages/search", ctx.Handlers.Search.Search)
 	api.GET("/packages/:type/versions", ctx.Handlers.PackageVersion.ListVersions)
 	api.GET("/public/repo/:name", ctx.Handlers.PublicRepo.GetRepoConfig)
+	api.GET("/public/repositories", ctx.Handlers.PublicRepo.List)
 }
 
 func (ctx *RouterContext) setupAuthPublicRoutes(api *gin.RouterGroup) {
@@ -158,11 +155,13 @@ func (ctx *RouterContext) setupProtectedRoutes(api *gin.RouterGroup) {
 		ctx.setupBackupRoutes(protected)
 		ctx.setupWebhookRoutes(protected)
 		ctx.setupSystemRoutes(protected)
-		ctx.setupMigrationRoutes(protected)
+		ctx.setupMigrationV2Routes(protected)
 		ctx.setupAIRoutes(protected)
 		ctx.setupHealthRoutes(protected)
 
 		protected.GET("/dashboard/stats", ctx.Handlers.Dashboard.GetStats)
+
+		ctx.setupPackageRoutes(protected)
 	}
 }
 
@@ -363,11 +362,6 @@ func (ctx *RouterContext) setupAuditRoutes(protected *gin.RouterGroup) {
 		proxyDownloads.GET("/logs", ctx.Handlers.ProxyDownloadLog.List)
 		proxyDownloads.GET("/stats", ctx.Handlers.ProxyDownloadLog.GetStats)
 	}
-
-	protected.POST("/packages/versions/:id/deprecate", ctx.requirePermission("npm", "write"), ctx.Handlers.PackageVersion.DeprecateVersion)
-	protected.POST("/packages/versions/:id/restore", ctx.requirePermission("npm", "write"), ctx.Handlers.PackageVersion.RestoreVersion)
-	protected.POST("/packages/versions/:id/yank", ctx.requirePermission("npm", "write"), ctx.Handlers.PackageVersion.YankVersion)
-	protected.DELETE("/packages/versions/:id", ctx.requirePermission("npm", "delete"), ctx.Handlers.PackageVersion.DeleteVersion)
 }
 
 func (ctx *RouterContext) setupBackupRoutes(protected *gin.RouterGroup) {
@@ -419,28 +413,19 @@ func (ctx *RouterContext) setupSystemRoutes(protected *gin.RouterGroup) {
 	files := protected.Group("/files")
 	files.Use(ctx.requirePermission("system", "admin"))
 	{
+		files.GET("/backends", ctx.Handlers.FileBrowse.ListBackends)
 		files.GET("/browse", ctx.Handlers.FileBrowse.ListDirectory)
 		files.GET("/stats", ctx.Handlers.FileBrowse.GetFileStats)
 		files.GET("/download", ctx.Handlers.FileBrowse.DownloadFile)
 	}
 }
 
-func (ctx *RouterContext) setupMigrationRoutes(protected *gin.RouterGroup) {
-	migration := protected.Group("/migration")
-	migration.Use(ctx.requirePermission("system", "admin"))
-	{
-		migration.GET("/queue/status", ctx.Handlers.Migration.GetQueueStatus)
-		migration.GET("", ctx.Handlers.Migration.ListMigrations)
-		migration.POST("/nexus/test", ctx.Handlers.Migration.TestNexusConnection)
-		migration.POST("/nexus/repositories", ctx.Handlers.Migration.ListNexusRepositories)
-		migration.POST("/nexus/sync-repos", ctx.Handlers.Migration.SyncNexusRepos)
-		migration.POST("/nexus/sync-config-only", ctx.Handlers.Migration.SyncConfigOnly)
-		migration.POST("/nexus", ctx.Handlers.Migration.CreateMigration)
-		migration.GET("/:id/status", ctx.Handlers.Migration.GetMigrationStatus)
-		migration.POST("/:id/cancel", ctx.Handlers.Migration.CancelMigration)
-		migration.POST("/:id/retry", ctx.Handlers.Migration.RetryFailedMigration)
-		migration.GET("/:id/items", ctx.Handlers.Migration.ListMigrationItems)
+func (ctx *RouterContext) setupMigrationV2Routes(protected *gin.RouterGroup) {
+	if ctx.Handlers.MigrationV2 == nil {
+		return
 	}
+	adminMw := ctx.requirePermission("system", "admin")
+	ctx.Handlers.MigrationV2.RegisterRoutes(protected, adminMw)
 }
 
 func (ctx *RouterContext) setupAIRoutes(protected *gin.RouterGroup) {
@@ -474,39 +459,62 @@ func (ctx *RouterContext) setupHealthRoutes(protected *gin.RouterGroup) {
 }
 
 func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.RepositoryCache) {
-	repoRouter := handler.NewRepoRouter(ctx.RepoSvc)
-	repoRouter.SetRepoCache(repoCache)
-	repoRouter.SetResolver(ctx.RepoResolver)
-	repoRouter.SetWebhookService(ctx.WebhookSvc)
-	repoRouter.SetPermCache(ctx.PermCache)
-	repoRouter.SetBlockService(ctx.BlockRule)
-	for _, adap := range ctx.Adapters {
-		if repoAware, ok := adap.(adapter.RepoAwareAdapter); ok {
-			ctx.RepoResolver.RegisterAdapter(string(adap.Type()), repoAware)
-		}
-	}
-
 	authMw := middleware.Auth(ctx.AuthSvc)
 	permMw := ctx.requirePermission
 
-	repoGroup := r.Group("/repo/:repoName")
+	// 使用新架构 RepositoryRouter
+	repoHandler := gin.WrapH(ctx.RepositoryRouter)
+
+	// Nexus 兼容路由: /repository/:repoName/*path
+	repoGroup := r.Group("/repository/:repoName")
 	{
-		repoGroup.GET("/*path", repoRouter.HandleRequest)
+		repoGroup.GET("/*path", repoHandler)
+		repoGroup.PUT("/*path", authMw, repoHandler)
+		repoGroup.POST("/*path", authMw, repoHandler)
+		repoGroup.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
+	}
 
-		publishGroup := repoGroup.Group("")
-		publishGroup.Use(authMw)
-		{
-			publishGroup.PUT("/*path", repoRouter.HandlePublish)
-		}
+	// Nexus 2 兼容: /content/repositories/:repoName/*path
+	nexus2Group := r.Group("/content/repositories/:repoName")
+	{
+		nexus2Group.GET("/*path", repoHandler)
+		nexus2Group.PUT("/*path", authMw, repoHandler)
+		nexus2Group.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
+	}
 
-		deleteGroup := repoGroup.Group("")
-		deleteGroup.Use(authMw, permMw("package", "delete"))
-		{
-			deleteGroup.DELETE("/*path", repoRouter.HandleDelete)
-		}
+	// 组合仓库: /content/groups/:groupName/*path
+	groupGroup := r.Group("/content/groups/:groupName")
+	{
+		groupGroup.GET("/*path", repoHandler)
+		groupGroup.PUT("/*path", authMw, repoHandler)
+		groupGroup.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
 	}
 }
 
 func (ctx *RouterContext) requirePermission(resource, action string) gin.HandlerFunc {
 	return middleware.RequirePermission(ctx.PermCache, resource, action)
+}
+
+func (ctx *RouterContext) setupPackageRoutes(protected *gin.RouterGroup) {
+	if ctx.Handlers.PackageVersion == nil {
+		return
+	}
+
+	packagesRead := protected.Group("/packages")
+	packagesRead.Use(ctx.requirePermission("package", "read"))
+
+	packageWrite := protected.Group("/packages")
+	packageWrite.Use(ctx.requirePermission("package", "write"))
+	{
+		packageWrite.POST("/versions/:id/deprecate", ctx.Handlers.PackageVersion.DeprecateVersion)
+		packageWrite.POST("/versions/:id/restore", ctx.Handlers.PackageVersion.RestoreVersion)
+		packageWrite.POST("/versions/:id/yank", ctx.Handlers.PackageVersion.YankVersion)
+	}
+
+	packageDelete := protected.Group("/packages")
+	packageDelete.Use(ctx.requirePermission("package", "delete"))
+	{
+		packageDelete.DELETE("/versions/:id", ctx.Handlers.PackageVersion.DeleteVersion)
+		packageDelete.DELETE("/:id", ctx.Handlers.PackageVersion.DeletePackage)
+	}
 }

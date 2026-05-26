@@ -147,6 +147,9 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { storageBackendApi, type StorageBackend } from '@/api/storageBackend'
 import type { FormInstance, FormRules } from 'element-plus'
+import { useTableRowHover } from '@/composables/useTableRowHover'
+
+const { tableRowClass, handleRowEnter, handleRowLeave } = useTableRowHover()
 
 const loading = ref(false)
 const saving = ref(false)
@@ -154,19 +157,6 @@ const dialogVisible = ref(false)
 const isEdit = ref(false)
 const formRef = ref<FormInstance>()
 const storages = ref<StorageBackend[]>([])
-const hoveredRow = ref<number | null>(null)
-
-function tableRowClass({ rowIndex }: { rowIndex: number }) {
-  return rowIndex === hoveredRow.value ? 'row-hovered' : ''
-}
-
-function handleRowEnter({ rowIndex }: { rowIndex: number }) {
-  hoveredRow.value = rowIndex
-}
-
-function handleRowLeave() {
-  hoveredRow.value = null
-}
 
 function getTypeIcon(type: string): string {
   const icons: Record<string, string> = {

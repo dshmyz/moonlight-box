@@ -58,7 +58,7 @@ logging:
 proxy:
   default_timeout: 30s
   connect_timeout: 10s
-  large_file_threshold: 50MB  # 大文件阈值
+  large_file_threshold: 52428800  # 大文件阈值 (50MB)
   max_redirects: 10
   insecure_skip_verify: false  # 是否跳过 SSL 证书校验
   
@@ -114,3 +114,25 @@ ai:
 seed:
   enabled: true  # 是否启用种子数据（角色、权限、管理员账号等）
   load_test_data: false  # 是否加载测试包数据（生产环境建议设为 false）
+
+# 服务层配置
+service:
+  # 依赖解析最大并发数（控制Maven/Go包下载后的异步依赖解析任务数）
+  max_concurrent_dep_parse: 10
+  # 存储操作超时时间
+  storage_op_timeout: 30s
+  # 数据库操作超时时间
+  db_op_timeout: 10s
+
+# 日志采样配置（避免高频错误日志刷屏）
+# sample_rate: 0=不记录, 1=全部记录, 0.1=10%记录
+# 仅对 warn/error 级别生效
+logging:
+  # 全局采样率
+  sample_rate: 1.0
+  # 按模块配置采样率（优先级高于全局配置）
+  sample_by_module:
+    # 示例：代理模块错误日志只记录10%
+    # proxy: 0.1
+    # 示例：健康检查警告日志只记录50%
+    # health: 0.5

@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/types"
 	"github.com/gin-gonic/gin"
-	"github.com/moonlight-box/registry/internal/model"
-	"github.com/moonlight-box/registry/internal/repository"
-	"github.com/moonlight-box/registry/internal/types"
-	_ "github.com/ncruces/go-sqlite3/embed"
-	"github.com/ncruces/go-sqlite3/gormlite"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -30,26 +30,6 @@ func (m *mockStorageChecker) CheckStoragePath(path string) error {
 
 type mockConfigReader struct{}
 
-type mockDownloadService struct {
-	downloader *ProxyDownloader
-}
-
-func (m *mockDownloadService) Download(ctx context.Context, downloadCtx *types.DownloadContext) (*types.DownloadResult, error) {
-	remoteURL := fmt.Sprintf("%s/%s/%s", downloadCtx.Repo.RemoteURL, downloadCtx.Name, downloadCtx.Version)
-	result, err := m.downloader.FetchFromRemote(ctx, downloadCtx.Repo, remoteURL)
-	if err != nil {
-		return nil, err
-	}
-	return &types.DownloadResult{
-		Content:  result.Content,
-		Size:     result.Size,
-		RepoID:   result.RepoID,
-		Filename: result.Name,
-		Name:     downloadCtx.Name,
-		Version:  downloadCtx.Version,
-	}, nil
-}
-
 func (m *mockConfigReader) GetConfigAsBool(key string, defaultValue bool) bool {
 	return defaultValue
 }
@@ -61,7 +41,7 @@ func (m *testMockAdapter) RoutePrefix() string     { return "/maven" }
 func (m *testMockAdapter) ParsePackagePath(path string) (*types.PackageIdentity, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (m *testMockAdapter) ResolvePackagePath(path string) (*types.PackagePathInfo, error) {
+func (m *testMockAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
 	return &types.PackagePathInfo{
 		Name:       path,
 		RemotePath: path,
@@ -70,17 +50,21 @@ func (m *testMockAdapter) ResolvePackagePath(path string) (*types.PackagePathInf
 func (m *testMockAdapter) BuildRemotePath(name, version, filename string) string {
 	return fmt.Sprintf("%s/%s/%s", name, version, filename)
 }
-func (m *testMockAdapter) HandleRepoRequest(c *gin.Context, ctx *types.RepoRequestContext) {}
-func (m *testMockAdapter) HandleDownload(c *gin.Context, ctx *types.DownloadContext) (*types.DownloadResult, error) {
-	return nil, fmt.Errorf("not implemented")
-}
 func (m *testMockAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 func (m *testMockAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
 	return fmt.Errorf("not implemented")
 }
-func (m *testMockAdapter) FormatDownloadResponse(c *gin.Context, result *types.DownloadResult) {}
+func (m *testMockAdapter) ParseIntent(path string, method string) *types.RequestIntent {
+	return &types.RequestIntent{Type: types.RequestUnknown}
+}
+func (m *testMockAdapter) HandleGet(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (m *testMockAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
+	return nil, fmt.Errorf("not implemented")
+}
 
 func (m *mockConfigReader) GetConfigAsInt(key string, defaultValue int) int {
 	return defaultValue
@@ -95,16 +79,18 @@ func TestHealthCheckService_BasicCheck(t *testing.T) {
 	defer server.Close()
 
 	// 初始化测试数据库
-	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	db.AutoMigrate(&model.Repository{})
 
 	// 创建测试仓库
 	repo := &model.Repository{
-		Name:      "test-proxy",
-		Type:      model.RepoTypeProxy,
-		RemoteURL: server.URL,
-		Enabled:   true,
+		Name:    "test-proxy",
+		Type:    model.RepoTypeProxy,
+		Enabled: true,
+		Config: &model.RepositoryConfig{
+			RemoteURL: server.URL,
+		},
 	}
 	db.Create(repo)
 
@@ -146,16 +132,18 @@ func TestHealthCheckService_FailedCheck(t *testing.T) {
 	defer server.Close()
 
 	// 初始化测试数据库
-	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	db.AutoMigrate(&model.Repository{})
 
 	// 创建测试仓库
 	repo := &model.Repository{
-		Name:      "test-proxy-fail",
-		Type:      model.RepoTypeProxy,
-		RemoteURL: server.URL,
-		Enabled:   true,
+		Name:    "test-proxy-fail",
+		Type:    model.RepoTypeProxy,
+		Enabled: true,
+		Config: &model.RepositoryConfig{
+			RemoteURL: server.URL,
+		},
 	}
 	db.Create(repo)
 
@@ -188,16 +176,18 @@ func TestHealthCheckService_FailedCheck(t *testing.T) {
 
 func TestHealthCheckService_CircuitBreakerIntegration(t *testing.T) {
 	// 初始化测试数据库
-	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	db.AutoMigrate(&model.Repository{})
 
 	// 创建测试仓库
 	repo := &model.Repository{
-		Name:      "test-proxy-cb",
-		Type:      model.RepoTypeProxy,
-		RemoteURL: "http://invalid-host-that-does-not-exist:12345",
-		Enabled:   true,
+		Name:    "test-proxy-cb",
+		Type:    model.RepoTypeProxy,
+		Enabled: true,
+		Config: &model.RepositoryConfig{
+			RemoteURL: "http://invalid-host-that-does-not-exist:12345",
+		},
 	}
 	db.Create(repo)
 
@@ -254,16 +244,16 @@ func TestHealthCheckService_Recovery(t *testing.T) {
 	defer server.Close()
 
 	// 初始化测试数据库
-	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	db.AutoMigrate(&model.Repository{})
 
 	// 创建测试仓库
 	repo := &model.Repository{
-		Name:      "test-proxy-recovery",
-		Type:      model.RepoTypeProxy,
-		RemoteURL: server.URL,
-		Enabled:   true,
+		Name:    "test-proxy-recovery",
+		Type:    model.RepoTypeProxy,
+		Config:  &model.RepositoryConfig{RemoteURL: server.URL},
+		Enabled: true,
 	}
 	db.Create(repo)
 
@@ -314,7 +304,7 @@ func TestHealthCheckService_Recovery(t *testing.T) {
 
 func TestHealthCheckService_StartStop(t *testing.T) {
 	// 初始化测试数据库
-	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	db.AutoMigrate(&model.Repository{})
 
@@ -349,7 +339,7 @@ func TestHealthCheckService_StartStop(t *testing.T) {
 
 func TestProxyDownloader_CircuitBreakerIntegration(t *testing.T) {
 	// 初始化测试数据库
-	db, err := gorm.Open(gormlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	db.AutoMigrate(&model.Repository{})
 
@@ -363,6 +353,7 @@ func TestProxyDownloader_CircuitBreakerIntegration(t *testing.T) {
 		Interval:         100 * time.Millisecond,
 		Timeout:          2 * time.Second,
 		FailureThreshold: 5,
+		BlockOnUnhealthy: true,
 	}
 
 	repoRepo := repository.NewRepositoryRepository(db)
@@ -370,32 +361,26 @@ func TestProxyDownloader_CircuitBreakerIntegration(t *testing.T) {
 
 	// 创建测试仓库
 	repo := &model.Repository{
-		Name:             "test-proxy-router",
-		Type:             model.RepoTypeProxy,
-		RemoteURL:        "http://invalid-host:12345",
-		Enabled:          true,
-		CacheEnabled:     false,
-		CacheTTLSeconds:  0,
-		CacheNegativeTTL: 0,
-		TimeoutSeconds:   1,
-		MaxRedirects:     0,
+		Name:    "test-proxy-router",
+		Type:    model.RepoTypeProxy,
+		Enabled: true,
+		Config: &model.RepositoryConfig{
+			RemoteURL:        "http://invalid-host:12345",
+			CacheEnabled:     false,
+			CacheTTLSeconds:  0,
+			CacheNegativeTTL: 0,
+			TimeoutSeconds:   1,
+			MaxRedirects:     0,
+		},
 	}
 	db.Create(repo)
 
-	proxyDownloader := NewProxyDownloader(NewCacheService(), remoteClient, nil)
+	proxyDownloader := NewProxyDownloader(NewCacheService(), remoteClient)
 	proxyDownloader.SetHealthCheckService(healthSvc)
-
-	mockAdp := &testMockAdapter{}
-	proxyDownloader.RegisterAdapter("maven", mockAdp)
-
-	repoCache := NewRepositoryCache(repoRepo, nil, 5*time.Minute)
-	repoHandler := NewRepoHandler(repoRepo, nil, repoCache)
-	repoHandler.RegisterAdapter("maven", mockAdp)
-	repoHandler.SetDownloadService(&mockDownloadService{downloader: proxyDownloader})
 
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		_, err := repoHandler.resolveProxy(ctx, repo, "maven", "test", "1.0.0")
+		_, err := proxyDownloader.FetchFromRemote(ctx, repo, repo.Config.RemoteURL+"/test/1.0.0")
 		assert.Error(t, err)
 	}
 
@@ -406,7 +391,58 @@ func TestProxyDownloader_CircuitBreakerIntegration(t *testing.T) {
 
 	assert.Equal(t, CircuitOpen, cb.GetState())
 
-	_, err = repoHandler.resolveProxy(ctx, repo, "maven", "test", "1.0.0")
+	_, err = proxyDownloader.FetchFromRemote(ctx, repo, repo.Config.RemoteURL+"/test/1.0.0")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "circuit breaker open")
+}
+
+func TestProxyDownloader_CircuitBreakerNonBlocking(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	assert.NoError(t, err)
+	db.AutoMigrate(&model.Repository{})
+
+	tm := NewTransportManager(5*time.Second, NewDNSResolver(nil))
+	remoteClient := NewRemoteClient(tm, 10)
+
+	config := HealthCheckConfig{
+		Enabled:          true,
+		Interval:         100 * time.Millisecond,
+		Timeout:          2 * time.Second,
+		FailureThreshold: 5,
+		BlockOnUnhealthy: false,
+	}
+
+	repoRepo := repository.NewRepositoryRepository(db)
+	healthSvc := NewHealthCheckService(db, repoRepo, &mockStorageChecker{}, remoteClient, config, &mockConfigReader{})
+
+	repo := &model.Repository{
+		Name:    "test-proxy-nonblock",
+		Type:    model.RepoTypeProxy,
+		Enabled: true,
+		Config: &model.RepositoryConfig{
+			RemoteURL:        "http://invalid-host:12345",
+			CacheEnabled:     false,
+			CacheTTLSeconds:  0,
+			CacheNegativeTTL: 0,
+			TimeoutSeconds:   1,
+			MaxRedirects:     0,
+		},
+	}
+	db.Create(repo)
+
+	proxyDownloader := NewProxyDownloader(NewCacheService(), remoteClient)
+	proxyDownloader.SetHealthCheckService(healthSvc)
+
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		_, err := proxyDownloader.FetchFromRemote(ctx, repo, repo.Config.RemoteURL+"/test/1.0.0")
+		assert.Error(t, err)
+	}
+
+	cb := healthSvc.GetCircuitBreaker(repo.ID)
+	assert.NotNil(t, cb)
+	assert.Equal(t, CircuitOpen, cb.GetState())
+
+	assert.False(t, healthSvc.BlockOnUnhealthy())
+
+	assert.True(t, healthSvc.ShouldSkipRequest(repo.ID))
 }

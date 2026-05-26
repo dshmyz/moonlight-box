@@ -16,6 +16,7 @@ type Config struct {
 	Security SecurityConfig `mapstructure:"security"`
 	Cache    CacheConfig    `mapstructure:"cache"`
 	Logging  LoggingConfig  `mapstructure:"logging"`
+	Service  ServiceConfig  `mapstructure:"service"` // 服务层配置
 	Proxy    ProxyConfig    `mapstructure:"proxy"`
 	AI       AIConfig       `mapstructure:"ai"`   // AI 配置
 	Seed     SeedConfig     `mapstructure:"seed"` // 初始化数据配置
@@ -27,12 +28,13 @@ type SeedConfig struct {
 }
 
 type ServerConfig struct {
-	Host         string        `mapstructure:"host"`
-	Port         int           `mapstructure:"port"`
-	Mode         string        `mapstructure:"mode"` // debug, release, test
-	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
-	WriteTimeout time.Duration `mapstructure:"write_timeout"`
-	StaticDir    string        `mapstructure:"static_dir"` // 前端静态文件目录
+	Host          string        `mapstructure:"host"`
+	Port          int           `mapstructure:"port"`
+	Mode          string        `mapstructure:"mode"` // debug, release, test
+	ReadTimeout   time.Duration `mapstructure:"read_timeout"`
+	WriteTimeout  time.Duration `mapstructure:"write_timeout"`
+	StaticDir     string        `mapstructure:"static_dir"` // 前端静态文件目录
+	MaxUploadSize int64         `mapstructure:"max_upload_size"`
 }
 
 type DatabaseConfig struct {
@@ -88,21 +90,44 @@ type CacheConfig struct {
 }
 
 type LoggingConfig struct {
-	Level            string        `mapstructure:"level"`  // debug, info, warn, error
-	Format           string        `mapstructure:"format"` // json, console
-	Output           string        `mapstructure:"output"`
+	Level  string `mapstructure:"level"`  // debug, info, warn, error
+	Format string `mapstructure:"format"` // json, console
+	Output string `mapstructure:"output"` // 主日志文件路径
+	// 分文件日志配置
+	// 启用后，不同类型日志写入不同文件，便于管理和轮转
+	EnableSplitFiles bool          `mapstructure:"enable_split_files"`
+	SqlLogFile       string        `mapstructure:"sql_log_file"`       // SQL日志文件，默认 ./logs/sql.log
+	ErrorLogFile     string        `mapstructure:"error_log_file"`     // 错误日志文件，默认 ./logs/error.log
+	AccessLogFile    string        `mapstructure:"access_log_file"`    // 访问日志文件，默认 ./logs/access.log
 	LogRetentionDays int           `mapstructure:"log_retention_days"` // 日志保留天数
 	CleanupInterval  time.Duration `mapstructure:"cleanup_interval"`   // 清理间隔
+	// 日志采样配置（避免高频错误日志刷屏）
+	// sample_rate: 0=不采样(全部记录), 1=100%采样, 0.1=10%采样
+	// 仅对 Warn/Error 级别生效
+	// 按 module 配置不同采样率，格式: {"module_name": 0.1}
+	SampleRate     float64            `mapstructure:"sample_rate"`
+	SampleByModule map[string]float64 `mapstructure:"sample_by_module"`
+}
+
+// ServiceConfig 服务层通用配置
+type ServiceConfig struct {
+	// 依赖解析并发限制（Maven/Go 包下载后异步解析依赖）
+	MaxConcurrentDepParse int `mapstructure:"max_concurrent_dep_parse"`
+	// 存储操作超时
+	StorageOpTimeout time.Duration `mapstructure:"storage_op_timeout"`
+	// 数据库操作超时
+	DbOpTimeout time.Duration `mapstructure:"db_op_timeout"`
 }
 
 type ProxyConfig struct {
-	DefaultTimeout     time.Duration     `mapstructure:"default_timeout"`
-	ConnectTimeout     time.Duration     `mapstructure:"connect_timeout"`
-	LargeFileThreshold int64             `mapstructure:"large_file_threshold"`
-	MaxRedirects       int               `mapstructure:"max_redirects"`
-	InsecureSkipVerify bool              `mapstructure:"insecure_skip_verify"`
-	DNSMapping         map[string]string `mapstructure:"dns_mapping"`
-	HealthCheck        HealthCheckConfig `mapstructure:"health_check"`
+	DefaultTimeout        time.Duration     `mapstructure:"default_timeout"`
+	ConnectTimeout        time.Duration     `mapstructure:"connect_timeout"`
+	LargeFileThreshold    int64             `mapstructure:"large_file_threshold"`
+	LargeFileThresholdStr string            `mapstructure:"large_file_threshold_str"`
+	MaxRedirects          int               `mapstructure:"max_redirects"`
+	InsecureSkipVerify    bool              `mapstructure:"insecure_skip_verify"`
+	DNSMapping            map[string]string `mapstructure:"dns_mapping"`
+	HealthCheck           HealthCheckConfig `mapstructure:"health_check"`
 }
 
 type HealthCheckConfig struct {
@@ -110,6 +135,7 @@ type HealthCheckConfig struct {
 	Interval         time.Duration `mapstructure:"interval"`
 	Timeout          time.Duration `mapstructure:"timeout"`
 	FailureThreshold int           `mapstructure:"failure_threshold"`
+	BlockOnUnhealthy bool          `mapstructure:"block_on_unhealthy"`
 }
 
 // AI 配置

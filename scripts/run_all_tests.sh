@@ -6,6 +6,7 @@ BASE_URL="${1:-http://localhost:9081}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASS="${ADMIN_PASS:-admin123}"
 TEST_SUITE="${TEST_SUITE:-all}"
+TEST_TIMEOUT="${TEST_TIMEOUT:-180}"  # per-test timeout (seconds)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -16,6 +17,20 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+TOTAL_PASS=0
+TOTAL_FAIL=0
+TOTAL_SKIP=0
+
+# temp files to clean up on exit
+CLEANUP_FILES=()
+
+cleanup() {
+    if [ ${#CLEANUP_FILES[@]} -gt 0 ]; then
+        rm -rf "${CLEANUP_FILES[@]}" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
 
 TOTAL_PASS=0
 TOTAL_FAIL=0
@@ -43,31 +58,49 @@ run_test() {
     local test_name="$1"
     local test_script="$2"
     local enabled="$3"
-    
+
     if [ "$enabled" != "true" ]; then
         echo -e "  ${YELLOW}⊘ SKIP${NC} $test_name"
         TOTAL_SKIP=$((TOTAL_SKIP + 1))
         return 0
     fi
-    
+
     echo -e "\n${BLUE}▶ 执行: $test_name${NC}"
     echo -e "  脚本: $test_script"
-    
+
     if [ ! -f "$test_script" ]; then
         echo -e "  ${RED}✗ 错误: 测试脚本不存在${NC}"
         TOTAL_FAIL=$((TOTAL_FAIL + 1))
         return 1
     fi
-    
+
     chmod +x "$test_script"
-    
-    if bash "$test_script" "$BASE_URL"; then
-        TOTAL_PASS=$((TOTAL_PASS + 1))
-        return 0
-    else
-        TOTAL_FAIL=$((TOTAL_FAIL + 1))
-        return 1
+
+    # 带超时执行（macOS 需要 gtimeout），超时算 FAIL
+    USE_TIMEOUT=""
+    if command -v timeout &>/dev/null; then
+        USE_TIMEOUT="timeout"
+    elif command -v gtimeout &>/dev/null; then
+        USE_TIMEOUT="gtimeout"
     fi
+    if [ -n "$USE_TIMEOUT" ]; then
+        if "$USE_TIMEOUT" "$TEST_TIMEOUT" bash "$test_script" "$BASE_URL"; then
+            TOTAL_PASS=$((TOTAL_PASS + 1))
+        else
+            local rc=$?
+            if [ $rc -eq 124 ]; then
+                echo -e "  ${RED}✗ 超时: $test_name 超过 ${TEST_TIMEOUT}s${NC}"
+            fi
+            TOTAL_FAIL=$((TOTAL_FAIL + 1))
+        fi
+    else
+        if bash "$test_script" "$BASE_URL"; then
+            TOTAL_PASS=$((TOTAL_PASS + 1))
+        else
+            TOTAL_FAIL=$((TOTAL_FAIL + 1))
+        fi
+    fi
+    return 0
 }
 
 check_prerequisites() {
@@ -95,12 +128,19 @@ check_prerequisites() {
     
     if command -v go &> /dev/null; then
         echo -e "  ${GREEN}✓${NC} Go 已安装: $(go version)"
+    elif [ -x /usr/local/go/bin/go ]; then
+        echo -e "  ${GREEN}✓${NC} Go 已安装: $(/usr/local/go/bin/go version)"
+        export PATH="/usr/local/go/bin:$PATH"
     else
         echo -e "  ${YELLOW}⚠${NC} Go 未安装（部分测试将跳过）"
     fi
     
     if command -v pip &> /dev/null; then
         echo -e "  ${GREEN}✓${NC} pip 已安装: $(pip --version | awk '{print $2}')"
+    elif command -v pip3 &> /dev/null; then
+        echo -e "  ${GREEN}✓${NC} pip3 已安装: $(pip3 --version | awk '{print $2}')"
+    elif python3 -m pip --version &> /dev/null; then
+        echo -e "  ${GREEN}✓${NC} python3 -m pip 可用: $(python3 -m pip --version | awk '{print $2}')"
     else
         echo -e "  ${YELLOW}⚠${NC} pip 未安装（部分测试将跳过）"
     fi
