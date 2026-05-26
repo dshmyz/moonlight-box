@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/source"
@@ -246,6 +247,9 @@ func (s *NexusSource) ListComponentsPage(ctx context.Context, repoName, continua
 }
 
 func (s *NexusSource) DownloadAsset(ctx context.Context, assetURL string) (source.AssetStream, error) {
+	if !strings.HasPrefix(assetURL, "http://") && !strings.HasPrefix(assetURL, "https://") {
+		assetURL = strings.TrimRight(s.baseURL, "/") + "/" + strings.TrimLeft(assetURL, "/")
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", assetURL, nil)
 	if err != nil {
 		return source.AssetStream{}, err

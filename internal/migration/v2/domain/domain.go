@@ -217,6 +217,7 @@ type MigrationPlan struct {
 	ScopeJSON       string         `json:"-" gorm:"column:selected_scope_json;type:text"`
 	PolicyJSON      string         `json:"-" gorm:"column:conflict_policy_json;type:text"`
 	StatsJSON       string         `json:"-" gorm:"column:stats_json;type:text"`
+	Stats           *PlanStats     `json:"stats,omitempty" gorm:"-"`
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
 	StartedAt       *time.Time     `json:"started_at"`
@@ -306,6 +307,31 @@ type MigrationJob struct {
 }
 
 func (MigrationJob) TableName() string { return "migration_v2_jobs" }
+
+// UserCheckpoint stores user information during the scanning phase
+// so the executor can create users without re-fetching from the source.
+type UserCheckpoint struct {
+	Email       string   `json:"email"`
+	DisplayName string   `json:"display_name"`
+	Roles       []string `json:"roles,omitempty"`
+}
+
+// RepoCheckpoint stores repository configuration during the scanning phase
+// so the executor can create repositories without re-fetching from the source.
+type RepoCheckpoint struct {
+	Type       string `json:"type"`
+	Format     string `json:"format"`
+	RemoteURL  string `json:"remote_url,omitempty"`
+	IsVirtual  bool   `json:"is_virtual"`
+}
+
+// RoleCheckpoint stores role information during the scanning phase
+// so the executor can create roles without re-fetching from the source.
+type RoleCheckpoint struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Privileges  []string `json:"privileges,omitempty"`
+}
 
 // MigrationItem
 type MigrationItem struct {

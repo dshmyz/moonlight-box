@@ -2,6 +2,7 @@ package planner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/domain"
@@ -11,13 +12,13 @@ import (
 
 // Planner builds migration jobs and items from source scanning.
 type Planner struct {
-	src          source.MigrationSource
-	planID       uint
-	scope        *domain.ScopeSelection
-	jobRepo      *repository.JobRepo
-	itemRepo     *repository.ItemRepo
-	eventRepo    *repository.EventRepo
-	targetRepoID uint
+	src            source.MigrationSource
+	planID         uint
+	scope          *domain.ScopeSelection
+	jobRepo        *repository.JobRepo
+	itemRepo       *repository.ItemRepo
+	eventRepo      *repository.EventRepo
+	targetRepoID   uint
 	targetRepoName string
 }
 
@@ -36,7 +37,7 @@ func New(src source.MigrationSource, planID uint, scope *domain.ScopeSelection, 
 
 // Scan runs the full scan phase: repositories, security, and artifacts.
 func (p *Planner) Scan(ctx context.Context) error {
-	p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged, "Scanning started", nil, nil)
+	p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged, "开始扫描仓库配置", nil, nil)
 
 	if p.scope.RepoConfig || p.scope.GroupMemberships {
 		if err := p.scanRepositories(ctx); err != nil {
@@ -56,7 +57,7 @@ func (p *Planner) Scan(ctx context.Context) error {
 		}
 	}
 
-	p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged, "Scanning completed", nil, nil)
+	p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged, "扫描全部完成", nil, nil)
 	return nil
 }
 
@@ -66,8 +67,43 @@ func (p *Planner) scanRepositories(ctx context.Context) error {
 		return fmt.Errorf("failed to list repositories: %w", err)
 	}
 
+	type repoDetail struct {
+		detail    *source.SourceRepositoryDetail
+		err       error
+		repoIndex int
+	}
+	needsDetail := make(map[int]bool)
+	for i, repo := range repos {
+		// Only need GetRepositoryDetail for proxy (remoteURL) and group (members)
+		if repo.Format != "" && repo.Type != "" && p.shouldIncludeRepo(repo.Type) {
+			if repo.Type == "proxy" || repo.Type == "group" {
+				needsDetail[i] = true
+			}
+		}
+	}
+
+	details := make(map[int]*source.SourceRepositoryDetail)
+	if len(needsDetail) > 0 {
+		results := make(chan repoDetail, len(needsDetail))
+		for i := range needsDetail {
+			go func(idx int, r source.SourceRepository) {
+				d, err := p.src.GetRepositoryDetail(ctx, r.Format, r.Type, r.Name)
+				results <- repoDetail{detail: d, err: err, repoIndex: idx}
+			}(i, repos[i])
+		}
+		for range needsDetail {
+			r := <-results
+			if r.err != nil {
+				p.eventRepo.Log(p.planID, domain.LevelWarn, domain.EventSourceWarning,
+					fmt.Sprintf("Repository detail unavailable for %s: %v", repos[r.repoIndex].Name, r.err), nil, nil)
+			} else {
+				details[r.repoIndex] = r.detail
+			}
+		}
+	}
+
 	var jobs []domain.MigrationJob
-	for _, repo := range repos {
+	for i, repo := range repos {
 		if repo.Format == "" || repo.Type == "" {
 			continue
 		}
@@ -75,40 +111,47 @@ func (p *Planner) scanRepositories(ctx context.Context) error {
 			continue
 		}
 
-		detail, detailErr := p.src.GetRepositoryDetail(ctx, repo.Format, repo.Type, repo.Name)
-		if detailErr != nil {
-			p.eventRepo.Log(p.planID, domain.LevelWarn, domain.EventSourceWarning,
-				fmt.Sprintf("Repository detail unavailable for %s (format=%s type=%s): %v", repo.Name, repo.Format, repo.Type, detailErr), nil, nil)
-		}
-
 		if p.scope.RepoConfig {
+			remoteURL := ""
+			if d := details[i]; d != nil && d.Proxy != nil {
+				remoteURL = d.Proxy.RemoteURL
+			}
+			repoCheckpoint := domain.RepoCheckpoint{
+				Type:      repo.Type,
+				Format:    repo.Format,
+				RemoteURL: remoteURL,
+				IsVirtual: repo.Type == "group",
+			}
+			checkpointBytes, _ := json.Marshal(repoCheckpoint)
 			jobs = append(jobs, domain.MigrationJob{
 				PlanID:      p.planID,
 				Kind:        domain.JobRepoConfig,
 				Status:      domain.JobPending,
 				SourceKey:   repo.Name,
 				TargetKey:   repo.Name,
+				Checkpoint:  string(checkpointBytes),
 				MaxAttempts: 3,
 			})
 		}
 
-		// Group membership
-		if p.scope.GroupMemberships && repo.Type == "group" && detailErr == nil && detail != nil && detail.Group != nil {
-			for _, memberName := range detail.Group.MemberNames {
-				jobs = append(jobs, domain.MigrationJob{
-					PlanID:      p.planID,
-					Kind:        domain.JobGroupMembership,
-					Status:      domain.JobPending,
-					SourceKey:   repo.Name,
-					TargetKey:   memberName,
-					MaxAttempts: 3,
-				})
+		if p.scope.GroupMemberships && repo.Type == "group" {
+			if d := details[i]; d != nil && d.Group != nil {
+				for _, memberName := range d.Group.MemberNames {
+					jobs = append(jobs, domain.MigrationJob{
+						PlanID:      p.planID,
+						Kind:        domain.JobGroupMembership,
+						Status:      domain.JobPending,
+						SourceKey:   repo.Name,
+						TargetKey:   memberName,
+						MaxAttempts: 3,
+					})
+				}
 			}
 		}
 	}
 
 	p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged,
-		fmt.Sprintf("Found %d repositories", len(jobs)), nil, nil)
+		fmt.Sprintf("发现 %d 个仓库配置", len(jobs)), nil, nil)
 
 	if len(jobs) > 0 {
 		return p.jobRepo.BatchCreate(jobs)
@@ -143,7 +186,7 @@ func (p *Planner) scanSecurity(ctx context.Context) error {
 			}
 		}
 		p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged,
-			fmt.Sprintf("Found %d privileges", len(permJobs)), nil, nil)
+			fmt.Sprintf("发现 %d 个权限", len(permJobs)), nil, nil)
 	}
 
 	if p.scope.Roles {
@@ -156,12 +199,19 @@ func (p *Planner) scanSecurity(ctx context.Context) error {
 			if role.External {
 				continue
 			}
+			roleCheckpoint := domain.RoleCheckpoint{
+				Name:        role.Name,
+				Description: role.Description,
+				Privileges:  role.Privileges,
+			}
+			checkpointBytes, _ := json.Marshal(roleCheckpoint)
 			jobs = append(jobs, domain.MigrationJob{
-				PlanID:   p.planID,
-				Kind:     domain.JobRole,
-				Status:   domain.JobPending,
-				SourceKey: role.ID,
-				TargetKey: role.ID,
+				PlanID:      p.planID,
+				Kind:        domain.JobRole,
+				Status:      domain.JobPending,
+				SourceKey:   role.ID,
+				TargetKey:   role.ID,
+				Checkpoint:  string(checkpointBytes),
 				MaxAttempts: 3,
 			})
 		}
@@ -171,7 +221,7 @@ func (p *Planner) scanSecurity(ctx context.Context) error {
 			}
 		}
 		p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged,
-			fmt.Sprintf("Found %d roles", len(jobs)), nil, nil)
+			fmt.Sprintf("发现 %d 个角色", len(jobs)), nil, nil)
 	}
 
 	if p.scope.Users {
@@ -184,12 +234,22 @@ func (p *Planner) scanSecurity(ctx context.Context) error {
 			if u.External {
 				continue
 			}
+			checkpoint := domain.UserCheckpoint{
+				Email:       u.Email,
+				DisplayName: u.FirstName + " " + u.LastName,
+				Roles:       u.Roles,
+			}
+			if checkpoint.DisplayName == " " {
+				checkpoint.DisplayName = u.UserID
+			}
+			checkpointBytes, _ := json.Marshal(checkpoint)
 			jobs = append(jobs, domain.MigrationJob{
-				PlanID:   p.planID,
-				Kind:     domain.JobUser,
-				Status:   domain.JobPending,
-				SourceKey: u.UserID,
-				TargetKey: u.UserID,
+				PlanID:      p.planID,
+				Kind:        domain.JobUser,
+				Status:      domain.JobPending,
+				SourceKey:   u.UserID,
+				TargetKey:   u.UserID,
+				Checkpoint:  string(checkpointBytes),
 				MaxAttempts: 3,
 			})
 		}
@@ -199,7 +259,7 @@ func (p *Planner) scanSecurity(ctx context.Context) error {
 			}
 		}
 		p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged,
-			fmt.Sprintf("Found %d users", len(jobs)), nil, nil)
+			fmt.Sprintf("发现 %d 个用户", len(jobs)), nil, nil)
 	}
 
 	return nil
@@ -207,16 +267,29 @@ func (p *Planner) scanSecurity(ctx context.Context) error {
 
 func (p *Planner) scanArtifacts(ctx context.Context) error {
 	for _, repoName := range p.scope.ArtifactRepos {
-		// Create artifact_scan job
+		// Create artifact_scan job (work already done during scan, mark as completed)
 		scanJob := domain.MigrationJob{
-			PlanID:   p.planID,
-			Kind:     domain.JobArtifactScan,
-			Status:   domain.JobPending,
-			SourceKey: repoName,
-			TargetKey: p.determineTargetRepo(repoName),
+			PlanID:      p.planID,
+			Kind:        domain.JobArtifactScan,
+			Status:      domain.JobCompleted,
+			SourceKey:   repoName,
+			TargetKey:   p.determineTargetRepo(repoName),
 			MaxAttempts: 3,
 		}
 		if err := p.jobRepo.Create(&scanJob); err != nil {
+			return err
+		}
+
+		// Create artifact_copy job (items linked to this, executed by scheduler)
+		copyJob := domain.MigrationJob{
+			PlanID:      p.planID,
+			Kind:        domain.JobArtifactCopy,
+			Status:      domain.JobPending,
+			SourceKey:   repoName,
+			TargetKey:   p.determineTargetRepo(repoName),
+			MaxAttempts: 3,
+		}
+		if err := p.jobRepo.Create(&copyJob); err != nil {
 			return err
 		}
 
@@ -228,23 +301,26 @@ func (p *Planner) scanArtifacts(ctx context.Context) error {
 				return fmt.Errorf("failed to list components for %s: %w", repoName, err)
 			}
 			for _, comp := range page.Items {
-				allItems = append(allItems, domain.MigrationItem{
-					PlanID:           p.planID,
-					JobID:            scanJob.ID,
-					Kind:             domain.ItemArtifact,
-					SourceRepository: repoName,
-					SourceID:         comp.ID,
-					SourceFormat:     comp.Format,
-					SourceName:       comp.Name,
-					SourceVersion:    comp.Version,
-					TargetRepository: p.determineTargetRepo(repoName),
-					Status:           domain.ItemPending,
-				})
-				if len(allItems) >= 100 {
-					if err := p.itemRepo.BatchCreate(allItems); err != nil {
-						return err
+				for _, asset := range comp.Assets {
+					allItems = append(allItems, domain.MigrationItem{
+						PlanID:           p.planID,
+						JobID:            copyJob.ID,
+						Kind:             domain.ItemArtifact,
+						SourceRepository: repoName,
+						SourceID:         comp.ID,
+						SourcePath:       asset.DownloadURL,
+						SourceFormat:     comp.Format,
+						SourceName:       comp.Name,
+						SourceVersion:    comp.Version,
+						TargetRepository: p.determineTargetRepo(repoName),
+						Status:           domain.ItemPending,
+					})
+					if len(allItems) >= 100 {
+						if err := p.itemRepo.BatchCreate(allItems); err != nil {
+							return err
+						}
+						allItems = allItems[:0]
 					}
-					allItems = allItems[:0]
 				}
 			}
 			if page.ContinuationToken == "" {
@@ -258,7 +334,7 @@ func (p *Planner) scanArtifacts(ctx context.Context) error {
 			}
 		}
 		p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged,
-			fmt.Sprintf("Scanned repository %s", repoName), nil, nil)
+			fmt.Sprintf("已完成仓库 [%s] 的制品扫描", repoName), nil, nil)
 	}
 	return nil
 }

@@ -76,6 +76,21 @@ func (r *JobRepo) ResetRunning(planID uint) error {
 	return r.db.Model(&domain.MigrationJob{}).Where("plan_id = ? AND status = ?", planID, domain.JobRunning).
 		Updates(map[string]interface{}{"status": domain.JobPending}).Error
 }
+func (r *JobRepo) CountByPlanAndKind(planID uint, kind domain.JobKind) (int64, error) {
+	var c int64
+	return c, r.db.Model(&domain.MigrationJob{}).Where("plan_id = ? AND kind = ?", planID, kind).Count(&c).Error
+}
+func (r *JobRepo) CountByPlanAndStatus(planID uint, status domain.JobStatus) (int64, error) {
+	var c int64
+	return c, r.db.Model(&domain.MigrationJob{}).Where("plan_id = ? AND status = ?", planID, status).Count(&c).Error
+}
+func (r *JobRepo) CountByPlanKindAndStatus(planID uint, kind domain.JobKind, status domain.JobStatus) (int64, error) {
+	var c int64
+	return c, r.db.Model(&domain.MigrationJob{}).Where("plan_id = ? AND kind = ? AND status = ?", planID, kind, status).Count(&c).Error
+}
+func (r *JobRepo) DeleteByPlan(planID uint) error {
+	return r.db.Where("plan_id = ?", planID).Delete(&domain.MigrationJob{}).Error
+}
 
 // ItemRepo handles migration_v2_items data access.
 type ItemRepo struct{ db *gorm.DB }
@@ -119,6 +134,13 @@ func (r *ItemRepo) ResetRunning(planID uint) error {
 func (r *ItemRepo) CountByPlanAndStatus(planID uint, status domain.ItemStatus) (int64, error) {
 	var c int64
 	return c, r.db.Model(&domain.MigrationItem{}).Where("plan_id = ? AND status = ?", planID, status).Count(&c).Error
+}
+func (r *ItemRepo) CountByPlan(planID uint) (int64, error) {
+	var c int64
+	return c, r.db.Model(&domain.MigrationItem{}).Where("plan_id = ?", planID).Count(&c).Error
+}
+func (r *ItemRepo) DeleteByPlan(planID uint) error {
+	return r.db.Where("plan_id = ?", planID).Delete(&domain.MigrationItem{}).Error
 }
 
 // ConflictRepo handles migration_v2_conflicts data access.
@@ -171,4 +193,7 @@ func (r *EventRepo) Log(planID uint, level domain.EventLevel, eventType domain.E
 		EventType: eventType,
 		Message:   message,
 	})
+}
+func (r *EventRepo) DeleteByPlan(planID uint) error {
+	return r.db.Where("plan_id = ?", planID).Delete(&domain.MigrationEvent{}).Error
 }

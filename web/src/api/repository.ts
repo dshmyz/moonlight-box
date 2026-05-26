@@ -62,6 +62,18 @@ export interface Repository {
   storage_backend_id?: number
 }
 
+export interface RepositoryUpdateData {
+  display_name?: string
+  description?: string
+  enabled?: boolean
+  public_visible?: boolean
+  config?: RepositoryConfig
+  allow_overwrite?: boolean
+  allow_delete?: boolean
+  members?: string[]
+  storage_backend_id?: number
+}
+
 export interface RepositoryMember {
   id: number
   repository_id: number
@@ -121,7 +133,7 @@ export const repositoryApi = {
     return request.post<Repository>('/repositories', data)
   },
 
-  update(name: string, data: Partial<Repository>) {
+  update(name: string, data: RepositoryUpdateData) {
     return request.put(`/repositories/${name}`, data)
   },
 

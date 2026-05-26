@@ -182,9 +182,11 @@ func TestRepositoryService_Update(t *testing.T) {
 	service.Create(repo, nil)
 
 	// 更新仓库
-	err := service.Update("test-repo", map[string]interface{}{
-		"display_name": "Test Repository",
-		"description":  "Updated description",
+	displayName := "Test Repository"
+	description := "Updated description"
+	err := service.Update("test-repo", &model.UpdateRepositoryParams{
+		DisplayName: &displayName,
+		Description: &description,
 	})
 	assert.Nil(t, err)
 
@@ -426,9 +428,9 @@ func TestRepositoryService_Update_VirtualRepoMembers(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, 2, len(members))
 
-	// 更新成员列表（使用 []interface{} 模拟 JSON 解析结果）
-	err = service.Update("virtual-update-test", map[string]interface{}{
-		"members": []interface{}{"local-2", "local-3"},
+	// 更新成员列表
+	err = service.Update("virtual-update-test", &model.UpdateRepositoryParams{
+		Members: []string{"local-2", "local-3"},
 	})
 	assert.Nil(t, err)
 

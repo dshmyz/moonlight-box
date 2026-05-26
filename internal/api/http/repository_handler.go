@@ -173,7 +173,7 @@ func (h *RepositoryHandler) Create(c *gin.Context) {
 			response.Conflict(c, "仓库名称已存在")
 			return
 		}
-		response.InternalError(c, "Failed to create repository")
+		response.ErrorResponse(c, 400, err.Error())
 		return
 	}
 
@@ -183,14 +183,14 @@ func (h *RepositoryHandler) Create(c *gin.Context) {
 // Update 更新仓库信息
 func (h *RepositoryHandler) Update(c *gin.Context) {
 	name := c.Param("name")
-	var updates map[string]interface{}
-	if err := c.ShouldBindJSON(&updates); err != nil {
+	var req model.UpdateRepositoryParams
+	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request", err.Error())
 		return
 	}
 
-	if err := h.svc.Update(name, updates); err != nil {
-		response.InternalError(c, "Failed to update repository")
+	if err := h.svc.Update(name, &req); err != nil {
+		response.ErrorResponse(c, 400, err.Error())
 		return
 	}
 
@@ -201,7 +201,7 @@ func (h *RepositoryHandler) Update(c *gin.Context) {
 func (h *RepositoryHandler) Delete(c *gin.Context) {
 	name := c.Param("name")
 	if err := h.svc.Delete(name); err != nil {
-		response.InternalError(c, "Failed to delete repository")
+		response.WriteAppError(c, err)
 		return
 	}
 
@@ -213,7 +213,7 @@ func (h *RepositoryHandler) GetMembers(c *gin.Context) {
 	name := c.Param("name")
 	members, err := h.svc.GetMembersContext(c.Request.Context(), name)
 	if err != nil {
-		response.InternalError(c, "Failed to get members")
+		response.WriteAppError(c, err)
 		return
 	}
 
@@ -234,7 +234,7 @@ func (h *RepositoryHandler) AddMember(c *gin.Context) {
 	}
 
 	if err := h.svc.AddMember(name, req.MemberName, req.Priority); err != nil {
-		response.InternalError(c, "Failed to add member")
+		response.WriteAppError(c, err)
 		return
 	}
 
@@ -247,7 +247,7 @@ func (h *RepositoryHandler) RemoveMember(c *gin.Context) {
 	memberName := c.Param("memberName")
 
 	if err := h.svc.RemoveMember(name, memberName); err != nil {
-		response.InternalError(c, "Failed to remove member")
+		response.WriteAppError(c, err)
 		return
 	}
 

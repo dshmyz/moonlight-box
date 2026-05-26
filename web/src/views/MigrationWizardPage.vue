@@ -72,13 +72,46 @@
 
         <!-- Step 2: Scan Progress -->
         <div v-if="step === 2" class="step-panel">
-          <h3>扫描中...</h3>
-          <p v-if="currentPlan">Plan #{{ currentPlan.id }} - 状态: {{ currentPlan.status }}</p>
-          <el-alert v-if="currentPlan?.status === 'failed'" type="error" title="扫描失败" :description="scanError" show-icon closable />
+          <h3>{{ isScanning ? '正在扫描源数据...' : (scanFailed ? '扫描失败' : '扫描完成') }}</h3>
+
+          <!-- scan in progress / summary -->
+          <div v-if="currentPlan?.stats" class="stats-grid">
+            <div class="stat-card" v-if="currentPlan.stats.total_repos > 0">
+              <div class="stat-icon repos"><i class="fa-solid fa-database"></i></div>
+              <div class="stat-num">{{ currentPlan.stats.total_repos }}</div>
+              <div class="stat-label">仓库配置</div>
+            </div>
+            <div class="stat-card" v-if="currentPlan.stats.total_roles > 0">
+              <div class="stat-icon roles"><i class="fa-solid fa-shield-halved"></i></div>
+              <div class="stat-num">{{ currentPlan.stats.total_roles }}</div>
+              <div class="stat-label">角色</div>
+            </div>
+            <div class="stat-card" v-if="currentPlan.stats.total_users > 0">
+              <div class="stat-icon users"><i class="fa-solid fa-user-group"></i></div>
+              <div class="stat-num">{{ currentPlan.stats.total_users }}</div>
+              <div class="stat-label">用户</div>
+            </div>
+            <div class="stat-card" v-if="currentPlan.stats.total_artifacts > 0">
+              <div class="stat-icon artifacts"><i class="fa-solid fa-box-archive"></i></div>
+              <div class="stat-num">{{ currentPlan.stats.total_artifacts }}</div>
+              <div class="stat-label">制品</div>
+            </div>
+          </div>
+
+          <!-- scan events -->
+          <div v-if="events.length" class="event-log">
+            <div v-for="e in recentEvents" :key="e.id" class="event-line" :class="'event-' + e.level">
+              <span class="event-time">{{ formatTime(e.created_at) }}</span>
+              <span class="event-msg">{{ e.message }}</span>
+            </div>
+          </div>
+
+          <el-alert v-if="scanFailed" type="error" title="扫描失败" :description="scanError" show-icon closable style="margin-top:16px" />
+
           <div class="actions">
-            <el-button @click="prevStep">上一步</el-button>
-            <el-button v-if="currentPlan?.status !== 'failed'" type="primary" @click="runPrecheck" :disabled="scanRunning">执行预检</el-button>
-            <el-button v-else type="primary" @click="retryScan" :loading="scanRunning">重新扫描</el-button>
+            <el-button @click="prevStep" :disabled="isScanning">上一步</el-button>
+            <el-button v-if="!isScanning && !scanFailed" type="primary" @click="runPrecheck">执行预检</el-button>
+            <el-button v-if="scanFailed" type="primary" @click="retryScan" :loading="isScanning">重新扫描</el-button>
           </div>
         </div>
 
@@ -103,18 +136,39 @@
 
         <!-- Step 4: Execution -->
         <div v-if="step === 4" class="step-panel">
-          <h3>执行中</h3>
-          <p>状态: {{ currentPlan?.status }}</p>
-          <div v-if="jobs.length">
-            <p>Jobs: {{ completedJobs }}/{{ jobs.length }}</p>
-            <div v-for="j in jobs" :key="j.id" class="job-row">
-              <span>{{ j.kind }}/{{ j.source_key }}</span>
-              <el-tag :type="jobTagType(j.status)" size="small">{{ j.status }}</el-tag>
+          <h3>{{ execTitle }}</h3>
+
+          <!-- overall progress -->
+          <div class="overall-progress">
+            <div class="progress-header">
+              <span>总体进度</span>
+              <span class="progress-text">{{ overallProgress }}% ({{ totalCompleted }}/{{ totalJobs }})</span>
+            </div>
+            <el-progress :percentage="overallProgress" :status="execProgressStatus" :stroke-width="12" />
+          </div>
+
+          <!-- category progress bars -->
+          <div class="category-progress" v-if="jobCategories.length">
+            <div v-for="cat in jobCategories" :key="cat.key" class="cat-row">
+              <div class="cat-header">
+                <span class="cat-name">{{ cat.label }}</span>
+                <span class="cat-count">{{ cat.completed }}/{{ cat.total }}</span>
+              </div>
+              <el-progress :percentage="cat.pct" :status="cat.pct === 100 ? 'success' : ''" :stroke-width="8"
+                :color="cat.failed > 0 ? '#f56c6c' : '#409eff'" />
             </div>
           </div>
-          <div v-if="events.length" class="event-log">
-            <p v-for="e in recentEvents" :key="e.id" class="event-line">{{ e.message }}</p>
+
+          <!-- recent events -->
+          <div v-if="recentEvents.length" class="event-log">
+            <div v-for="e in recentEvents" :key="e.id" class="event-line" :class="'event-' + e.level">
+              <span class="event-time">{{ formatTime(e.created_at) }}</span>
+              <el-tag v-if="e.level === 'error'" type="danger" size="small">错误</el-tag>
+              <el-tag v-else-if="e.level === 'warn'" type="warning" size="small">警告</el-tag>
+              <span class="event-msg">{{ e.message }}</span>
+            </div>
           </div>
+
           <div class="actions">
             <el-button v-if="currentPlan?.status === 'paused'" type="primary" @click="resumePlan">继续执行</el-button>
             <el-button v-else @click="pausePlan" :disabled="!isRunning">暂停</el-button>
@@ -125,14 +179,33 @@
         <!-- Step 5: Result -->
         <div v-if="step === 5" class="step-panel">
           <h3>迁移结果</h3>
-          <p>状态: {{ currentPlan?.status }}</p>
-          <div v-if="jobs.length">
-            <p>完成: {{ completedJobs }}/{{ jobs.length }}</p>
-            <div v-for="j in jobs" :key="j.id" class="job-row">
-              <span>{{ j.kind }}/{{ j.source_key }}</span>
-              <el-tag :type="jobTagType(j.status)" size="small">{{ j.status }}</el-tag>
+          <div class="result-summary">
+            <el-tag :type="resultTagType" size="large">{{ planStatusLabel(currentPlan?.status || '') }}</el-tag>
+          </div>
+
+          <div v-if="currentPlan?.stats" class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-icon repos"><i class="fa-solid fa-database"></i></div>
+              <div class="stat-num">{{ currentPlan.stats.synced_repos }}/{{ currentPlan.stats.total_repos }}</div>
+              <div class="stat-label">仓库配置</div>
+            </div>
+            <div class="stat-card" v-if="currentPlan.stats.total_roles > 0">
+              <div class="stat-icon roles"><i class="fa-solid fa-shield-halved"></i></div>
+              <div class="stat-num">{{ currentPlan.stats.synced_roles }}/{{ currentPlan.stats.total_roles }}</div>
+              <div class="stat-label">角色</div>
+            </div>
+            <div class="stat-card" v-if="currentPlan.stats.total_users > 0">
+              <div class="stat-icon users"><i class="fa-solid fa-user-group"></i></div>
+              <div class="stat-num">{{ currentPlan.stats.synced_users }}/{{ currentPlan.stats.total_users }}</div>
+              <div class="stat-label">用户</div>
+            </div>
+            <div class="stat-card" v-if="currentPlan.stats.total_artifacts > 0">
+              <div class="stat-icon artifacts"><i class="fa-solid fa-box-archive"></i></div>
+              <div class="stat-num">{{ currentPlan.stats.synced_artifacts }}/{{ currentPlan.stats.total_artifacts }}</div>
+              <div class="stat-label">制品</div>
             </div>
           </div>
+
           <div class="actions">
             <el-button @click="prevStep">上一步</el-button>
             <el-button type="primary" @click="resetWizard">重新开始</el-button>
@@ -146,13 +219,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { migrationV2Api, type MigrationPlan, type MigrationJob, type MigrationConflict, type MigrationEvent, type ConflictPolicy, type ScopeSelection } from '@/api/migrationV2'
+import { migrationV2Api, type MigrationPlan, type MigrationJob, type MigrationConflict, type MigrationEvent, type ConflictPolicy, type ScopeSelection, type JobKind } from '@/api/migrationV2'
 
 const step = ref(0)
 const testing = ref(false)
-const scanRunning = ref(false)
 const scanError = ref('')
 const pollTimer = ref<number | null>(null)
+const scanPollTimer = ref<number | null>(null)
 const connectionSuccess = ref(false)
 
 const connForm = ref({ url: '', username: 'admin', password: '' })
@@ -169,14 +242,104 @@ const scope = ref<ScopeSelection>({
   target_strategy: 'keep_structure', target_repo_id: 0, target_repo_name: '',
 })
 
-const isRunning = computed(() => currentPlan.value?.status === 'running' || currentPlan.value?.status === 'verifying')
-const completedJobs = computed(() => jobs.value.filter(j => j.status === 'completed').length)
-const recentEvents = computed(() => events.value.slice(0, 10))
+// --- computed ---
 
-function jobTagType(s: string) {
-  const m: Record<string, string> = { completed: 'success', failed: 'danger', running: 'warning', pending: 'info', skipped: '' }
-  return m[s] || ''
+const isScanning = computed(() => currentPlan.value?.status === 'scanning')
+const scanFailed = computed(() => currentPlan.value?.status === 'failed' && currentPlan.value?.current_stage === 'scan')
+const isRunning = computed(() => currentPlan.value?.status === 'running' || currentPlan.value?.status === 'verifying')
+
+const execTitle = computed(() => {
+  const s = currentPlan.value?.status
+  if (s === 'running') return '正在执行迁移...'
+  if (s === 'verifying') return '正在验证迁移结果...'
+  if (s === 'paused') return '迁移已暂停'
+  return '执行中'
+})
+
+const totalJobs = computed(() => {
+  const kinds = ['repo_config', 'role', 'user', 'artifact_copy'] as JobKind[]
+  return jobs.value.filter(j => kinds.includes(j.kind)).length
+})
+
+const totalCompleted = computed(() =>
+  jobs.value.filter(j => j.status === 'completed' && ['repo_config', 'role', 'user', 'artifact_copy'].includes(j.kind)).length
+)
+
+const overallProgress = computed(() => {
+  if (totalJobs.value === 0) return 0
+  return Math.round((totalCompleted.value / totalJobs.value) * 100)
+})
+
+const execProgressStatus = computed(() => {
+  if (currentPlan.value?.status === 'completed') return 'success'
+  if (currentPlan.value?.status === 'failed') return 'exception'
+  return ''
+})
+
+const jobCategories = computed(() => {
+  const cats: { key: JobKind; label: string }[] = [
+    { key: 'repo_config', label: '仓库配置' },
+    { key: 'role', label: '角色' },
+    { key: 'user', label: '用户' },
+    { key: 'artifact_copy', label: '制品复制' },
+  ]
+  return cats.map(cat => {
+    const list = jobs.value.filter(j => j.kind === cat.key)
+    const total = list.length
+    const completed = list.filter(j => j.status === 'completed').length
+    const failed = list.filter(j => j.status === 'failed').length
+    const skipped = list.filter(j => j.status === 'skipped').length
+    const done = completed + skipped
+    return {
+      key: cat.key,
+      label: cat.label,
+      total,
+      completed,
+      skipped,
+      failed,
+      done,
+      pct: total === 0 ? 0 : Math.round((done / total) * 100),
+    }
+  }).filter(c => c.total > 0)
+})
+
+const resultTagType = computed(() => {
+  const s = currentPlan.value?.status
+  if (s === 'completed') return 'success'
+  if (s === 'failed') return 'danger'
+  if (s === 'cancelled') return 'info'
+  return ''
+})
+
+const recentEvents = computed(() => events.value.slice(0, 20))
+
+// --- helpers ---
+
+function planStatusLabel(s: string): string {
+  const m: Record<string, string> = {
+    draft: '草稿',
+    scanning: '扫描中',
+    prechecking: '预检中',
+    precheck_failed: '预检失败',
+    ready: '就绪',
+    running: '执行中',
+    paused: '已暂停',
+    verifying: '验证中',
+    completed: '已完成',
+    failed: '失败',
+    cancelling: '取消中',
+    cancelled: '已取消',
+  }
+  return m[s] || s
 }
+
+function formatTime(t: string): string {
+  if (!t) return ''
+  const d = new Date(t)
+  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+// --- actions ---
 
 async function testConnection() {
   testing.value = true
@@ -184,23 +347,16 @@ async function testConnection() {
     await migrationV2Api.testSource({ source_type: 'nexus', ...connForm.value })
     ElMessage.success('连接成功')
     connectionSuccess.value = true
-  } catch (e: any) { 
+  } catch (e: any) {
     ElMessage.error('连接失败: ' + e.message)
     connectionSuccess.value = false
   }
   finally { testing.value = false }
 }
 
-function nextStep() { 
-  if (step.value < 5) {
-    step.value++
-  }
-}
-
+function nextStep() { if (step.value < 5) step.value++ }
 function prevStep() {
-  if (step.value > 0) {
-    step.value--
-  }
+  if (step.value > 0) step.value--
 }
 
 function resetWizard() {
@@ -212,55 +368,66 @@ function resetWizard() {
   events.value = []
   conflictPolicies.value = {}
   connForm.value = { url: '', username: 'admin', password: '' }
-  stopPolling()
+  stopAllPolling()
 }
 
 function onRepoConfigChange(v: boolean) { if (!v) { scope.value.hosted_repos = scope.value.proxy_repos = scope.value.group_repos = scope.value.group_memberships = false } }
 function onArtifactsChange(v: boolean) { if (!v) scope.value.artifact_repos = [] }
 
+// --- scan ---
+
 async function createAndScan() {
   try {
-    const res = await migrationV2Api.createPlan({
+    const plan = await migrationV2Api.createPlan({
       name: connForm.value.url,
       source_url: connForm.value.url,
       username: connForm.value.username,
       password: connForm.value.password,
       scope: scope.value,
-    })
-    currentPlan.value = res as any
+    }) as MigrationPlan
+    currentPlan.value = plan
     step.value = 2
-    scanRunning.value = true
     scanError.value = ''
-    try {
-      await migrationV2Api.scanPlan(currentPlan.value!.id)
-      ElMessage.success('扫描完成')
-      await refreshPlan()
-    } catch (e: any) {
-      scanError.value = e.message || '扫描失败'
-      ElMessage.error('扫描失败: ' + scanError.value)
-      await refreshPlan()
-    } finally {
-      scanRunning.value = false
-    }
+    await migrationV2Api.scanPlan(currentPlan.value.id)
+    startScanPolling()
   } catch (e: any) { ElMessage.error('创建失败: ' + e.message) }
 }
 
 async function retryScan() {
   if (!currentPlan.value) return
-  scanRunning.value = true
   scanError.value = ''
   try {
     await migrationV2Api.scanPlan(currentPlan.value.id)
-    ElMessage.success('扫描完成')
-    await refreshPlan()
-  } catch (e: any) {
-    scanError.value = e.message || '扫描失败'
-    ElMessage.error('扫描失败: ' + scanError.value)
-    await refreshPlan()
-  } finally {
-    scanRunning.value = false
-  }
+    events.value = []
+    startScanPolling()
+  } catch (e: any) { ElMessage.error('扫描失败: ' + e.message) }
 }
+
+function startScanPolling() {
+  stopScanPolling()
+  scanPollTimer.value = window.setInterval(async () => {
+    if (!currentPlan.value) return
+    await refreshPlan()
+    try { events.value = (await migrationV2Api.getEvents(currentPlan.value.id, 50) as MigrationEvent[]).reverse() }
+    catch { /* ignore */ }
+    try { jobs.value = (await migrationV2Api.getJobs(currentPlan.value.id) as MigrationJob[]) || [] }
+    catch { /* ignore */ }
+
+    const s = currentPlan.value?.status
+    if (s === 'prechecking' || s === 'failed') {
+      stopScanPolling()
+      if (s === 'failed') {
+        scanError.value = '扫描失败，请查看上方事件日志了解详情'
+      }
+    }
+  }, 1500)
+}
+
+function stopScanPolling() {
+  if (scanPollTimer.value) { clearInterval(scanPollTimer.value); scanPollTimer.value = null }
+}
+
+// --- precheck ---
 
 async function runPrecheck() {
   if (!currentPlan.value) return
@@ -272,7 +439,7 @@ async function runPrecheck() {
     if (conflicts.value.length === 0) {
       step.value = 4
       await migrationV2Api.startPlan(currentPlan.value.id)
-      startPolling()
+      startExecPolling()
     } else {
       step.value = 3
     }
@@ -290,9 +457,11 @@ async function applyConflicts() {
     }
     await migrationV2Api.startPlan(currentPlan.value.id)
     step.value = 4
-    startPolling()
+    startExecPolling()
   } catch (e: any) { ElMessage.error('执行失败: ' + e.message) }
 }
+
+// --- execution ---
 
 async function pausePlan() {
   if (!currentPlan.value) return
@@ -304,16 +473,15 @@ async function resumePlan() {
   if (!currentPlan.value) return
   try {
     await migrationV2Api.resumePlan(currentPlan.value.id)
-    startPolling()
-  } catch (e: any) {
-    ElMessage.error('恢复失败: ' + e.message)
-  }
+    startExecPolling()
+  } catch (e: any) { ElMessage.error('恢复失败: ' + e.message) }
 }
 
 async function cancelPlan() {
   if (!currentPlan.value) return
   await migrationV2Api.cancelPlan(currentPlan.value.id)
-  stopPolling()
+  stopExecPolling()
+  await refreshPlan()
   step.value = 5
 }
 
@@ -323,41 +491,56 @@ async function refreshPlan() {
   catch { /* ignore */ }
 }
 
-function startPolling() {
-  stopPolling()
+function startExecPolling() {
+  stopExecPolling()
   pollTimer.value = window.setInterval(async () => {
     if (!currentPlan.value) return
     await refreshPlan()
     try { jobs.value = (await migrationV2Api.getJobs(currentPlan.value.id)) as any }
     catch { /* ignore */ }
-    try { events.value = (await migrationV2Api.getEvents(currentPlan.value.id, 20)) as any }
+    try { events.value = (await migrationV2Api.getEvents(currentPlan.value.id, 30) as MigrationEvent[]).reverse() }
     catch { /* ignore */ }
-    if (currentPlan.value?.status === 'completed' || currentPlan.value?.status === 'failed' || currentPlan.value?.status === 'cancelled') {
-      stopPolling()
+    const s = currentPlan.value?.status
+    if (s === 'completed' || s === 'failed' || s === 'cancelled') {
+      stopExecPolling()
       step.value = 5
     }
   }, 3000)
 }
 
-function stopPolling() {
+function stopExecPolling() {
   if (pollTimer.value) { clearInterval(pollTimer.value); pollTimer.value = null }
 }
+
+function stopAllPolling() {
+  stopScanPolling()
+  stopExecPolling()
+}
+
+// --- lifecycle ---
 
 async function loadRecentPlan() {
   try {
     const res = await migrationV2Api.listPlans()
     if (!res || !Array.isArray(res) || res.length === 0) return
-    
+
     const recentPlan = res[0]
     currentPlan.value = recentPlan
-    
+
     switch (recentPlan.status) {
       case 'draft':
         step.value = 1
         break
       case 'scanning':
+        step.value = 2
+        events.value = (await migrationV2Api.getEvents(recentPlan.id, 50) as MigrationEvent[]).reverse() || []
+        jobs.value = (await migrationV2Api.getJobs(recentPlan.id) as MigrationJob[]) || []
+        startScanPolling()
+        break
       case 'prechecking':
         step.value = 2
+        await loadPlanData(recentPlan.id)
+        events.value = events.value.reverse()
         break
       case 'precheck_failed':
         step.value = 3
@@ -370,7 +553,7 @@ async function loadRecentPlan() {
         if (conflicts.value.length === 0) {
           step.value = 4
           await migrationV2Api.startPlan(recentPlan.id)
-          startPolling()
+          startExecPolling()
         } else {
           step.value = 3
         }
@@ -379,17 +562,25 @@ async function loadRecentPlan() {
       case 'verifying':
         step.value = 4
         await loadPlanData(recentPlan.id)
-        startPolling()
+        events.value = events.value.reverse()
+        startExecPolling()
         break
       case 'paused':
         step.value = 4
         await loadPlanData(recentPlan.id)
+        events.value = events.value.reverse()
         break
       case 'completed':
       case 'failed':
       case 'cancelled':
-        step.value = 5
-        await loadPlanData(recentPlan.id)
+        if (recentPlan.current_stage === 'scan') {
+          step.value = 2
+          await loadPlanData(recentPlan.id)
+          events.value = events.value.reverse()
+        } else {
+          step.value = 5
+          await loadPlanData(recentPlan.id)
+        }
         break
     }
   } catch (e) {
@@ -400,7 +591,7 @@ async function loadRecentPlan() {
 async function loadPlanData(planID: number) {
   try {
     jobs.value = (await migrationV2Api.getJobs(planID) as MigrationJob[]) || []
-    events.value = (await migrationV2Api.getEvents(planID, 20) as MigrationEvent[]) || []
+    events.value = (await migrationV2Api.getEvents(planID, 50) as MigrationEvent[]) || []
     conflicts.value = (await migrationV2Api.getConflicts(planID) as MigrationConflict[]) || []
     conflicts.value.forEach(c => { conflictPolicies.value[c.id] = c.suggested_policy })
   } catch (e) {
@@ -412,7 +603,7 @@ onMounted(() => {
   loadRecentPlan()
 })
 
-onUnmounted(() => stopPolling())
+onUnmounted(() => stopAllPolling())
 </script>
 
 <style scoped>
@@ -426,9 +617,39 @@ onUnmounted(() => stopPolling())
 .step-bar { margin-bottom: 32px; }
 .step-panel { min-height: 300px; }
 .sub-options { margin-left: 24px; padding: 8px 0; }
-.actions { margin-top: 24px; }
+.actions { margin-top: 24px; display: flex; gap: 12px; }
 .conflict-item { margin-bottom: 16px; }
-.job-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
-.event-log { margin-top: 16px; max-height: 200px; overflow-y: auto; background: #f9fafb; border-radius: 8px; padding: 12px; }
-.event-line { font-size: 12px; color: #6b7280; margin: 4px 0; }
+
+/* stats grid */
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; margin: 20px 0; }
+.stat-card { text-align: center; padding: 20px 12px; border-radius: 12px; background: #f8fafc; border: 1px solid #e5e7eb; }
+.stat-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; margin: 0 auto 10px; font-size: 18px; }
+.stat-icon.repos { background: #eff6ff; color: #3b82f6; }
+.stat-icon.roles { background: #fef3c7; color: #f59e0b; }
+.stat-icon.users { background: #ecfdf5; color: #10b981; }
+.stat-icon.artifacts { background: #ede9fe; color: #8b5cf6; }
+.stat-num { font-size: 28px; font-weight: 700; color: #1f2937; }
+.stat-label { font-size: 13px; color: #6b7280; margin-top: 4px; }
+
+/* progress */
+.overall-progress { margin-bottom: 24px; }
+.progress-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.progress-text { font-size: 13px; color: #6b7280; }
+
+.category-progress { margin-bottom: 20px; }
+.cat-row { margin-bottom: 12px; }
+.cat-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.cat-name { font-size: 13px; font-weight: 500; color: #374151; }
+.cat-count { font-size: 12px; color: #9ca3af; }
+
+.result-summary { margin-bottom: 20px; }
+
+/* event log */
+.event-log { margin-top: 16px; max-height: 280px; overflow-y: auto; background: #f9fafb; border-radius: 8px; padding: 12px; }
+.event-line { font-size: 12px; padding: 3px 0; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #f0f0f0; }
+.event-line:last-child { border-bottom: none; }
+.event-line.event-warn { color: #e6a23c; }
+.event-line.event-error { color: #f56c6c; }
+.event-time { color: #9ca3af; white-space: nowrap; font-family: monospace; }
+.event-msg { flex: 1; }
 </style>

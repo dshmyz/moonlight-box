@@ -110,7 +110,7 @@ import { ref, computed, watch } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage } from 'element-plus'
 import { Document, Link, Setting, Coin, Lock, Connection } from '@element-plus/icons-vue'
-import { repositoryApi, type Repository, type ProxyAuthConfig } from '@/api/repository'
+import { repositoryApi, type Repository, type RepositoryConfig, type RepositoryUpdateData, type ProxyAuthConfig } from '@/api/repository'
 import BasicInfoForm from './BasicInfoForm.vue'
 import AuthConfigForm from './AuthConfigForm.vue'
 import TimeoutConfigForm from './TimeoutConfigForm.vue'
@@ -360,25 +360,9 @@ const buildProxyAuthConfig = (): ProxyAuthConfig | undefined => {
   return undefined
 }
 
-const buildSubmitData = (): Partial<Repository> => {
-  const memberNames = formData.value.type === 'virtual'
-    ? membersText.value
-        .split('\n')
-        .map(name => name.trim())
-        .filter(Boolean)
-    : undefined
-
-  const data: Partial<Repository> = {
-    name: formData.value.name,
-    display_name: formData.value.display_name,
-    description: formData.value.description,
-    type: formData.value.type,
-    package_type: formData.value.package_type,
-    storage_backend_id: storageBackendId.value || undefined,
-  }
-
+const buildConfig = (): RepositoryConfig => {
   if (formData.value.type === 'proxy') {
-    data.config = {
+    return {
       remote_url: formData.value.remote_url,
       auth_type: formData.value.auth_type,
       auth: buildProxyAuthConfig(),
@@ -392,12 +376,31 @@ const buildSubmitData = (): Partial<Repository> => {
       insecure_skip_verify: formData.value.insecure_skip_verify,
       failure_cache_rules: formData.value.failure_cache_rules || '',
     }
-  } else {
-    data.config = {
-      cache_enabled: formData.value.cache_enabled,
-      cache_ttl_seconds: formData.value.cache_ttl_seconds,
-      cache_max_size_gb: formData.value.cache_max_size_gb,
-    }
+  }
+  return {
+    cache_enabled: formData.value.cache_enabled,
+    cache_ttl_seconds: formData.value.cache_ttl_seconds,
+    cache_max_size_gb: formData.value.cache_max_size_gb,
+  }
+}
+
+const getMemberNames = (): string[] | undefined => {
+  if (formData.value.type !== 'virtual') return undefined
+  return membersText.value
+    .split('\n')
+    .map(name => name.trim())
+    .filter(Boolean)
+}
+
+const buildCreateData = (): Partial<Repository> => {
+  const data: Partial<Repository> = {
+    name: formData.value.name,
+    display_name: formData.value.display_name,
+    description: formData.value.description,
+    type: formData.value.type,
+    package_type: formData.value.package_type,
+    storage_backend_id: storageBackendId.value || undefined,
+    config: buildConfig(),
   }
 
   if (formData.value.type === 'local' || formData.value.type === 'proxy') {
@@ -406,7 +409,27 @@ const buildSubmitData = (): Partial<Repository> => {
   }
 
   if (formData.value.type === 'virtual') {
-    data.members = memberNames
+    data.members = getMemberNames()
+  }
+
+  return data
+}
+
+const buildUpdateData = (): RepositoryUpdateData => {
+  const data: RepositoryUpdateData = {
+    display_name: formData.value.display_name,
+    description: formData.value.description,
+    config: buildConfig(),
+    storage_backend_id: storageBackendId.value || undefined,
+  }
+
+  if (formData.value.type === 'local' || formData.value.type === 'proxy') {
+    data.allow_overwrite = formData.value.allow_overwrite
+    data.allow_delete = formData.value.allow_delete
+  }
+
+  if (formData.value.type === 'virtual') {
+    data.members = getMemberNames()
   }
 
   return data
@@ -424,13 +447,11 @@ const handleSubmit = async () => {
 
   submitting.value = true
   try {
-    const data = buildSubmitData()
-
     if (isEditMode.value) {
-      await repositoryApi.update(formData.value.name, data)
+      await repositoryApi.update(formData.value.name, buildUpdateData())
       ElMessage.success('更新成功')
     } else {
-      await repositoryApi.create(data)
+      await repositoryApi.create(buildCreateData())
       ElMessage.success('创建成功')
     }
 

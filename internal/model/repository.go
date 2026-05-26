@@ -114,6 +114,19 @@ type APIKeyAuth struct {
 	QueryParam string `json:"query_param,omitempty"`
 }
 
+// UpdateRepositoryParams 仓库更新参数，使用指针类型区分"未传"与"设为零值"
+type UpdateRepositoryParams struct {
+	DisplayName      *string           `json:"display_name"`
+	Description      *string           `json:"description"`
+	Config           *RepositoryConfig `json:"config"`
+	Members          []string          `json:"members"`
+	StorageBackendID *uint             `json:"storage_backend_id"`
+	Enabled          *bool             `json:"enabled"`
+	PublicVisible    *bool             `json:"public_visible"`
+	AllowOverwrite   *bool             `json:"allow_overwrite"`
+	AllowDelete      *bool             `json:"allow_delete"`
+}
+
 // RepositoryConfig 仓库配置 JSONB，替代原有的独立代理字段
 type RepositoryConfig struct {
 	RemoteURL         string           `json:"remote_url,omitempty"`

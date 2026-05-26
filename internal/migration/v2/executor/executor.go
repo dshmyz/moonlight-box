@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -101,28 +102,19 @@ func (m *ExecutorManager) executeRepoConfig(ctx context.Context, job *domain.Mig
 	repoType := "local"
 	packageType := "generic"
 	remoteURL := ""
+	isVirtual := false
 
-	if m.src != nil {
-		repos, err := m.src.ListRepositories(ctx)
-		if err == nil {
-			for _, r := range repos {
-				if r.Name == job.SourceKey {
-					packageType = r.Format
-					repoType = nexus.MapRepositoryType(r.Type)
-					// Get detail for proxy repos to get remote URL
-					if r.Type == "proxy" {
-						detail, detailErr := m.src.GetRepositoryDetail(ctx, r.Format, r.Type, r.Name)
-						if detailErr == nil && detail.Proxy != nil {
-							remoteURL = detail.Proxy.RemoteURL
-						} else if r.URL != "" {
-							remoteURL = r.URL
-						}
-					}
-					break
-				}
-			}
+	if job.Checkpoint != "" {
+		var cp domain.RepoCheckpoint
+		if err := json.Unmarshal([]byte(job.Checkpoint), &cp); err == nil {
+			repoType = cp.Type
+			packageType = cp.Format
+			remoteURL = cp.RemoteURL
+			isVirtual = cp.IsVirtual
 		}
 	}
+
+	repoType = nexus.MapRepositoryType(repoType)
 
 	repo := &model.Repository{
 		Name:        job.SourceKey,
@@ -137,7 +129,7 @@ func (m *ExecutorManager) executeRepoConfig(ctx context.Context, job *domain.Mig
 			CacheTTLSeconds: 86400,
 		}
 	}
-	if repoType == "virtual" {
+	if isVirtual {
 		repo.StorageBackendID = nil
 	}
 	if err := m.db.Create(repo).Error; err != nil {
@@ -204,9 +196,25 @@ func (m *ExecutorManager) executeRole(ctx context.Context, job *domain.Migration
 	if count > 0 {
 		return nil
 	}
+
+	name := job.SourceKey
+	description := "Migrated from source"
+
+	if job.Checkpoint != "" {
+		var cp domain.RoleCheckpoint
+		if err := json.Unmarshal([]byte(job.Checkpoint), &cp); err == nil {
+			if cp.Name != "" {
+				name = cp.Name
+			}
+			if cp.Description != "" {
+				description = cp.Description
+			}
+		}
+	}
+
 	role := &model.Role{
-		Name:        job.SourceKey,
-		Description: "Migrated from source",
+		Name:        name,
+		Description: description,
 	}
 	return m.db.Create(role).Error
 }
@@ -223,20 +231,15 @@ func (m *ExecutorManager) executeUser(ctx context.Context, job *domain.Migration
 	email := job.SourceKey + "@migrated.local"
 	displayName := job.SourceKey
 
-	// Try to get actual user data from source
-	if m.src != nil {
-		users, err := m.src.ListUsers(ctx)
-		if err == nil {
-			for _, u := range users {
-				if u.UserID == job.SourceKey {
-					if u.Email != "" {
-						email = u.Email
-					}
-					if u.FirstName != "" || u.LastName != "" {
-						displayName = u.FirstName + " " + u.LastName
-					}
-					break
-				}
+	// Use checkpoint data stored during the scanning phase
+	if job.Checkpoint != "" {
+		var cp domain.UserCheckpoint
+		if err := json.Unmarshal([]byte(job.Checkpoint), &cp); err == nil {
+			if cp.Email != "" {
+				email = cp.Email
+			}
+			if cp.DisplayName != "" {
+				displayName = cp.DisplayName
 			}
 		}
 	}
@@ -256,7 +259,22 @@ func (m *ExecutorManager) executeUser(ctx context.Context, job *domain.Migration
 		DisplayName:  displayName,
 		IsActive:     true,
 	}
-	return m.db.Create(user).Error
+	if err := m.db.Create(user).Error; err != nil {
+		return err
+	}
+
+	// Assign default role (developer) to migrated users
+	var devRole model.Role
+	if err := m.db.Where("name = ?", "developer").First(&devRole).Error; err == nil {
+		userRole := model.UserRole{
+			UserID:     user.ID,
+			RoleID:     devRole.ID,
+			AssignedBy: user.ID,
+		}
+		m.db.Create(&userRole)
+	}
+
+	return nil
 }
 
 func (m *ExecutorManager) executeArtifactCopy(ctx context.Context, job *domain.MigrationJob) error {

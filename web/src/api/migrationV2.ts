@@ -48,6 +48,24 @@ export interface ScopeSelection {
   target_repo_name: string
 }
 
+export interface PlanStats {
+  total_repos: number
+  synced_repos: number
+  skipped_repos: number
+  failed_repos: number
+  total_users: number
+  synced_users: number
+  skipped_users: number
+  failed_users: number
+  total_roles: number
+  synced_roles: number
+  skipped_roles: number
+  total_artifacts: number
+  synced_artifacts: number
+  skipped_artifacts: number
+  failed_artifacts: number
+}
+
 export interface MigrationPlan {
   id: number
   name: string
@@ -55,6 +73,7 @@ export interface MigrationPlan {
   source_url: string
   status: PlanStatus
   current_stage: PlanStage
+  stats: PlanStats | null
   created_at: string
   updated_at: string
   started_at: string | null

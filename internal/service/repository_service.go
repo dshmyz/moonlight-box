@@ -152,8 +152,8 @@ func (s *RepositoryService) Create(repo *model.Repository, members []string) err
 				}
 				group := model.RepositoryMember{
 					RepositoryID: repo.ID,
-					MemberID:  memberRepo.ID,
-					Position:      i,
+					MemberID:     memberRepo.ID,
+					Position:     i,
 				}
 				if err := tx.Create(&group).Error; err != nil {
 					return err
@@ -276,26 +276,38 @@ func (s *RepositoryService) GetByIDContext(ctx context.Context, id uint) (*model
 }
 
 // Update 更新仓库信息
-func (s *RepositoryService) Update(name string, updates map[string]interface{}) error {
-	var members []string
-	if membersRaw, ok := updates["members"]; ok {
-		delete(updates, "members")
+func (s *RepositoryService) Update(name string, params *model.UpdateRepositoryParams) error {
+	updates := make(map[string]interface{})
 
-		switch v := membersRaw.(type) {
-		case []string:
-			members = v
-		case []interface{}:
-			for _, item := range v {
-				if str, ok := item.(string); ok {
-					members = append(members, str)
-				}
-			}
-		}
+	if params.DisplayName != nil {
+		updates["display_name"] = *params.DisplayName
+	}
+	if params.Description != nil {
+		updates["description"] = *params.Description
+	}
+	if params.Config != nil {
+		updates["config"] = params.Config
+	}
+	if params.Enabled != nil {
+		updates["enabled"] = *params.Enabled
+	}
+	if params.PublicVisible != nil {
+		updates["public_visible"] = *params.PublicVisible
+	}
+	if params.StorageBackendID != nil {
+		updates["storage_backend_id"] = *params.StorageBackendID
+	}
+	if params.AllowOverwrite != nil {
+		updates["allow_overwrite"] = *params.AllowOverwrite
+	}
+	if params.AllowDelete != nil {
+		updates["allow_delete"] = *params.AllowDelete
 	}
 
-	if len(members) > 0 {
+	members := params.Members
+
+	if members != nil {
 		err := s.db.Transaction(func(tx *gorm.DB) error {
-			// 在事务中直接更新仓库基本信息
 			if err := tx.Model(&model.Repository{}).Where("name = ?", name).Updates(updates).Error; err != nil {
 				return err
 			}
@@ -316,8 +328,8 @@ func (s *RepositoryService) Update(name string, updates map[string]interface{}) 
 				}
 				group := model.RepositoryMember{
 					RepositoryID: virtualRepo.ID,
-					MemberID:  memberRepo.ID,
-					Position:      i,
+					MemberID:     memberRepo.ID,
+					Position:     i,
 				}
 				if err := tx.Create(&group).Error; err != nil {
 					return err
