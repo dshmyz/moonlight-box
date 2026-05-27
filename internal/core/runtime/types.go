@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"io"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -15,7 +17,20 @@ type ArtifactKey struct {
 }
 
 func (k *ArtifactKey) String() string {
-	return k.RepositoryID + "/" + k.Format + "/" + k.Filename
+	base := k.RepositoryID + "/" + k.Format
+	// 按 key 排序 Coordinates 保证稳定输出
+	coords := make([]string, 0, len(k.Coordinates))
+	for key := range k.Coordinates {
+		coords = append(coords, key)
+	}
+	sort.Strings(coords)
+	for _, key := range coords {
+		base += "/" + key + "=" + k.Coordinates[key]
+	}
+	if k.Filename != "" {
+		base += "/" + k.Filename
+	}
+	return base
 }
 
 type ArtifactQuery struct {
@@ -131,4 +146,19 @@ type ResolvedRepository struct {
 	Repository    *Repository
 	RemainingPath string
 	RouteStyle    RouteStyle
+}
+
+// SanitizeFilename 移除文件名中的控制字符（\r, \n, \x00 等），
+// 防止 Content-Disposition header 注入。
+func SanitizeFilename(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			b.WriteByte('_')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

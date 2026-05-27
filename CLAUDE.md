@@ -115,7 +115,7 @@ make swagger        # 从注释生成 OpenAPI 文档
 
 | 层 | 职责 | 不可做的事 |
 |-----|------|-----------|
-| **ProtocolPlugin** | 协议语法：路径解析、请求路由、metadata 解析/渲染、projection 渲染 | **不可**在 Handle 中直接调 HTTP 访问上游。**不可**判断仓库类型（Type=="proxy"/"virtual"）。**不可**做缓存/回源策略决策 |
+| **ProtocolPlugin** | 协议语法：路径解析、请求路由、metadata 解析/渲染、projection 渲染 | **不可**在 Handle 中直接调 HTTP 访问上游。**不可**判断仓库类型（Type=="proxy"/"virtual"）。**不可**做缓存/回源策略决策。**不可**自建 `http.Client`，必须使用 `SetHTTPClient()` 注入的客户端 |
 | **RepositoryRuntime** | 仓库行为：hosted/proxy/group、缓存策略、回源时机、stale 判断、merge 策略 | 不可感知协议格式（XML/JSON/HTML） |
 | **RemoteFetcher** | Plugin 实现此接口，Runtime 回调它来**拉取远端数据+归一化为 Artifact** | RemoteFetcher 中的 HTTP 调用是唯一合法例外——因为 Runtime 通过它回调 Plugin 做协议相关的远端交互 |
 
@@ -152,6 +152,8 @@ Plugin 调用 QueryArtifacts(RemotePath=...)
 - [ ] Plugin 的 Handle 方法中没有 `*GroupRuntime`/`*ProxyRuntime` 类型断言
 - [ ] 需要回源的能力通过实现 `RemoteFetcher` 接口提供
 - [ ] QueryArtifacts 调用包含 `RemotePath` 字段
+- [ ] Plugin 内部不自建 `http.Client`，必须使用 `SetHTTPClient()` 注入的客户端（来自 `proxy.TransportManager`，含 DNS 映射、TLS 配置和连接池）
+- [ ] 新增 Plugin 时，`main.go` 中必须调用 `plugin.SetHTTPClient(pluginHTTPClient)`
 - [ ] Runtime 层改动不影响任何插件的协议语义
 - **日志初始化顺序**: 配置加载 → 临时日志 → DB 初始化 → 正式日志（DB 必须在日志之后初始化）
 - **缓存 TTL**: 系统内多处使用 5 分钟 TTL 缓存（Package/Repo/Permission），注意缓存一致性

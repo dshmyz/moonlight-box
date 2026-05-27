@@ -1,7 +1,9 @@
 package gomod
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,10 +14,165 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 )
 
-type GoPlugin struct{}
+type GoPlugin struct {
+	httpClient *http.Client
+}
 
 func NewGoPlugin() *GoPlugin {
-	return &GoPlugin{}
+	return &GoPlugin{
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// SetHTTPClient allows injecting a shared HTTP client (with DNS mapping, TLS config, etc.)
+func (p *GoPlugin) SetHTTPClient(client *http.Client) {
+	if client != nil {
+		p.httpClient = client
+	}
+}
+
+// FetchRemote implements the RemoteFetcher interface.
+// Runtime calls this when local cache is empty; Plugin handles remote Go protocol interaction.
+func (p *GoPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return nil, errors.New("go: empty module path")
+	}
+
+	// Determine the remote fetch strategy based on the path suffix.
+	if strings.HasSuffix(path, "/@v/list") {
+		return p.fetchVersionList(ctx, remoteURL, path)
+	}
+	if strings.HasSuffix(path, "/@latest") {
+		return p.fetchLatest(ctx, remoteURL, path)
+	}
+	// For other paths (e.g. /@v/*.info, *.mod, *.zip), return a basic artifact indicating the resource exists.
+	modulePath, filename := p.splitModulePath(path)
+	return []*runtime.Artifact{
+		{
+			Format: "go",
+			Kind:   "module-file",
+			Coordinates: map[string]string{
+				"module": modulePath,
+				"path":   path,
+			},
+			Properties: map[string]string{
+				"filename": filename,
+			},
+		},
+	}, nil
+}
+
+// fetchVersionList fetches the @v/list endpoint from a Go module proxy
+// and parses the line-separated version list.
+func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	modulePath := strings.TrimSuffix(path, "/@v/list")
+	fullURL := strings.TrimRight(remoteURL, "/") + "/" + encodeGoPath(path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("go: create request for version list: %w", err)
+	}
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("go: fetch version list from %s: %w", fullURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("go: fetch version list from %s: status %d", fullURL, resp.StatusCode)
+	}
+
+	var artifacts []*runtime.Artifact
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		version := strings.TrimSpace(scanner.Text())
+		if version == "" {
+			continue
+		}
+		artifacts = append(artifacts, &runtime.Artifact{
+			Format: "go",
+			Kind:   "version",
+			Coordinates: map[string]string{
+				"module":  modulePath,
+				"version": version,
+			},
+		})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("go: scan version list: %w", err)
+	}
+	return artifacts, nil
+}
+
+// fetchLatest fetches the @latest endpoint from a Go module proxy
+// and parses the JSON response.
+func (p *GoPlugin) fetchLatest(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	modulePath := strings.TrimSuffix(path, "/@latest")
+	fullURL := strings.TrimRight(remoteURL, "/") + "/" + encodeGoPath(path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("go: create request for @latest: %w", err)
+	}
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("go: fetch @latest from %s: %w", fullURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("go: fetch @latest from %s: status %d", fullURL, resp.StatusCode)
+	}
+
+	var result struct {
+		Version string `json:"Version"`
+		Time    string `json:"Time"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("go: decode @latest response: %w", err)
+	}
+	if result.Version == "" {
+		return nil, nil
+	}
+	return []*runtime.Artifact{
+		{
+			Format: "go",
+			Kind:   "version",
+			Coordinates: map[string]string{
+				"module":  modulePath,
+				"version": result.Version,
+			},
+			Properties: map[string]string{
+				"time": result.Time,
+			},
+		},
+	}, nil
+}
+
+// splitModulePath splits a Go module path like "github.com/foo/bar/@v/v1.0.0.zip"
+// into the module path and the filename portion.
+func (p *GoPlugin) splitModulePath(path string) (modulePath, filename string) {
+	if idx := strings.Index(path, "/@v/"); idx >= 0 {
+		return path[:idx], path[idx+4:]
+	}
+	if idx := strings.Index(path, "/@latest"); idx >= 0 {
+		return path[:idx], "@latest"
+	}
+	return path, ""
+}
+
+// encodeGoPath encodes uppercase letters per Go module proxy spec:
+// A → !a, B → !b, ..., Z → !z. Required for fetching from upstream proxies
+// like proxy.golang.org when module paths contain uppercase letters.
+func encodeGoPath(path string) string {
+	var b strings.Builder
+	b.Grow(len(path) + 8)
+	for _, r := range path {
+		if r >= 'A' && r <= 'Z' {
+			b.WriteByte('!')
+			b.WriteByte(byte(r) + 32) // to lowercase
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func (p *GoPlugin) Name() string {
@@ -48,9 +205,10 @@ func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime
 
 	modulePath := strings.TrimSuffix(path, "/@latest")
 
-	artifacts, err := repoRuntime.QueryArtifacts(context.Background(), runtime.ArtifactQuery{
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "go",
+		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
 		Coordinates: map[string]string{
 			"module": modulePath,
 		},
@@ -85,9 +243,10 @@ func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime ru
 
 	modulePath := strings.TrimSuffix(path, "/@v/list")
 
-	artifacts, err := repoRuntime.QueryArtifacts(context.Background(), runtime.ArtifactQuery{
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "go",
+		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
 		Coordinates: map[string]string{
 			"module": modulePath,
 		},
@@ -160,7 +319,7 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 		Filename: filename,
 	}
 
-	artifact, err := repoRuntime.GetArtifact(context.Background(), key)
+	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 	if err != nil {
 		if errors.Is(err, runtime.ErrNotFound) {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)

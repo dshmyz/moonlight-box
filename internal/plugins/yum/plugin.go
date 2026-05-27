@@ -16,11 +16,125 @@ import (
 )
 
 type YumPlugin struct {
-	cache *cache.MemoryCache
+	cache      *cache.MemoryCache
+	httpClient *http.Client
 }
 
 func NewYumPlugin() *YumPlugin {
-	return &YumPlugin{cache: cache.NewMemoryCache()}
+	return &YumPlugin{
+		cache:      cache.NewMemoryCache(),
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// SetHTTPClient allows injecting a shared HTTP client (with DNS mapping, TLS config, etc.)
+func (p *YumPlugin) SetHTTPClient(client *http.Client) {
+	if client != nil {
+		p.httpClient = client
+	}
+}
+
+// FetchRemote implements the RemoteFetcher interface.
+// Runtime calls this when local cache is empty; Plugin handles remote YUM protocol interaction.
+// It fetches repomd.xml or other repository metadata from the remote repository.
+func (p *YumPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return nil, errors.New("yum: empty path")
+	}
+
+	// For repomd.xml requests, fetch and parse the XML from remote.
+	if strings.HasSuffix(path, "repodata/repomd.xml") {
+		return p.fetchRepomd(ctx, remoteURL, path)
+	}
+
+	// For other paths (RPM packages, primary.xml, etc.), return a basic artifact indicating the remote resource exists.
+	filename := filepath.Base(path)
+	return []*runtime.Artifact{
+		{
+			Format: "yum",
+			Kind:   "file",
+			Coordinates: map[string]string{
+				"file":     filename,
+				"filename": filename,
+				"path":     path,
+			},
+			Properties: map[string]string{
+				"filename": filename,
+			},
+		},
+	}, nil
+}
+
+// fetchRepomd fetches repomd.xml from the remote repository and parses data references.
+func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	fullURL := strings.TrimRight(remoteURL, "/") + "/" + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("yum: create request for repomd: %w", err)
+	}
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("yum: fetch repomd from %s: %w", fullURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("yum: fetch repomd from %s: status %d", fullURL, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("yum: read repomd body: %w", err)
+	}
+
+	type repomdData struct {
+		Type     string `xml:"type,attr"`
+		Location struct {
+			Href string `xml:"href,attr"`
+		} `xml:"location"`
+	}
+	type repomdXML struct {
+		XMLName xml.Name     `xml:"repomd"`
+		Data    []repomdData `xml:"data"`
+	}
+
+	var repomd repomdXML
+	if err := xml.Unmarshal(body, &repomd); err != nil {
+		return nil, fmt.Errorf("yum: unmarshal repomd XML: %w", err)
+	}
+
+	var artifacts []*runtime.Artifact
+	// Add the repomd.xml itself as an artifact.
+	artifacts = append(artifacts, &runtime.Artifact{
+		Format: "yum",
+		Kind:   "metadata",
+		Coordinates: map[string]string{
+			"file": "repomd.xml",
+		},
+		Properties: map[string]string{
+			"filename": "repomd.xml",
+		},
+	})
+	// Add each data reference as an artifact.
+	for _, d := range repomd.Data {
+		href := d.Location.Href
+		if href == "" {
+			continue
+		}
+		artifacts = append(artifacts, &runtime.Artifact{
+			Format: "yum",
+			Kind:   "metadata-ref",
+			Coordinates: map[string]string{
+				"file": filepath.Base(href),
+				"type": d.Type,
+				"href": href,
+			},
+			Properties: map[string]string{
+				"filename": filepath.Base(href),
+			},
+		})
+	}
+	return artifacts, nil
 }
 
 func (p *YumPlugin) Name() string {
@@ -73,10 +187,10 @@ func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtim
 		Filename: "repomd.xml",
 	}
 
-	if artifact, err := repoRuntime.GetArtifact(context.Background(), key); err == nil && artifact.Content != nil {
+	if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
 		defer artifact.Content.Close()
 		ctx.Writer.Header().Set("Content-Type", "application/xml")
-		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+key.Filename+"\"")
+		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
 			return err
@@ -96,9 +210,10 @@ func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtim
 		}
 	}
 
-	artifacts, err := repoRuntime.QueryArtifacts(context.Background(), runtime.ArtifactQuery{
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "yum",
+		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
 	})
 	if err != nil || len(artifacts) == 0 {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
@@ -155,10 +270,10 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 		Filename: filename,
 	}
 
-	if artifact, err := repoRuntime.GetArtifact(context.Background(), key); err == nil && artifact.Content != nil {
+	if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
 		defer artifact.Content.Close()
 		ctx.Writer.Header().Set("Content-Type", "application/xml")
-		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+key.Filename+"\"")
+		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
 			return err
@@ -178,9 +293,10 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 		}
 	}
 
-	artifacts, err := repoRuntime.QueryArtifacts(context.Background(), runtime.ArtifactQuery{
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "yum",
+		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
 	})
 	if err != nil || len(artifacts) == 0 {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
@@ -222,7 +338,7 @@ func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime ru
 
 	switch ctx.Request.Method {
 	case http.MethodGet:
-		artifact, err := repoRuntime.GetArtifact(context.Background(), key)
+		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 		if err != nil {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
@@ -233,7 +349,7 @@ func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime ru
 		}
 		defer artifact.Content.Close()
 		ctx.Writer.Header().Set("Content-Type", "application/x-rpm")
-		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+key.Filename+"\"")
+		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
 			return err

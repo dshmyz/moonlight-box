@@ -164,6 +164,12 @@ func main() {
 	tm := proxy.NewTransportManager(cfg.Proxy.ConnectTimeout, dnsResolver)
 	remoteClient := proxy.NewRemoteClient(tm, cfg.Proxy.MaxRedirects)
 
+	// 共享 HTTP 客户端：使用 proxy.TransportManager 的 DNS 映射、TLS 配置和连接池
+	pluginHTTPClient := &http.Client{
+		Transport: tm.GetTransport(cfg.Proxy.InsecureSkipVerify),
+		Timeout:   cfg.Proxy.DefaultTimeout,
+	}
+
 	healthCheckCfg := proxy.HealthCheckConfig{
 		Enabled:          cfg.Proxy.HealthCheck.Enabled,
 		Interval:         cfg.Proxy.HealthCheck.Interval,
@@ -245,6 +251,15 @@ func main() {
 	yumPlugin := yum.NewYumPlugin()
 	aptPlugin := apt.NewAptPlugin()
 
+	// 注入统一 HTTP 客户端到所有插件（含 DNS 映射、TLS 配置、连接池）
+	npmPlugin.SetHTTPClient(pluginHTTPClient)
+	mavenPlugin.SetHTTPClient(pluginHTTPClient)
+	goPlugin.SetHTTPClient(pluginHTTPClient)
+	pypiPlugin.SetHTTPClient(pluginHTTPClient)
+	genericPlugin.SetHTTPClient(pluginHTTPClient)
+	yumPlugin.SetHTTPClient(pluginHTTPClient)
+	aptPlugin.SetHTTPClient(pluginHTTPClient)
+
 	// 创建新架构 RepositoryRouter
 	repoManager := runtime.NewDefaultRepositoryManager()
 	compositeResolver := &runtime.CompositeResolver{
@@ -264,13 +279,18 @@ func main() {
 	repositoryRouter.RegisterPlugin("apt", aptPlugin)
 
 	fetchers := map[string]runtime.RemoteFetcher{
-		"pypi": pypiPlugin,
-		"npm":  npmPlugin,
+		"pypi":    pypiPlugin,
+		"npm":     npmPlugin,
+		"maven":   mavenPlugin,
+		"go":      goPlugin,
+		"yum":     yumPlugin,
+		"apt":     aptPlugin,
+		"generic": genericPlugin,
 	}
 	blockRuleSvc := service.NewBlockRuleService(blockRuleRepo, auditSvc)
 	blocker := &blockRuleBlocker{svc: blockRuleSvc}
 
-	initRepoRuntimes(repoManager, repoRepo, groupRepo, db, storageSvc, fetchers, blocker)
+	initRepoRuntimes(repoManager, repoRepo, groupRepo, db, storageSvc, fetchers, blocker, pluginHTTPClient)
 
 	// 初始化仓库缓存（5分钟TTL）
 	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
@@ -285,7 +305,7 @@ func main() {
 		if defaultBackend == nil {
 			return nil, fmt.Errorf("no default storage backend available")
 		}
-		repoRuntime, createErr := createRuntimeForRepo(repo, repoRepo, groupRepo, db, defaultBackend, repoManager, fetchers, blocker)
+		repoRuntime, createErr := createRuntimeForRepo(repo, repoRepo, groupRepo, db, defaultBackend, repoManager, fetchers, blocker, pluginHTTPClient)
 		if createErr != nil {
 			return nil, createErr
 		}
@@ -341,9 +361,6 @@ func main() {
 	// 初始化 Webhook 服务
 	webhookRepo := repository.NewWebhookRepository(db)
 	webhookSvc := service.NewWebhookService(webhookRepo)
-
-	// 重新初始化系统配置服务（供调度器使用）
-	systemConfigSvc = service.NewSystemConfigService(systemConfigRepo)
 
 	// 初始化调度器服务（需要在 repoHandler 之前创建）
 	schedulerSvc := service.NewSchedulerService(backupSvc, systemConfigSvc, webhookSvc)

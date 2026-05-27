@@ -11,6 +11,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const maxMetadataCacheSize = 10000 // 内存缓存上限，防止无限增长
+
 type ProxyRuntime struct {
 	MetadataStore MetadataStore
 	BlobStore     BlobStore
@@ -49,6 +51,9 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 	if err := n.checkBlocked(key); err != nil {
 		return nil, err
 	}
+	// 统一使用带 RepositoryID 的 key
+	key.RepositoryID = n.RepositoryID
+
 	if n.isNegativeCached(key) {
 		return nil, ErrNotFound
 	}
@@ -59,9 +64,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 		return artifact, nil
 	}
 
-	searchKey := key
-	searchKey.RepositoryID = n.RepositoryID
-	artifact, err := n.MetadataStore.Get(ctx, searchKey)
+	artifact, err := n.MetadataStore.Get(ctx, key)
 	if err == nil {
 		if refreshErr := n.refreshStaleMetadata(ctx, artifact, key); refreshErr != nil {
 			return nil, refreshErr
@@ -124,6 +127,32 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 	if err != nil {
 		return nil, err
 	}
+
+	// 检查缓存是否过期，过期则刷新
+	if len(artifacts) > 0 && n.CachePolicy.MetadataTTL > 0 {
+		oldest := artifacts[0].UpdatedAt
+		for _, a := range artifacts {
+			if a.UpdatedAt.Before(oldest) {
+				oldest = a.UpdatedAt
+			}
+		}
+		if time.Since(oldest) > n.CachePolicy.MetadataTTL {
+			// 缓存过期，尝试回源刷新
+			if n.Fetcher != nil && n.RemoteBaseURL != "" {
+				fetched, fetchErr := n.Fetcher.FetchRemote(ctx, n.RemoteBaseURL, query.RemotePath)
+				if fetchErr == nil && len(fetched) > 0 {
+					for _, a := range fetched {
+						a.RepositoryID = n.RepositoryID
+						_ = n.MetadataStore.Put(ctx, a)
+					}
+					return fetched, nil
+				}
+				// 回源失败，返回过期数据
+				logrus.WithError(fetchErr).Warn("QueryArtifacts: refresh failed, serving stale data")
+			}
+		}
+	}
+
 	if len(artifacts) > 0 {
 		return artifacts, nil
 	}
@@ -272,6 +301,10 @@ func (n *ProxyRuntime) setCachedArtifact(key ArtifactKey, artifact *Artifact) {
 	}
 	n.metadataCacheMu.Lock()
 	if n.metadataCache == nil {
+		n.metadataCache = map[string]cachedArtifact{}
+	}
+	// 超过上限时清空缓存，防止内存无限增长
+	if len(n.metadataCache) >= maxMetadataCacheSize {
 		n.metadataCache = map[string]cachedArtifact{}
 	}
 	n.metadataCache[key.String()] = cachedArtifact{artifact: artifact, expiresAt: time.Now().Add(n.CachePolicy.MetadataTTL)}

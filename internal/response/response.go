@@ -5,6 +5,7 @@ package response
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	apperr "github.com/dshmyz/moonlight-box/internal/errors"
 	"github.com/gin-gonic/gin"
@@ -86,12 +87,26 @@ func BadRequest(c *gin.Context, message string, errors interface{}) {
 }
 
 // Unauthorized 返回未授权响应（401 Unauthorized）
+// 对于前端 API 请求（/api/v1/*），不设置 WWW-Authenticate header，避免触发浏览器原生登录框
+// 对于包仓库请求（/repository/*、/content/*），设置 WWW-Authenticate header，支持 CI/CD 工具的 Basic Auth
 func Unauthorized(c *gin.Context, message string) {
-	c.Header("WWW-Authenticate", `Basic realm="Moonlight Registry"`)
+	if shouldSetWWWAuthenticate(c) {
+		c.Header("WWW-Authenticate", `Basic realm="Moonlight Registry"`)
+	}
 	c.JSON(http.StatusUnauthorized, Response{
 		Code:    http.StatusUnauthorized,
 		Message: message,
 	})
+}
+
+// shouldSetWWWAuthenticate 判断是否应该设置 WWW-Authenticate header
+// 只有包仓库请求才需要设置，前端 API 请求不需要
+func shouldSetWWWAuthenticate(c *gin.Context) bool {
+	path := c.Request.URL.Path
+	if strings.HasPrefix(path, "/api/v1/") {
+		return false
+	}
+	return true
 }
 
 // Forbidden 返回禁止访问响应（403 Forbidden）

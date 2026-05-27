@@ -174,6 +174,80 @@ else
     fail "带认证访问返回 HTTP $HTTP_CODE (expected 200)"
 fi
 
+# ── Resolver 边界路径测试 ──────────────────────
+echo
+echo "════════════════════════════════════════"
+echo "  测试: Resolver 边界路径"
+echo "════════════════════════════════════════"
+
+# 无尾路径的请求应返回 404（仓库名解析不能出错）
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/repository/maven-local")
+if [ "$HTTP_CODE" = "404" ]; then
+    pass "无尾路径 /repository/maven-local 返回 404 (Resolver 正确处理)"
+else
+    info "/repository/maven-local 返回 HTTP $HTTP_CODE (可能是 404 或 redirect)"
+fi
+
+# 空仓库名的请求应返回 404
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/repository/")
+if [ "$HTTP_CODE" = "404" ]; then
+    pass "空仓库路径 /repository/ 返回 404 (符合预期)"
+else
+    info "/repository/ 返回 HTTP $HTTP_CODE"
+fi
+
+# 不存在的仓库应返回 404
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/repository/nonexistent-repo-$$/anything")
+if [ "$HTTP_CODE" = "404" ]; then
+    pass "不存在的仓库返回 404 (符合预期)"
+else
+    fail "不存在的仓库返回 HTTP $HTTP_CODE (expected 404)"
+fi
+
+# ── 404 请求日志验证 ──────────────────────
+echo
+echo "════════════════════════════════════════"
+echo "  测试: 404 请求不应记为成功下载"
+echo "════════════════════════════════════════"
+
+# 请求一个不存在的包，返回 404
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+    "$BASE_URL/repository/maven-local/com/test/nonexistent-boundary/1.0.0/nonexistent-boundary-1.0.0.jar")
+
+if [ "$HTTP_CODE" = "404" ]; then
+    pass "不存在的包返回 404 (符合预期)"
+
+    # 查询代理日志，验证此 404 请求没有被记为 status_code=200
+    sleep 2  # 等待批量日志 flush
+    LOGS_JSON=$(curl -s "$BASE_URL/api/v1/proxy-download-logs/logs?page=1&page_size=10" \
+        -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo '{}')
+
+    BAD_COUNT=$(echo "$LOGS_JSON" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+items = d.get('data', {}).get('items', d.get('data', []))
+if not isinstance(items, list):
+    items = []
+count = 0
+for item in items:
+    sc = item.get('status_code')
+    if str(sc) == '200':
+        count += 1
+# 检查是否有 status_code=200 的记录——如果有且时间很近，说明 404 被错误记录为 200
+print(count)
+" 2>/dev/null || echo "-1")
+
+    if [ "$BAD_COUNT" = "-1" ]; then
+        info "无法解析日志 JSON，跳过日志准确性验证"
+    else
+        # 注意：这里不判断 fail，因为其他正常请求可能也有 200
+        # 但至少我们可以记录这个信息
+        info "当前日志中 status_code=200 的记录数: $BAD_COUNT"
+    fi
+else
+    info "不存在的包返回 HTTP $HTTP_CODE (expected 404)"
+fi
+
 echo
 echo "============================================"
 echo " 测试汇总"

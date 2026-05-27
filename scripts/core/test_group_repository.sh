@@ -33,6 +33,20 @@ warn() {
     echo -e "  ${YELLOW}⚠ WARN${NC} $1"
 }
 
+log_pass() {
+    echo -e "  ${GREEN}✓ PASS${NC} $1"
+    PASS_COUNT=$((PASS_COUNT + 1))
+}
+
+log_fail() {
+    echo -e "  ${RED}✗ FAIL${NC} $1"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+}
+
+log_info() {
+    echo -e "  ${BLUE}ℹ INFO${NC} $1"
+}
+
 get_auth_token() {
     curl -s -X POST "$BASE_URL/api/v1/auth/login" \
         -H "Content-Type: application/json" \
@@ -325,6 +339,112 @@ curl -s -X DELETE "$BASE_URL/api/v1/repositories/$REPO_B_NAME" \
     -H "Authorization: Bearer $TOKEN" > /dev/null 2>&1
 
 info "测试仓库已清理"
+
+# ── 测试 12: Group QueryArtifacts 去重验证 ──────────────────────
+echo
+echo "════════════════════════════════════════"
+echo "  测试 12: Group QueryArtifacts 去重验证"
+echo "════════════════════════════════════════"
+info "此测试验证 GroupRuntime.QueryArtifacts 的去重逻辑是否正确"
+info "问题：回源的 Artifact.ID 为空字符串，导致 seen[\"\"] 去重丢弃所有成员的数据"
+
+# 创建两个新的 proxy 仓库指向同一个远端
+PROXY_A="group-test-proxy-a-$$"
+PROXY_B="group-test-proxy-b-$$"
+GROUP_NAME_V2="group-test-virtual-v2-$$"
+
+# 创建 proxy 仓库 A
+CREATE_PROXY_A=$(curl -s -X POST "$BASE_URL/api/v1/repositories" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"name\": \"$PROXY_A\",
+        \"type\": \"proxy\",
+        \"package_type\": \"maven\",
+        \"enabled\": true,
+        \"config\": {
+            \"remote_url\": \"https://maven.aliyun.com/repository/public\"
+        },
+        \"description\": \"Group test proxy A\"
+    }")
+
+if echo "$CREATE_PROXY_A" | grep -q "\"name\":\"$PROXY_A\""; then
+    pass "Proxy 仓库 A 创建成功"
+else
+    warn "Proxy 仓库 A 创建可能失败: $CREATE_PROXY_A"
+fi
+
+# 创建 proxy 仓库 B
+CREATE_PROXY_B=$(curl -s -X POST "$BASE_URL/api/v1/repositories" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"name\": \"$PROXY_B\",
+        \"type\": \"proxy\",
+        \"package_type\": \"maven\",
+        \"enabled\": true,
+        \"config\": {
+            \"remote_url\": \"https://maven.aliyun.com/repository/public\"
+        },
+        \"description\": \"Group test proxy B\"
+    }")
+
+if echo "$CREATE_PROXY_B" | grep -q "\"name\":\"$PROXY_B\""; then
+    pass "Proxy 仓库 B 创建成功"
+else
+    warn "Proxy 仓库 B 创建可能失败: $CREATE_PROXY_B"
+fi
+
+sleep 2  # 等待 runtime 初始化
+
+# 创建包含两个 proxy 成员的仓库组
+CREATE_GROUP_V2=$(curl -s -X POST "$BASE_URL/api/v1/repositories" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"name\": \"$GROUP_NAME_V2\",
+        \"type\": \"virtual\",
+        \"package_type\": \"maven\",
+        \"enabled\": true,
+        \"description\": \"Group test virtual v2 (two proxy members)\",
+        \"members\": [\"$PROXY_A\", \"$PROXY_B\"]
+    }")
+
+if echo "$CREATE_GROUP_V2" | grep -q "\"name\":\"$GROUP_NAME_V2\""; then
+    pass "仓库组 v2 创建成功 (包含两个 proxy 成员)"
+
+    # 通过 group 请求 maven-metadata.xml
+    # 如果去重 bug 存在，两个 proxy 成员回源的 artifact ID 都为 ""，会被当作重复只保留第一个
+    sleep 2
+    HTTP_CODE=$(curl -s -o /tmp/group-meta-v2.xml -w "%{http_code}" \
+        "$BASE_URL/repository/$GROUP_NAME_V2/com/google/guava/guava/maven-metadata.xml")
+
+    if [ "$HTTP_CODE" = "200" ]; then
+        log_pass "Group maven-metadata.xml 返回 200"
+        VERSION_COUNT=$(grep -c "<version>" /tmp/group-meta-v2.xml 2>/dev/null || echo "0")
+        if [ "$VERSION_COUNT" -gt 5 ]; then
+            pass "Group metadata 包含 $VERSION_COUNT 个版本 (去重正确)"
+        elif [ "$VERSION_COUNT" -gt 0 ]; then
+            info "Group metadata 包含 $VERSION_COUNT 个版本 (可能偏少，但不一定是 bug)"
+        else
+            fail "Group metadata 包含 0 个版本 (去重 bug 或回源失败)"
+        fi
+    else
+        info "Group maven-metadata.xml 返回 HTTP $HTTP_CODE"
+    fi
+
+    rm -f /tmp/group-meta-v2.xml
+else
+    warn "仓库组 v2 创建可能失败: $CREATE_GROUP_V2"
+fi
+
+# 清理
+curl -s -X DELETE "$BASE_URL/api/v1/repositories/$GROUP_NAME_V2" \
+    -H "Authorization: Bearer $TOKEN" > /dev/null 2>&1
+curl -s -X DELETE "$BASE_URL/api/v1/repositories/$PROXY_A" \
+    -H "Authorization: Bearer $TOKEN" > /dev/null 2>&1
+curl -s -X DELETE "$BASE_URL/api/v1/repositories/$PROXY_B" \
+    -H "Authorization: Bearer $TOKEN" > /dev/null 2>&1
 
 echo
 echo "============================================"

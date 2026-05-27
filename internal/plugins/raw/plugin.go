@@ -3,18 +3,136 @@ package raw
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 )
 
-type GenericPlugin struct{}
+type GenericPlugin struct {
+	httpClient *http.Client
+}
 
 func NewGenericPlugin() *GenericPlugin {
-	return &GenericPlugin{}
+	return &GenericPlugin{
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// SetHTTPClient allows injecting a shared HTTP client (with DNS mapping, TLS config, etc.)
+func (p *GenericPlugin) SetHTTPClient(client *http.Client) {
+	if client != nil {
+		p.httpClient = client
+	}
+}
+
+// FetchRemote implements the RemoteFetcher interface.
+// Runtime calls this when local cache is empty; Plugin handles remote generic/raw protocol interaction.
+// It performs a simple directory listing or file fetch from the remote repository.
+func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return nil, errors.New("generic: empty path")
+	}
+
+	fullURL := strings.TrimRight(remoteURL, "/") + "/" + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("generic: create request: %w", err)
+	}
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("generic: fetch from %s: %w", fullURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("generic: fetch from %s: status %d", fullURL, resp.StatusCode)
+	}
+
+	// If the response is HTML (directory listing), attempt to parse links.
+	contentType := resp.Header.Get("Content-Type")
+	if strings.Contains(contentType, "text/html") {
+		return p.parseDirectoryListing(path, resp.Body)
+	}
+
+	// For non-HTML responses (direct file download), return a single artifact.
+	filename := filepath.Base(path)
+	dir := filepath.Dir(path)
+	if dir == "." {
+		dir = ""
+	}
+	return []*runtime.Artifact{
+		{
+			Format: "generic",
+			Kind:   "file",
+			Coordinates: map[string]string{
+				"name": filename,
+				"path": dir,
+			},
+			Properties: map[string]string{
+				"filename": filename,
+			},
+		},
+	}, nil
+}
+
+// parseDirectoryListing attempts to extract file links from an HTML directory listing.
+func (p *GenericPlugin) parseDirectoryListing(basePath string, body io.Reader) ([]*runtime.Artifact, error) {
+	htmlBytes, err := io.ReadAll(body)
+	if err != nil {
+		return nil, fmt.Errorf("generic: read directory listing: %w", err)
+	}
+	html := string(htmlBytes)
+
+	// Match href attributes in anchor tags, a common pattern for directory listings.
+	// This handles both auto-index pages (nginx, apache) and simple HTML listings.
+	var artifacts []*runtime.Artifact
+	seen := make(map[string]bool)
+	// Simple regex-free approach: find href="..." patterns in <a> tags.
+	for _, segment := range strings.Split(html, `href="`) {
+		if len(segment) == 0 {
+			continue
+		}
+		endIdx := strings.Index(segment, `"`)
+		if endIdx <= 0 {
+			continue
+		}
+		href := segment[:endIdx]
+		// Skip parent directory links, query strings, and absolute URLs.
+		if href == "../" || href == "/" || strings.HasPrefix(href, "?") || strings.HasPrefix(href, "http") {
+			continue
+		}
+		name := strings.TrimRight(href, "/")
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		isDir := strings.HasSuffix(href, "/")
+		kind := "file"
+		if isDir {
+			kind = "directory"
+		}
+		dir := filepath.Dir(basePath)
+		if dir == "." {
+			dir = ""
+		}
+		artifacts = append(artifacts, &runtime.Artifact{
+			Format: "generic",
+			Kind:   kind,
+			Coordinates: map[string]string{
+				"name": name,
+				"path": dir,
+			},
+			Properties: map[string]string{
+				"filename": name,
+			},
+		})
+	}
+	return artifacts, nil
 }
 
 func (p *GenericPlugin) Name() string {
@@ -58,7 +176,7 @@ func (p *GenericPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.
 }
 
 func (p *GenericPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
-	artifact, err := repoRuntime.GetArtifact(context.Background(), key)
+	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 	if err != nil {
 		if errors.Is(err, runtime.ErrNotFound) {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
@@ -87,7 +205,7 @@ func (p *GenericPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime 
 	}
 
 	ctx.Writer.Header().Set("Content-Type", contentType)
-	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+key.Filename+"\"")
+	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 	ctx.Writer.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
 		return err
@@ -96,7 +214,7 @@ func (p *GenericPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime 
 }
 
 func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
-	session, err := repoRuntime.BeginUpload(context.Background(), runtime.UploadRequest{
+	session, err := repoRuntime.BeginUpload(ctx.Request.Context(), runtime.UploadRequest{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "generic",
 		Filename:     key.Filename,
@@ -107,9 +225,9 @@ func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime ru
 		return nil
 	}
 
-	blobRef, err := session.PutBlob(context.Background(), ctx.Request.Body)
+	blobRef, err := session.PutBlob(ctx.Request.Context(), ctx.Request.Body)
 	if err != nil {
-		session.Abort(context.Background())
+		session.Abort(ctx.Request.Context())
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}
@@ -126,13 +244,13 @@ func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime ru
 		},
 	}
 
-	if err := session.PutArtifact(context.Background(), artifact); err != nil {
-		session.Abort(context.Background())
+	if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
+		session.Abort(ctx.Request.Context())
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}
 
-	if err := session.Commit(context.Background()); err != nil {
+	if err := session.Commit(ctx.Request.Context()); err != nil {
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}
@@ -142,7 +260,7 @@ func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime ru
 }
 
 func (p *GenericPlugin) handleDelete(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
-	err := repoRuntime.DeleteArtifact(context.Background(), key)
+	err := repoRuntime.DeleteArtifact(ctx.Request.Context(), key)
 	if err != nil {
 		switch {
 		case errors.Is(err, runtime.ErrNotFound):

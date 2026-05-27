@@ -98,4 +98,5 @@ type RequestContext struct {
 	RepositoryPath string
 	RouteStyle     RouteStyle
 	Blocker        PackageBlocker
+	StatusCode     int // 实际响应状态码，由 handleRequest 设置
 }

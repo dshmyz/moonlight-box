@@ -1,6 +1,9 @@
 package runtime
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 type GroupRuntime struct {
 	Members  []RepositoryNode
@@ -17,6 +20,23 @@ func (g *GroupRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 	return nil, ErrNotFound
 }
 
+// artifactDedupeKey 生成去重用的唯一 key，不依赖 Artifact.ID
+// 因为回源创建的 Artifact.ID 可能为空。
+// 注意：不包含 RepositoryID，因为 GroupRuntime 合并多个成员仓库的结果时，
+// 同一个包在不同成员中应视为同一条目。
+func artifactDedupeKey(a *Artifact) string {
+	if a.ID != "" {
+		return a.ID
+	}
+	name := a.Coordinates["name"]
+	pkg := a.Coordinates["package"]
+	version := a.Coordinates["version"]
+	group := a.Coordinates["group"]
+	artifact := a.Coordinates["artifact"]
+	filename := a.Coordinates["filename"]
+	return fmt.Sprintf("%s/%s/%s/%s/%s/%s/%s", a.Format, name, pkg, version, group, artifact, filename)
+}
+
 func (g *GroupRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
 	allArtifacts := make([]*Artifact, 0)
 	seen := make(map[string]bool)
@@ -27,8 +47,9 @@ func (g *GroupRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 			continue
 		}
 		for _, a := range artifacts {
-			if !seen[a.ID] {
-				seen[a.ID] = true
+			key := artifactDedupeKey(a)
+			if !seen[key] {
+				seen[key] = true
 				allArtifacts = append(allArtifacts, a)
 			}
 		}

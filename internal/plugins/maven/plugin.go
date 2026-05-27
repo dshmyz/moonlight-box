@@ -8,16 +8,134 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 )
 
-type MavenPlugin struct{}
+// mavenVersionPattern 匹配 Maven 版本号：数字开头或包含 SNAPSHOT
+var mavenVersionPattern = regexp.MustCompile(`^\d|^SNAPSHOT`)
+
+type MavenPlugin struct {
+	httpClient *http.Client
+}
 
 func NewMavenPlugin() *MavenPlugin {
-	return &MavenPlugin{}
+	return &MavenPlugin{
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// SetHTTPClient allows injecting a shared HTTP client (with DNS mapping, TLS config, etc.)
+func (p *MavenPlugin) SetHTTPClient(client *http.Client) {
+	if client != nil {
+		p.httpClient = client
+	}
+}
+
+// FetchRemote implements the RemoteFetcher interface.
+// Runtime calls this when local cache is empty; Plugin handles remote Maven protocol interaction.
+// It fetches maven-metadata.xml from the remote repository and parses versions from it.
+func (p *MavenPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return nil, errors.New("maven: empty path")
+	}
+
+	// For maven-metadata.xml requests, fetch and parse the XML from remote.
+	if strings.HasSuffix(path, "maven-metadata.xml") {
+		return p.fetchMetadata(ctx, remoteURL, path)
+	}
+
+	// For other paths (artifact downloads), return a basic artifact indicating the remote resource exists.
+	key, err := p.parseMavenPath(path)
+	if err != nil {
+		return nil, fmt.Errorf("maven: parse remote path: %w", err)
+	}
+	return []*runtime.Artifact{
+		{
+			Format:      "maven",
+			Kind:        "artifact",
+			Coordinates: key.Coordinates,
+			Properties: map[string]string{
+				"filename":  key.Filename,
+				"extension": key.Extension,
+			},
+		},
+	}, nil
+}
+
+// fetchMetadata fetches maven-metadata.xml from the remote repository and extracts versions.
+func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	fullURL := strings.TrimRight(remoteURL, "/") + "/" + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("maven: create request for metadata: %w", err)
+	}
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("maven: fetch metadata from %s: %w", fullURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("maven: fetch metadata from %s: status %d", fullURL, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("maven: read metadata body: %w", err)
+	}
+
+	var meta mavenMetadata
+	if err := xml.Unmarshal(body, &meta); err != nil {
+		return nil, fmt.Errorf("maven: unmarshal metadata XML: %w", err)
+	}
+
+	// Parse the path to extract group and artifact coordinates.
+	parts := strings.Split(strings.Trim(strings.TrimSuffix(path, "/maven-metadata.xml"), "/"), "/")
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("maven: invalid metadata path: %s", path)
+	}
+
+	artifact := parts[len(parts)-1]
+	groupParts := parts[:len(parts)-1]
+	version := ""
+	// 最后一段是版本号当且仅当它匹配版本模式（数字开头或 SNAPSHOT）
+	if len(parts) >= 3 && mavenVersionPattern.MatchString(parts[len(parts)-1]) {
+		version = parts[len(parts)-1]
+		artifact = parts[len(parts)-2]
+		groupParts = parts[:len(parts)-2]
+	}
+	group := strings.Join(groupParts, ".")
+
+	var artifacts []*runtime.Artifact
+	versions := meta.Versioning.Versions.Items
+	if len(versions) == 0 && meta.Version != "" {
+		versions = []string{meta.Version}
+	}
+	for _, v := range versions {
+		coords := map[string]string{
+			"group":    group,
+			"artifact": artifact,
+			"version":  v,
+		}
+		if version != "" {
+			coords["base_version"] = version
+		}
+		artifacts = append(artifacts, &runtime.Artifact{
+			Format:      "maven",
+			Kind:        "version",
+			Coordinates: coords,
+			Properties: map[string]string{
+				"latest":  meta.Versioning.Latest,
+				"release": meta.Versioning.Release,
+			},
+		})
+	}
+	return artifacts, nil
 }
 
 func (p *MavenPlugin) Name() string {
@@ -104,31 +222,24 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 	artifact := parts[len(parts)-1]
 	groupParts := parts[:len(parts)-1]
 	version := ""
-	if len(parts) >= 4 {
-		// {groupDirs...}/{artifactId}/{version}/maven-metadata.xml
+	// 最后一段是版本号当且仅当它匹配版本模式（数字开头或 SNAPSHOT）
+	if len(parts) >= 3 && mavenVersionPattern.MatchString(parts[len(parts)-1]) {
 		version = parts[len(parts)-1]
 		artifact = parts[len(parts)-2]
 		groupParts = parts[:len(parts)-2]
-	} else if len(parts) >= 3 {
-		last := parts[len(parts)-1]
-		prev := parts[len(parts)-2]
-		if prev != "" && last != "" && len(last) > 0 && last[0] >= '0' && last[0] <= '9' {
-			version = last
-			artifact = prev
-			groupParts = parts[:len(parts)-2]
-		}
 	}
 	group := strings.Join(groupParts, ".")
 
 	query := runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "maven",
+		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
 		Coordinates: map[string]string{
 			"group":    group,
 			"artifact": artifact,
 		},
 	}
-	artifacts, err := repoRuntime.QueryArtifacts(context.Background(), query)
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), query)
 	if err != nil {
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
@@ -147,7 +258,7 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 			},
 			Filename: "maven-metadata.xml",
 		}
-		if metaArtifact, metaErr := repoRuntime.GetArtifact(context.Background(), metaKey); metaErr == nil && metaArtifact.Content != nil {
+		if metaArtifact, metaErr := repoRuntime.GetArtifact(ctx.Request.Context(), metaKey); metaErr == nil && metaArtifact.Content != nil {
 			defer metaArtifact.Content.Close()
 			body, _ := io.ReadAll(metaArtifact.Content)
 			ctx.Writer.Header().Set("Content-Type", "application/xml")
@@ -261,7 +372,7 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 }
 
 func (p *MavenPlugin) handleDelete(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
-	err := repoRuntime.DeleteArtifact(context.Background(), key)
+	err := repoRuntime.DeleteArtifact(ctx.Request.Context(), key)
 	if err != nil {
 		switch {
 		case errors.Is(err, runtime.ErrNotFound):
@@ -310,7 +421,7 @@ func (p *MavenPlugin) parseMavenPath(path string) (runtime.ArtifactKey, error) {
 }
 
 func (p *MavenPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
-	artifact, err := repoRuntime.GetArtifact(context.Background(), key)
+	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 	if err != nil {
 		if errors.Is(err, runtime.ErrNotFound) {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
@@ -326,7 +437,7 @@ func (p *MavenPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime ru
 	defer artifact.Content.Close()
 
 	ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
-	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+key.Filename+"\"")
+	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 	ctx.Writer.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
 		return err
@@ -335,7 +446,7 @@ func (p *MavenPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime ru
 }
 
 func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
-	session, err := repoRuntime.BeginUpload(context.Background(), runtime.UploadRequest{
+	session, err := repoRuntime.BeginUpload(ctx.Request.Context(), runtime.UploadRequest{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "maven",
 		Filename:     key.Filename,
@@ -346,9 +457,9 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		return nil
 	}
 
-	blobRef, err := session.PutBlob(context.Background(), ctx.Request.Body)
+	blobRef, err := session.PutBlob(ctx.Request.Context(), ctx.Request.Body)
 	if err != nil {
-		session.Abort(context.Background())
+		session.Abort(ctx.Request.Context())
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}
@@ -370,13 +481,13 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		},
 	}
 
-	if err := session.PutArtifact(context.Background(), artifact); err != nil {
-		session.Abort(context.Background())
+	if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
+		session.Abort(ctx.Request.Context())
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}
 
-	if err := session.Commit(context.Background()); err != nil {
+	if err := session.Commit(ctx.Request.Context()); err != nil {
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}

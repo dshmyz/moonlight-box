@@ -485,6 +485,11 @@ func (h *HealthCheckService) doHealthCheck(ctx context.Context, rawURL string) (
 		return resp.StatusCode, nil
 	}
 
+	// 3xx 重定向是正常行为，不应视为错误
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return resp.StatusCode, nil
+	}
+
 	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 		return resp.StatusCode, nil
 	}

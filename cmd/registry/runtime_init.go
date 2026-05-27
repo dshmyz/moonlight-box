@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -24,6 +25,7 @@ func initRepoRuntimes(
 	storageSvc *service.StorageService,
 	fetchers map[string]runtime.RemoteFetcher,
 	blocker runtime.PackageBlocker,
+	httpClient *http.Client,
 ) {
 	allRepos, err := repoRepo.List(nil)
 	if err != nil {
@@ -39,7 +41,7 @@ func initRepoRuntimes(
 
 	for i := range allRepos {
 		repo := &allRepos[i]
-		repoRuntime, createErr := createRuntimeForRepo(repo, repoRepo, groupRepo, db, defaultBackend, repoManager, fetchers, blocker)
+		repoRuntime, createErr := createRuntimeForRepo(repo, repoRepo, groupRepo, db, defaultBackend, repoManager, fetchers, blocker, httpClient)
 		if createErr != nil {
 			logrus.WithError(createErr).WithField("repo", repo.Name).Warn("Failed to create runtime for repo")
 			continue
@@ -95,6 +97,7 @@ func createRuntimeForRepo(
 	repoManager *runtime.DefaultRepositoryManager,
 	fetchers map[string]runtime.RemoteFetcher,
 	blocker runtime.PackageBlocker,
+	httpClient *http.Client,
 ) (runtime.RepositoryRuntime, error) {
 	metadataStore := storage.NewMetadataStore(db)
 	blobStore := storage.NewCASBlobStore(backend, db)
@@ -129,7 +132,7 @@ func createRuntimeForRepo(
 		pr := &runtime.ProxyRuntime{
 			MetadataStore: metadataStore,
 			BlobStore:     blobStore,
-			RemoteClient:  runtime.NewHTTPRemoteClient(),
+			RemoteClient:  runtime.NewHTTPRemoteClient(httpClient),
 			RepositoryID:  fmt.Sprintf("%d", repo.ID),
 			RemoteBaseURL: remoteBaseURL,
 			CachePolicy:   cachePolicy,
@@ -142,7 +145,7 @@ func createRuntimeForRepo(
 		return pr, nil
 
 	case model.RepoTypeVirtual:
-		return createGroupRuntime(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers, blocker)
+		return createGroupRuntime(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers, blocker, httpClient)
 
 	default:
 		return nil, fmt.Errorf("unsupported repo type: %s", repo.Type)
@@ -165,6 +168,7 @@ func createGroupRuntime(
 	repoManager *runtime.DefaultRepositoryManager,
 	fetchers map[string]runtime.RemoteFetcher,
 	blocker runtime.PackageBlocker,
+	httpClient *http.Client,
 ) (runtime.RepositoryRuntime, error) {
 	members, err := repoRepo.FindByName(repo.Name)
 	if err != nil {
@@ -203,7 +207,7 @@ func createGroupRuntime(
 			n := &runtime.ProxyRuntime{
 				MetadataStore: memberMeta,
 				BlobStore:     memberBlob,
-				RemoteClient:  runtime.NewHTTPRemoteClient(),
+				RemoteClient:  runtime.NewHTTPRemoteClient(httpClient),
 				RepositoryID:  memberID,
 				RemoteBaseURL: remoteBaseURL,
 				Format:        memberRepo.PackageType,

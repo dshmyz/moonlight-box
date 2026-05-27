@@ -15,11 +15,146 @@ import (
 )
 
 type AptPlugin struct {
-	cache *cache.MemoryCache
+	cache      *cache.MemoryCache
+	httpClient *http.Client
 }
 
 func NewAptPlugin() *AptPlugin {
-	return &AptPlugin{cache: cache.NewMemoryCache()}
+	return &AptPlugin{
+		cache:      cache.NewMemoryCache(),
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// SetHTTPClient allows injecting a shared HTTP client (with DNS mapping, TLS config, etc.)
+func (p *AptPlugin) SetHTTPClient(client *http.Client) {
+	if client != nil {
+		p.httpClient = client
+	}
+}
+
+// FetchRemote implements the RemoteFetcher interface.
+// Runtime calls this when local cache is empty; Plugin handles remote APT protocol interaction.
+// It fetches Packages index or InRelease/Release files from the remote repository.
+func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return nil, errors.New("apt: empty path")
+	}
+
+	// For Packages index requests, fetch and parse the Packages file.
+	if p.isPackagesRequest(path) {
+		return p.fetchPackagesIndex(ctx, remoteURL, path)
+	}
+
+	// For InRelease/Release requests, return a basic artifact indicating the remote resource exists.
+	if p.isInReleaseRequest(path) {
+		filename := filepath.Base(path)
+		return []*runtime.Artifact{
+			{
+				Format: "apt",
+				Kind:   "release",
+				Coordinates: map[string]string{
+					"file": filename,
+				},
+				Properties: map[string]string{
+					"filename": filename,
+				},
+			},
+		}, nil
+	}
+
+	// For .deb package requests, return a basic artifact indicating the remote resource exists.
+	filename := filepath.Base(path)
+	return []*runtime.Artifact{
+		{
+			Format: "apt",
+			Kind:   "package",
+			Coordinates: map[string]string{
+				"filename": filename,
+			},
+			Properties: map[string]string{
+				"filename": filename,
+			},
+		},
+	}, nil
+}
+
+// fetchPackagesIndex fetches a Packages index file from the remote repository
+// and parses it to extract package entries.
+func (p *AptPlugin) fetchPackagesIndex(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	fullURL := strings.TrimRight(remoteURL, "/") + "/" + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("apt: create request for packages index: %w", err)
+	}
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("apt: fetch packages index from %s: %w", fullURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("apt: fetch packages index from %s: status %d", fullURL, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("apt: read packages index body: %w", err)
+	}
+
+	return p.parsePackagesIndex(string(body)), nil
+}
+
+// parsePackagesIndex parses a Debian Packages index file and extracts package entries.
+func (p *AptPlugin) parsePackagesIndex(content string) []*runtime.Artifact {
+	var artifacts []*runtime.Artifact
+	var currentPkg map[string]string
+
+	finishPkg := func() {
+		if currentPkg == nil {
+			return
+		}
+		pkgName := currentPkg["Package"]
+		version := currentPkg["Version"]
+		filename := currentPkg["Filename"]
+		if pkgName != "" && version != "" {
+			artifact := &runtime.Artifact{
+				Format: "apt",
+				Kind:   "package",
+				Coordinates: map[string]string{
+					"package":  pkgName,
+					"name":     pkgName,
+					"version":  version,
+					"filename": filepath.Base(filename),
+				},
+				Properties: map[string]string{
+					"filename":    filepath.Base(filename),
+					"remote_path": filename,
+				},
+			}
+			artifacts = append(artifacts, artifact)
+		}
+		currentPkg = nil
+	}
+
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			finishPkg()
+			continue
+		}
+		if strings.Contains(line, ": ") {
+			parts := strings.SplitN(line, ": ", 2)
+			key := parts[0]
+			value := parts[1]
+			if currentPkg == nil {
+				currentPkg = make(map[string]string)
+			}
+			currentPkg[key] = value
+		}
+	}
+	finishPkg()
+	return artifacts
 }
 
 func (p *AptPlugin) Name() string {
@@ -73,7 +208,7 @@ func (p *AptPlugin) handleInRelease(ctx *runtime.RequestContext, repoRuntime run
 		Filename: filename,
 	}
 
-	artifact, err := repoRuntime.GetArtifact(context.Background(), key)
+	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 	if err != nil {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
@@ -85,7 +220,7 @@ func (p *AptPlugin) handleInRelease(ctx *runtime.RequestContext, repoRuntime run
 	defer artifact.Content.Close()
 
 	ctx.Writer.Header().Set("Content-Type", "text/plain")
-	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+key.Filename+"\"")
+	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 	ctx.Writer.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
 		return err
@@ -109,10 +244,10 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 		Filename: filename,
 	}
 
-	if artifact, err := repoRuntime.GetArtifact(context.Background(), key); err == nil && artifact.Content != nil {
+	if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
 		defer artifact.Content.Close()
 		ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
-		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+key.Filename+"\"")
+		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
 			return err
@@ -133,9 +268,10 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 		}
 	}
 
-	artifacts, err := repoRuntime.QueryArtifacts(context.Background(), runtime.ArtifactQuery{
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "apt",
+		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
 	})
 	if err != nil {
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
@@ -194,7 +330,7 @@ func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime ru
 
 	switch ctx.Request.Method {
 	case http.MethodGet:
-		artifact, err := repoRuntime.GetArtifact(context.Background(), key)
+		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 		if err != nil {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
@@ -205,7 +341,7 @@ func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime ru
 		}
 		defer artifact.Content.Close()
 		ctx.Writer.Header().Set("Content-Type", "application/vnd.debian.binary-package")
-		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+key.Filename+"\"")
+		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
 			return err

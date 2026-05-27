@@ -209,6 +209,13 @@ case "$TEST_SUITE" in
         
         print_section "第十阶段: 异常场景测试"
         run_test "异常场景" "$SCRIPT_DIR/exception/test_exception_scenarios.sh" "true"
+        
+        # ── 新增：数据准确性与架构合规测试 ──────────────────────
+        print_section "第十一阶段: 路由日志准确性测试"
+        run_test "路由日志准确性" "$SCRIPT_DIR/core/test_router_logging.sh" "true"
+        
+        print_section "第十二阶段: QueryArtifacts 回源路径测试"
+        run_test "QueryArtifacts 回源" "$SCRIPT_DIR/core/test_queryartifacts.sh" "true"
         ;;
     
     basic)

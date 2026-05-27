@@ -2,11 +2,13 @@ package npm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -15,10 +17,21 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-type NpmPlugin struct{}
+type NpmPlugin struct {
+	httpClient *http.Client // 统一 HTTP 客户端，可注入
+}
 
 func NewNpmPlugin() *NpmPlugin {
-	return &NpmPlugin{}
+	return &NpmPlugin{
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// SetHTTPClient 允许注入统一的 HTTP 客户端（含 DNS 映射、TLS 配置等）
+func (p *NpmPlugin) SetHTTPClient(client *http.Client) {
+	if client != nil {
+		p.httpClient = client
+	}
 }
 
 func (p *NpmPlugin) Name() string {
@@ -31,12 +44,14 @@ func (p *NpmPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 	if packageName == "" {
 		return nil, errors.New("npm: empty package path")
 	}
-	fullURL := strings.TrimRight(remoteURL, "/") + "/" + packageName
+	// scoped package 需要 URL 编码: @scope/pkg → %40scope%2Fpkg
+	encodedName := url.PathEscape(packageName)
+	fullURL := strings.TrimRight(remoteURL, "/") + "/" + encodedName
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +107,7 @@ func (p *NpmPlugin) handleAllPackages(ctx *runtime.RequestContext, repoRuntime r
 		return errors.New("method not allowed")
 	}
 
-	artifacts, err := repoRuntime.QueryArtifacts(context.Background(), runtime.ArtifactQuery{
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
 	})
@@ -173,7 +188,7 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 		Filename: filename,
 	}
 
-	artifact, err := repoRuntime.GetArtifact(context.Background(), key)
+	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 	if err != nil {
 		if errors.Is(err, runtime.ErrBlocked) {
 			return err
@@ -192,7 +207,7 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 	defer artifact.Content.Close()
 
 	ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
-	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+key.Filename+"\"")
+	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 	ctx.Writer.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
 		return err
@@ -235,7 +250,7 @@ func (p *NpmPlugin) handleTarballDelete(ctx *runtime.RequestContext, repoRuntime
 }
 
 func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, packageName string) error {
-	artifacts, err := repoRuntime.QueryArtifacts(context.Background(), runtime.ArtifactQuery{
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
 		Coordinates: map[string]string{
@@ -332,7 +347,7 @@ func (p *NpmPlugin) handlePackageDelete(ctx *runtime.RequestContext, repoRuntime
 }
 
 func deleteArtifact(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
-	err := repoRuntime.DeleteArtifact(context.Background(), key)
+	err := repoRuntime.DeleteArtifact(ctx.Request.Context(), key)
 	if err != nil {
 		switch {
 		case errors.Is(err, runtime.ErrNotFound):
@@ -359,8 +374,12 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		version = v
 	}
 
+	// 提取 _attachments 中的 tarball 数据
+	attachments, _ := npmMeta["_attachments"].(map[string]interface{})
+	delete(npmMeta, "_attachments") // 存储 metadata 时移除 attachments 数据
+
 	metadataJSON, _ := json.Marshal(npmMeta)
-	session, err := repoRuntime.BeginUpload(context.Background(), runtime.UploadRequest{
+	session, err := repoRuntime.BeginUpload(ctx.Request.Context(), runtime.UploadRequest{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
 		Filename:     packageName,
@@ -370,9 +389,58 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		return nil
 	}
 
-	blob, err := session.PutBlob(context.Background(), strings.NewReader(string(metadataJSON)))
+	// 存储 tarball blob
+	for tarballName, att := range attachments {
+		attMap, ok := att.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		data, _ := attMap["data"].(string)
+		if data == "" {
+			continue
+		}
+		tarballBytes, err := base64.StdEncoding.DecodeString(data)
+		if err != nil {
+			session.Abort(ctx.Request.Context())
+			http.Error(ctx.Writer, "invalid tarball base64: "+err.Error(), http.StatusBadRequest)
+			return nil
+		}
+
+		tarballBlob, err := session.PutBlob(ctx.Request.Context(), strings.NewReader(string(tarballBytes)))
+		if err != nil {
+			session.Abort(ctx.Request.Context())
+			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			return nil
+		}
+
+		tarballVersion := strings.TrimSuffix(strings.TrimPrefix(tarballName, packageName+"-"), ".tgz")
+		tarballArtifact := &runtime.Artifact{
+			RepositoryID: ctx.Repository.ID,
+			Format:       "npm",
+			Kind:         "tarball",
+			Coordinates: map[string]string{
+				"name":    packageName,
+				"version": tarballVersion,
+				"path":    packageName + "/-",
+			},
+			BlobRefs: []runtime.BlobRef{tarballBlob},
+			Properties: map[string]string{
+				"package":  packageName,
+				"version":  tarballVersion,
+				"filename": tarballName,
+			},
+		}
+		if err := session.PutArtifact(ctx.Request.Context(), tarballArtifact); err != nil {
+			session.Abort(ctx.Request.Context())
+			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			return nil
+		}
+	}
+
+	// 存储 metadata blob
+	blob, err := session.PutBlob(ctx.Request.Context(), strings.NewReader(string(metadataJSON)))
 	if err != nil {
-		session.Abort(context.Background())
+		session.Abort(ctx.Request.Context())
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}
@@ -392,13 +460,13 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		},
 	}
 
-	if err := session.PutArtifact(context.Background(), artifact); err != nil {
-		session.Abort(context.Background())
+	if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
+		session.Abort(ctx.Request.Context())
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}
 
-	if err := session.Commit(context.Background()); err != nil {
+	if err := session.Commit(ctx.Request.Context()); err != nil {
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}

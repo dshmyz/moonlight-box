@@ -15,12 +15,14 @@ type HTTPRemoteClient struct {
 	client *http.Client
 }
 
-func NewHTTPRemoteClient() *HTTPRemoteClient {
-	return &HTTPRemoteClient{
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+// NewHTTPRemoteClient 创建 HTTPRemoteClient。
+// 如果传入的 client 非 nil，使用它（应来自 proxy.TransportManager，含 DNS 映射和 TLS 配置）；
+// 否则使用默认裸客户端。
+func NewHTTPRemoteClient(client *http.Client) *HTTPRemoteClient {
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
 	}
+	return &HTTPRemoteClient{client: client}
 }
 
 func (c *HTTPRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (*RemoteMetadata, error) {
