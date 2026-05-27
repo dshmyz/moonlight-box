@@ -25,6 +25,7 @@ func (h *MigrationV2Handler) RegisterRoutes(protected *gin.RouterGroup, adminMw 
 	v2.Use(adminMw)
 	{
 		v2.POST("/sources/test", h.TestSource)
+		v2.POST("/sources/repositories", h.ListSourceRepositories)
 		v2.POST("/plans", h.CreatePlan)
 		v2.GET("/plans", h.ListPlans)
 		v2.GET("/plans/:id", h.GetPlan)
@@ -65,6 +66,28 @@ func (h *MigrationV2Handler) TestSource(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"message": "Connection successful"})
+}
+
+func (h *MigrationV2Handler) ListSourceRepositories(c *gin.Context) {
+	var req struct {
+		SourceType string `json:"source_type"`
+		URL        string `json:"url" binding:"required"`
+		Username   string `json:"username"`
+		Password   string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request", err.Error())
+		return
+	}
+	if req.SourceType == "" {
+		req.SourceType = "nexus"
+	}
+	repos, err := h.svc.ListSourceRepositories(c.Request.Context(), req.SourceType, req.URL, req.Username, req.Password)
+	if err != nil {
+		response.BadRequest(c, "Failed to list repositories", err.Error())
+		return
+	}
+	response.Success(c, repos)
 }
 
 func (h *MigrationV2Handler) CreatePlan(c *gin.Context) {

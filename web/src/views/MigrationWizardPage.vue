@@ -53,7 +53,43 @@
           <el-checkbox v-model="scope.users" style="margin-left:16px">用户</el-checkbox>
           <el-divider />
           <el-checkbox v-model="scope.artifacts" @change="onArtifactsChange">制品数据</el-checkbox>
-          <div v-if="scope.artifacts" class="sub-options">
+          <div v-if="scope.artifacts" class="sub-options artifact-options">
+            <div class="artifact-picker-card">
+              <div class="artifact-picker-header">
+                <div>
+                  <div class="artifact-picker-title">选择制品源仓库</div>
+                  <div class="artifact-picker-subtitle">仅支持 hosted/proxy 仓库，group 仓库不会直接复制制品。</div>
+                </div>
+                <div class="artifact-picker-actions">
+                  <el-button size="small" @click="loadSourceRepositories" :loading="loadingSourceRepos">重新加载</el-button>
+                  <el-button size="small" @click="selectAllArtifactRepos" :disabled="artifactRepoOptions.length === 0">全选</el-button>
+                  <el-button size="small" @click="clearArtifactRepos" :disabled="scope.artifact_repos.length === 0">清空</el-button>
+                </div>
+              </div>
+              <el-alert v-if="sourceRepoError" type="error" :title="sourceRepoError" show-icon :closable="false" />
+              <el-select
+                v-model="scope.artifact_repos"
+                multiple
+                filterable
+                collapse-tags
+                collapse-tags-tooltip
+                placeholder="选择要迁移制品的源仓库"
+                class="artifact-repo-select"
+                :loading="loadingSourceRepos"
+                :disabled="sourceRepoLoadFailed"
+              >
+                <el-option
+                  v-for="repo in artifactRepoOptions"
+                  :key="repo.name"
+                  :label="`${repo.name} · ${repo.format} · ${repo.type}`"
+                  :value="repo.name"
+                />
+              </el-select>
+              <div class="artifact-picker-meta">
+                <el-tag type="info" effect="plain">可迁移 {{ artifactRepoOptions.length }} 个</el-tag>
+                <el-tag :type="scope.artifact_repos.length > 0 ? 'success' : 'warning'" effect="plain">已选择 {{ scope.artifact_repos.length }} 个</el-tag>
+              </div>
+            </div>
             <el-form-item label="目标仓库">
               <el-select v-model="scope.target_strategy" placeholder="选择目标策略">
                 <el-option label="保持源仓库结构" value="keep_structure" />
@@ -219,7 +255,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { migrationV2Api, type MigrationPlan, type MigrationJob, type MigrationConflict, type MigrationEvent, type ConflictPolicy, type ScopeSelection, type JobKind } from '@/api/migrationV2'
+import { migrationV2Api, type MigrationPlan, type MigrationJob, type MigrationConflict, type MigrationEvent, type ConflictPolicy, type ScopeSelection, type JobKind, type SourceRepository } from '@/api/migrationV2'
+import { getMigratableArtifactRepositories, validateArtifactSelection } from '@/utils/migrationRepositorySelection'
 
 const step = ref(0)
 const testing = ref(false)
@@ -234,6 +271,11 @@ const jobs = ref<MigrationJob[]>([])
 const conflicts = ref<MigrationConflict[]>([])
 const events = ref<MigrationEvent[]>([])
 const conflictPolicies = ref<Record<number, ConflictPolicy>>({})
+const sourceRepositories = ref<SourceRepository[]>([])
+const loadingSourceRepos = ref(false)
+const sourceRepositoriesLoaded = ref(false)
+const sourceRepoLoadFailed = ref(false)
+const sourceRepoError = ref('')
 
 const scope = ref<ScopeSelection>({
   repo_config: true, hosted_repos: true, proxy_repos: true, group_repos: true,
@@ -312,6 +354,7 @@ const resultTagType = computed(() => {
 })
 
 const recentEvents = computed(() => events.value.slice(0, 20))
+const artifactRepoOptions = computed(() => getMigratableArtifactRepositories(sourceRepositories.value))
 
 // --- helpers ---
 
@@ -347,11 +390,40 @@ async function testConnection() {
     await migrationV2Api.testSource({ source_type: 'nexus', ...connForm.value })
     ElMessage.success('连接成功')
     connectionSuccess.value = true
+    await loadSourceRepositories()
   } catch (e: any) {
     ElMessage.error('连接失败: ' + e.message)
     connectionSuccess.value = false
   }
   finally { testing.value = false }
+}
+
+async function loadSourceRepositories() {
+  loadingSourceRepos.value = true
+  sourceRepoLoadFailed.value = false
+  sourceRepoError.value = ''
+  try {
+    sourceRepositories.value = await migrationV2Api.listSourceRepositories({ source_type: 'nexus', ...connForm.value }) as SourceRepository[]
+    sourceRepositoriesLoaded.value = true
+    const validNames = new Set(artifactRepoOptions.value.map(repo => repo.name))
+    scope.value.artifact_repos = scope.value.artifact_repos.filter(name => validNames.has(name))
+  } catch (e: any) {
+    sourceRepositories.value = []
+    sourceRepositoriesLoaded.value = false
+    sourceRepoLoadFailed.value = true
+    sourceRepoError.value = '源仓库列表加载失败，请重新加载或关闭制品数据'
+    ElMessage.error(sourceRepoError.value + ': ' + e.message)
+  } finally {
+    loadingSourceRepos.value = false
+  }
+}
+
+function selectAllArtifactRepos() {
+  scope.value.artifact_repos = artifactRepoOptions.value.map(repo => repo.name)
+}
+
+function clearArtifactRepos() {
+  scope.value.artifact_repos = []
 }
 
 function nextStep() { if (step.value < 5) step.value++ }
@@ -367,16 +439,37 @@ function resetWizard() {
   conflicts.value = []
   events.value = []
   conflictPolicies.value = {}
+  sourceRepositories.value = []
+  sourceRepositoriesLoaded.value = false
+  sourceRepoLoadFailed.value = false
+  sourceRepoError.value = ''
   connForm.value = { url: '', username: 'admin', password: '' }
   stopAllPolling()
 }
 
 function onRepoConfigChange(v: boolean) { if (!v) { scope.value.hosted_repos = scope.value.proxy_repos = scope.value.group_repos = scope.value.group_memberships = false } }
-function onArtifactsChange(v: boolean) { if (!v) scope.value.artifact_repos = [] }
+function onArtifactsChange(v: boolean) {
+  if (!v) {
+    scope.value.artifact_repos = []
+    return
+  }
+  if (connectionSuccess.value && !sourceRepositoriesLoaded.value && !sourceRepoLoadFailed.value) {
+    loadSourceRepositories()
+  }
+}
 
 // --- scan ---
 
 async function createAndScan() {
+  const artifactError = validateArtifactSelection(scope.value.artifacts, scope.value.artifact_repos, sourceRepositoriesLoaded.value && !sourceRepoLoadFailed.value)
+  if (artifactError) {
+    ElMessage.error(artifactError)
+    return
+  }
+  if (scope.value.artifacts && scope.value.target_strategy === 'map_target' && !scope.value.target_repo_name.trim()) {
+    ElMessage.error('请输入目标仓库名')
+    return
+  }
   try {
     const plan = await migrationV2Api.createPlan({
       name: connForm.value.url,
@@ -449,13 +542,23 @@ async function runPrecheck() {
 async function applyConflicts() {
   if (!currentPlan.value) return
   try {
-    if (conflicts.value.length > 0) {
-      const resolutions = Object.entries(conflictPolicies.value).map(([id, policy]) => ({
-        conflict_id: Number(id), policy,
-      }))
-      await migrationV2Api.applyConflicts(currentPlan.value.id, resolutions)
+    // Refresh plan status first
+    await refreshPlan()
+    const status = currentPlan.value?.status
+
+    // If plan is already ready (no blocking conflicts), skip apply and start directly
+    if (status === 'ready' && conflicts.value.length === 0) {
+      await migrationV2Api.startPlan(currentPlan.value.id)
+    } else {
+      // Apply conflict resolutions first
+      if (conflicts.value.length > 0) {
+        const resolutions = Object.entries(conflictPolicies.value).map(([id, policy]) => ({
+          conflict_id: Number(id), policy,
+        }))
+        await migrationV2Api.applyConflicts(currentPlan.value.id, resolutions)
+      }
+      await migrationV2Api.startPlan(currentPlan.value.id)
     }
-    await migrationV2Api.startPlan(currentPlan.value.id)
     step.value = 4
     startExecPolling()
   } catch (e: any) { ElMessage.error('执行失败: ' + e.message) }
@@ -617,6 +720,14 @@ onUnmounted(() => stopAllPolling())
 .step-bar { margin-bottom: 32px; }
 .step-panel { min-height: 300px; }
 .sub-options { margin-left: 24px; padding: 8px 0; }
+.artifact-options { max-width: 760px; }
+.artifact-picker-card { margin: 12px 0 16px; padding: 16px; border: 1px solid #dbeafe; border-radius: 14px; background: linear-gradient(135deg, #f8fbff 0%, #f5f3ff 100%); }
+.artifact-picker-header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 12px; }
+.artifact-picker-title { font-size: 14px; font-weight: 700; color: #1f2937; }
+.artifact-picker-subtitle { font-size: 12px; color: #64748b; margin-top: 3px; }
+.artifact-picker-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.artifact-repo-select { width: 100%; margin-top: 10px; }
+.artifact-picker-meta { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .actions { margin-top: 24px; display: flex; gap: 12px; }
 .conflict-item { margin-bottom: 16px; }
 

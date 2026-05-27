@@ -127,18 +127,60 @@ type UpdateRepositoryParams struct {
 	AllowDelete      *bool             `json:"allow_delete"`
 }
 
+// ToRepoForUpdate 将更新参数转换为 Repository struct 和需要更新的字段列表，
+// 供 GORM Select+Updates 使用，确保 serializer:json 等标签正确生效。
+func (p *UpdateRepositoryParams) ToRepoForUpdate() (*Repository, []string) {
+	repo := &Repository{}
+	var fields []string
+
+	if p.DisplayName != nil {
+		repo.DisplayName = *p.DisplayName
+		fields = append(fields, "display_name")
+	}
+	if p.Description != nil {
+		repo.Description = *p.Description
+		fields = append(fields, "description")
+	}
+	if p.Config != nil {
+		repo.Config = p.Config
+		fields = append(fields, "config")
+	}
+	if p.StorageBackendID != nil {
+		repo.StorageBackendID = p.StorageBackendID
+		fields = append(fields, "storage_backend_id")
+	}
+	if p.Enabled != nil {
+		repo.Enabled = *p.Enabled
+		fields = append(fields, "enabled")
+	}
+	if p.PublicVisible != nil {
+		repo.PublicVisible = *p.PublicVisible
+		fields = append(fields, "public_visible")
+	}
+	if p.AllowOverwrite != nil {
+		repo.AllowOverwrite = *p.AllowOverwrite
+		fields = append(fields, "allow_overwrite")
+	}
+	if p.AllowDelete != nil {
+		repo.AllowDelete = *p.AllowDelete
+		fields = append(fields, "allow_delete")
+	}
+
+	return repo, fields
+}
+
 // RepositoryConfig 仓库配置 JSONB，替代原有的独立代理字段
 type RepositoryConfig struct {
-	RemoteURL         string           `json:"remote_url,omitempty"`
-	AuthType          string           `json:"auth_type,omitempty"`
-	Auth              *ProxyAuthConfig `json:"auth,omitempty"`
-	ProxyPriority     int              `json:"proxy_priority,omitempty"`
-	CacheEnabled      bool             `json:"cache_enabled,omitempty"`
-	CacheTTLSeconds   int              `json:"cache_ttl_seconds,omitempty"`
-	CacheMaxSizeGB    float64          `json:"cache_max_size_gb,omitempty"`
-	CacheNegativeTTL  int              `json:"cache_negative_ttl,omitempty"`
-	TimeoutSeconds    int              `json:"timeout_seconds,omitempty"`
-	MaxRedirects      int              `json:"max_redirects,omitempty"`
-	InsecureSkipVerify bool            `json:"insecure_skip_verify,omitempty"`
-	FailureCacheRules string           `json:"failure_cache_rules,omitempty"`
+	RemoteURL          string           `json:"remote_url,omitempty"`
+	AuthType           string           `json:"auth_type,omitempty"`
+	Auth               *ProxyAuthConfig `json:"auth,omitempty"`
+	ProxyPriority      int              `json:"proxy_priority,omitempty"`
+	CacheEnabled       bool             `json:"cache_enabled,omitempty"`
+	CacheTTLSeconds    int              `json:"cache_ttl_seconds,omitempty"`
+	CacheMaxSizeGB     float64          `json:"cache_max_size_gb,omitempty"`
+	CacheNegativeTTL   int              `json:"cache_negative_ttl,omitempty"`
+	TimeoutSeconds     int              `json:"timeout_seconds,omitempty"`
+	MaxRedirects       int              `json:"max_redirects,omitempty"`
+	InsecureSkipVerify bool             `json:"insecure_skip_verify,omitempty"`
+	FailureCacheRules  string           `json:"failure_cache_rules,omitempty"`
 }

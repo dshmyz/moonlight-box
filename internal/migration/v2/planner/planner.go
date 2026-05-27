@@ -39,8 +39,24 @@ func New(src source.MigrationSource, planID uint, scope *domain.ScopeSelection, 
 func (p *Planner) Scan(ctx context.Context) error {
 	p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged, "开始扫描仓库配置", nil, nil)
 
+	var repos []source.SourceRepository
+	loadRepos := func() error {
+		if repos != nil {
+			return nil
+		}
+		var err error
+		repos, err = p.src.ListRepositories(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to list repositories: %w", err)
+		}
+		return nil
+	}
+
 	if p.scope.RepoConfig || p.scope.GroupMemberships {
-		if err := p.scanRepositories(ctx); err != nil {
+		if err := loadRepos(); err != nil {
+			return err
+		}
+		if err := p.scanRepositories(ctx, repos); err != nil {
 			return err
 		}
 	}
@@ -51,8 +67,11 @@ func (p *Planner) Scan(ctx context.Context) error {
 		}
 	}
 
-	if p.scope.Artifacts && len(p.scope.ArtifactRepos) > 0 {
-		if err := p.scanArtifacts(ctx); err != nil {
+	if p.scope.Artifacts {
+		if err := loadRepos(); err != nil {
+			return err
+		}
+		if err := p.scanArtifacts(ctx, repos); err != nil {
 			return err
 		}
 	}
@@ -61,12 +80,7 @@ func (p *Planner) Scan(ctx context.Context) error {
 	return nil
 }
 
-func (p *Planner) scanRepositories(ctx context.Context) error {
-	repos, err := p.src.ListRepositories(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list repositories: %w", err)
-	}
-
+func (p *Planner) scanRepositories(ctx context.Context, repos []source.SourceRepository) error {
 	type repoDetail struct {
 		detail    *source.SourceRepositoryDetail
 		err       error
@@ -265,8 +279,22 @@ func (p *Planner) scanSecurity(ctx context.Context) error {
 	return nil
 }
 
-func (p *Planner) scanArtifacts(ctx context.Context) error {
-	for _, repoName := range p.scope.ArtifactRepos {
+func (p *Planner) scanArtifacts(ctx context.Context, repos []source.SourceRepository) error {
+	repoNames := p.scope.ArtifactRepos
+	if len(repoNames) == 0 {
+		for _, repo := range repos {
+			if repo.Name == "" || repo.Type == "group" || !p.shouldIncludeRepo(repo.Type) {
+				continue
+			}
+			repoNames = append(repoNames, repo.Name)
+		}
+	}
+	if len(repoNames) == 0 {
+		p.eventRepo.Log(p.planID, domain.LevelWarn, domain.EventSourceWarning, "未发现可迁移的制品仓库", nil, nil)
+		return nil
+	}
+
+	for _, repoName := range repoNames {
 		// Create artifact_scan job (work already done during scan, mark as completed)
 		scanJob := domain.MigrationJob{
 			PlanID:      p.planID,

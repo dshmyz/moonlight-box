@@ -2,6 +2,7 @@ package precheck
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/domain"
@@ -78,37 +79,49 @@ func (p *Prechecker) checkRepoExists(job *domain.MigrationJob) {
 }
 
 func (p *Prechecker) checkUserConflicts(job *domain.MigrationJob) {
-	// Check email conflict
-	var emailCount int64
-	p.db.Raw("SELECT count(*) FROM users WHERE email = (SELECT email FROM users WHERE username = ? LIMIT 1)", job.SourceKey).Scan(&emailCount)
-	if emailCount > 0 {
-		// Check by username
-		var userExists int64
-		p.db.Raw("SELECT count(*) FROM users WHERE username = ?", job.SourceKey).Scan(&userExists)
-		if userExists == 0 {
-			// Username doesn't exist locally, email conflict is a warning
-			c := domain.MigrationConflict{
-				PlanID:          p.planID,
-				Kind:            domain.ConflictEmailExists,
-				Severity:        domain.SeverityBlocking,
-				SourceKey:       job.SourceKey,
-				TargetKey:       job.TargetKey,
-				Message:         fmt.Sprintf("Email for user %s conflicts with an existing local user", job.SourceKey),
-				SuggestedPolicy: domain.PolicyRename,
-			}
-			p.conflictRepo.Create(&c)
-		} else {
-			c := domain.MigrationConflict{
-				PlanID:          p.planID,
-				Kind:            domain.ConflictEmailExists,
-				Severity:        domain.SeverityWarning,
-				SourceKey:       job.SourceKey,
-				TargetKey:       job.TargetKey,
-				Message:         fmt.Sprintf("User %s already exists locally", job.SourceKey),
-				SuggestedPolicy: domain.PolicySkip,
-			}
-			p.conflictRepo.Create(&c)
+	// Check if username already exists locally
+	var userExists int64
+	p.db.Raw("SELECT count(*) FROM users WHERE username = ?", job.SourceKey).Scan(&userExists)
+	if userExists > 0 {
+		c := domain.MigrationConflict{
+			PlanID:          p.planID,
+			Kind:            domain.ConflictEmailExists,
+			Severity:        domain.SeverityWarning,
+			SourceKey:       job.SourceKey,
+			TargetKey:       job.TargetKey,
+			Message:         fmt.Sprintf("User %s already exists locally", job.SourceKey),
+			SuggestedPolicy: domain.PolicySkip,
 		}
+		p.conflictRepo.Create(&c)
+		return
+	}
+
+	// Check email conflict using the email stored in the job checkpoint
+	email := ""
+	if job.Checkpoint != "" {
+		var cp domain.UserCheckpoint
+		if err := json.Unmarshal([]byte(job.Checkpoint), &cp); err == nil && cp.Email != "" {
+			email = cp.Email
+		}
+	}
+	if email == "" {
+		// No email available from checkpoint, skip email conflict check
+		return
+	}
+
+	var emailCount int64
+	p.db.Raw("SELECT count(*) FROM users WHERE email = ?", email).Scan(&emailCount)
+	if emailCount > 0 {
+		c := domain.MigrationConflict{
+			PlanID:          p.planID,
+			Kind:            domain.ConflictEmailExists,
+			Severity:        domain.SeverityBlocking,
+			SourceKey:       job.SourceKey,
+			TargetKey:       job.TargetKey,
+			Message:         fmt.Sprintf("Email %s for user %s conflicts with an existing local user", email, job.SourceKey),
+			SuggestedPolicy: domain.PolicyRename,
+		}
+		p.conflictRepo.Create(&c)
 	}
 }
 

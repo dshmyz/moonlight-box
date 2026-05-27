@@ -132,12 +132,23 @@ export interface MigrationEvent {
   created_at: string
 }
 
+export interface SourceRepository {
+  name: string
+  format: string
+  type: 'hosted' | 'proxy' | 'group' | string
+  url?: string
+}
+
 // --- API ---
 
 export const migrationV2Api = {
   // Source
   testSource(data: { source_type: string; url: string; username: string; password: string }) {
     return request.post('/migration/v2/sources/test', data)
+  },
+
+  listSourceRepositories(data: { source_type: string; url: string; username: string; password: string }) {
+    return request.post<SourceRepository[]>('/migration/v2/sources/repositories', data)
   },
 
   // Plans

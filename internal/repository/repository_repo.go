@@ -112,9 +112,12 @@ func (r *RepositoryRepository) CountContext(ctx context.Context, filter map[stri
 	return total, err
 }
 
-// Update 更新仓库
-func (r *RepositoryRepository) Update(name string, updates map[string]interface{}) error {
-	return r.db.Model(&model.Repository{}).Where("name = ?", name).Updates(updates).Error
+// Update 更新仓库指定字段，使用 struct+Select 确保 serializer 正确生效
+func (r *RepositoryRepository) Update(name string, repo *model.Repository, fields []string) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return r.db.Model(&model.Repository{}).Where("name = ?", name).Select(fields).Updates(repo).Error
 }
 
 // Delete 删除仓库

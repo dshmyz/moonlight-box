@@ -86,6 +86,18 @@ func (s *MigrationServiceV2) TestSourceConnection(ctx context.Context, sourceTyp
 	return src.TestConnection(ctx)
 }
 
+// ListSourceRepositories lists repositories from the migration source.
+func (s *MigrationServiceV2) ListSourceRepositories(ctx context.Context, sourceType, url, username, password string) ([]source.SourceRepository, error) {
+	var src source.MigrationSource
+	switch sourceType {
+	case "nexus":
+		src = nexus.New(url, username, password)
+	default:
+		return nil, fmt.Errorf("unsupported source type: %s", sourceType)
+	}
+	return src.ListRepositories(ctx)
+}
+
 // ScanPlan runs the scan phase for a plan asynchronously.
 func (s *MigrationServiceV2) ScanPlan(ctx context.Context, planID uint) error {
 	plan, err := s.planRepo.FindByID(planID)
@@ -240,8 +252,11 @@ func (s *MigrationServiceV2) ApplyConflictPolicies(ctx context.Context, planID u
 	if err != nil {
 		return 0, err
 	}
-	if plan.Status != domain.PlanPrecheckFailed {
-		return 0, fmt.Errorf("plan must be in precheck_failed status, current: %s", plan.Status)
+	// Allow applying policies from both precheck_failed and ready states.
+	// When precheck finds only warnings (no blocking), plan transitions to ready directly,
+	// but the user may still want to resolve those warning conflicts before execution.
+	if plan.Status != domain.PlanPrecheckFailed && plan.Status != domain.PlanReady {
+		return 0, fmt.Errorf("plan must be in precheck_failed or ready status, current: %s", plan.Status)
 	}
 
 	p := precheck.New(s.db, planID, s.jobRepo, s.itemRepo, s.conflictRepo, s.eventRepo)
@@ -250,7 +265,7 @@ func (s *MigrationServiceV2) ApplyConflictPolicies(ctx context.Context, planID u
 		return 0, err
 	}
 
-	if remaining == 0 {
+	if remaining == 0 && plan.Status != domain.PlanReady {
 		s.planRepo.UpdateStatus(planID, domain.PlanReady)
 	}
 	return remaining, nil

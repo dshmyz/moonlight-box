@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/domain"
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/repository"
@@ -248,7 +249,13 @@ func (m *ExecutorManager) executeUser(ctx context.Context, job *domain.Migration
 	var emailCount int64
 	m.db.Raw("SELECT count(*) FROM users WHERE email = ?", email).Scan(&emailCount)
 	if emailCount > 0 {
-		email = fmt.Sprintf("%s-migrated-%s", job.SourceKey, email)
+		// Extract email parts and create a valid migrated email
+		parts := strings.Split(email, "@")
+		if len(parts) == 2 {
+			email = fmt.Sprintf("%s-migrated@%s", parts[0], parts[1])
+		} else {
+			email = fmt.Sprintf("%s-migrated@migrated.local", job.SourceKey)
+		}
 	}
 
 	hashedPassword, _ := util.HashPassword(util.GenerateRandomString(16))

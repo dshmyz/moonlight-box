@@ -277,39 +277,15 @@ func (s *RepositoryService) GetByIDContext(ctx context.Context, id uint) (*model
 
 // Update 更新仓库信息
 func (s *RepositoryService) Update(name string, params *model.UpdateRepositoryParams) error {
-	updates := make(map[string]interface{})
-
-	if params.DisplayName != nil {
-		updates["display_name"] = *params.DisplayName
-	}
-	if params.Description != nil {
-		updates["description"] = *params.Description
-	}
-	if params.Config != nil {
-		updates["config"] = params.Config
-	}
-	if params.Enabled != nil {
-		updates["enabled"] = *params.Enabled
-	}
-	if params.PublicVisible != nil {
-		updates["public_visible"] = *params.PublicVisible
-	}
-	if params.StorageBackendID != nil {
-		updates["storage_backend_id"] = *params.StorageBackendID
-	}
-	if params.AllowOverwrite != nil {
-		updates["allow_overwrite"] = *params.AllowOverwrite
-	}
-	if params.AllowDelete != nil {
-		updates["allow_delete"] = *params.AllowDelete
-	}
-
+	repo, fields := params.ToRepoForUpdate()
 	members := params.Members
 
 	if members != nil {
 		err := s.db.Transaction(func(tx *gorm.DB) error {
-			if err := tx.Model(&model.Repository{}).Where("name = ?", name).Updates(updates).Error; err != nil {
-				return err
+			if len(fields) > 0 {
+				if err := tx.Model(&model.Repository{}).Where("name = ?", name).Select(fields).Updates(repo).Error; err != nil {
+					return err
+				}
 			}
 
 			var virtualRepo model.Repository
@@ -351,7 +327,7 @@ func (s *RepositoryService) Update(name string, params *model.UpdateRepositoryPa
 		return err
 	}
 
-	err := s.repoRepo.Update(name, updates)
+	err := s.repoRepo.Update(name, repo, fields)
 	if err == nil {
 		s.invalidateCache(name)
 	}
