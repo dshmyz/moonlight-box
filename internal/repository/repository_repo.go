@@ -84,6 +84,10 @@ func (r *RepositoryRepository) ListContext(ctx context.Context, filter map[strin
 	if publicVisible, ok := filter["public_visible"]; ok {
 		query = query.Where("public_visible = ?", publicVisible)
 	}
+	if keyword, ok := filter["keyword"]; ok {
+		keywordStr := fmt.Sprintf("%%%s%%", keyword)
+		query = query.Where("name LIKE ? OR display_name LIKE ? OR description LIKE ?", keywordStr, keywordStr, keywordStr)
+	}
 	if page > 0 && pageSize > 0 {
 		query = query.Offset((page - 1) * pageSize).Limit(pageSize)
 	}
@@ -107,6 +111,10 @@ func (r *RepositoryRepository) CountContext(ctx context.Context, filter map[stri
 	}
 	if publicVisible, ok := filter["public_visible"]; ok {
 		query = query.Where("public_visible = ?", publicVisible)
+	}
+	if keyword, ok := filter["keyword"]; ok {
+		keywordStr := fmt.Sprintf("%%%s%%", keyword)
+		query = query.Where("name LIKE ? OR display_name LIKE ? OR description LIKE ?", keywordStr, keywordStr, keywordStr)
 	}
 	err := query.Count(&total).Error
 	return total, err

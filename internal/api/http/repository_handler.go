@@ -88,7 +88,7 @@ func getForwardedPrefix(c *gin.Context) string {
 	return prefix
 }
 
-// List 列出仓库，支持按 package_type、type 过滤和分页
+// List 列出仓库，支持按 package_type、type、keyword 过滤和分页
 func (h *RepositoryHandler) List(c *gin.Context) {
 	filter := make(map[string]interface{})
 	if pkgType := c.Query("package_type"); pkgType != "" {
@@ -96,6 +96,9 @@ func (h *RepositoryHandler) List(c *gin.Context) {
 	}
 	if repoType := c.Query("type"); repoType != "" {
 		filter["type"] = repoType
+	}
+	if keyword := c.Query("keyword"); keyword != "" {
+		filter["keyword"] = keyword
 	}
 
 	page, pageSize := parsePagination(c)

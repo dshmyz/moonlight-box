@@ -121,7 +121,7 @@ export interface PaginatedResponse<T> {
 }
 
 export const repositoryApi = {
-  list(params?: { package_type?: string; type?: string; page?: number; page_size?: number }) {
+  list(params?: { package_type?: string; type?: string; page?: number; page_size?: number; keyword?: string }) {
     return request.get<RepositoryWithHealth[] | PaginatedResponse<RepositoryWithHealth>>('/repositories', { params })
   },
 

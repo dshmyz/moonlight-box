@@ -15,18 +15,23 @@ func TestListSourceRepositoriesReturnsNexusRepositories(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	nexus := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/service/rest/v1/repositories" {
+		switch r.URL.Path {
+		case "/service/rest/v1/status":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":"3.30.2"}`))
+		case "/service/rest/v1/repositories":
+			if username, password, ok := r.BasicAuth(); !ok || username != "admin" || password != "secret" {
+				t.Fatalf("unexpected basic auth: %q/%q ok=%v", username, password, ok)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[
+				{"name":"npm-hosted","format":"npm","type":"hosted","url":"http://nexus/repository/npm-hosted"},
+				{"name":"maven-proxy","format":"maven2","type":"proxy","url":"http://nexus/repository/maven-proxy"},
+				{"name":"npm-group","format":"npm","type":"group","url":"http://nexus/repository/npm-group"}
+			]`))
+		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
-		if username, password, ok := r.BasicAuth(); !ok || username != "admin" || password != "secret" {
-			t.Fatalf("unexpected basic auth: %q/%q ok=%v", username, password, ok)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`[
-			{"name":"npm-hosted","format":"npm","type":"hosted","url":"http://nexus/repository/npm-hosted"},
-			{"name":"maven-proxy","format":"maven2","type":"proxy","url":"http://nexus/repository/maven-proxy"},
-			{"name":"npm-group","format":"npm","type":"group","url":"http://nexus/repository/npm-group"}
-		]`))
 	}))
 	defer nexus.Close()
 

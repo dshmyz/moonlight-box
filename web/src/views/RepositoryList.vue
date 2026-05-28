@@ -40,6 +40,18 @@
     <div class="content-panel">
       <div class="panel-filter-bar">
         <div class="filter-left">
+          <div class="search-box">
+            <i class="fa-solid fa-search search-icon"></i>
+            <el-input
+              v-model="keywordFilter"
+              placeholder="搜索仓库名称或描述..."
+              class="search-input"
+              clearable
+              @keyup.enter="onFilterChange"
+              @clear="onFilterChange"
+            />
+          </div>
+          <el-divider direction="vertical" class="filter-divider" />
           <i class="fa-solid fa-code filter-icon"></i>
           <span class="filter-label">语言类型</span>
           <el-select
@@ -52,15 +64,6 @@
             <el-option label="全部" value="" />
             <el-option v-for="pt in packageTypeOptions" :key="pt.value" :label="pt.label" :value="pt.value" />
           </el-select>
-          <el-tag
-            v-if="packageTypeFilter"
-            class="filter-tag"
-            size="small"
-            closable
-            @close="clearFilter"
-          >
-            {{ packageTypeFilter }}
-          </el-tag>
         </div>
         <div class="filter-right">
           <span class="result-count">{{ total }} 个仓库</span>
@@ -217,6 +220,7 @@ interface LocalRepository extends RepositoryWithHealth {
 const loading = ref(false)
 const activeTab = ref('all')
 const packageTypeFilter = ref('')
+const keywordFilter = ref('')
 const showDialog = ref(false)
 const editingRepo = ref<Repository | null>(null)
 const repos = ref<LocalRepository[]>([])
@@ -279,7 +283,7 @@ const getHealthTooltip = (row: LocalRepository) => {
 const loadRepos = async () => {
   loading.value = true
   try {
-    const params: { package_type?: string; type?: string; page: number; page_size: number } = {
+    const params: { package_type?: string; type?: string; page: number; page_size: number; keyword?: string } = {
       page: page.value,
       page_size: pageSize.value,
     }
@@ -288,6 +292,9 @@ const loadRepos = async () => {
     }
     if (activeTab.value !== 'all') {
       params.type = activeTab.value
+    }
+    if (keywordFilter.value) {
+      params.keyword = keywordFilter.value
     }
     const res = await repositoryApi.list(params)
 
@@ -321,11 +328,6 @@ const onFilterChange = () => {
 const onSizeChange = () => {
   page.value = 1
   loadRepos()
-}
-
-const clearFilter = () => {
-  packageTypeFilter.value = ''
-  onFilterChange()
 }
 
 const goToRepoDetail = (name: string) => {
@@ -556,7 +558,47 @@ onMounted(loadRepos)
 .filter-left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 16px;
+}
+
+.search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-icon {
+  position: absolute;
+  left: 12px;
+  color: #94a3b8;
+  font-size: 14px;
+  pointer-events: none;
+}
+
+.search-input {
+  width: 280px;
+  border-radius: 10px;
+}
+
+.search-input :deep(.el-input__wrapper) {
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px #e2e8f0;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  padding-left: 36px;
+}
+
+.search-input :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px #cbd5e1;
+}
+
+.search-input :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 1px #6366f1, 0 0 0 3px rgba(99, 102, 241, 0.1);
+}
+
+.filter-divider {
+  height: 24px;
+  margin: 0;
+  background: #e2e8f0;
 }
 
 .filter-icon {

@@ -170,7 +170,7 @@ const handleSearch = async () => {
       q: searchQuery.value,
       page: currentPage.value,
       page_size: pageSize.value,
-      sort: sortBy.value === 'downloads' ? 'downloads' : sortBy.value,
+      sort: sortBy.value === 'downloads' ? 'updated_at' : sortBy.value,
     }
     if (selectedType.value !== 'all') {
       params.type = selectedType.value

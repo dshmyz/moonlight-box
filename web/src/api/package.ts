@@ -75,7 +75,7 @@ export interface VersionListResponse {
 }
 
 export const packageApi = {
-  search(params: { q?: string; type?: string; name?: string; version?: string; repository?: string; scope?: string; sort?: string; page?: number; page_size?: number }) {
+  search(params: { q?: string; type?: string; name?: string; version?: string; repository?: string; sort?: string; page?: number; page_size?: number }) {
     return request.get<SearchResponse>('/packages/search', { params })
   },
 

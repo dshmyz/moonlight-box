@@ -39,8 +39,7 @@ func (h *PackageSearchHandler) Search(c *gin.Context) {
 		Name:       c.Query("name"),
 		Version:    c.Query("version"),
 		Repository: c.Query("repository"),
-		Scope:      c.DefaultQuery("scope", "name"),
-		Sort:       c.DefaultQuery("sort", "downloads"),
+		Sort:       c.DefaultQuery("sort", "updated_at"),
 		Page:       page,
 		PageSize:   pageSize,
 	}

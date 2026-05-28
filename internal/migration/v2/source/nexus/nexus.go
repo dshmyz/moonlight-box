@@ -27,6 +27,11 @@ type NexusSource struct {
 	scriptOnce  sync.Once
 	scriptReady bool
 	scriptErr   error
+
+	// version stores detected Nexus version
+	version      NexusVersion
+	versionReady bool
+	versionErr   error
 }
 
 func New(baseURL, username, password string) *NexusSource {
@@ -46,23 +51,43 @@ func New(baseURL, username, password string) *NexusSource {
 }
 
 func (s *NexusSource) TestConnection(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", s.baseURL+"/service/rest/v1/status", nil)
+	version, err := s.getVersion(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to detect Nexus version: %w", err)
 	}
-	s.setAuth(req)
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("connection failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("connection failed with status: %d", resp.StatusCode)
-	}
+
+	logrus.WithFields(logrus.Fields{
+		"version": version.String(),
+		"baseURL": s.baseURL,
+	}).Info("Nexus connection test successful")
+
 	return nil
 }
 
+func (s *NexusSource) getVersion(ctx context.Context) (NexusVersion, error) {
+	if s.versionReady {
+		return s.version, s.versionErr
+	}
+
+	var versionOnce sync.Once
+	versionOnce.Do(func() {
+		s.version, s.versionErr = s.DetectVersion(ctx)
+		s.versionReady = true
+	})
+
+	return s.version, s.versionErr
+}
+
 func (s *NexusSource) ListRepositories(ctx context.Context) ([]source.SourceRepository, error) {
+	version, err := s.getVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if version.IsNexus2() {
+		return s.listRepositoriesNexus2(ctx)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", s.baseURL+"/service/rest/v1/repositories", nil)
 	if err != nil {
 		return nil, err
@@ -80,13 +105,29 @@ func (s *NexusSource) ListRepositories(ctx context.Context) ([]source.SourceRepo
 	if err := json.NewDecoder(resp.Body).Decode(&repos); err != nil {
 		return nil, err
 	}
+
+	for i := range repos {
+		repos[i].Type = strings.ToLower(repos[i].Type)
+		repos[i].Format = strings.ToLower(repos[i].Format)
+	}
+
 	return repos, nil
 }
 
 // GetRepositoryDetail fetches repository detail.
 // It first tries the v1 detail endpoint (available in Nexus 3.15+).
 // If that returns 404 (Nexus 3.12 and earlier), it falls back to the Groovy Script API.
+// For Nexus 2.x, it uses the /service/local/repositories/{name} endpoint.
 func (s *NexusSource) GetRepositoryDetail(ctx context.Context, format, repoType, name string) (*source.SourceRepositoryDetail, error) {
+	version, err := s.getVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if version.IsNexus2() {
+		return s.getRepoDetailNexus2(ctx, format, repoType, name)
+	}
+
 	// Try v1 detail endpoint first (Nexus 3.15+)
 	detail, err := s.getRepoDetailV1(ctx, format, repoType, name)
 	if err == nil {
@@ -121,9 +162,14 @@ func (s *NexusSource) GetRepositoryDetail(ctx context.Context, format, repoType,
 
 // getRepoDetailV1 calls the v1 repository detail endpoint.
 // Nexus 3 format-specific path: GET /service/rest/v1/repositories/{format}/{type}/{name}
-// e.g. /service/rest/v1/repositories/maven2/hosted/maven-releases
+// e.g. /service/rest/v1/repositories/maven/hosted/maven-releases
+// Note: The format in path uses "maven" not "maven2"
 func (s *NexusSource) getRepoDetailV1(ctx context.Context, format, repoType, name string) (*source.SourceRepositoryDetail, error) {
-	url := fmt.Sprintf("%s/service/rest/v1/repositories/%s/%s/%s", s.baseURL, format, repoType, name)
+	pathFormat := format
+	if format == "maven2" {
+		pathFormat = "maven"
+	}
+	url := fmt.Sprintf("%s/service/rest/v1/repositories/%s/%s/%s", s.baseURL, pathFormat, repoType, name)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -163,9 +209,14 @@ func (s *NexusSource) listGroupMembers(ctx context.Context, format, groupName st
 
 // listGroupMembersV1 calls the v1 group members endpoint.
 // Nexus 3 format-specific path: GET /service/rest/v1/repositories/{format}/group/{groupName}/members
-// e.g. /service/rest/v1/repositories/maven2/group/maven-public/members
+// e.g. /service/rest/v1/repositories/maven/group/maven-public/members
+// Note: The format in path uses "maven" not "maven2"
 func (s *NexusSource) listGroupMembersV1(ctx context.Context, format, groupName string) ([]string, error) {
-	url := fmt.Sprintf("%s/service/rest/v1/repositories/%s/group/%s/members", s.baseURL, format, groupName)
+	pathFormat := format
+	if format == "maven2" {
+		pathFormat = "maven"
+	}
+	url := fmt.Sprintf("%s/service/rest/v1/repositories/%s/group/%s/members", s.baseURL, pathFormat, groupName)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -500,6 +551,15 @@ func (s *NexusSource) listGroupMembersViaScript(ctx context.Context, groupName s
 }
 
 func (s *NexusSource) ListRoles(ctx context.Context) ([]source.SourceRole, error) {
+	version, err := s.getVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if version.IsNexus2() {
+		return s.listRolesNexus2(ctx)
+	}
+
 	// Try v1 endpoint first (Nexus 3.17+)
 	roles, err := s.listRolesV1(ctx)
 	if err == nil {
@@ -597,6 +657,15 @@ func (s *NexusSource) listRolesViaScript(ctx context.Context) ([]source.SourceRo
 }
 
 func (s *NexusSource) ListPrivileges(ctx context.Context) ([]source.SourcePrivilege, error) {
+	version, err := s.getVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if version.IsNexus2() {
+		return s.listPrivilegesNexus2(ctx)
+	}
+
 	// Try v1 endpoint first (Nexus 3.17+)
 	privs, err := s.listPrivilegesV1(ctx)
 	if err == nil {
@@ -686,6 +755,15 @@ func (s *NexusSource) listPrivilegesViaScript(ctx context.Context) ([]source.Sou
 }
 
 func (s *NexusSource) ListUsers(ctx context.Context) ([]source.SourceUser, error) {
+	version, err := s.getVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if version.IsNexus2() {
+		return s.listUsersNexus2(ctx)
+	}
+
 	// Try v1 endpoint first (Nexus 3.24+)
 	users, err := s.listUsersV1(ctx)
 	if err == nil {
@@ -783,6 +861,15 @@ func (s *NexusSource) listUsersViaScript(ctx context.Context) ([]source.SourceUs
 }
 
 func (s *NexusSource) ListComponentsPage(ctx context.Context, repoName, continuationToken string) (source.SourceComponentPage, error) {
+	version, err := s.getVersion(ctx)
+	if err != nil {
+		return source.SourceComponentPage{}, err
+	}
+
+	if version.IsNexus2() {
+		return s.listComponentsPageNexus2(ctx, repoName, continuationToken)
+	}
+
 	url := fmt.Sprintf("%s/service/rest/v1/components?repository=%s", s.baseURL, repoName)
 	if continuationToken != "" {
 		url += "&continuationToken=" + continuationToken
@@ -938,15 +1025,15 @@ func MapRepositoryFormat(nexusFormat string) string {
 // nexusRepoDetailV1 matches the camelCase JSON response of
 // GET /service/rest/v1/repositories/{format}/{type}/{name}
 type nexusRepoDetailV1 struct {
-	Name    string `json:"name"`
-	Format  string `json:"format"`
-	Type    string `json:"type"`
-	URL     string `json:"url"`
-	Online  bool   `json:"online"`
-	Proxy   *struct {
-		RemoteURL     string `json:"remoteUrl"`
-		ContentMaxAge int    `json:"contentMaxAge"`
-		MetadataMaxAge int   `json:"metadataMaxAge"`
+	Name   string `json:"name"`
+	Format string `json:"format"`
+	Type   string `json:"type"`
+	URL    string `json:"url"`
+	Online bool   `json:"online"`
+	Proxy  *struct {
+		RemoteURL      string `json:"remoteUrl"`
+		ContentMaxAge  int    `json:"contentMaxAge"`
+		MetadataMaxAge int    `json:"metadataMaxAge"`
 	} `json:"proxy"`
 	Storage *struct {
 		BlobStoreName               string `json:"blobStoreName"`

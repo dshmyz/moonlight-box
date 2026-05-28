@@ -24,7 +24,7 @@ func NewAuthHandler(authService *service.AuthService, auditSvc *service.AuditSer
 // @Accept json
 // @Produce json
 // @Param body body service.LoginRequest true "登录信息"
-// @Success 200 {object} Response{data=service.AuthResponse}
+// @Success 200 {object} response.Response{data=service.AuthResponse}
 // @Router /api/v1/auth/login [post]
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req service.LoginRequest
@@ -63,7 +63,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 // @Tags Auth
 // @Security BearerAuth
 // @Produce json
-// @Success 200 {object} Response
+// @Success 200 {object} response.Response
 // @Router /api/v1/auth/logout [post]
 func (h *AuthHandler) Logout(c *gin.Context) {
 	userID := c.GetUint("userID")
@@ -97,7 +97,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 // @Accept json
 // @Produce json
 // @Param body body object{refresh_token=string} true "刷新令牌"
-// @Success 200 {object} Response{data=service.AuthResponse}
+// @Success 200 {object} response.Response{data=service.AuthResponse}
 // @Router /api/v1/auth/refresh [post]
 func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	var req struct {
@@ -121,7 +121,7 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 // @Tags Auth
 // @Security BearerAuth
 // @Produce json
-// @Success 200 {object} Response{data=model.UserDTO}
+// @Success 200 {object} response.Response{data=model.UserDTO}
 // @Router /api/v1/auth/profile [get]
 func (h *AuthHandler) Profile(c *gin.Context) {
 	userID := c.GetUint("userID")
@@ -140,8 +140,8 @@ func (h *AuthHandler) Profile(c *gin.Context) {
 // @Security BearerAuth
 // @Accept json
 // @Produce json
-// @Param body body UpdateProfileRequest true "更新信息"
-// @Success 200 {object} Response{data=model.UserDTO}
+// @Param body body object{email=string,display_name=string,avatar_url=string} true "更新信息"
+// @Success 200 {object} response.Response{data=model.UserDTO}
 // @Router /api/v1/auth/profile [put]
 func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 	userID := c.GetUint("userID")
@@ -185,8 +185,8 @@ func (h *AuthHandler) UpdateProfile(c *gin.Context) {
 // @Security BearerAuth
 // @Accept json
 // @Produce json
-// @Param body body ChangePasswordRequest true "密码信息"
-// @Success 200 {object} Response
+// @Param body body object{old_password=string,new_password=string} true "密码信息"
+// @Success 200 {object} response.Response
 // @Router /api/v1/auth/password [put]
 func (h *AuthHandler) ChangePassword(c *gin.Context) {
 	userID := c.GetUint("userID")

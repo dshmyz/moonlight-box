@@ -19,7 +19,6 @@ type SearchRequest struct {
 	Name       string
 	Version    string
 	Repository string
-	Scope      string
 	Sort       string
 	Page       int
 	PageSize   int
@@ -152,6 +151,10 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 	case "name":
 		sort.Slice(orderedKeys, func(i, j int) bool {
 			return groups[orderedKeys[i]].name < groups[orderedKeys[j]].name
+		})
+	case "updated_at":
+		sort.Slice(orderedKeys, func(i, j int) bool {
+			return groups[orderedKeys[i]].latestTime.After(groups[orderedKeys[j]].latestTime)
 		})
 	default:
 		sort.Slice(orderedKeys, func(i, j int) bool {
