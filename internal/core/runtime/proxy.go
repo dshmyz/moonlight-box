@@ -3,11 +3,13 @@ package runtime
 import (
 	"context"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/metrics"
 	"github.com/sirupsen/logrus"
 )
 
@@ -58,6 +60,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 		return nil, ErrNotFound
 	}
 	if artifact, ok := n.getCachedArtifact(key); ok {
+		metrics.RecordCacheHit(n.RepositoryID, n.Format)
 		if err := n.openArtifactContent(artifact); err != nil {
 			return nil, err
 		}
@@ -78,6 +81,9 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 		n.setCachedArtifact(key, artifact)
 		return artifact, nil
 	}
+
+	// 内存缓存和 MetadataStore 均未命中，需要回源
+	metrics.RecordCacheMiss(n.RepositoryID, n.Format)
 
 	key.RemoteURL = n.buildRemoteURL(key)
 	metadata, err := n.RemoteClient.FetchMetadata(ctx, key)
@@ -139,8 +145,11 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		if time.Since(oldest) > n.CachePolicy.MetadataTTL {
 			// 缓存过期，尝试回源刷新
 			if n.Fetcher != nil && n.RemoteBaseURL != "" {
+				fetchStart := time.Now()
 				fetched, fetchErr := n.Fetcher.FetchRemote(ctx, n.RemoteBaseURL, query.RemotePath)
+				fetchDuration := time.Since(fetchStart).Seconds()
 				if fetchErr == nil && len(fetched) > 0 {
+					metrics.RecordProxyFetch(n.Format, "success", fetchDuration)
 					for _, a := range fetched {
 						a.RepositoryID = n.RepositoryID
 						_ = n.MetadataStore.Put(ctx, a)
@@ -148,6 +157,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 					return fetched, nil
 				}
 				// 回源失败，返回过期数据
+				metrics.RecordProxyFetch(n.Format, "error", fetchDuration)
 				logrus.WithError(fetchErr).Warn("QueryArtifacts: refresh failed, serving stale data")
 			}
 		}
@@ -158,10 +168,14 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 	}
 	// 本地缓存为空,通过 RemoteFetcher 回源
 	if n.Fetcher != nil && n.RemoteBaseURL != "" {
+		fetchStart := time.Now()
 		fetched, fetchErr := n.Fetcher.FetchRemote(ctx, n.RemoteBaseURL, query.RemotePath)
+		fetchDuration := time.Since(fetchStart).Seconds()
 		if fetchErr != nil {
+			metrics.RecordProxyFetch(n.Format, "error", fetchDuration)
 			return nil, fetchErr
 		}
+		metrics.RecordProxyFetch(n.Format, "success", fetchDuration)
 		// 缓存回源结果
 		for _, a := range fetched {
 			a.RepositoryID = n.RepositoryID
@@ -303,9 +317,9 @@ func (n *ProxyRuntime) setCachedArtifact(key ArtifactKey, artifact *Artifact) {
 	if n.metadataCache == nil {
 		n.metadataCache = map[string]cachedArtifact{}
 	}
-	// 超过上限时清空缓存，防止内存无限增长
+	// 超过上限时淘汰最老的 25% 条目，避免全量清空引发缓存击穿
 	if len(n.metadataCache) >= maxMetadataCacheSize {
-		n.metadataCache = map[string]cachedArtifact{}
+		n.evictOldestEntries(maxMetadataCacheSize / 4)
 	}
 	n.metadataCache[key.String()] = cachedArtifact{artifact: artifact, expiresAt: time.Now().Add(n.CachePolicy.MetadataTTL)}
 	n.metadataCacheMu.Unlock()
@@ -315,6 +329,31 @@ func (n *ProxyRuntime) invalidateCachedArtifact(key ArtifactKey) {
 	n.metadataCacheMu.Lock()
 	delete(n.metadataCache, key.String())
 	n.metadataCacheMu.Unlock()
+}
+
+// evictOldestEntries 淘汰 expiresAt 最早的 count 个条目。
+// 调用方必须持有 metadataCacheMu 写锁。
+func (n *ProxyRuntime) evictOldestEntries(count int) {
+	if count <= 0 || len(n.metadataCache) == 0 {
+		return
+	}
+	type kv struct {
+		key       string
+		expiresAt time.Time
+	}
+	entries := make([]kv, 0, len(n.metadataCache))
+	for k, v := range n.metadataCache {
+		entries = append(entries, kv{key: k, expiresAt: v.expiresAt})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].expiresAt.Before(entries[j].expiresAt)
+	})
+	if count > len(entries) {
+		count = len(entries)
+	}
+	for i := 0; i < count; i++ {
+		delete(n.metadataCache, entries[i].key)
+	}
 }
 
 func (n *ProxyRuntime) isNegativeCached(key ArtifactKey) bool {

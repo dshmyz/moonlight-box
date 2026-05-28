@@ -148,13 +148,13 @@ type ResolvedRepository struct {
 	RouteStyle    RouteStyle
 }
 
-// SanitizeFilename 移除文件名中的控制字符（\r, \n, \x00 等），
+// SanitizeFilename 移除文件名中的控制字符（\r, \n, \x00 等）和双引号，
 // 防止 Content-Disposition header 注入。
 func SanitizeFilename(name string) string {
 	var b strings.Builder
 	b.Grow(len(name))
 	for _, r := range name {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || r == 0x7f || r == '"' {
 			b.WriteByte('_')
 		} else {
 			b.WriteRune(r)

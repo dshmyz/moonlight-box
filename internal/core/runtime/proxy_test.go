@@ -520,6 +520,7 @@ func TestSanitizeFilename(t *testing.T) {
 		{"file\r\ninjection", "file__injection"},
 		{"file\x00null", "file_null"},
 		{"file\x7fdel", "file_del"},
+		{`file";injection`, "file_;injection"},
 		{"", ""},
 		{"keep-this_name.v1.0.tgz", "keep-this_name.v1.0.tgz"},
 	}

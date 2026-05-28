@@ -86,6 +86,13 @@ func (b *DownloadCountBatcher) batchUpdateWithSQL(ctx context.Context, counts ma
 	if len(counts) == 0 {
 		return
 	}
+	// 白名单校验：防止 SQL 注入（虽然当前调用方均为硬编码常量）
+	allowedTables := map[string]bool{"repositories": true}
+	allowedColumns := map[string]bool{"download_count": true}
+	if !allowedTables[tableName] || !allowedColumns[columnName] {
+		slog.Error("batchUpdateWithSQL: rejected non-whitelisted table/column", "table", tableName, "column", columnName)
+		return
+	}
 	sqlDB, err := b.db.DB()
 	if err != nil {
 		slog.Error("failed to get sql.DB", "error", err)

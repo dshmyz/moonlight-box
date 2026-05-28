@@ -225,7 +225,9 @@ func extractPackageInfo(format, path string) (packageName, version, filename str
 			packageName = parts[len(parts)-1]
 		}
 	case "npm":
-		if len(parts) >= 1 {
+		if len(parts) >= 2 && strings.HasPrefix(parts[0], "@") {
+			packageName = parts[0] + "/" + parts[1] // scoped: @scope/pkg
+		} else if len(parts) >= 1 {
 			packageName = parts[0]
 		}
 		if strings.Contains(path, "/-/") {

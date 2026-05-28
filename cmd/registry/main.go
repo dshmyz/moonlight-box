@@ -165,9 +165,13 @@ func main() {
 	remoteClient := proxy.NewRemoteClient(tm, cfg.Proxy.MaxRedirects)
 
 	// 共享 HTTP 客户端：使用 proxy.TransportManager 的 DNS 映射、TLS 配置和连接池
+	pluginTimeout := cfg.Proxy.DefaultTimeout
+	if pluginTimeout <= 0 {
+		pluginTimeout = 60 * time.Second
+	}
 	pluginHTTPClient := &http.Client{
 		Transport: tm.GetTransport(cfg.Proxy.InsecureSkipVerify),
-		Timeout:   cfg.Proxy.DefaultTimeout,
+		Timeout:   pluginTimeout,
 	}
 
 	healthCheckCfg := proxy.HealthCheckConfig{

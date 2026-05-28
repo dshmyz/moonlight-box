@@ -90,15 +90,17 @@ func (s *NexusSource) GetRepositoryDetail(ctx context.Context, format, repoType,
 	// Try v1 detail endpoint first (Nexus 3.15+)
 	detail, err := s.getRepoDetailV1(ctx, format, repoType, name)
 	if err == nil {
-		// For group repos, also fetch member repositories
-		if repoType == "group" {
+		// For group repos, ensure we have member data.
+		// Source 1: group.memberNames from the detail response (camelCase mapped)
+		// Source 2: dedicated /members endpoint fallback
+		if repoType == "group" && (detail.Group == nil || len(detail.Group.MemberNames) == 0) {
 			members, merr := s.listGroupMembers(ctx, format, name)
 			if merr != nil {
 				logrus.WithFields(logrus.Fields{
 					"format":     format,
 					"group_name": name,
 					"error":      merr,
-				}).Warn("Failed to fetch group members, continuing without membership data")
+				}).Warn("Group members endpoint unavailable, detail response also has no memberNames")
 			} else {
 				detail.Group = &source.SourceGroupConfig{MemberNames: members}
 			}
@@ -117,7 +119,9 @@ func (s *NexusSource) GetRepositoryDetail(ctx context.Context, format, repoType,
 	return nil, err
 }
 
-// getRepoDetailV1 calls the v1 repository detail endpoint (Nexus 3.15+).
+// getRepoDetailV1 calls the v1 repository detail endpoint.
+// Nexus 3 format-specific path: GET /service/rest/v1/repositories/{format}/{type}/{name}
+// e.g. /service/rest/v1/repositories/maven2/hosted/maven-releases
 func (s *NexusSource) getRepoDetailV1(ctx context.Context, format, repoType, name string) (*source.SourceRepositoryDetail, error) {
 	url := fmt.Sprintf("%s/service/rest/v1/repositories/%s/%s/%s", s.baseURL, format, repoType, name)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -134,11 +138,11 @@ func (s *NexusSource) getRepoDetailV1(ctx context.Context, format, repoType, nam
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("failed to get repository detail: %d - %s", resp.StatusCode, string(body))
 	}
-	var detail source.SourceRepositoryDetail
-	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+	var nexusDetail nexusRepoDetailV1
+	if err := json.NewDecoder(resp.Body).Decode(&nexusDetail); err != nil {
 		return nil, err
 	}
-	return &detail, nil
+	return nexusDetail.toSourceDetail(), nil
 }
 
 // listGroupMembers fetches member repository names for a group repository.
@@ -157,9 +161,11 @@ func (s *NexusSource) listGroupMembers(ctx context.Context, format, groupName st
 	return nil, err
 }
 
-// listGroupMembersV1 calls the v1 group members endpoint (Nexus 3.15+).
+// listGroupMembersV1 calls the v1 group members endpoint.
+// Nexus 3 format-specific path: GET /service/rest/v1/repositories/{format}/group/{groupName}/members
+// e.g. /service/rest/v1/repositories/maven2/group/maven-public/members
 func (s *NexusSource) listGroupMembersV1(ctx context.Context, format, groupName string) ([]string, error) {
-	url := fmt.Sprintf("%s/service/rest/v1/repository/%s/group/%s/members", s.baseURL, format, groupName)
+	url := fmt.Sprintf("%s/service/rest/v1/repositories/%s/group/%s/members", s.baseURL, format, groupName)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -174,17 +180,38 @@ func (s *NexusSource) listGroupMembersV1(ctx context.Context, format, groupName 
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("failed to list group members: %d - %s", resp.StatusCode, string(body))
 	}
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read group members response: %w", err)
+	}
+
+	// 先尝试 [{"name":"..."}] 格式
 	var memberList []struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&memberList); err != nil {
-		return nil, err
+	if err := json.Unmarshal(bodyBytes, &memberList); err == nil && len(memberList) > 0 {
+		var names []string
+		for _, m := range memberList {
+			if m.Name != "" {
+				names = append(names, m.Name)
+			}
+		}
+		if len(names) > 0 {
+			return names, nil
+		}
 	}
-	var names []string
-	for _, m := range memberList {
-		names = append(names, m.Name)
+
+	// 再尝试 ["repo1", "repo2"] 纯字符串数组格式
+	var stringList []string
+	if err := json.Unmarshal(bodyBytes, &stringList); err == nil && len(stringList) > 0 {
+		return stringList, nil
 	}
-	return names, nil
+
+	logrus.WithFields(logrus.Fields{
+		"url":      url,
+		"response": string(bodyBytes),
+	}).Warn("Group members response has unexpected format, returning empty list")
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -511,9 +538,13 @@ func (s *NexusSource) listRolesV1(ctx context.Context) ([]source.SourceRole, err
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("failed to list roles: %d - %s", resp.StatusCode, string(body))
 	}
-	var roles []source.SourceRole
-	if err := json.NewDecoder(resp.Body).Decode(&roles); err != nil {
+	var nexusRoles []nexusRoleV1
+	if err := json.NewDecoder(resp.Body).Decode(&nexusRoles); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	var roles []source.SourceRole
+	for _, r := range nexusRoles {
+		roles = append(roles, r.toSourceRole())
 	}
 	return roles, nil
 }
@@ -533,9 +564,13 @@ func (s *NexusSource) listRolesBeta(ctx context.Context) ([]source.SourceRole, e
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("failed to list roles (beta): %d - %s", resp.StatusCode, string(body))
 	}
-	var roles []source.SourceRole
-	if err := json.NewDecoder(resp.Body).Decode(&roles); err != nil {
+	var nexusRoles []nexusRoleV1
+	if err := json.NewDecoder(resp.Body).Decode(&nexusRoles); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	var roles []source.SourceRole
+	for _, r := range nexusRoles {
+		roles = append(roles, r.toSourceRole())
 	}
 	return roles, nil
 }
@@ -689,9 +724,13 @@ func (s *NexusSource) listUsersV1(ctx context.Context) ([]source.SourceUser, err
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("failed to list users: %d - %s", resp.StatusCode, string(body))
 	}
-	var users []source.SourceUser
-	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
+	var nexusUsers []nexusUserV1
+	if err := json.NewDecoder(resp.Body).Decode(&nexusUsers); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	var users []source.SourceUser
+	for _, u := range nexusUsers {
+		users = append(users, u.toSourceUser())
 	}
 	return users, nil
 }
@@ -711,9 +750,13 @@ func (s *NexusSource) listUsersBeta(ctx context.Context) ([]source.SourceUser, e
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("failed to list users (beta): %d - %s", resp.StatusCode, string(body))
 	}
-	var users []source.SourceUser
-	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
+	var nexusUsers []nexusUserV1
+	if err := json.NewDecoder(resp.Body).Decode(&nexusUsers); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	var users []source.SourceUser
+	for _, u := range nexusUsers {
+		users = append(users, u.toSourceUser())
 	}
 	return users, nil
 }
@@ -801,6 +844,61 @@ func (s *NexusSource) setAuth(req *http.Request) {
 	req.SetBasicAuth(s.username, s.password)
 }
 
+// ---------------------------------------------------------------------------
+// Nexus 3 REST API JSON mapping structs
+// The Nexus REST API uses camelCase field names, but source.SourceUser/SourceRole
+// use snake_case JSON tags (for Groovy script compatibility). These Nexus-specific
+// structs bridge the gap for v1 API deserialization.
+// ---------------------------------------------------------------------------
+
+// nexusUserV1 matches the camelCase JSON response of Nexus 3 /service/rest/v1/security/users.
+type nexusUserV1 struct {
+	UserID        string   `json:"userId"`
+	FirstName     string   `json:"firstName"`
+	LastName      string   `json:"lastName"`
+	EmailAddress  string   `json:"emailAddress"`
+	Source        string   `json:"source"`
+	Status        string   `json:"status"`
+	Roles         []string `json:"roles"`
+	ExternalRoles []string `json:"externalRoles"`
+	ReadOnly      bool     `json:"readOnly"`
+}
+
+func (u nexusUserV1) toSourceUser() source.SourceUser {
+	return source.SourceUser{
+		UserID:     u.UserID,
+		FirstName:  u.FirstName,
+		LastName:   u.LastName,
+		Email:      u.EmailAddress,
+		Status:     u.Status,
+		Roles:      u.Roles,
+		External:   u.Source != "default",
+		ExternalID: u.Source,
+	}
+}
+
+// nexusRoleV1 matches the camelCase JSON response of Nexus 3 /service/rest/v1/security/roles.
+type nexusRoleV1 struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Privileges  []string `json:"privileges"`
+	Roles       []string `json:"roles"`
+	ReadOnly    bool     `json:"readOnly"`
+	Source      string   `json:"source"`
+}
+
+func (r nexusRoleV1) toSourceRole() source.SourceRole {
+	return source.SourceRole{
+		ID:          r.ID,
+		Name:        r.Name,
+		Description: r.Description,
+		Privileges:  r.Privileges,
+		Roles:       r.Roles,
+		External:    r.Source != "default",
+	}
+}
+
 // MapRepositoryType converts Nexus-native type to the target-system type.
 func MapRepositoryType(nexusType string) string {
 	switch nexusType {
@@ -813,4 +911,73 @@ func MapRepositoryType(nexusType string) string {
 	default:
 		return "proxy"
 	}
+}
+
+// MapRepositoryFormat converts Nexus-native format name to the target-system format name.
+// Nexus uses names like "maven2", "raw", "docker" etc., while the target system
+// uses "maven", "generic", etc. (registered plugin names in main.go).
+func MapRepositoryFormat(nexusFormat string) string {
+	switch nexusFormat {
+	case "maven2":
+		return "maven"
+	case "raw":
+		return "generic"
+	case "npm", "pypi", "go", "apt", "yum":
+		return nexusFormat // same name
+	default:
+		return "generic"
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Nexus 3 repository detail API response mapping
+// The Nexus REST API uses camelCase (remoteUrl) but source.SourceProxyConfig
+// uses snake_case JSON tag (remote_url). This struct bridges the gap.
+// ---------------------------------------------------------------------------
+
+// nexusRepoDetailV1 matches the camelCase JSON response of
+// GET /service/rest/v1/repositories/{format}/{type}/{name}
+type nexusRepoDetailV1 struct {
+	Name    string `json:"name"`
+	Format  string `json:"format"`
+	Type    string `json:"type"`
+	URL     string `json:"url"`
+	Online  bool   `json:"online"`
+	Proxy   *struct {
+		RemoteURL     string `json:"remoteUrl"`
+		ContentMaxAge int    `json:"contentMaxAge"`
+		MetadataMaxAge int   `json:"metadataMaxAge"`
+	} `json:"proxy"`
+	Storage *struct {
+		BlobStoreName               string `json:"blobStoreName"`
+		StrictContentTypeValidation bool   `json:"strictContentTypeValidation"`
+	} `json:"storage"`
+	Group *struct {
+		MemberNames []string `json:"memberNames"`
+	} `json:"group"`
+}
+
+func (d *nexusRepoDetailV1) toSourceDetail() *source.SourceRepositoryDetail {
+	detail := &source.SourceRepositoryDetail{
+		Name:   d.Name,
+		Format: d.Format,
+		Type:   d.Type,
+		URL:    d.URL,
+	}
+	if d.Proxy != nil {
+		detail.Proxy = &source.SourceProxyConfig{
+			RemoteURL: d.Proxy.RemoteURL,
+		}
+	}
+	if d.Storage != nil {
+		detail.Storage = &source.SourceStorageConfig{
+			BlobStoreName: d.Storage.BlobStoreName,
+		}
+	}
+	if d.Group != nil {
+		detail.Group = &source.SourceGroupConfig{
+			MemberNames: d.Group.MemberNames,
+		}
+	}
+	return detail
 }

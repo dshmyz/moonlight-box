@@ -28,6 +28,7 @@ func Logger() gin.HandlerFunc {
 			"ip":         clientIP,
 			"latency":    latency,
 			"user-agent": c.Request.UserAgent(),
+			"request_id": c.GetString("RequestID"),
 		})
 
 		if len(c.Errors) > 0 {

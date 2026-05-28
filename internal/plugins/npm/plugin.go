@@ -389,7 +389,8 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		return nil
 	}
 
-	// 存储 tarball blob
+	// 存储 tarball blob（限制单个附件最大 100MB，防止内存耗尽）
+	const maxTarballSize = 100 * 1024 * 1024
 	for tarballName, att := range attachments {
 		attMap, ok := att.(map[string]interface{})
 		if !ok {
@@ -398,6 +399,12 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		data, _ := attMap["data"].(string)
 		if data == "" {
 			continue
+		}
+		// base64 编码后体积约为原始的 4/3 倍，提前估算防止 OOM
+		if int64(len(data)) > maxTarballSize*4/3+4 {
+			session.Abort(ctx.Request.Context())
+			http.Error(ctx.Writer, "tarball too large (max 100MB)", http.StatusRequestEntityTooLarge)
+			return nil
 		}
 		tarballBytes, err := base64.StdEncoding.DecodeString(data)
 		if err != nil {

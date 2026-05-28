@@ -134,6 +134,23 @@ var (
 		},
 		[]string{"severity"},
 	)
+
+	ProxyFetchTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "moonlight_proxy_fetch_total",
+			Help: "Total upstream fetch attempts by format and result",
+		},
+		[]string{"format", "result"}, // result: success / error
+	)
+
+	ProxyFetchDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "moonlight_proxy_fetch_duration_seconds",
+			Help:    "Upstream fetch latency in seconds",
+			Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+		},
+		[]string{"format"},
+	)
 )
 
 func RecordDownload(packageType, packageName, version string) {
@@ -191,4 +208,9 @@ func UpdateRepositoriesTotal(repositoryType, packageType string, count float64) 
 
 func UpdateActiveConnections(count float64) {
 	ActiveConnections.Set(count)
+}
+
+func RecordProxyFetch(format, result string, durationSeconds float64) {
+	ProxyFetchTotal.WithLabelValues(format, result).Inc()
+	ProxyFetchDuration.WithLabelValues(format).Observe(durationSeconds)
 }

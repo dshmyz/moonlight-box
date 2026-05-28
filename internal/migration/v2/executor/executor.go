@@ -116,6 +116,7 @@ func (m *ExecutorManager) executeRepoConfig(ctx context.Context, job *domain.Mig
 	}
 
 	repoType = nexus.MapRepositoryType(repoType)
+	packageType = nexus.MapRepositoryFormat(packageType)
 
 	repo := &model.Repository{
 		Name:        job.SourceKey,
