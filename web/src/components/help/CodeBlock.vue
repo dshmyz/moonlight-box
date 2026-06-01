@@ -73,7 +73,7 @@ pre {
 }
 
 code {
-  font-family: 'Courier New', Consolas, monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   color: #303133;
 }

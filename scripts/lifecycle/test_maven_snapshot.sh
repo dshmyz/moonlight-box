@@ -72,6 +72,14 @@ if [ -z "$TOKEN" ]; then
     exit 1
 fi
 
+REPO_CHECK=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/repository/maven-snapshots/" -H "Authorization: Bearer $TOKEN")
+if [ "$REPO_CHECK" = "404" ]; then
+    curl -s -X POST "$BASE_URL/api/v1/repositories" \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"name":"maven-snapshots","type":"local","format":"maven","package_type":"maven","description":"Maven SNAPSHOT repository","config":{"allow_redeploy":true,"layout_policy":"permissive"}}' > /dev/null 2>&1
+fi
+
 TEST_DIR="/tmp/maven-snapshot-test-$$"
 CLEAN_TEMPS+=("$TEST_DIR")
 mkdir -p "$TEST_DIR"
@@ -193,7 +201,7 @@ if [ "$HTTP_CODE" = "200" ]; then
     if echo "$METADATA_CONTENT" | grep -q "<snapshot>"; then
         pass "maven-metadata.xml 包含 <snapshot> 标签"
     else
-        info "maven-metadata.xml 未包含 <snapshot> 标签"
+        fail "maven-metadata.xml 未包含 <snapshot> 标签"
     fi
     
     if echo "$METADATA_CONTENT" | grep -q "<timestamp>"; then
@@ -344,7 +352,7 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
 if [ "$HTTP_CODE" = "200" ]; then
     pass "maven-metadata.xml.md5 可访问 (HTTP 200)"
 else
-    info "maven-metadata.xml.md5 返回 HTTP $HTTP_CODE"
+    fail "maven-metadata.xml.md5 返回 HTTP $HTTP_CODE"
 fi
 
 echo

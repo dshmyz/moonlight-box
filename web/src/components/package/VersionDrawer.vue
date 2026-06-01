@@ -128,7 +128,7 @@ function copyChecksum(checksum: string) {
 .version-text {
   font-weight: 500;
   color: #303133;
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
 }
 
@@ -140,7 +140,7 @@ function copyChecksum(checksum: string) {
 }
 
 .checksum-text {
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-family: var(--font-family-mono);
   font-size: 12px;
   color: #606266;
   cursor: pointer;

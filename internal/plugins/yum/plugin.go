@@ -13,6 +13,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/core/cache"
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/sirupsen/logrus"
 )
 
 type YumPlugin struct {
@@ -43,6 +44,11 @@ func (p *YumPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 		return nil, errors.New("yum: empty path")
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"remoteURL": remoteURL,
+		"path":      path,
+	}).Debug("yum: FetchRemote called")
+
 	// For repomd.xml requests, fetch and parse the XML from remote.
 	if strings.HasSuffix(path, "repodata/repomd.xml") {
 		return p.fetchRepomd(ctx, remoteURL, path)
@@ -50,6 +56,10 @@ func (p *YumPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 
 	// For other paths (RPM packages, primary.xml, etc.), return a basic artifact indicating the remote resource exists.
 	filename := filepath.Base(path)
+	logrus.WithFields(logrus.Fields{
+		"path":     path,
+		"filename": filename,
+	}).Debug("yum: FetchRemote returning file reference")
 	return []*runtime.Artifact{
 		{
 			Format: "yum",
@@ -68,22 +78,46 @@ func (p *YumPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 
 // fetchRepomd fetches repomd.xml from the remote repository and parses data references.
 func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	start := time.Now()
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + path
+
+	logrus.WithFields(logrus.Fields{
+		"remoteURL": remoteURL,
+		"path":      path,
+		"fullURL":   fullURL,
+	}).Debug("yum: fetchRepomd called")
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
+		logrus.WithError(err).WithField("fullURL", fullURL).Error("yum: create request for repomd failed")
 		return nil, fmt.Errorf("yum: create request for repomd: %w", err)
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":  fullURL,
+			"duration": time.Since(start).Seconds(),
+			"error":    err.Error(),
+		}).Error("yum: fetch repomd HTTP request failed")
 		return nil, fmt.Errorf("yum: fetch repomd from %s: %w", fullURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":    fullURL,
+			"statusCode": resp.StatusCode,
+			"duration":   time.Since(start).Seconds(),
+		}).Error("yum: fetch repomd returned non-200 status")
 		return nil, fmt.Errorf("yum: fetch repomd from %s: status %d", fullURL, resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":  fullURL,
+			"duration": time.Since(start).Seconds(),
+			"error":    err.Error(),
+		}).Error("yum: read repomd body failed")
 		return nil, fmt.Errorf("yum: read repomd body: %w", err)
 	}
 
@@ -100,6 +134,11 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 
 	var repomd repomdXML
 	if err := xml.Unmarshal(body, &repomd); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":  fullURL,
+			"duration": time.Since(start).Seconds(),
+			"error":    err.Error(),
+		}).Error("yum: unmarshal repomd XML failed")
 		return nil, fmt.Errorf("yum: unmarshal repomd XML: %w", err)
 	}
 
@@ -134,6 +173,12 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 			},
 		})
 	}
+
+	logrus.WithFields(logrus.Fields{
+		"fullURL":       fullURL,
+		"artifactCount": len(artifacts),
+		"duration":      time.Since(start).Seconds(),
+	}).Debug("yum: fetchRepomd success")
 	return artifacts, nil
 }
 
@@ -144,6 +189,15 @@ func (p *YumPlugin) Name() string {
 func (p *YumPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
 	path := ctx.RepositoryPath
 	path = strings.TrimPrefix(path, "/")
+
+	logrus.WithFields(logrus.Fields{
+		"originalPath":   ctx.RepositoryPath,
+		"trimmedPath":    path,
+		"isRepomd":       p.isRepomdRequest(path),
+		"isPrimary":      p.isPrimaryRequest(path),
+		"isRpmPackage":   p.isRpmPackageRequest(path),
+		"repositoryName": ctx.Repository.Name,
+	}).Debug("yum: Handle called")
 
 	if p.isRepomdRequest(path) {
 		return p.handleRepomd(ctx, repoRuntime, path)
@@ -157,6 +211,10 @@ func (p *YumPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Repo
 		return p.handleRpmPackage(ctx, repoRuntime, path)
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"path":           path,
+		"repositoryName": ctx.Repository.Name,
+	}).Warn("yum: path does not match any known pattern, returning 404")
 	http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 	return nil
 }
@@ -189,6 +247,9 @@ func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtim
 
 	if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
 		defer artifact.Content.Close()
+		ctx.FromCache = artifact.FromCache
+		ctx.RemoteURL = artifact.RemoteURL
+		ctx.SizeBytes = artifact.SizeBytes
 		ctx.Writer.Header().Set("Content-Type", "application/xml")
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
@@ -272,6 +333,9 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 
 	if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
 		defer artifact.Content.Close()
+		ctx.FromCache = artifact.FromCache
+		ctx.RemoteURL = artifact.RemoteURL
+		ctx.SizeBytes = artifact.SizeBytes
 		ctx.Writer.Header().Set("Content-Type", "application/xml")
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
@@ -348,6 +412,9 @@ func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime ru
 			return nil
 		}
 		defer artifact.Content.Close()
+		ctx.FromCache = artifact.FromCache
+		ctx.RemoteURL = artifact.RemoteURL
+		ctx.SizeBytes = artifact.SizeBytes
 		ctx.Writer.Header().Set("Content-Type", "application/x-rpm")
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)

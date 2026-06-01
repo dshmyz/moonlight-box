@@ -277,7 +277,7 @@ const handleBatchImport = async () => {
   margin: 0;
   font-size: 12px;
   color: #64748b;
-  font-family: 'Monaco', 'Menlo', monospace;
+  font-family: var(--font-family-mono);
 }
 
 .paste-area {

@@ -292,7 +292,7 @@ if [ "$HTTP_CODE_DELETE" = "200" ] || [ "$HTTP_CODE_DELETE" = "204" ]; then
     if [ "$HTTP_CODE_DELETE_AGAIN" = "404" ]; then
         pass "重复删除返回 404 (符合预期)"
     else
-        info "重复删除返回 HTTP $HTTP_CODE_DELETE_AGAIN"
+        fail "重复删除返回 HTTP $HTTP_CODE_DELETE_AGAIN"
     fi
 else
     fail "制品删除失败 (HTTP $HTTP_CODE_DELETE)"
@@ -313,7 +313,7 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
 if [ "$HTTP_CODE" = "404" ] || [ "$HTTP_CODE" = "502" ]; then
     pass "上游不可用制品返回合理错误 (HTTP $HTTP_CODE)"
 else
-    info "上游不可用制品返回 HTTP $HTTP_CODE"
+    fail "上游不可用制品返回 HTTP $HTTP_CODE"
 fi
 
 echo
@@ -331,7 +331,7 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
 if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
     pass "自定义请求头处理正常"
 else
-    info "自定义请求头返回 HTTP $HTTP_CODE"
+    fail "自定义请求头返回 HTTP $HTTP_CODE"
 fi
 
 echo

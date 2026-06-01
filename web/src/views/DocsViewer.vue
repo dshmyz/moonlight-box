@@ -218,7 +218,7 @@ onMounted(() => {
   padding: 20px;
   border-radius: 8px;
   overflow-x: auto;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-family: var(--font-family-mono);
   font-size: 14px;
   line-height: 1.7;
   margin: 16px 0;
@@ -229,7 +229,7 @@ onMounted(() => {
   color: #0f172a;
   padding: 2px 6px;
   border-radius: 4px;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
 }
 

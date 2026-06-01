@@ -69,7 +69,7 @@ if [ -n "$TOKEN" ]; then
         pass "apt-local 仓库已存在"
     fi
 else
-    info "跳过仓库创建 (无认证令牌)"
+    fail "跳过仓库创建 (无认证令牌)"
 fi
 
 echo
@@ -107,7 +107,7 @@ if [ -n "$TOKEN" ]; then
         warn "DEB 包上传失败 (HTTP $HTTP_CODE)"
     fi
 else
-    info "跳过上传 (无认证令牌)"
+    fail "跳过上传 (无认证令牌)"
 fi
 
 echo
@@ -208,7 +208,7 @@ if [ -n "$TOKEN" ]; then
         warn "pool 结构 DEB 包上传失败 (HTTP $HTTP_CODE)"
     fi
 else
-    info "跳过 pool 上传 (无认证令牌)"
+    fail "跳过 pool 上传 (无认证令牌)"
 fi
 
 # 清理

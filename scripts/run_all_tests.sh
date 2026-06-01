@@ -177,6 +177,13 @@ print_summary() {
 print_header
 check_prerequisites
 
+print_section "0/0 初始化测试仓库"
+if [ -f "$SCRIPT_DIR/setup_test_repos.sh" ]; then
+    bash "$SCRIPT_DIR/setup_test_repos.sh" "$BASE_URL"
+else
+    echo -e "  ${YELLOW}⚠  setup_test_repos.sh 不存在，跳过仓库初始化${NC}"
+fi
+
 case "$TEST_SUITE" in
     all)
         print_section "第一阶段: 基础 HTTP 接口测试"

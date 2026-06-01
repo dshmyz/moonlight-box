@@ -490,7 +490,7 @@ onMounted(loadSystemInfo)
 }
 
 .commit-hash {
-  font-family: monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   background: #f3f4f6;
   padding: 4px 10px;

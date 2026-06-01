@@ -175,14 +175,27 @@ func createGroupRuntime(
 		return nil, fmt.Errorf("loading members for group %s: %w", repo.Name, err)
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"groupName":   repo.Name,
+		"memberCount": len(members.Members),
+		"packageType": repo.PackageType,
+	}).Debug("createGroupRuntime: loading group members")
+
 	var nodes []runtime.RepositoryNode
 	var writable runtime.RepositoryNode
 
-	for _, member := range members.Members {
+	for i, member := range members.Members {
 		memberRepo := member.MemberRepo
 		memberID := strconv.FormatUint(uint64(memberRepo.ID), 10)
 		memberMeta := storage.NewMetadataStore(db)
 		memberBlob := storage.NewCASBlobStore(backend, db)
+
+		logrus.WithFields(logrus.Fields{
+			"index":        i,
+			"memberName":   memberRepo.Name,
+			"memberType":   memberRepo.Type,
+			"memberFormat": memberRepo.PackageType,
+		}).Debug("createGroupRuntime: processing member")
 
 		var node runtime.RepositoryNode
 		switch memberRepo.Type {
@@ -217,14 +230,24 @@ func createGroupRuntime(
 			}
 			n.Blocker = blocker
 			node = n
+			logrus.WithFields(logrus.Fields{
+				"memberName":    memberRepo.Name,
+				"remoteBaseURL": remoteBaseURL,
+				"hasFetcher":    n.Fetcher != nil,
+			}).Debug("createGroupRuntime: proxy member configured")
 		default:
+			logrus.WithFields(logrus.Fields{
+				"memberName": memberRepo.Name,
+				"memberType": memberRepo.Type,
+			}).Warn("createGroupRuntime: skipping unsupported member type")
 			continue
 		}
 
 		nodes = append(nodes, node)
 
 		// 确保成员仓库也在 manager 中注册
-		if repoManager.Get(memberRepo.Name) == nil {
+		existingRepo := repoManager.Get(memberRepo.Name)
+		if existingRepo == nil {
 			rtRepo := &runtime.Repository{
 				ID:     memberID,
 				Name:   memberRepo.Name,
@@ -242,8 +265,29 @@ func createGroupRuntime(
 				rtRepo.Runtime = n
 			}
 			repoManager.Set(rtRepo)
+			logrus.WithFields(logrus.Fields{
+				"memberName": memberRepo.Name,
+			}).Debug("createGroupRuntime: registered new member in manager")
+		} else if existingRepo.Runtime == nil {
+			// 如果成员仓库已注册但 Runtime 为 nil，更新它
+			switch n := node.(type) {
+			case *runtime.HostedRuntime:
+				existingRepo.Runtime = n
+			case *runtime.ProxyRuntime:
+				existingRepo.Runtime = n
+			}
+			repoManager.Set(existingRepo)
+			logrus.WithFields(logrus.Fields{
+				"memberName": memberRepo.Name,
+			}).Debug("createGroupRuntime: updated existing member runtime")
 		}
 	}
+
+	logrus.WithFields(logrus.Fields{
+		"groupName":   repo.Name,
+		"nodeCount":   len(nodes),
+		"hasWritable": writable != nil,
+	}).Debug("createGroupRuntime: group runtime created")
 
 	return &runtime.GroupRuntime{
 		Members:  nodes,
@@ -294,25 +338,33 @@ func newDownloadCountAdapter(batcher *service.DownloadCountBatcher) *downloadCou
 	return &downloadCountAdapter{batcher: batcher}
 }
 
-// proxyLogAdapter 将 LogBatcher 适配为 runtime.ProxyDownloadLogger
-type proxyLogAdapter struct {
+// downloadLogAdapter 将 LogBatcher 适配为 runtime.DownloadLogger
+type downloadLogAdapter struct {
 	batcher *service.LogBatcher
 }
 
-func (a *proxyLogAdapter) LogDownload(repoID uint, packageType, packageName, version, filename string, statusCode int, sizeBytes int64, fromCache bool) {
-	a.batcher.Record(&model.ProxyDownloadLog{
-		RepositoryID: repoID,
-		PackageType:  packageType,
-		PackageName:  packageName,
-		Version:      version,
-		Filename:     filename,
-		Status:       "success",
-		StatusCode:   statusCode,
-		SizeBytes:    sizeBytes,
-		FromCache:    fromCache,
+func (a *downloadLogAdapter) LogDownload(params runtime.DownloadLogParams) {
+	status := "success"
+	if params.StatusCode >= 400 {
+		status = "failed"
+	}
+	a.batcher.Record(&model.DownloadLog{
+		RepositoryID: params.RepoID,
+		PackageType:  params.PackageType,
+		PackageName:  params.PackageName,
+		Version:      params.Version,
+		Filename:     params.Filename,
+		RemoteURL:    params.RemoteURL,
+		Status:       status,
+		StatusCode:   params.StatusCode,
+		SizeBytes:    params.SizeBytes,
+		FromCache:    params.FromCache,
+		IPAddress:    params.ClientIP,
+		UserAgent:    params.UserAgent,
+		RequestID:    params.RequestID,
 	})
 }
 
-func newProxyLogAdapter(batcher *service.LogBatcher) *proxyLogAdapter {
-	return &proxyLogAdapter{batcher: batcher}
+func newDownloadLogAdapter(batcher *service.LogBatcher) *downloadLogAdapter {
+	return &downloadLogAdapter{batcher: batcher}
 }

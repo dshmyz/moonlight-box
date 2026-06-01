@@ -26,7 +26,7 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 
 func TestHandle_GetDownload(t *testing.T) {
 	p := NewGenericPlugin()
-	art := testhelper.NewArtifact("generic", "file", map[string]string{"name": "readme.txt", "path": "docs"}, "hello world")
+	art := testhelper.NewArtifact("generic", "file", map[string]string{"name": "readme.txt", "path": "docs", "filename": "readme.txt"}, "hello world")
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
 	ctx, w := newCtx("GET", "docs/readme.txt", nil)
@@ -167,7 +167,7 @@ func TestContentTypes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		p := NewGenericPlugin()
-		art := testhelper.NewArtifact("generic", "file", map[string]string{"name": tt.filename, "path": ""}, "data")
+		art := testhelper.NewArtifact("generic", "file", map[string]string{"name": tt.filename, "path": "", "filename": tt.filename}, "data")
 		rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
 		ctx, w := newCtx("GET", tt.filename, nil)
@@ -213,7 +213,7 @@ func TestFetchRemote_EmptyPath(t *testing.T) {
 // Ensure JSON API returns proper structure.
 func TestHandle_JSONContentType(t *testing.T) {
 	p := NewGenericPlugin()
-	art := testhelper.NewArtifact("generic", "file", map[string]string{"name": "data.json", "path": ""}, `{"key":"value"}`)
+	art := testhelper.NewArtifact("generic", "file", map[string]string{"name": "data.json", "path": "", "filename": "data.json"}, `{"key":"value"}`)
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
 	ctx, w := newCtx("GET", "data.json", nil)

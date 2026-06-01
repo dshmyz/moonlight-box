@@ -317,7 +317,7 @@ function handleFileDownload(row: PackageVersion, file: PackageFile) {
 .version-text {
   font-weight: 500;
   color: var(--lunar-silver);
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   transition: color 0.2s;
 }
@@ -364,7 +364,7 @@ function handleFileDownload(row: PackageVersion, file: PackageFile) {
 }
 
 .checksum-text {
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-family: var(--font-family-mono);
   font-size: 12px;
   color: var(--lunar-silver-dim);
   cursor: pointer;

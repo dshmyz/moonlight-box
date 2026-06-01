@@ -751,7 +751,7 @@ const downloadTemplate = (filename: string) => {
 }
 
 .code-block-wrapper code {
-  font-family: 'Fira Code', 'Consolas', monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   color: #e2e8f0;
   line-height: 1.6;
@@ -779,7 +779,7 @@ const downloadTemplate = (filename: string) => {
   padding: 2px 6px;
   border-radius: 4px;
   color: #0369a1;
-  font-family: 'Fira Code', monospace;
+  font-family: var(--font-family-mono);
   font-size: 12px;
 }
 
@@ -891,7 +891,7 @@ const downloadTemplate = (filename: string) => {
   background: #f1f5f9;
   padding: 4px 10px;
   border-radius: 4px;
-  font-family: 'Fira Code', monospace;
+  font-family: var(--font-family-mono);
   font-size: 12px;
   color: #7c3aed;
 }
@@ -964,7 +964,7 @@ const downloadTemplate = (filename: string) => {
   background: #f1f5f9;
   padding: 3px 8px;
   border-radius: 4px;
-  font-family: 'Fira Code', monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   color: #7c3aed;
 }

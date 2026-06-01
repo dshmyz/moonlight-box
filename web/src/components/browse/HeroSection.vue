@@ -230,11 +230,11 @@ function selectType(value: string) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 10px;
+  padding: 4px 14px;
   background: var(--lunar-bg-glass);
   border: 1px solid var(--lunar-border);
   border-radius: 100px;
-  font-size: 11px;
+  font-size: 14px;
   color: var(--lunar-accent);
   font-weight: 600;
   letter-spacing: 1px;

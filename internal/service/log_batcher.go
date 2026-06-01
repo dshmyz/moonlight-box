@@ -12,15 +12,15 @@ import (
 
 type LogBatcher struct {
 	mu            sync.Mutex
-	logs          []*model.ProxyDownloadLog
-	logRepo       *repository.ProxyDownloadLogRepository
+	logs          []*model.DownloadLog
+	logRepo       *repository.DownloadLogRepository
 	batchSize     int
 	flushInterval time.Duration
 	stopCh        chan struct{}
 	flushing      bool
 }
 
-func NewLogBatcher(logRepo *repository.ProxyDownloadLogRepository, batchSize int, flushInterval time.Duration) *LogBatcher {
+func NewLogBatcher(logRepo *repository.DownloadLogRepository, batchSize int, flushInterval time.Duration) *LogBatcher {
 	if batchSize <= 0 {
 		batchSize = 100
 	}
@@ -29,19 +29,19 @@ func NewLogBatcher(logRepo *repository.ProxyDownloadLogRepository, batchSize int
 	}
 
 	batcher := &LogBatcher{
-		logs:          make([]*model.ProxyDownloadLog, 0, batchSize),
+		logs:          make([]*model.DownloadLog, 0, batchSize),
 		logRepo:       logRepo,
 		batchSize:     batchSize,
 		flushInterval: flushInterval,
 		stopCh:        make(chan struct{}),
 	}
 
-	go batcher.flushLoop()
+	util.SafeGo("log-batcher.flush-loop", batcher.flushLoop)
 
 	return batcher
 }
 
-func (b *LogBatcher) Record(log *model.ProxyDownloadLog) {
+func (b *LogBatcher) Record(log *model.DownloadLog) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -49,7 +49,7 @@ func (b *LogBatcher) Record(log *model.ProxyDownloadLog) {
 
 	if len(b.logs) >= b.batchSize && !b.flushing {
 		b.flushing = true
-		go b.flush()
+		util.SafeGo("log-batcher.flush", b.flush)
 	}
 }
 
@@ -71,7 +71,7 @@ func (b *LogBatcher) flushLoop() {
 func (b *LogBatcher) flush() {
 	b.mu.Lock()
 	logs := b.logs
-	b.logs = make([]*model.ProxyDownloadLog, 0, b.batchSize)
+	b.logs = make([]*model.DownloadLog, 0, b.batchSize)
 	b.flushing = false
 	b.mu.Unlock()
 
@@ -84,13 +84,13 @@ func (b *LogBatcher) flush() {
 			util.LogKeyModule:  "service",
 			util.LogKeyPkgType: "go",
 			util.LogKeyError:   err,
-		}).Error("failed to batch create proxy download logs")
+		}).Error("failed to batch create download logs")
 	} else {
 		util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
 			util.LogKeyModule:  "service",
 			util.LogKeyPkgType: "go",
 			"count":            len(logs),
-		}).Debug("batch created proxy download logs")
+		}).Debug("batch created download logs")
 	}
 }
 

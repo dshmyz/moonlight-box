@@ -585,7 +585,7 @@ onMounted(() => {
 }
 
 .url-text {
-  font-family: 'SF Mono', Monaco, monospace;
+  font-family: var(--font-family-mono);
   font-size: 12px;
   color: #059669;
   word-break: break-all;

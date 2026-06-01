@@ -97,6 +97,8 @@ func (m *ExecutorManager) executeRepoConfig(ctx context.Context, job *domain.Mig
 		return err
 	}
 	if count > 0 {
+		m.eventRepo.Log(job.PlanID, domain.LevelInfo, domain.EventStatusChanged,
+			fmt.Sprintf("跳过已存在的仓库: %s", job.SourceKey), &job.ID, nil)
 		return nil
 	}
 
@@ -164,6 +166,8 @@ func (m *ExecutorManager) executeGroupMembership(ctx context.Context, job *domai
 		return err
 	}
 	if count > 0 {
+		m.eventRepo.Log(job.PlanID, domain.LevelInfo, domain.EventStatusChanged,
+			fmt.Sprintf("跳过已存在的组成员关系: %s -> %s", virtualName, memberName), &job.ID, nil)
 		return nil
 	}
 
@@ -172,7 +176,12 @@ func (m *ExecutorManager) executeGroupMembership(ctx context.Context, job *domai
 		MemberID:     memberRepo.ID,
 		Position:     0,
 	}
-	return m.db.Create(&member).Error
+	if err := m.db.Create(&member).Error; err != nil {
+		return err
+	}
+	m.eventRepo.Log(job.PlanID, domain.LevelInfo, domain.EventStatusChanged,
+		fmt.Sprintf("添加组成员: %s -> %s", virtualName, memberName), &job.ID, nil)
+	return nil
 }
 
 func (m *ExecutorManager) executePermission(ctx context.Context, job *domain.MigrationJob) error {
@@ -181,13 +190,20 @@ func (m *ExecutorManager) executePermission(ctx context.Context, job *domain.Mig
 		return err
 	}
 	if count > 0 {
+		m.eventRepo.Log(job.PlanID, domain.LevelInfo, domain.EventStatusChanged,
+			fmt.Sprintf("跳过已存在的权限: %s:%s", job.SourceKey, job.TargetKey), &job.ID, nil)
 		return nil
 	}
 	perm := &model.Permission{
 		Resource: job.SourceKey,
 		Action:   job.TargetKey,
 	}
-	return m.db.Where(model.Permission{Resource: job.SourceKey, Action: job.TargetKey}).FirstOrCreate(perm).Error
+	if err := m.db.Where(model.Permission{Resource: job.SourceKey, Action: job.TargetKey}).FirstOrCreate(perm).Error; err != nil {
+		return err
+	}
+	m.eventRepo.Log(job.PlanID, domain.LevelInfo, domain.EventStatusChanged,
+		fmt.Sprintf("创建权限: %s:%s", job.SourceKey, job.TargetKey), &job.ID, nil)
+	return nil
 }
 
 func (m *ExecutorManager) executeRole(ctx context.Context, job *domain.MigrationJob) error {
@@ -196,6 +212,8 @@ func (m *ExecutorManager) executeRole(ctx context.Context, job *domain.Migration
 		return err
 	}
 	if count > 0 {
+		m.eventRepo.Log(job.PlanID, domain.LevelInfo, domain.EventStatusChanged,
+			fmt.Sprintf("跳过已存在的角色: %s", job.SourceKey), &job.ID, nil)
 		return nil
 	}
 
@@ -218,7 +236,12 @@ func (m *ExecutorManager) executeRole(ctx context.Context, job *domain.Migration
 		Name:        name,
 		Description: description,
 	}
-	return m.db.Create(role).Error
+	if err := m.db.Create(role).Error; err != nil {
+		return err
+	}
+	m.eventRepo.Log(job.PlanID, domain.LevelInfo, domain.EventStatusChanged,
+		fmt.Sprintf("创建角色: %s", name), &job.ID, nil)
+	return nil
 }
 
 func (m *ExecutorManager) executeUser(ctx context.Context, job *domain.MigrationJob) error {
@@ -227,6 +250,8 @@ func (m *ExecutorManager) executeUser(ctx context.Context, job *domain.Migration
 		return err
 	}
 	if count > 0 {
+		m.eventRepo.Log(job.PlanID, domain.LevelInfo, domain.EventStatusChanged,
+			fmt.Sprintf("跳过已存在的用户: %s", job.SourceKey), &job.ID, nil)
 		return nil
 	}
 
@@ -282,6 +307,8 @@ func (m *ExecutorManager) executeUser(ctx context.Context, job *domain.Migration
 		m.db.Create(&userRole)
 	}
 
+	m.eventRepo.Log(job.PlanID, domain.LevelInfo, domain.EventStatusChanged,
+		fmt.Sprintf("创建用户: %s (%s)", job.SourceKey, email), &job.ID, nil)
 	return nil
 }
 
@@ -295,6 +322,18 @@ func (m *ExecutorManager) executeArtifactCopy(ctx context.Context, job *domain.M
 		return err
 	}
 
+	// 统计跳过的 item
+	var skippedCount int
+	for _, item := range items {
+		if item.Status != domain.ItemPending {
+			skippedCount++
+		}
+	}
+	if skippedCount > 0 {
+		m.eventRepo.Log(job.PlanID, domain.LevelInfo, domain.EventStatusChanged,
+			fmt.Sprintf("跳过 %d 个已处理的制品", skippedCount), &job.ID, nil)
+	}
+
 	sem := make(chan struct{}, m.concurrency)
 	errCh := make(chan error, len(items))
 
@@ -306,7 +345,7 @@ func (m *ExecutorManager) executeArtifactCopy(ctx context.Context, job *domain.M
 		sem <- struct{}{}
 		go func(it domain.MigrationItem) {
 			defer func() { <-sem }()
-			if execErr := m.executeItem(ctx, &it); execErr != nil {
+			if execErr := m.executeItem(ctx, job.PlanID, &it); execErr != nil {
 				errCh <- execErr
 			}
 		}(item)
@@ -325,23 +364,23 @@ func (m *ExecutorManager) executeArtifactCopy(ctx context.Context, job *domain.M
 	return nil
 }
 
-func (m *ExecutorManager) executeItem(ctx context.Context, item *domain.MigrationItem) error {
+func (m *ExecutorManager) executeItem(ctx context.Context, planID uint, item *domain.MigrationItem) error {
 	item.Status = domain.ItemRunning
 	m.db.Save(item)
 
 	ns, ok := m.src.(*nexus.NexusSource)
 	if !ok {
-		return m.failItem(item, domain.ErrArtifactDownloadFailed, "source is not a Nexus source")
+		return m.failItem(planID, item, domain.ErrArtifactDownloadFailed, "source is not a Nexus source")
 	}
 
 	assetStream, err := ns.DownloadAsset(ctx, item.SourcePath)
 	if err != nil {
-		return m.failItem(item, domain.ErrArtifactDownloadFailed, err.Error())
+		return m.failItem(planID, item, domain.ErrArtifactDownloadFailed, err.Error())
 	}
 	defer assetStream.Reader.Close()
 
 	if m.storageSvc == nil {
-		return m.failItem(item, domain.ErrArtifactStorageFailed, "storage service not configured")
+		return m.failItem(planID, item, domain.ErrArtifactStorageFailed, "storage service not configured")
 	}
 
 	hash := sha256.New()
@@ -360,7 +399,7 @@ func (m *ExecutorManager) executeItem(ctx context.Context, item *domain.Migratio
 	size := assetStream.Size
 	storageKey, err := m.storageSvc.StorePackage(ctx, item.SourceFormat, item.SourceName, storageVersion, teeReader, size)
 	if err != nil {
-		return m.failItem(item, domain.ErrArtifactStorageFailed, err.Error())
+		return m.failItem(planID, item, domain.ErrArtifactStorageFailed, err.Error())
 	}
 
 	digest := hex.EncodeToString(hash.Sum(nil))
@@ -407,20 +446,40 @@ func (m *ExecutorManager) executeItem(ctx context.Context, item *domain.Migratio
 		return tx.Create(ab).Error
 	})
 	if err != nil {
-		return m.failItem(item, domain.ErrArtifactStorageFailed, err.Error())
+		return m.failItem(planID, item, domain.ErrArtifactStorageFailed, err.Error())
 	}
 
 	item.Status = domain.ItemCompleted
 	item.ChecksumJSON = fmt.Sprintf(`{"sha256":"%s"}`, digest)
 	item.SizeBytes = size
-	return m.db.Save(item).Error
+	if err := m.db.Save(item).Error; err != nil {
+		return err
+	}
+
+	// 记录成功日志
+	m.eventRepo.Log(planID, domain.LevelInfo, domain.EventItemCompleted,
+		fmt.Sprintf("制品迁移成功: %s/%s (%s)", item.SourceRepository, item.SourcePath, item.SourceName), nil, &item.ID)
+	return nil
 }
 
-func (m *ExecutorManager) failItem(item *domain.MigrationItem, code domain.ErrorCode, msg string) error {
+func (m *ExecutorManager) failItem(planID uint, item *domain.MigrationItem, code domain.ErrorCode, msg string) error {
 	item.Status = domain.ItemFailed
 	item.ErrorCode = code
 	item.ErrorMessage = msg
 	m.db.Save(item)
+
+	// 记录失败日志
+	m.eventRepo.Log(planID, domain.LevelError, domain.EventJobFailed,
+		fmt.Sprintf("制品迁移失败: %s/%s - %s: %s", item.SourceRepository, item.SourcePath, code, msg), nil, &item.ID)
+
+	logrus.WithFields(logrus.Fields{
+		"plan_id":     planID,
+		"item_id":     item.ID,
+		"source_path": item.SourcePath,
+		"error_code":  code,
+		"error":       msg,
+	}).Error("Migration item failed")
+
 	return fmt.Errorf("%s: %s", code, msg)
 }
 

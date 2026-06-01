@@ -369,7 +369,7 @@ onMounted(loadLogs)
 }
 
 .ip-text {
-  font-family: monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   color: #6b7280;
 }

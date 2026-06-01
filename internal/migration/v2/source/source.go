@@ -101,12 +101,13 @@ type SourceComponent struct {
 }
 
 // SourceAsset represents an asset within a component.
+// Nexus 3 API uses camelCase field names.
 type SourceAsset struct {
-	DownloadURL string            `json:"download_url"`
+	DownloadURL string            `json:"downloadUrl"`
 	Path        string            `json:"path"`
 	Checksum    map[string]string `json:"checksum"`
-	ContentType string            `json:"content_type"`
-	FileSize    int64             `json:"file_size"`
+	ContentType string            `json:"contentType"`
+	FileSize    int64             `json:"fileSize"`
 }
 
 // SourceComponentPage is a paginated response of components.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/source"
@@ -45,22 +46,27 @@ func (s *NexusSource) DetectVersion(ctx context.Context) (NexusVersion, error) {
 	candidates := []string{
 		s.baseURL + "/service/rest/v1/status",
 		s.baseURL + "/service/local/status",
+		s.baseURL + "/nexus/service/local/status",
 		s.baseURL + "/status",
+		s.baseURL + "/",
 	}
 
+	var lastErr error
 	for _, url := range candidates {
 		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
+			lastErr = err
 			continue
 		}
 		s.setAuth(req)
 		resp, err := s.client.Do(req)
 		if err != nil {
+			lastErr = err
 			continue
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode == http.StatusOK {
+		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			body, _ := io.ReadAll(resp.Body)
 			version := parseVersionFromResponse(string(body))
 			if version.Major > 0 {
@@ -69,7 +75,10 @@ func (s *NexusSource) DetectVersion(ctx context.Context) (NexusVersion, error) {
 		}
 	}
 
-	return NexusVersion{}, fmt.Errorf("unable to detect Nexus version")
+	if lastErr != nil {
+		return NexusVersion{}, fmt.Errorf("unable to detect Nexus version: %w", lastErr)
+	}
+	return NexusVersion{}, fmt.Errorf("unable to detect Nexus version: no valid version found in response")
 }
 
 func parseVersionFromResponse(body string) NexusVersion {
@@ -110,7 +119,15 @@ func parseVersionFromResponse(body string) NexusVersion {
 }
 
 func parseVersionString(versionStr string, result *NexusVersion) {
-	fmt.Sscanf(versionStr, "%d.%d.%d", &result.Major, &result.Minor, &result.Patch)
+	re := regexp.MustCompile(`(\d+)\.(\d+)(?:\.(\d+))?`)
+	matches := re.FindStringSubmatch(versionStr)
+	if len(matches) >= 3 {
+		fmt.Sscanf(matches[1], "%d", &result.Major)
+		fmt.Sscanf(matches[2], "%d", &result.Minor)
+		if len(matches) >= 4 {
+			fmt.Sscanf(matches[3], "%d", &result.Patch)
+		}
+	}
 }
 
 type nexus2Repository struct {

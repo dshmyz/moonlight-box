@@ -227,7 +227,7 @@ if [ -d "$TMPDIR/venv" ]; then
     pip config unset global.index-url 2>/dev/null || true
     pip config unset global.trusted-host 2>/dev/null || true
 else
-    info "跳过 pip install (无法创建虚拟环境)"
+    fail "跳过 pip install (无法创建虚拟环境)"
 fi
 cd / && rm -rf "$TMPDIR"
 

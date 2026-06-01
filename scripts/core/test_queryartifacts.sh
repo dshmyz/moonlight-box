@@ -116,7 +116,7 @@ if [ "$GO_LIST" = "200" ]; then
         if grep -q "v1.8.4" /tmp/test-go-list.txt 2>/dev/null; then
             log_pass "Go @v/list 包含预期版本 v1.8.4"
         else
-            log_info "Go @v/list 未包含 v1.8.4 (可能远端版本有变化)"
+            log_fail "Go @v/list 未包含 v1.8.4 (可能远端版本有变化)"
         fi
     else
         log_fail "Go @v/list 返回空版本列表 (本地无缓存时应回源但返回了空)"

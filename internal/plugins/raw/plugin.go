@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/sirupsen/logrus"
 )
 
 type GenericPlugin struct {
@@ -34,29 +35,63 @@ func (p *GenericPlugin) SetHTTPClient(client *http.Client) {
 // Runtime calls this when local cache is empty; Plugin handles remote generic/raw protocol interaction.
 // It performs a simple directory listing or file fetch from the remote repository.
 func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	start := time.Now()
 	path = strings.TrimPrefix(path, "/")
 	if path == "" {
 		return nil, errors.New("generic: empty path")
 	}
 
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + path
+
+	logrus.WithFields(logrus.Fields{
+		"remoteURL": remoteURL,
+		"path":      path,
+		"fullURL":   fullURL,
+	}).Debug("generic: FetchRemote called")
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
+		logrus.WithError(err).WithField("fullURL", fullURL).Error("generic: create request failed")
 		return nil, fmt.Errorf("generic: create request: %w", err)
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":  fullURL,
+			"duration": time.Since(start).Seconds(),
+			"error":    err.Error(),
+		}).Error("generic: HTTP request failed")
 		return nil, fmt.Errorf("generic: fetch from %s: %w", fullURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":    fullURL,
+			"statusCode": resp.StatusCode,
+			"duration":   time.Since(start).Seconds(),
+		}).Error("generic: HTTP request returned non-200 status")
 		return nil, fmt.Errorf("generic: fetch from %s: status %d", fullURL, resp.StatusCode)
 	}
 
 	// If the response is HTML (directory listing), attempt to parse links.
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "text/html") {
-		return p.parseDirectoryListing(path, resp.Body)
+		artifacts, err := p.parseDirectoryListing(path, resp.Body)
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"fullURL":  fullURL,
+				"duration": time.Since(start).Seconds(),
+				"error":    err.Error(),
+			}).Error("generic: parse directory listing failed")
+			return nil, err
+		}
+		logrus.WithFields(logrus.Fields{
+			"fullURL":     fullURL,
+			"itemCount":   len(artifacts),
+			"contentType": contentType,
+			"duration":    time.Since(start).Seconds(),
+		}).Debug("generic: FetchRemote directory listing success")
+		return artifacts, nil
 	}
 
 	// For non-HTML responses (direct file download), return a single artifact.
@@ -65,15 +100,20 @@ func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string)
 	if dir == "." {
 		dir = ""
 	}
+
+	logrus.WithFields(logrus.Fields{
+		"fullURL":     fullURL,
+		"filename":    filename,
+		"contentType": contentType,
+		"duration":    time.Since(start).Seconds(),
+	}).Debug("generic: FetchRemote file success")
 	return []*runtime.Artifact{
 		{
 			Format: "generic",
 			Kind:   "file",
 			Coordinates: map[string]string{
-				"name": filename,
-				"path": dir,
-			},
-			Properties: map[string]string{
+				"name":     filename,
+				"path":     dir,
 				"filename": filename,
 			},
 		},
@@ -124,10 +164,8 @@ func (p *GenericPlugin) parseDirectoryListing(basePath string, body io.Reader) (
 			Format: "generic",
 			Kind:   kind,
 			Coordinates: map[string]string{
-				"name": name,
-				"path": dir,
-			},
-			Properties: map[string]string{
+				"name":     name,
+				"path":     dir,
 				"filename": name,
 			},
 		})
@@ -157,8 +195,9 @@ func (p *GenericPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.
 		RepositoryID: ctx.Repository.ID,
 		Format:       "generic",
 		Coordinates: map[string]string{
-			"name": filename,
-			"path": dir,
+			"name":     filename,
+			"path":     dir,
+			"filename": filename,
 		},
 		Filename:  filename,
 		Extension: filepath.Ext(filename),
@@ -190,6 +229,10 @@ func (p *GenericPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime 
 		return nil
 	}
 	defer artifact.Content.Close()
+
+	ctx.FromCache = artifact.FromCache
+	ctx.RemoteURL = artifact.RemoteURL
+	ctx.SizeBytes = artifact.SizeBytes
 
 	contentType := "application/octet-stream"
 	ext := strings.ToLower(key.Extension)

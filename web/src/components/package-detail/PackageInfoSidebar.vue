@@ -32,6 +32,7 @@
         <el-descriptions-item label="发布时间">{{ formatDate(activeVersion.published_at) }}</el-descriptions-item>
         <el-descriptions-item label="大小">{{ formatSize(activeVersion.size_bytes) }}</el-descriptions-item>
         <el-descriptions-item label="下载量">{{ formatNumber(activeVersion.download_count) }}</el-descriptions-item>
+        <el-descriptions-item label="触发回源IP">{{ activeVersion.trigger_ip || '-' }}</el-descriptions-item>
         <el-descriptions-item label="SHA256">
           <span class="checksum-text" @click="copyText(activeVersion.checksum_sha256 || '')">{{ activeVersion.checksum_sha256 || '-' }}</span>
         </el-descriptions-item>
@@ -140,11 +141,11 @@ function copyText(text: string) {
 }
 
 .version-tag {
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-family: var(--font-family-mono);
 }
 
 .checksum-text {
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-family: var(--font-family-mono);
   font-size: 12px;
   color: var(--lunar-silver-dim);
   cursor: pointer;
@@ -178,7 +179,7 @@ function copyText(text: string) {
 
 .config-value {
   display: block;
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-family: var(--font-family-mono);
   font-size: 12px;
   color: var(--lunar-accent);
   background: var(--lunar-bg-glass);

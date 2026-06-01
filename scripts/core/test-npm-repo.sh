@@ -389,7 +389,7 @@ cleanup() {
         
         log_info "清理完成"
     else
-        log_info "AUTH_TOKEN未设置，跳过清理"
+        log_fail "AUTH_TOKEN未设置，跳过清理"
     fi
 }
 

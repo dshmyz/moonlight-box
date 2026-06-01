@@ -162,7 +162,7 @@ if [ -d "dist" ] && [ "$(ls -A dist 2>/dev/null)" ]; then
             if [ "$HTTP_CODE" = "200" ]; then
                 pass "上传的包在 Simple Index 中可访问 (HTTP 200)"
             else
-                info "上传的包返回 HTTP $HTTP_CODE"
+                fail "上传的包返回 HTTP $HTTP_CODE"
             fi
         else
             warn "Python 包上传失败（可能需要认证配置）"

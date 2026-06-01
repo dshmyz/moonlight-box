@@ -94,10 +94,12 @@ defineEmits<{
 
 .package-card {
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform;
+  transform: translateZ(0);
 }
 
 .package-card:hover {
-  transform: translateY(-6px);
+  transform: translateY(-4px) translateZ(0);
 }
 
 .card-glass {
@@ -107,6 +109,7 @@ defineEmits<{
   border: 1px solid rgba(0, 0, 0, 0.06);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: box-shadow;
 }
 
 .package-card:hover .card-glass {
@@ -282,7 +285,7 @@ defineEmits<{
 }
 
 .btn-view-detail:hover {
-  transform: translateY(-2px);
+  transform: translateY(-2px) translateZ(0);
   box-shadow: 0 6px 16px rgba(99, 102, 241, 0.4);
 }
 

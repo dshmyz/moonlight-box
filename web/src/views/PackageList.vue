@@ -258,6 +258,8 @@ onMounted(() => {
   border-radius: 16px;
   border: 1px solid rgba(0, 0, 0, 0.06);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  will-change: transform;
+  transform: translateZ(0);
 }
 
 .header-content {
@@ -308,7 +310,7 @@ onMounted(() => {
 }
 
 .upload-btn:hover {
-  transform: translateY(-2px);
+  transform: translateY(-2px) translateZ(0);
   box-shadow: 0 8px 24px rgba(37, 99, 235, 0.35);
 }
 
@@ -521,6 +523,8 @@ onMounted(() => {
   border: 1px solid rgba(0, 0, 0, 0.06);
   overflow: hidden;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+  will-change: transform;
+  transform: translateZ(0);
 }
 
 .list-footer {

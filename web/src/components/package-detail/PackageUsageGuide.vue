@@ -238,7 +238,7 @@ function copyCommand(text: string) {
 }
 
 .version-tag {
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-family: var(--font-family-mono);
 }
 
 .guide-section {
@@ -282,7 +282,7 @@ function copyCommand(text: string) {
 }
 
 .command-row code {
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   color: var(--lunar-silver);
   word-break: break-all;
@@ -303,7 +303,7 @@ function copyCommand(text: string) {
 }
 
 .code-block code {
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   color: var(--lunar-silver-muted);
   line-height: 1.6;

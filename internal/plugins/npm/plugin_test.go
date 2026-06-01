@@ -81,9 +81,10 @@ func TestHandle_ScopedPackage(t *testing.T) {
 func TestHandle_TarballDownload(t *testing.T) {
 	p := NewNpmPlugin()
 	art := testhelper.NewArtifact("npm", "tarball", map[string]string{
-		"name":    "express",
-		"version": "4.18.2",
-		"path":    "express/-",
+		"name":     "express",
+		"version":  "4.18.2",
+		"path":     "express/-",
+		"filename": "express-4.18.2.tgz",
 	}, "tarball-content")
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
@@ -236,7 +237,10 @@ func TestFetchRemote_ParsesVersions(t *testing.T) {
 func TestFetchRemote_ScopedPackageEncoding(t *testing.T) {
 	var capturedPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedPath = r.URL.Path
+		capturedPath = r.URL.RawPath
+		if capturedPath == "" {
+			capturedPath = r.URL.Path
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"name":     "@scope/pkg",

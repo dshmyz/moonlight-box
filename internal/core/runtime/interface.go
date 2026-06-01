@@ -32,6 +32,7 @@ type RepositoryNode interface {
 type MetadataStore interface {
 	Get(ctx context.Context, key ArtifactKey) (*Artifact, error)
 	Put(ctx context.Context, artifact *Artifact) error
+	BatchPut(ctx context.Context, artifacts []*Artifact) error
 	Delete(ctx context.Context, key ArtifactKey) error
 	Query(ctx context.Context, query ArtifactQuery) ([]*Artifact, error)
 }
@@ -98,5 +99,8 @@ type RequestContext struct {
 	RepositoryPath string
 	RouteStyle     RouteStyle
 	Blocker        PackageBlocker
-	StatusCode     int // 实际响应状态码，由 handleRequest 设置
+	StatusCode     int    // 实际响应状态码，由 handleRequest 设置
+	FromCache      bool   // 是否命中缓存，由 Runtime 设置
+	RemoteURL      string // 回源 URL，由 Runtime 设置
+	SizeBytes      int64  // 下载字节数，由 Runtime 设置
 }

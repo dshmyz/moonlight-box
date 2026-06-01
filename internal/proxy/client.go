@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 type TransportManager struct {
@@ -151,10 +153,12 @@ func (c *RemoteClient) buildClient(opts RequestOptions) *http.Client {
 }
 
 func (c *RemoteClient) Get(ctx context.Context, url string, opts RequestOptions, auth *ProxyAuthConfig) (*http.Response, error) {
+	start := time.Now()
 	client := c.buildClient(opts)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
+		logrus.WithError(err).WithField("url", url).Error("proxy: create request failed")
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 
@@ -162,27 +166,44 @@ func (c *RemoteClient) Get(ctx context.Context, url string, opts RequestOptions,
 
 	if auth != nil {
 		if err := auth.Apply(req); err != nil {
+			logrus.WithError(err).WithField("url", url).Error("proxy: apply auth failed")
 			return nil, fmt.Errorf("应用认证信息失败: %w", err)
 		}
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"url":      url,
+			"duration": time.Since(start).Seconds(),
+			"error":    err.Error(),
+		}).Error("proxy: HTTP request failed")
 		return nil, fmt.Errorf("请求失败: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
+		logrus.WithFields(logrus.Fields{
+			"url":        url,
+			"statusCode": resp.StatusCode,
+			"duration":   time.Since(start).Seconds(),
+		}).Warn("proxy: HTTP request returned non-200 status")
 		return nil, &RemoteError{
 			StatusCode: resp.StatusCode,
 			URL:        url,
 		}
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"url":        url,
+		"statusCode": resp.StatusCode,
+		"duration":   time.Since(start).Seconds(),
+	}).Debug("proxy: HTTP request success")
 	return resp, nil
 }
 
 func (c *RemoteClient) GetBytes(ctx context.Context, url string, opts RequestOptions, auth *ProxyAuthConfig) ([]byte, string, error) {
+	start := time.Now()
 	maxRetries := opts.MaxRetries
 	if maxRetries == 0 {
 		maxRetries = c.defaultMaxRetries
@@ -192,6 +213,11 @@ func (c *RemoteClient) GetBytes(ctx context.Context, url string, opts RequestOpt
 		retryDelay = c.defaultRetryDelay
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"url":        url,
+		"maxRetries": maxRetries,
+	}).Debug("proxy: GetBytes request started")
+
 	var lastErr error
 	for i := 0; i < maxRetries; i++ {
 		resp, err := c.Get(ctx, url, opts, auth)
@@ -200,6 +226,12 @@ func (c *RemoteClient) GetBytes(ctx context.Context, url string, opts RequestOpt
 
 			if c.shouldRetry(err, i, maxRetries) {
 				delay := time.Duration(math.Pow(2, float64(i))) * retryDelay
+				logrus.WithFields(logrus.Fields{
+					"url":     url,
+					"attempt": i + 1,
+					"delay":   delay.Seconds(),
+					"error":   err.Error(),
+				}).Warn("proxy: GetBytes request failed, retrying")
 				select {
 				case <-ctx.Done():
 					return nil, "", ctx.Err()
@@ -207,6 +239,12 @@ func (c *RemoteClient) GetBytes(ctx context.Context, url string, opts RequestOpt
 				}
 				continue
 			}
+			logrus.WithFields(logrus.Fields{
+				"url":      url,
+				"attempts": i + 1,
+				"duration": time.Since(start).Seconds(),
+				"error":    err.Error(),
+			}).Error("proxy: GetBytes request failed after all retries")
 			return nil, "", err
 		}
 
@@ -217,6 +255,12 @@ func (c *RemoteClient) GetBytes(ctx context.Context, url string, opts RequestOpt
 			lastErr = fmt.Errorf("读取响应体失败: %w", err)
 			if c.shouldRetry(lastErr, i, maxRetries) {
 				delay := time.Duration(math.Pow(2, float64(i))) * retryDelay
+				logrus.WithFields(logrus.Fields{
+					"url":     url,
+					"attempt": i + 1,
+					"delay":   delay.Seconds(),
+					"error":   lastErr.Error(),
+				}).Warn("proxy: GetBytes read body failed, retrying")
 				select {
 				case <-ctx.Done():
 					return nil, "", ctx.Err()
@@ -224,16 +268,34 @@ func (c *RemoteClient) GetBytes(ctx context.Context, url string, opts RequestOpt
 				}
 				continue
 			}
+			logrus.WithFields(logrus.Fields{
+				"url":      url,
+				"attempts": i + 1,
+				"duration": time.Since(start).Seconds(),
+				"error":    lastErr.Error(),
+			}).Error("proxy: GetBytes read body failed after all retries")
 			return nil, "", lastErr
 		}
 
+		logrus.WithFields(logrus.Fields{
+			"url":         url,
+			"size":        len(body),
+			"contentType": contentType,
+			"duration":    time.Since(start).Seconds(),
+		}).Debug("proxy: GetBytes request success")
 		return body, contentType, nil
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"url":      url,
+		"duration": time.Since(start).Seconds(),
+		"error":    lastErr.Error(),
+	}).Error("proxy: GetBytes request failed after all attempts")
 	return nil, "", lastErr
 }
 
 func (c *RemoteClient) GetStream(ctx context.Context, url string, opts RequestOptions, auth *ProxyAuthConfig) (*http.Response, error) {
+	start := time.Now()
 	maxRetries := opts.MaxRetries
 	if maxRetries == 0 {
 		maxRetries = c.defaultMaxRetries
@@ -243,12 +305,18 @@ func (c *RemoteClient) GetStream(ctx context.Context, url string, opts RequestOp
 		retryDelay = c.defaultRetryDelay
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"url":        url,
+		"maxRetries": maxRetries,
+	}).Debug("proxy: GetStream request started")
+
 	var lastErr error
 	for i := 0; i < maxRetries; i++ {
 		client := c.buildClient(opts)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
+			logrus.WithError(err).WithField("url", url).Error("proxy: GetStream create request failed")
 			return nil, fmt.Errorf("创建请求失败: %w", err)
 		}
 
@@ -256,6 +324,7 @@ func (c *RemoteClient) GetStream(ctx context.Context, url string, opts RequestOp
 
 		if auth != nil {
 			if err := auth.Apply(req); err != nil {
+				logrus.WithError(err).WithField("url", url).Error("proxy: GetStream apply auth failed")
 				return nil, fmt.Errorf("应用认证信息失败: %w", err)
 			}
 		}
@@ -265,6 +334,12 @@ func (c *RemoteClient) GetStream(ctx context.Context, url string, opts RequestOp
 			lastErr = err
 			if c.shouldRetry(err, i, maxRetries) {
 				delay := time.Duration(math.Pow(2, float64(i))) * retryDelay
+				logrus.WithFields(logrus.Fields{
+					"url":     url,
+					"attempt": i + 1,
+					"delay":   delay.Seconds(),
+					"error":   err.Error(),
+				}).Warn("proxy: GetStream request failed, retrying")
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
@@ -272,6 +347,12 @@ func (c *RemoteClient) GetStream(ctx context.Context, url string, opts RequestOp
 				}
 				continue
 			}
+			logrus.WithFields(logrus.Fields{
+				"url":      url,
+				"attempts": i + 1,
+				"duration": time.Since(start).Seconds(),
+				"error":    err.Error(),
+			}).Error("proxy: GetStream request failed after all retries")
 			return nil, err
 		}
 
@@ -283,6 +364,12 @@ func (c *RemoteClient) GetStream(ctx context.Context, url string, opts RequestOp
 			}
 			if c.shouldRetry(lastErr, i, maxRetries) {
 				delay := time.Duration(math.Pow(2, float64(i))) * retryDelay
+				logrus.WithFields(logrus.Fields{
+					"url":        url,
+					"attempt":    i + 1,
+					"delay":      delay.Seconds(),
+					"statusCode": resp.StatusCode,
+				}).Warn("proxy: GetStream returned non-200 status, retrying")
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
@@ -290,12 +377,28 @@ func (c *RemoteClient) GetStream(ctx context.Context, url string, opts RequestOp
 				}
 				continue
 			}
+			logrus.WithFields(logrus.Fields{
+				"url":        url,
+				"attempts":   i + 1,
+				"statusCode": resp.StatusCode,
+				"duration":   time.Since(start).Seconds(),
+			}).Error("proxy: GetStream returned non-200 status after all retries")
 			return nil, lastErr
 		}
 
+		logrus.WithFields(logrus.Fields{
+			"url":        url,
+			"statusCode": resp.StatusCode,
+			"duration":   time.Since(start).Seconds(),
+		}).Debug("proxy: GetStream request success")
 		return resp, nil
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"url":      url,
+		"duration": time.Since(start).Seconds(),
+		"error":    lastErr.Error(),
+	}).Error("proxy: GetStream request failed after all attempts")
 	return nil, lastErr
 }
 

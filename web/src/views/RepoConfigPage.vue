@@ -218,7 +218,7 @@ onMounted(() => {
 
 .url-text {
   flex: 1;
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-family: var(--font-family-mono);
   font-size: 14px;
   color: #0f172a;
   word-break: break-all;
@@ -306,7 +306,7 @@ onMounted(() => {
 }
 
 .guide-code code {
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   color: #e2e8f0;
   white-space: pre-wrap;

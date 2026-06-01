@@ -412,7 +412,7 @@ const downloadConfig = () => {
   padding: 20px;
   border-radius: 10px;
   overflow-x: auto;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-family: var(--font-family-mono);
   font-size: 14px;
   line-height: 1.7;
   margin: 16px 0;
@@ -420,7 +420,7 @@ const downloadConfig = () => {
 }
 
 .manager-config code {
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-family: var(--font-family-mono);
 }
 
 .manager-config :deep(.el-button) {

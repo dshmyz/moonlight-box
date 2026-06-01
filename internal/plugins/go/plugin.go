@@ -9,9 +9,11 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/sirupsen/logrus"
 )
 
 type GoPlugin struct {
@@ -53,10 +55,8 @@ func (p *GoPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*
 			Format: "go",
 			Kind:   "module-file",
 			Coordinates: map[string]string{
-				"module": modulePath,
-				"path":   path,
-			},
-			Properties: map[string]string{
+				"module":   modulePath,
+				"path":     path,
 				"filename": filename,
 			},
 		},
@@ -68,16 +68,33 @@ func (p *GoPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*
 func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
 	modulePath := strings.TrimSuffix(path, "/@v/list")
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + encodeGoPath(path)
+
+	logrus.WithFields(logrus.Fields{
+		"remoteURL":  remoteURL,
+		"path":       path,
+		"modulePath": modulePath,
+		"fullURL":    fullURL,
+	}).Debug("go: fetchVersionList called")
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
+		logrus.WithError(err).Error("go: create request for version list failed")
 		return nil, fmt.Errorf("go: create request for version list: %w", err)
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"fullURL": fullURL,
+			"error":   err.Error(),
+		}).Error("go: fetch version list HTTP request failed")
 		return nil, fmt.Errorf("go: fetch version list from %s: %w", fullURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":    fullURL,
+			"statusCode": resp.StatusCode,
+		}).Error("go: fetch version list returned non-200 status")
 		return nil, fmt.Errorf("go: fetch version list from %s: status %d", fullURL, resp.StatusCode)
 	}
 
@@ -100,7 +117,76 @@ func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string)
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("go: scan version list: %w", err)
 	}
+	logrus.WithFields(logrus.Fields{
+		"modulePath":   modulePath,
+		"versionCount": len(artifacts),
+	}).Debug("go: fetchVersionList success")
+
+	const maxInfoFetches = 10
+	infoStart := len(artifacts) - maxInfoFetches
+	if infoStart < 0 {
+		infoStart = 0
+	}
+
+	var wg sync.WaitGroup
+	for _, a := range artifacts[infoStart:] {
+		wg.Add(1)
+		go func(art *runtime.Artifact) {
+			defer wg.Done()
+			info, err := p.fetchVersionInfo(ctx, remoteURL, art.Coordinates["module"], art.Coordinates["version"])
+			if err == nil && info.Time != "" {
+				art.Properties = map[string]string{"published_at": info.Time}
+			}
+		}(a)
+	}
+	wg.Wait()
+
 	return artifacts, nil
+}
+
+func (p *GoPlugin) fetchVersionInfo(ctx context.Context, remoteURL, modulePath, version string) (struct {
+	Version string
+	Time    string
+}, error) {
+	infoPath := modulePath + "/@v/" + version + ".info"
+	fullURL := strings.TrimRight(remoteURL, "/") + "/" + encodeGoPath(infoPath)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	if err != nil {
+		return struct {
+			Version string
+			Time    string
+		}{}, err
+	}
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return struct {
+			Version string
+			Time    string
+		}{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return struct {
+			Version string
+			Time    string
+		}{}, fmt.Errorf("go: fetch version info from %s: status %d", fullURL, resp.StatusCode)
+	}
+
+	var result struct {
+		Version string `json:"Version"`
+		Time    string `json:"Time"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return struct {
+			Version string
+			Time    string
+		}{}, err
+	}
+	return struct {
+		Version string
+		Time    string
+	}{Version: result.Version, Time: result.Time}, nil
 }
 
 // fetchLatest fetches the @latest endpoint from a Go module proxy
@@ -243,18 +329,35 @@ func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime ru
 
 	modulePath := strings.TrimSuffix(path, "/@v/list")
 
+	logrus.WithFields(logrus.Fields{
+		"repository":   ctx.Repository.Name,
+		"repositoryID": ctx.Repository.ID,
+		"path":         path,
+		"modulePath":   modulePath,
+		"repoType":     ctx.Repository.Type,
+	}).Debug("go: handleVersionList called")
+
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "go",
-		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
+		RemotePath:   path,
 		Coordinates: map[string]string{
 			"module": modulePath,
 		},
 	})
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"modulePath": modulePath,
+			"error":      err.Error(),
+		}).Error("go: QueryArtifacts failed in handleVersionList")
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}
+
+	logrus.WithFields(logrus.Fields{
+		"modulePath":    modulePath,
+		"artifactCount": len(artifacts),
+	}).Debug("go: handleVersionList got artifacts")
 
 	var sb strings.Builder
 	seen := make(map[string]bool)
@@ -310,11 +413,12 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 		RepositoryID: ctx.Repository.ID,
 		Format:       "go",
 		Coordinates: map[string]string{
-			"name":    modulePath,
-			"module":  modulePath,
-			"version": cleanVersion,
-			"path":    modulePath + "/@v",
-			"ext":     fileType,
+			"name":     modulePath,
+			"module":   modulePath,
+			"version":  cleanVersion,
+			"path":     modulePath + "/@v",
+			"ext":      fileType,
+			"filename": filename,
 		},
 		Filename: filename,
 	}
@@ -329,6 +433,10 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 		return nil
 	}
 	defer artifact.Content.Close()
+
+	ctx.FromCache = artifact.FromCache
+	ctx.RemoteURL = artifact.RemoteURL
+	ctx.SizeBytes = artifact.SizeBytes
 
 	switch fileType {
 	case "mod":

@@ -23,6 +23,7 @@ FAIL=0
 log_pass() { echo -e "  ${GREEN}✓ PASS${NC} $1"; PASS=$((PASS + 1)); }
 log_fail() { echo -e "  ${RED}✗ FAIL${NC} $1"; FAIL=$((FAIL + 1)); }
 log_info() { echo -e "  ${BLUE}ℹ INFO${NC} $1"; }
+log_warn() { echo -e "  ${YELLOW}⚠ WARN${NC} $1"; }
 log_section() { echo -e "\n${YELLOW}════════════════════════════════════════${NC}"; echo -e "  ${YELLOW}$1${NC}"; echo -e "${YELLOW}════════════════════════════════════════${NC}"; }
 
 # cleanup
@@ -52,7 +53,7 @@ fi
 # 获取当前代理日志记录数（用于后续增量验证）
 get_log_count() {
     local count
-    count=$(curl -s "$BASE_URL/api/v1/proxy-download-logs/logs?page=1&page_size=1" \
+    count=$(curl -s "$BASE_URL/api/v1/download-logs/logs?page=1&page_size=1" \
         -H "Authorization: Bearer $TOKEN" | \
         python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('total',0))" 2>/dev/null || echo "0")
     echo "$count"
@@ -61,7 +62,7 @@ get_log_count() {
 # 获取最新 N 条代理日志（JSON）
 get_latest_logs() {
     local limit=${1:-10}
-    curl -s "$BASE_URL/api/v1/proxy-download-logs/logs?page=1&page_size=$limit" \
+    curl -s "$BASE_URL/api/v1/download-logs/logs?page=1&page_size=$limit" \
         -H "Authorization: Bearer $TOKEN"
 }
 
@@ -143,20 +144,20 @@ if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then
         if [ "$AFTER_LOGS" -gt "$BEFORE_LOGS" ] 2>/dev/null; then
             log_pass "代理日志有新增 (before=$BEFORE_LOGS, after=$AFTER_LOGS)"
         else
-            log_info "代理日志计数未变化 (可能是批量写入延迟，等待 2s 后重试)"
+            log_warn "代理日志计数未变化 (可能是批量写入延迟，等待 2s 后重试)"
             sleep 2
             AFTER_LOGS=$(get_log_count)
             if [ "$AFTER_LOGS" -gt "$BEFORE_LOGS" ] 2>/dev/null; then
                 log_pass "代理日志有新增 (延迟写入, before=$BEFORE_LOGS, after=$AFTER_LOGS)"
             else
-                log_info "代理日志总数: $AFTER_LOGS (批量写入可能未 flush)"
+                log_warn "代理日志总数: $AFTER_LOGS (批量写入可能未 flush)"
             fi
         fi
     else
         log_fail "正常下载返回 $HTTP_CODE (预期 200)"
     fi
 else
-    log_info "跳过: maven-local 上传失败 (HTTP $HTTP_CODE)"
+    log_warn "跳过: maven-local 上传失败 (HTTP $HTTP_CODE)"
 fi
 
 # ── 测试 2: 404 请求不应记为成功 ──────────────────────
@@ -214,7 +215,7 @@ BLOCK_RESPONSE=$(curl -s -X POST "$BASE_URL/api/v1/block-rules" \
 BLOCK_ID=$(echo "$BLOCK_RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('id',''))" 2>/dev/null)
 
 if [ -n "$BLOCK_ID" ]; then
-    log_info "阻断规则已创建 (ID: $BLOCK_ID)，等待生效..."
+    log_warn "阻断规则已创建 (ID: $BLOCK_ID)，等待生效..."
     sleep 2
 
     BEFORE_LOGS=$(get_log_count)
@@ -226,7 +227,7 @@ if [ -n "$BLOCK_ID" ]; then
     if [ "$HTTP_CODE" = "403" ]; then
         log_pass "被阻断的包返回 403 (符合预期)"
     else
-        log_info "被阻断的包返回 $HTTP_CODE (可能阻断规则尚未生效)"
+        log_fail "被阻断的包返回 $HTTP_CODE (可能阻断规则尚未生效)"
     fi
 
     sleep 2
@@ -256,7 +257,7 @@ print(count_200_on_blocked)
     curl -s -X DELETE "$BASE_URL/api/v1/block-rules/$BLOCK_ID" \
         -H "Authorization: Bearer $TOKEN" > /dev/null 2>&1
 else
-    log_info "跳过: 阻断规则创建失败"
+    log_warn "跳过: 阻断规则创建失败"
 fi
 
 # ── 测试 4: 验证日志中的 repoID 不为 0 ──────────────────────
@@ -285,7 +286,7 @@ print(zero_count)
 if [ "$ZERO_REPO_COUNT" = "0" ]; then
     log_pass "日志中 repository_id 不为 0"
 elif [ "$ZERO_REPO_COUNT" = "-1" ]; then
-    log_info "无法解析日志 JSON，跳过 repository_id 验证"
+    log_warn "无法解析日志 JSON，跳过 repository_id 验证"
 else
     log_fail "日志中有 $ZERO_REPO_COUNT 条记录 repository_id=0 (应关联具体仓库)"
 fi
@@ -314,9 +315,131 @@ print(empty_count)
 if [ "$EMPTY_FIELDS" = "0" ]; then
     log_pass "日志记录中包名/版本/文件名信息完整"
 elif [ "$EMPTY_FIELDS" = "-1" ]; then
-    log_info "无法解析日志 JSON，跳过字段验证"
+    log_warn "无法解析日志 JSON，跳过字段验证"
 else
     log_fail "日志中有 $EMPTY_FIELDS 条记录包名/版本/文件名全为空"
+fi
+
+# ── 测试 6: 验证日志中的 ip_address 字段 ──────────────────────
+log_section "测试 6: 验证日志中的 ip_address 字段"
+
+IP_EMPTY_COUNT=$(echo "$LOGS_JSON" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+items = d.get('data', {}).get('items', d.get('data', []))
+if not isinstance(items, list):
+    items = []
+empty_ip = 0
+for item in items:
+    ip = item.get('ip_address', '')
+    if not ip or ip == '':
+        empty_ip += 1
+print(empty_ip)
+" 2>/dev/null || echo "-1")
+
+if [ "$IP_EMPTY_COUNT" = "0" ]; then
+    log_pass "日志记录中 ip_address 字段已填充"
+elif [ "$IP_EMPTY_COUNT" = "-1" ]; then
+    log_warn "无法解析日志 JSON，跳过 ip_address 验证"
+else
+    log_warn "日志中有 $IP_EMPTY_COUNT 条记录 ip_address 为空 (可能是本地请求未正确获取 IP)"
+fi
+
+# ── 测试 7: 验证包版本 API 返回 license 和 published_at ──────────────────────
+log_section "测试 7: 验证包版本 API 返回 license 和 published_at"
+
+# 通过代理下载一个包，触发元数据解析
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+    "$BASE_URL/repository/npm-proxy-cn/lodash" 2>/dev/null || echo "000")
+
+if [ "$HTTP_CODE" = "200" ]; then
+    log_info "npm 代理下载成功，等待元数据写入..."
+    sleep 3
+
+    # 查询包版本 API
+    VERSIONS_JSON=$(curl -s "$BASE_URL/api/v1/packages/npm/versions?name=lodash" \
+        -H "Authorization: Bearer $TOKEN" 2>/dev/null)
+
+    # 检查是否有版本数据
+    VERSION_COUNT=$(echo "$VERSIONS_JSON" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+items = d.get('data', {}).get('items', d.get('data', []))
+if not isinstance(items, list):
+    items = []
+print(len(items))
+" 2>/dev/null || echo "0")
+
+    if [ "$VERSION_COUNT" -gt 0 ]; then
+        log_pass "包版本 API 返回 $VERSION_COUNT 个版本"
+
+        # 检查 license 字段
+        LICENSE_COUNT=$(echo "$VERSIONS_JSON" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+items = d.get('data', {}).get('items', d.get('data', []))
+if not isinstance(items, list):
+    items = []
+count = 0
+for item in items:
+    lic = item.get('license', '')
+    if lic and lic != '':
+        count += 1
+print(count)
+" 2>/dev/null || echo "0")
+
+        if [ "$LICENSE_COUNT" -gt 0 ]; then
+            log_pass "包版本 API 返回 license 字段 ($LICENSE_COUNT 个版本有 license)"
+        else
+            log_warn "包版本 API 未返回 license 字段 (可能上游未提供)"
+        fi
+
+        # 检查 published_at 字段
+        PUB_TIME_COUNT=$(echo "$VERSIONS_JSON" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+items = d.get('data', {}).get('items', d.get('data', []))
+if not isinstance(items, list):
+    items = []
+count = 0
+for item in items:
+    pa = item.get('published_at', '')
+    if pa and pa != '':
+        count += 1
+print(count)
+" 2>/dev/null || echo "0")
+
+        if [ "$PUB_TIME_COUNT" -gt 0 ]; then
+            log_pass "包版本 API 返回 published_at 字段 ($PUB_TIME_COUNT 个版本有发布时间)"
+        else
+            log_warn "包版本 API 未返回 published_at 字段 (可能上游未提供)"
+        fi
+
+        # 检查 trigger_ip 字段
+        TRIGGER_IP_COUNT=$(echo "$VERSIONS_JSON" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+items = d.get('data', {}).get('items', d.get('data', []))
+if not isinstance(items, list):
+    items = []
+count = 0
+for item in items:
+    tip = item.get('trigger_ip', '')
+    if tip and tip != '':
+        count += 1
+print(count)
+" 2>/dev/null || echo "0")
+
+        if [ "$TRIGGER_IP_COUNT" -gt 0 ]; then
+            log_pass "包版本 API 返回 trigger_ip 字段 ($TRIGGER_IP_COUNT 个版本有触发回源IP)"
+        else
+            log_warn "包版本 API 未返回 trigger_ip 字段 (可能未触发回源)"
+        fi
+    else
+        log_warn "包版本 API 未返回版本数据 (可能元数据尚未写入)"
+    fi
+else
+    log_warn "跳过: npm 代理下载失败 (HTTP $HTTP_CODE)"
 fi
 
 # ── 汇总 ──────────────────────

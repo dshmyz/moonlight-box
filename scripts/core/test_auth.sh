@@ -92,8 +92,11 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE_URL/api/v1/use
 if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
     pass "只读用户创建成功 (HTTP $HTTP_CODE)"
     USER_CREATED=true
+elif [ "$HTTP_CODE" = "500" ] || [ "$HTTP_CODE" = "409" ]; then
+    pass "只读用户已存在 (HTTP $HTTP_CODE)"
+    USER_CREATED=false
 else
-    info "只读用户创建返回 HTTP $HTTP_CODE (可能已存在)"
+    fail "只读用户创建返回 HTTP $HTTP_CODE"
     USER_CREATED=false
 fi
 
@@ -113,10 +116,10 @@ if [ "$USER_CREATED" = true ]; then
         if [ "$HTTP_CODE" = "200" ]; then
             pass "只读用户角色分配成功"
         else
-            info "只读用户角色分配返回 HTTP $HTTP_CODE"
+            fail "只读用户角色分配返回 HTTP $HTTP_CODE"
         fi
     else
-        info "无法获取只读用户 ID"
+        fail "无法获取只读用户 ID"
     fi
 fi
 
@@ -140,7 +143,7 @@ if [ -n "$USER_ID" ]; then
         if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
             pass "只读用户上传被拒绝 (HTTP $HTTP_CODE)"
         else
-            info "只读用户上传返回 HTTP $HTTP_CODE (可能权限配置不同)"
+            fail "只读用户上传返回 HTTP $HTTP_CODE (可能权限配置不同)"
         fi
 
         # GET a public artifact (should be allowed - no auth required for GET)
@@ -150,10 +153,10 @@ if [ -n "$USER_ID" ]; then
         if [ "$HTTP_CODE" = "200" ]; then
             pass "只读用户下载公开制品成功 (HTTP 200)"
         else
-            info "只读用户下载返回 HTTP $HTTP_CODE"
+            fail "只读用户下载返回 HTTP $HTTP_CODE"
         fi
     else
-        info "只读用户登录失败"
+        fail "只读用户登录失败"
     fi
 fi
 
@@ -169,7 +172,7 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
 if [ "$HTTP_CODE" = "401" ]; then
     pass "无令牌 PUT 返回 401 (符合预期)"
 else
-    info "无令牌 PUT 返回 HTTP $HTTP_CODE (expected 401)"
+    fail "无令牌 PUT 返回 HTTP $HTTP_CODE (expected 401)"
 fi
 
 echo
@@ -185,7 +188,7 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
 if [ "$HTTP_CODE" = "401" ]; then
     pass "无效令牌 PUT 返回 401 (符合预期)"
 else
-    info "无效令牌 PUT 返回 HTTP $HTTP_CODE (expected 401)"
+    fail "无效令牌 PUT 返回 HTTP $HTTP_CODE (expected 401)"
 fi
 
 echo
@@ -212,7 +215,7 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
 if [ "$HTTP_CODE" = "200" ]; then
     pass "公开 GET /repository/... POM 无需认证 (HTTP 200)"
 else
-    info "公开 GET 返回 HTTP $HTTP_CODE"
+    fail "公开 GET 返回 HTTP $HTTP_CODE"
 fi
 
 echo
@@ -226,7 +229,7 @@ WWW_AUTH=$(curl -s -o /dev/null -D - \
 if echo "$WWW_AUTH" | grep -qi "Basic"; then
     pass "401 响应包含 WWW-Authenticate: Basic 头"
 else
-    info "401 响应未返回 WWW-Authenticate 头"
+    info "401 响应未返回 WWW-Authenticate 头 (可选实现)"
 fi
 
 echo
@@ -244,7 +247,7 @@ if [ -n "$USER_ID" ]; then
         info "测试用户清理返回 HTTP $HTTP_CODE"
     fi
 else
-    info "无需清理测试用户"
+    pass "无需清理测试用户"
 fi
 
 echo

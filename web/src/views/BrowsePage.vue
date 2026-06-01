@@ -93,8 +93,13 @@
       </div>
     </div>
 
-    <div v-if="activeTab === 'repositories'" class="results-section">
-      <RepositoryShowcase />
+    <div v-if="activeTab === 'repositories'" class="repos-layout">
+      <div class="repos-main">
+        <RepositoryShowcase />
+      </div>
+      <aside class="repos-sidebar">
+        <RepositoryStatusPanel />
+      </aside>
     </div>
 
     <div class="keyboard-hint" :class="{ 'hint-faded': hintFaded }">
@@ -114,6 +119,7 @@ import { formatNumber } from '@/utils/format'
 import PackageCard from '@/components/browse/PackageCard.vue'
 import RepositoryShowcase from '@/components/browse/RepositoryShowcase.vue'
 import HeroSection from '@/components/browse/HeroSection.vue'
+import RepositoryStatusPanel from '@/components/browse/RepositoryStatusPanel.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -395,10 +401,38 @@ onUnmounted(() => {
   margin-top: 0;
 }
 
+/* 仓库 tab 布局 */
+.repos-layout {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: 24px;
+  margin-top: 0;
+}
+
+.repos-main {
+  min-width: 0;
+}
+
+.repos-sidebar {
+  position: sticky;
+  top: 80px;
+  align-self: start;
+}
+
 .package-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 16px;
+}
+
+@media (max-width: 1024px) {
+  .repos-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .repos-sidebar {
+    position: static;
+  }
 }
 
 @media (max-width: 768px) {
@@ -575,7 +609,7 @@ kbd {
   height: 20px;
   padding: 0 6px;
   font-size: 11px;
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-family: var(--font-family-mono);
   color: var(--lunar-silver-muted);
   background: var(--lunar-bg-surface);
   border: 1px solid var(--lunar-border);

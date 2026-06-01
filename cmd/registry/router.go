@@ -25,31 +25,31 @@ type RouterContext struct {
 	WebhookSvc       *service.WebhookService
 	RepositoryRouter http.Handler
 	Handlers         struct {
-		Auth             *handler.AuthHandler
-		Repo             *handler.RepositoryHandler
-		PublicRepo       *handler.PublicRepoHandler
-		Cache            *handler.CacheHandler
-		BlockRule        *handler.BlockRuleHandler
-		Search           *handler.PackageSearchHandler
-		Dashboard        *handler.DashboardHandler
-		CAS              *handler.CASHandler
-		StorageBackend   *handler.StorageBackendHandler
-		Security         *handler.SecurityHandler
-		AuditLog         *handler.AuditLogHandler
-		User             *handler.UserHandler
-		Role             *handler.RoleHandler
-		Backup           *handler.BackupHandler
-		BackupConfig     *handler.BackupConfigHandler
-		Webhook          *handler.WebhookHandler
-		SystemConfig     *handler.SystemConfigHandler
-		SystemInfo       *handler.SystemInfoHandler
-		FileBrowse       *handler.FileBrowseHandler
-		MigrationV2      *migv2handler.MigrationV2Handler
-		AI               *handler.AIHandler
-		ProxyDownloadLog *handler.ProxyDownloadLogHandler
-		HealthCheck      *handler.HealthCheckHandler
-		VulnRule         *handler.VulnRuleHandler
-		PackageVersion   *handler.PackageVersionHandler
+		Auth           *handler.AuthHandler
+		Repo           *handler.RepositoryHandler
+		PublicRepo     *handler.PublicRepoHandler
+		Cache          *handler.CacheHandler
+		BlockRule      *handler.BlockRuleHandler
+		Search         *handler.PackageSearchHandler
+		Dashboard      *handler.DashboardHandler
+		CAS            *handler.CASHandler
+		StorageBackend *handler.StorageBackendHandler
+		Security       *handler.SecurityHandler
+		AuditLog       *handler.AuditLogHandler
+		User           *handler.UserHandler
+		Role           *handler.RoleHandler
+		Backup         *handler.BackupHandler
+		BackupConfig   *handler.BackupConfigHandler
+		Webhook        *handler.WebhookHandler
+		SystemConfig   *handler.SystemConfigHandler
+		SystemInfo     *handler.SystemInfoHandler
+		FileBrowse     *handler.FileBrowseHandler
+		MigrationV2    *migv2handler.MigrationV2Handler
+		AI             *handler.AIHandler
+		DownloadLog    *handler.DownloadLogHandler
+		HealthCheck    *handler.HealthCheckHandler
+		VulnRule       *handler.VulnRuleHandler
+		PackageVersion *handler.PackageVersionHandler
 	}
 }
 
@@ -356,11 +356,11 @@ func (ctx *RouterContext) setupAuditRoutes(protected *gin.RouterGroup) {
 		audit.GET("/logs/:id", ctx.Handlers.AuditLog.Get)
 	}
 
-	proxyDownloads := protected.Group("/proxy-downloads")
-	proxyDownloads.Use(ctx.requirePermission("audit", "read"))
+	downloadLogs := protected.Group("/download-logs")
+	downloadLogs.Use(ctx.requirePermission("audit", "read"))
 	{
-		proxyDownloads.GET("/logs", ctx.Handlers.ProxyDownloadLog.List)
-		proxyDownloads.GET("/stats", ctx.Handlers.ProxyDownloadLog.GetStats)
+		downloadLogs.GET("/logs", ctx.Handlers.DownloadLog.List)
+		downloadLogs.GET("/stats", ctx.Handlers.DownloadLog.GetStats)
 	}
 }
 
@@ -469,8 +469,8 @@ func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.Reposi
 	repoGroup := r.Group("/repository/:repoName")
 	{
 		repoGroup.GET("/*path", repoHandler)
-		repoGroup.PUT("/*path", authMw, repoHandler)
-		repoGroup.POST("/*path", authMw, repoHandler)
+		repoGroup.PUT("/*path", authMw, permMw("package", "write"), repoHandler)
+		repoGroup.POST("/*path", authMw, permMw("package", "write"), repoHandler)
 		repoGroup.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
 	}
 
@@ -478,7 +478,7 @@ func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.Reposi
 	nexus2Group := r.Group("/content/repositories/:repoName")
 	{
 		nexus2Group.GET("/*path", repoHandler)
-		nexus2Group.PUT("/*path", authMw, repoHandler)
+		nexus2Group.PUT("/*path", authMw, permMw("package", "write"), repoHandler)
 		nexus2Group.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
 	}
 
@@ -486,7 +486,7 @@ func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.Reposi
 	groupGroup := r.Group("/content/groups/:groupName")
 	{
 		groupGroup.GET("/*path", repoHandler)
-		groupGroup.PUT("/*path", authMw, repoHandler)
+		groupGroup.PUT("/*path", authMw, permMw("package", "write"), repoHandler)
 		groupGroup.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
 	}
 }

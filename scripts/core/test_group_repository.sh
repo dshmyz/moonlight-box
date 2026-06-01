@@ -430,7 +430,7 @@ if echo "$CREATE_GROUP_V2" | grep -q "\"name\":\"$GROUP_NAME_V2\""; then
             fail "Group metadata 包含 0 个版本 (去重 bug 或回源失败)"
         fi
     else
-        info "Group maven-metadata.xml 返回 HTTP $HTTP_CODE"
+        fail "Group maven-metadata.xml 返回 HTTP $HTTP_CODE"
     fi
 
     rm -f /tmp/group-meta-v2.xml

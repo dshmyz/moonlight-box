@@ -355,7 +355,7 @@ const filteredCategories = computed(() => {
   padding: 16px;
   border-radius: 8px;
   overflow-x: auto;
-  font-family: 'Fira Code', 'Consolas', monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   line-height: 1.6;
   margin: 12px 0;
@@ -365,7 +365,7 @@ const filteredCategories = computed(() => {
   background: #f1f5f9;
   padding: 3px 8px;
   border-radius: 4px;
-  font-family: 'Fira Code', 'Consolas', monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   color: #7c3aed;
 }

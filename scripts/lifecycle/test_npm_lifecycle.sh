@@ -144,7 +144,7 @@ if npm publish --userconfig "$NPMRC_FILE" > /dev/null 2>&1; then
     if [ "$HTTP_CODE" = "200" ]; then
         pass "发布的 npm 包可访问 (HTTP 200)"
     else
-        info "发布的 npm 包返回 HTTP $HTTP_CODE"
+        fail "发布的 npm 包返回 HTTP $HTTP_CODE"
     fi
 else
     warn "npm 包发布失败（可能需要认证配置）"

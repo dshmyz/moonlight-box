@@ -161,10 +161,16 @@ func (h *RepositoryHandler) Create(c *gin.Context) {
 	}
 
 	repo := model.Repository{
-		Name:             req.Name,
-		DisplayName:      req.DisplayName,
-		Description:      req.Description,
-		Type:             model.RepositoryType(req.Type),
+		Name:        req.Name,
+		DisplayName: req.DisplayName,
+		Description: req.Description,
+		Type: func() model.RepositoryType {
+			// 规范化：group 等同于 virtual（Nexus 兼容）
+			if req.Type == "group" {
+				return model.RepoTypeVirtual
+			}
+			return model.RepositoryType(req.Type)
+		}(),
 		PackageType:      req.PackageType,
 		Config:           req.Config,
 		Enabled:          true,

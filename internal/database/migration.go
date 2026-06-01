@@ -1,9 +1,15 @@
 package database
 
 import (
+	"fmt"
+	"strings"
+
+	"github.com/dshmyz/moonlight-box/internal/config"
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/domain"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/util"
+
+	"github.com/sirupsen/logrus"
 )
 
 func AutoMigrate() error {
@@ -34,7 +40,7 @@ func AutoMigrate() error {
 		&model.Webhook{},
 		&model.WebhookDelivery{},
 		&model.Backup{},
-		&model.ProxyDownloadLog{},
+		&model.DownloadLog{},
 		&domain.MigrationPlan{},
 		&domain.MigrationJob{},
 		&domain.MigrationItem{},
@@ -55,6 +61,18 @@ func SeedData() error {
 			DB.Where("role_id = ?", oldRole.ID).Delete(&model.RolePermission{})
 			DB.Where("role_id = ?", oldRole.ID).Delete(&model.UserRole{})
 			DB.Delete(&oldRole)
+		}
+	}
+
+	deprecatedPerms := []struct{ resource, action string }{
+		{"npm", "read"}, {"npm", "write"}, {"npm", "delete"}, {"npm", "admin"},
+		{"maven", "read"}, {"maven", "write"}, {"maven", "delete"}, {"maven", "admin"},
+	}
+	for _, dp := range deprecatedPerms {
+		var perm model.Permission
+		if err := DB.Where("resource = ? AND action = ?", dp.resource, dp.action).First(&perm).Error; err == nil {
+			DB.Where("permission_id = ?", perm.ID).Delete(&model.RolePermission{})
+			DB.Delete(&perm)
 		}
 	}
 
@@ -92,14 +110,6 @@ func SeedData() error {
 		{Resource: "security", Action: "write"},
 		{Resource: "webhooks", Action: "read"},
 		{Resource: "webhooks", Action: "write"},
-		{Resource: "npm", Action: "read"},
-		{Resource: "npm", Action: "write"},
-		{Resource: "npm", Action: "delete"},
-		{Resource: "npm", Action: "admin"},
-		{Resource: "maven", Action: "read"},
-		{Resource: "maven", Action: "write"},
-		{Resource: "maven", Action: "delete"},
-		{Resource: "maven", Action: "admin"},
 		{Resource: "package", Action: "read"},
 		{Resource: "package", Action: "write"},
 		{Resource: "package", Action: "delete"},
@@ -131,8 +141,7 @@ func SeedData() error {
 		opsPerms := []struct{ resource, action string }{
 			{"system", "read"}, {"repositories", "read"}, {"repositories", "write"}, {"repositories", "delete"},
 			{"cache", "read"}, {"cache", "write"}, {"storage-backends", "read"}, {"storage-backends", "write"},
-			{"webhooks", "read"}, {"webhooks", "write"}, {"npm", "read"}, {"npm", "write"}, {"npm", "delete"},
-			{"maven", "read"}, {"maven", "write"}, {"maven", "delete"}, {"package", "read"},
+			{"webhooks", "read"}, {"webhooks", "write"}, {"package", "read"},
 			{"package", "write"}, {"package", "delete"}, {"audit", "read"},
 		}
 		for _, p := range opsPerms {
@@ -147,7 +156,6 @@ func SeedData() error {
 	var developerRole model.Role
 	if err := DB.Where("name = ?", "developer").First(&developerRole).Error; err == nil {
 		devPerms := []struct{ resource, action string }{
-			{"npm", "read"}, {"npm", "write"}, {"maven", "read"}, {"maven", "write"},
 			{"package", "read"}, {"package", "write"}, {"package", "delete_own"}, {"repositories", "read"},
 		}
 		for _, p := range devPerms {
@@ -164,7 +172,7 @@ func SeedData() error {
 		secPerms := []struct{ resource, action string }{
 			{"audit", "read"}, {"security", "read"}, {"security", "write"}, {"block-rules", "read"},
 			{"block-rules", "write"}, {"block-rules", "delete"}, {"system", "read"}, {"repositories", "read"},
-			{"users", "read"}, {"npm", "read"}, {"maven", "read"}, {"package", "read"},
+			{"users", "read"}, {"package", "read"},
 		}
 		for _, p := range secPerms {
 			var perm model.Permission
@@ -178,7 +186,19 @@ func SeedData() error {
 	var adminUser model.User
 	result := DB.Where("username = ?", "admin").First(&adminUser)
 	if result.Error != nil {
-		hashedPassword, err := util.HashPassword("admin123")
+		isRelease := false
+		if cfg := config.Get(); cfg != nil {
+			isRelease = strings.EqualFold(cfg.Server.Mode, "release")
+		}
+
+		var initialPassword string
+		if isRelease {
+			initialPassword = util.GenerateRandomString(20)
+		} else {
+			initialPassword = "admin123"
+		}
+
+		hashedPassword, err := util.HashPassword(initialPassword)
 		if err != nil {
 			return err
 		}
@@ -196,7 +216,29 @@ func SeedData() error {
 		if err := DB.Create(&userRole).Error; err != nil {
 			return err
 		}
+		printInitialAdminCredentials(initialPassword, isRelease)
 	}
 
 	return nil
+}
+
+// printInitialAdminCredentials 将首次生成的初始管理员密码打印到标准输出。
+// 出于安全考虑，密码只在此处一次性显示，不写入持久化日志文件。
+func printInitialAdminCredentials(password string, isRelease bool) {
+	banner := strings.Repeat("=", 64)
+	if isRelease {
+		fmt.Printf("\n%s\n"+
+			"  初始管理员账号已创建（此密码仅本次启动显示，请立即保存并登录后修改）\n"+
+			"  用户名: admin\n"+
+			"  密码  : %s\n"+
+			"%s\n\n", banner, password, banner)
+	} else {
+		fmt.Printf("\n%s\n"+
+			"  初始管理员账号已创建（测试/开发环境，密码固定为 admin123）\n"+
+			"  用户名: admin\n"+
+			"  密码  : %s\n"+
+			"%s\n\n", banner, password, banner)
+	}
+	util.WithFields(logrus.Fields{"username": "admin"}).
+		Warn("已生成随机初始管理员密码，请查看启动输出（stdout）并尽快修改")
 }

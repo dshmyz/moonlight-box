@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/mod/semver"
 )
 
@@ -40,23 +41,63 @@ func (p *NpmPlugin) Name() string {
 
 // FetchRemote 实现 RemoteFetcher 接口——Runtime 回调, 负责远端 npm registry 协议交互
 func (p *NpmPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	start := time.Now()
 	packageName := strings.TrimPrefix(path, "/")
 	if packageName == "" {
 		return nil, errors.New("npm: empty package path")
 	}
 	// scoped package 需要 URL 编码: @scope/pkg → %40scope%2Fpkg
-	encodedName := url.PathEscape(packageName)
+	encodedName := strings.ReplaceAll(url.PathEscape(packageName), "@", "%40")
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + encodedName
+
+	logrus.WithFields(logrus.Fields{
+		"remoteURL":   remoteURL,
+		"path":        path,
+		"packageName": packageName,
+		"fullURL":     fullURL,
+	}).Debug("npm: FetchRemote called")
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
+		logrus.WithError(err).WithField("fullURL", fullURL).Error("npm: create request failed")
 		return nil, err
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":  fullURL,
+			"duration": time.Since(start).Seconds(),
+			"error":    err.Error(),
+		}).Error("npm: HTTP request failed")
 		return nil, err
 	}
 	defer resp.Body.Close()
-	return p.parseNpmMetadata(packageName, resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":    fullURL,
+			"statusCode": resp.StatusCode,
+			"duration":   time.Since(start).Seconds(),
+		}).Error("npm: HTTP request returned non-200 status")
+		return nil, fmt.Errorf("npm: fetch from %s: status %d", fullURL, resp.StatusCode)
+	}
+
+	artifacts, err := p.parseNpmMetadata(packageName, resp.Body)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":  fullURL,
+			"duration": time.Since(start).Seconds(),
+			"error":    err.Error(),
+		}).Error("npm: parse metadata failed")
+		return nil, err
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"fullURL":      fullURL,
+		"versionCount": len(artifacts),
+		"duration":     time.Since(start).Seconds(),
+	}).Debug("npm: FetchRemote success")
+	return artifacts, nil
 }
 
 // parseNpmMetadata 解析 npm registry JSON, 提取版本列表为 artifact
@@ -69,18 +110,67 @@ func (p *NpmPlugin) parseNpmMetadata(packageName string, body io.Reader) ([]*run
 	if versions == nil {
 		return nil, nil
 	}
+	timeMap, _ := raw["time"].(map[string]interface{})
+	topLicense := extractLicense(raw)
+	topDesc, _ := raw["description"].(string)
+	topHomepage, _ := raw["homepage"].(string)
+
 	var artifacts []*runtime.Artifact
-	for version := range versions {
+	for ver, verRaw := range versions {
+		props := map[string]string{}
+		verObj, _ := verRaw.(map[string]interface{})
+		if verObj != nil {
+			if lic := extractLicense(verObj); lic != "" {
+				props["license"] = lic
+			}
+			if desc, _ := verObj["description"].(string); desc != "" {
+				props["description"] = desc
+			}
+			if hp, _ := verObj["homepage"].(string); hp != "" {
+				props["homepage"] = hp
+			}
+		}
+		if props["license"] == "" && topLicense != "" {
+			props["license"] = topLicense
+		}
+		if props["description"] == "" && topDesc != "" {
+			props["description"] = topDesc
+		}
+		if props["homepage"] == "" && topHomepage != "" {
+			props["homepage"] = topHomepage
+		}
+		if timeMap != nil {
+			if ts, ok := timeMap[ver].(string); ok {
+				props["published_at"] = ts
+			}
+		}
 		artifacts = append(artifacts, &runtime.Artifact{
 			Format: "npm",
 			Kind:   "version",
 			Coordinates: map[string]string{
 				"name":    packageName,
-				"version": version,
+				"version": ver,
 			},
+			Properties: props,
 		})
 	}
 	return artifacts, nil
+}
+
+func extractLicense(obj map[string]interface{}) string {
+	lic, ok := obj["license"]
+	if !ok || lic == nil {
+		return ""
+	}
+	switch v := lic.(type) {
+	case string:
+		return v
+	case map[string]interface{}:
+		t, _ := v["type"].(string)
+		return t
+	default:
+		return ""
+	}
 }
 
 func (p *NpmPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
@@ -181,9 +271,10 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
 		Coordinates: map[string]string{
-			"name":    packageName,
-			"version": version,
-			"path":    packageName + "/-",
+			"name":     packageName,
+			"version":  version,
+			"path":     packageName + "/-",
+			"filename": filename,
 		},
 		Filename: filename,
 	}
@@ -205,6 +296,10 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 		return nil
 	}
 	defer artifact.Content.Close()
+
+	ctx.FromCache = artifact.FromCache
+	ctx.RemoteURL = artifact.RemoteURL
+	ctx.SizeBytes = artifact.SizeBytes
 
 	ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
 	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
@@ -240,9 +335,10 @@ func (p *NpmPlugin) handleTarballDelete(ctx *runtime.RequestContext, repoRuntime
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
 		Coordinates: map[string]string{
-			"name":    packageName,
-			"version": version,
-			"path":    packageName + "/-",
+			"name":     packageName,
+			"version":  version,
+			"path":     packageName + "/-",
+			"filename": filename,
 		},
 		Filename: filename,
 	}
@@ -426,15 +522,15 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 			Format:       "npm",
 			Kind:         "tarball",
 			Coordinates: map[string]string{
-				"name":    packageName,
-				"version": tarballVersion,
-				"path":    packageName + "/-",
+				"name":     packageName,
+				"version":  tarballVersion,
+				"path":     packageName + "/-",
+				"filename": tarballName,
 			},
 			BlobRefs: []runtime.BlobRef{tarballBlob},
 			Properties: map[string]string{
-				"package":  packageName,
-				"version":  tarballVersion,
-				"filename": tarballName,
+				"package": packageName,
+				"version": tarballVersion,
 			},
 		}
 		if err := session.PutArtifact(ctx.Request.Context(), tarballArtifact); err != nil {

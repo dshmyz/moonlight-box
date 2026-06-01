@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/util"
+	"github.com/sirupsen/logrus"
 )
 
 type PyPIPlugin struct {
@@ -40,25 +42,71 @@ func (p *PyPIPlugin) Name() string {
 // FetchRemote 实现 RemoteFetcher 接口。
 // Runtime 在本地缓存为空时回调此方法，Plugin 负责远端协议交互。
 func (p *PyPIPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	start := time.Now()
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + path
+
+	logrus.WithFields(logrus.Fields{
+		"remoteURL": remoteURL,
+		"path":      path,
+		"fullURL":   fullURL,
+	}).Debug("pypi: FetchRemote called")
+
 	resp, err := p.httpGet(ctx, fullURL)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":  fullURL,
+			"duration": time.Since(start).Seconds(),
+			"error":    err.Error(),
+		}).Error("pypi: HTTP request failed")
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":    fullURL,
+			"statusCode": resp.StatusCode,
+			"duration":   time.Since(start).Seconds(),
+		}).Error("pypi: HTTP request returned non-200 status")
 		return nil, fmt.Errorf("remote returned status %d for %s", resp.StatusCode, fullURL)
 	}
 
+	var artifacts []*runtime.Artifact
 	if p.isSimpleIndexRequest(path) {
-		return p.parseSimpleIndex(resp.Body)
-	}
-	if p.isPackageListRequest(path) {
+		artifacts, err = p.parseSimpleIndex(resp.Body)
+	} else if p.isPackageListRequest(path) {
 		parts := strings.Split(strings.Trim(path, "/"), "/")
-		return p.parsePackageList(normalizePackageName(parts[1]), resp.Body)
+		packageName := normalizePackageName(parts[1])
+		if info, fetchErr := p.fetchPyPIPackageInfo(ctx, remoteURL, packageName); fetchErr == nil {
+			artifacts = p.buildArtifactsFromJSONAPI(packageName, info)
+		} else {
+			artifacts, err = p.parsePackageList(packageName, resp.Body)
+			if err == nil && len(artifacts) > 0 {
+				if info2, fetchErr2 := p.fetchPyPIPackageInfo(ctx, remoteURL, packageName); fetchErr2 == nil {
+					p.mergePackageInfo(artifacts, info2)
+				}
+			}
+		}
+	} else {
+		logrus.WithField("path", path).Error("pypi: unsupported remote path")
+		return nil, fmt.Errorf("unsupported remote path: %s", path)
 	}
-	return nil, fmt.Errorf("unsupported remote path: %s", path)
+
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":  fullURL,
+			"duration": time.Since(start).Seconds(),
+			"error":    err.Error(),
+		}).Error("pypi: parse response failed")
+		return nil, err
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"fullURL":       fullURL,
+		"artifactCount": len(artifacts),
+		"duration":      time.Since(start).Seconds(),
+	}).Debug("pypi: FetchRemote success")
+	return artifacts, nil
 }
 
 func (p *PyPIPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
@@ -316,12 +364,20 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 		if err == nil {
 			defer artifact.Content.Close()
+			ctx.FromCache = artifact.FromCache
+			ctx.RemoteURL = artifact.RemoteURL
+			ctx.SizeBytes = artifact.SizeBytes
 			ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
 			ctx.Writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, runtime.SanitizeFilename(key.Filename)))
 			ctx.Writer.WriteHeader(http.StatusOK)
 			io.Copy(ctx.Writer, artifact.Content)
 			return nil
 		}
+		util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
+			"path":  path,
+			"key":   key.String(),
+			"error": err.Error(),
+		}).Warn("pypi: handlePackagesDownload GetArtifact failed")
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	case http.MethodPut:
@@ -347,6 +403,10 @@ func (p *PyPIPlugin) handleChecksumRequest(ctx *runtime.RequestContext, repoRunt
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
+
+	ctx.FromCache = artifact.FromCache
+	ctx.RemoteURL = artifact.RemoteURL
+	ctx.SizeBytes = artifact.SizeBytes
 
 	if len(artifact.BlobRefs) == 0 {
 		http.Error(ctx.Writer, "No blob", http.StatusNotFound)
@@ -450,6 +510,10 @@ func (p *PyPIPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime run
 		return nil
 	}
 	defer artifact.Content.Close()
+
+	ctx.FromCache = artifact.FromCache
+	ctx.RemoteURL = artifact.RemoteURL
+	ctx.SizeBytes = artifact.SizeBytes
 
 	ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
 	ctx.Writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, runtime.SanitizeFilename(key.Filename)))
@@ -610,6 +674,198 @@ func (p *PyPIPlugin) httpGet(ctx context.Context, url string) (*http.Response, e
 	}
 	req.Header.Set("User-Agent", "Moonlight-Registry/1.0")
 	return p.httpClient.Do(req)
+}
+
+func (p *PyPIPlugin) fetchPyPIPackageInfo(ctx context.Context, remoteURL, packageName string) (map[string]interface{}, error) {
+	jsonURL := strings.TrimRight(remoteURL, "/") + "/pypi/" + packageName + "/json"
+	resp, err := p.httpGet(ctx, jsonURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("pypi json api returned status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[string]interface{}) []*runtime.Artifact {
+	license := p.extractStringField(info, "license")
+	if license == "" {
+		license = p.extractStringField(info, "license_expression")
+	}
+	description := p.extractStringField(info, "summary")
+	homepage := p.extractStringField(info, "home_page")
+	releases, _ := info["releases"].(map[string]interface{})
+	if releases == nil {
+		return nil
+	}
+	var artifacts []*runtime.Artifact
+	for version, filesRaw := range releases {
+		files, ok := filesRaw.([]interface{})
+		if !ok || len(files) == 0 {
+			continue
+		}
+		earliestTime := ""
+		for _, f := range files {
+			file, ok := f.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			filename, _ := file["filename"].(string)
+			if filename == "" {
+				continue
+			}
+			remotePath, _ := file["url"].(string)
+			if remotePath == "" {
+				remotePath = "packages/" + string([]rune(filename)[0:1]) + "/" + packageName + "/" + filename
+			}
+			props := map[string]string{
+				"remote_path": remotePath,
+			}
+			if license != "" {
+				props["license"] = license
+			}
+			if description != "" {
+				props["description"] = description
+			}
+			if homepage != "" {
+				props["homepage"] = homepage
+			}
+			if uploadTime, ok := file["upload_time"].(string); ok && uploadTime != "" {
+				if t, err := parsePyPITime(uploadTime); err == nil {
+					parsed := t.Format(time.RFC3339)
+					if earliestTime == "" || parsed < earliestTime {
+						earliestTime = parsed
+					}
+				}
+			}
+			artifacts = append(artifacts, &runtime.Artifact{
+				Format: "pypi",
+				Kind:   "package-file",
+				Coordinates: map[string]string{
+					"name":     packageName,
+					"package":  packageName,
+					"version":  version,
+					"filename": filename,
+				},
+				Properties: props,
+			})
+		}
+		if earliestTime != "" {
+			for _, a := range artifacts {
+				if a.Coordinates["version"] == version && a.Properties["published_at"] == "" {
+					a.Properties["published_at"] = earliestTime
+				}
+			}
+		}
+	}
+	return artifacts
+}
+
+func (p *PyPIPlugin) extractStringField(info map[string]interface{}, key string) string {
+	if v, ok := info[key]; ok {
+		if s, ok := v.(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func (p *PyPIPlugin) mergePackageInfo(artifacts []*runtime.Artifact, info map[string]interface{}) {
+	infoData, _ := info["info"].(map[string]interface{})
+	releases, _ := info["releases"].(map[string]interface{})
+
+	var license, description, homepage string
+	if infoData != nil {
+		if l, ok := infoData["license"].(string); ok && l != "" {
+			license = l
+		}
+		if le, ok := infoData["license_expression"].(string); ok && le != "" && license == "" {
+			license = le
+		}
+		if s, ok := infoData["summary"].(string); ok && s != "" {
+			description = s
+		}
+		if h, ok := infoData["home_page"].(string); ok && h != "" {
+			homepage = h
+		}
+	}
+
+	versionUploadTimes := make(map[string]string)
+	if releases != nil {
+		for version, files := range releases {
+			filesList, ok := files.([]interface{})
+			if !ok || len(filesList) == 0 {
+				continue
+			}
+			var earliest time.Time
+			found := false
+			for _, f := range filesList {
+				fileMap, ok := f.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				uploadTime, ok := fileMap["upload_time"].(string)
+				if !ok || uploadTime == "" {
+					continue
+				}
+				t, err := parsePyPITime(uploadTime)
+				if err != nil {
+					continue
+				}
+				if !found || t.Before(earliest) {
+					earliest = t
+					found = true
+				}
+			}
+			if found {
+				versionUploadTimes[version] = earliest.Format(time.RFC3339)
+			}
+		}
+	}
+
+	for _, artifact := range artifacts {
+		if artifact.Properties == nil {
+			artifact.Properties = make(map[string]string)
+		}
+		if license != "" {
+			artifact.Properties["license"] = license
+		}
+		if description != "" {
+			artifact.Properties["description"] = description
+		}
+		if homepage != "" {
+			artifact.Properties["homepage"] = homepage
+		}
+		version := artifact.Coordinates["version"]
+		if version != "" {
+			if uploadTime, ok := versionUploadTimes[version]; ok {
+				artifact.Properties["published_at"] = uploadTime
+			}
+		}
+	}
+}
+
+func parsePyPITime(s string) (time.Time, error) {
+	layouts := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unable to parse time: %s", s)
 }
 
 // parseSimpleIndex 解析 PyPI Simple Index 页面，提取包名列表

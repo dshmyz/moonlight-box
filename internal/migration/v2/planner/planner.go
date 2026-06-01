@@ -80,6 +80,77 @@ func (p *Planner) Scan(ctx context.Context) error {
 	return nil
 }
 
+// ScanStreaming runs the scan phase with streaming support.
+// It notifies via readyCh when artifact_copy jobs have new items ready for execution.
+// The channel receives the job ID of the artifact_copy job that has new items.
+// The channel is closed when scanning is complete.
+func (p *Planner) ScanStreaming(ctx context.Context, readyCh chan<- uint) error {
+	defer close(readyCh)
+
+	p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged, "开始扫描仓库配置（流式模式）", nil, nil)
+
+	var repos []source.SourceRepository
+	loadRepos := func() error {
+		if repos != nil {
+			return nil
+		}
+		var err error
+		repos, err = p.src.ListRepositories(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to list repositories: %w", err)
+		}
+		return nil
+	}
+
+	if p.scope.RepoConfig || p.scope.GroupMemberships {
+		if err := loadRepos(); err != nil {
+			return err
+		}
+		if err := p.scanRepositories(ctx, repos); err != nil {
+			return err
+		}
+		// 通知 executor 有 repo_config / group_membership jobs 可以执行
+		p.notifyReadyJobs(ctx, readyCh)
+	}
+
+	if p.scope.Privileges || p.scope.Roles || p.scope.Users {
+		if err := p.scanSecurity(ctx); err != nil {
+			return err
+		}
+		// 通知 executor 有 security jobs 可以执行
+		p.notifyReadyJobs(ctx, readyCh)
+	}
+
+	if p.scope.Artifacts {
+		if err := loadRepos(); err != nil {
+			return err
+		}
+		if err := p.scanArtifactsStreaming(ctx, repos, readyCh); err != nil {
+			return err
+		}
+	}
+
+	p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged, "扫描全部完成", nil, nil)
+	return nil
+}
+
+// notifyReadyJobs 查找当前 plan 下所有 pending 的非 artifact_copy jobs，通知 executor 执行
+func (p *Planner) notifyReadyJobs(ctx context.Context, readyCh chan<- uint) {
+	jobs, err := p.jobRepo.ListByPlanAndStatus(p.planID, []domain.JobStatus{domain.JobPending})
+	if err != nil {
+		return
+	}
+	for _, j := range jobs {
+		if j.Kind == domain.JobArtifactCopy {
+			continue
+		}
+		select {
+		case readyCh <- j.ID:
+		default:
+		}
+	}
+}
+
 func (p *Planner) scanRepositories(ctx context.Context, repos []source.SourceRepository) error {
 	type repoDetail struct {
 		detail    *source.SourceRepositoryDetail
@@ -359,6 +430,106 @@ func (p *Planner) scanArtifacts(ctx context.Context, repos []source.SourceReposi
 		if len(allItems) > 0 {
 			if err := p.itemRepo.BatchCreate(allItems); err != nil {
 				return err
+			}
+		}
+		p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged,
+			fmt.Sprintf("已完成仓库 [%s] 的制品扫描", repoName), nil, nil)
+	}
+	return nil
+}
+
+// scanArtifactsStreaming scans artifacts with streaming support.
+// It writes items to DB as they're scanned and notifies via readyCh.
+func (p *Planner) scanArtifactsStreaming(ctx context.Context, repos []source.SourceRepository, readyCh chan<- uint) error {
+	repoNames := p.scope.ArtifactRepos
+	if len(repoNames) == 0 {
+		for _, repo := range repos {
+			if repo.Name == "" || repo.Type == "group" || !p.shouldIncludeRepo(repo.Type) {
+				continue
+			}
+			repoNames = append(repoNames, repo.Name)
+		}
+	}
+	if len(repoNames) == 0 {
+		p.eventRepo.Log(p.planID, domain.LevelWarn, domain.EventSourceWarning, "未发现可迁移的制品仓库", nil, nil)
+		return nil
+	}
+
+	for _, repoName := range repoNames {
+		scanJob := domain.MigrationJob{
+			PlanID:      p.planID,
+			Kind:        domain.JobArtifactScan,
+			Status:      domain.JobCompleted,
+			SourceKey:   repoName,
+			TargetKey:   p.determineTargetRepo(repoName),
+			MaxAttempts: 3,
+		}
+		if err := p.jobRepo.Create(&scanJob); err != nil {
+			return err
+		}
+
+		copyJob := domain.MigrationJob{
+			PlanID:      p.planID,
+			Kind:        domain.JobArtifactCopy,
+			Status:      domain.JobPending,
+			SourceKey:   repoName,
+			TargetKey:   p.determineTargetRepo(repoName),
+			MaxAttempts: 3,
+		}
+		if err := p.jobRepo.Create(&copyJob); err != nil {
+			return err
+		}
+
+		var cursor string
+		var allItems []domain.MigrationItem
+
+		for {
+			page, err := p.src.ListComponentsPage(ctx, repoName, cursor)
+			if err != nil {
+				return fmt.Errorf("failed to list components for %s: %w", repoName, err)
+			}
+			for _, comp := range page.Items {
+				for _, asset := range comp.Assets {
+					allItems = append(allItems, domain.MigrationItem{
+						PlanID:           p.planID,
+						JobID:            copyJob.ID,
+						Kind:             domain.ItemArtifact,
+						SourceRepository: repoName,
+						SourceID:         comp.ID,
+						SourcePath:       asset.DownloadURL,
+						SourceFormat:     comp.Format,
+						SourceName:       comp.Name,
+						SourceVersion:    comp.Version,
+						TargetRepository: p.determineTargetRepo(repoName),
+						Status:           domain.ItemPending,
+					})
+					if len(allItems) >= 100 {
+						if err := p.itemRepo.BatchCreate(allItems); err != nil {
+							return err
+						}
+						// 通知 executor 有新 items 可以执行
+						select {
+						case readyCh <- copyJob.ID:
+						default:
+						}
+						allItems = allItems[:0]
+					}
+				}
+			}
+			if page.ContinuationToken == "" {
+				break
+			}
+			cursor = page.ContinuationToken
+		}
+
+		if len(allItems) > 0 {
+			if err := p.itemRepo.BatchCreate(allItems); err != nil {
+				return err
+			}
+			// 通知 executor 有新 items 可以执行
+			select {
+			case readyCh <- copyJob.ID:
+			default:
 			}
 		}
 		p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged,

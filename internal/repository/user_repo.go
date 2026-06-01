@@ -25,7 +25,7 @@ func (r *UserRepository) Create(user *model.User) error {
 
 func (r *UserRepository) FindByID(id uint) (*model.User, error) {
 	var user model.User
-	result := r.db.Preload("Roles").First(&user, id)
+	result := r.db.Preload("Roles.Permissions").First(&user, id)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, util.ErrUserNotFound
@@ -37,7 +37,7 @@ func (r *UserRepository) FindByID(id uint) (*model.User, error) {
 
 func (r *UserRepository) FindByUsername(username string) (*model.User, error) {
 	var user model.User
-	result := r.db.Preload("Roles").Where("username = ?", username).First(&user)
+	result := r.db.Preload("Roles.Permissions").Where("username = ?", username).First(&user)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, util.ErrUserNotFound
@@ -49,7 +49,7 @@ func (r *UserRepository) FindByUsername(username string) (*model.User, error) {
 
 func (r *UserRepository) FindByEmail(email string) (*model.User, error) {
 	var user model.User
-	result := r.db.Preload("Roles").Where("email = ?", email).First(&user)
+	result := r.db.Preload("Roles.Permissions").Where("email = ?", email).First(&user)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, util.ErrUserNotFound
@@ -67,7 +67,7 @@ func (r *UserRepository) List(page, pageSize int, keyword string, isActive *bool
 	var users []model.User
 	var total int64
 
-	query := r.db.Model(&model.User{}).Preload("Roles")
+	query := r.db.Model(&model.User{}).Preload("Roles.Permissions")
 
 	if keyword != "" {
 		query = query.Where("username LIKE ? OR email LIKE ? OR display_name LIKE ?",
@@ -97,7 +97,7 @@ func (r *UserRepository) UpdateLastLogin(id uint) error {
 
 func (r *UserRepository) FindOrCreateCASUser(username string) (*model.User, error) {
 	var user model.User
-	result := r.db.Preload("Roles").Where("username = ?", username).First(&user)
+	result := r.db.Preload("Roles.Permissions").Where("username = ?", username).First(&user)
 	if result.Error == nil {
 		if !user.IsActive {
 			return nil, errors.New("account is disabled")

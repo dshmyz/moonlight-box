@@ -64,7 +64,7 @@ if [ -n "$TOKEN" ]; then
         pass "generic-local 仓库已存在"
     fi
 else
-    info "跳过仓库创建 (无认证令牌)"
+    fail "跳过仓库创建 (无认证令牌)"
 fi
 
 echo
@@ -96,7 +96,7 @@ if [ -n "$TOKEN" ]; then
         warn "JSON 文件上传失败 (HTTP $HTTP_CODE)"
     fi
 else
-    info "跳过上传 (无认证令牌)"
+    fail "跳过上传 (无认证令牌)"
 fi
 
 echo
@@ -132,7 +132,7 @@ if [ -n "$TOKEN" ]; then
         cat /tmp/generic-upload-zip.json 2>/dev/null
     fi
 else
-    info "跳过 ZIP 上传 (无认证令牌)"
+    fail "跳过 ZIP 上传 (无认证令牌)"
 fi
 
 echo
@@ -168,7 +168,7 @@ EOF
         warn "XML 文件上传失败 (HTTP $HTTP_CODE)"
     fi
 else
-    info "跳过 XML 上传 (无认证令牌)"
+    fail "跳过 XML 上传 (无认证令牌)"
 fi
 
 echo
@@ -206,7 +206,7 @@ if [ -n "$TOKEN" ]; then
         warn "大文件上传失败 (HTTP $HTTP_CODE)"
     fi
 else
-    info "跳过大文件上传 (无认证令牌)"
+    fail "跳过大文件上传 (无认证令牌)"
 fi
 
 echo
@@ -233,7 +233,7 @@ if [ -n "$TOKEN" ]; then
         warn "嵌套路径上传失败 (HTTP $HTTP_CODE)"
     fi
 else
-    info "跳过嵌套路径测试 (无认证令牌)"
+    fail "跳过嵌套路径测试 (无认证令牌)"
 fi
 
 echo
@@ -263,7 +263,7 @@ if [ -n "$TOKEN" ]; then
         warn "DELETE 方法失败 (HTTP $HTTP_CODE)"
     fi
 else
-    info "跳过 DELETE 测试 (无认证令牌)"
+    fail "跳过 DELETE 测试 (无认证令牌)"
 fi
 
 echo
@@ -298,7 +298,7 @@ if [ -n "$TOKEN" ]; then
         fi
     done
 else
-    info "跳过内容类型测试 (无认证令牌)"
+    fail "跳过内容类型测试 (无认证令牌)"
 fi
 
 echo

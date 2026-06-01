@@ -96,7 +96,7 @@ const getToolDisplayName = (name: string) => {
   padding: 12px;
   background: var(--el-fill-color-light);
   border-radius: 4px;
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-family-mono);
   font-size: 12px;
   overflow-x: auto;
   white-space: pre-wrap;

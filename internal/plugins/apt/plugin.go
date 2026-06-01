@@ -12,6 +12,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/core/cache"
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/sirupsen/logrus"
 )
 
 type AptPlugin struct {
@@ -42,6 +43,11 @@ func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 		return nil, errors.New("apt: empty path")
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"remoteURL": remoteURL,
+		"path":      path,
+	}).Debug("apt: FetchRemote called")
+
 	// For Packages index requests, fetch and parse the Packages file.
 	if p.isPackagesRequest(path) {
 		return p.fetchPackagesIndex(ctx, remoteURL, path)
@@ -50,6 +56,11 @@ func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 	// For InRelease/Release requests, return a basic artifact indicating the remote resource exists.
 	if p.isInReleaseRequest(path) {
 		filename := filepath.Base(path)
+		logrus.WithFields(logrus.Fields{
+			"path":     path,
+			"filename": filename,
+			"kind":     "release",
+		}).Debug("apt: FetchRemote returning release file reference")
 		return []*runtime.Artifact{
 			{
 				Format: "apt",
@@ -66,6 +77,11 @@ func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 
 	// For .deb package requests, return a basic artifact indicating the remote resource exists.
 	filename := filepath.Base(path)
+	logrus.WithFields(logrus.Fields{
+		"path":     path,
+		"filename": filename,
+		"kind":     "package",
+	}).Debug("apt: FetchRemote returning package file reference")
 	return []*runtime.Artifact{
 		{
 			Format: "apt",
@@ -83,26 +99,57 @@ func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 // fetchPackagesIndex fetches a Packages index file from the remote repository
 // and parses it to extract package entries.
 func (p *AptPlugin) fetchPackagesIndex(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	start := time.Now()
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + path
+
+	logrus.WithFields(logrus.Fields{
+		"remoteURL": remoteURL,
+		"path":      path,
+		"fullURL":   fullURL,
+	}).Debug("apt: fetchPackagesIndex called")
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
+		logrus.WithError(err).WithField("fullURL", fullURL).Error("apt: create request for packages index failed")
 		return nil, fmt.Errorf("apt: create request for packages index: %w", err)
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":  fullURL,
+			"duration": time.Since(start).Seconds(),
+			"error":    err.Error(),
+		}).Error("apt: fetch packages index HTTP request failed")
 		return nil, fmt.Errorf("apt: fetch packages index from %s: %w", fullURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":    fullURL,
+			"statusCode": resp.StatusCode,
+			"duration":   time.Since(start).Seconds(),
+		}).Error("apt: fetch packages index returned non-200 status")
 		return nil, fmt.Errorf("apt: fetch packages index from %s: status %d", fullURL, resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":  fullURL,
+			"duration": time.Since(start).Seconds(),
+			"error":    err.Error(),
+		}).Error("apt: read packages index body failed")
 		return nil, fmt.Errorf("apt: read packages index body: %w", err)
 	}
 
-	return p.parsePackagesIndex(string(body)), nil
+	artifacts := p.parsePackagesIndex(string(body))
+
+	logrus.WithFields(logrus.Fields{
+		"fullURL":      fullURL,
+		"packageCount": len(artifacts),
+		"duration":     time.Since(start).Seconds(),
+	}).Debug("apt: fetchPackagesIndex success")
+	return artifacts, nil
 }
 
 // parsePackagesIndex parses a Debian Packages index file and extracts package entries.
@@ -219,6 +266,10 @@ func (p *AptPlugin) handleInRelease(ctx *runtime.RequestContext, repoRuntime run
 	}
 	defer artifact.Content.Close()
 
+	ctx.FromCache = artifact.FromCache
+	ctx.RemoteURL = artifact.RemoteURL
+	ctx.SizeBytes = artifact.SizeBytes
+
 	ctx.Writer.Header().Set("Content-Type", "text/plain")
 	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 	ctx.Writer.WriteHeader(http.StatusOK)
@@ -246,6 +297,9 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 
 	if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
 		defer artifact.Content.Close()
+		ctx.FromCache = artifact.FromCache
+		ctx.RemoteURL = artifact.RemoteURL
+		ctx.SizeBytes = artifact.SizeBytes
 		ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
@@ -340,6 +394,9 @@ func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime ru
 			return nil
 		}
 		defer artifact.Content.Close()
+		ctx.FromCache = artifact.FromCache
+		ctx.RemoteURL = artifact.RemoteURL
+		ctx.SizeBytes = artifact.SizeBytes
 		ctx.Writer.Header().Set("Content-Type", "application/vnd.debian.binary-package")
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)

@@ -1,11 +1,29 @@
 package runtime
 
 import (
+	"context"
 	"io"
 	"sort"
 	"strings"
 	"time"
 )
+
+type ctxKey string
+
+const clientIPKey ctxKey = "client_ip"
+
+// ContextWithClientIP 将客户端 IP 注入 context，供 Runtime 层回源时使用。
+func ContextWithClientIP(ctx context.Context, ip string) context.Context {
+	return context.WithValue(ctx, clientIPKey, ip)
+}
+
+// ClientIPFromContext 从 context 中提取客户端 IP。
+func ClientIPFromContext(ctx context.Context) string {
+	if ip, ok := ctx.Value(clientIPKey).(string); ok {
+		return ip
+	}
+	return ""
+}
 
 type ArtifactKey struct {
 	RepositoryID string
@@ -95,6 +113,10 @@ type Artifact struct {
 	Content      io.ReadCloser
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	// 请求统计字段（由 ProxyRuntime 设置）
+	FromCache bool   // 是否命中缓存
+	RemoteURL string // 回源 URL（未命中缓存时）
+	SizeBytes int64  // 文件大小
 }
 
 type RemoteMetadata struct {

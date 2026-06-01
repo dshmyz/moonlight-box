@@ -435,7 +435,7 @@ onMounted(loadWebhooks)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   color: #6b7280;
 }

@@ -110,6 +110,16 @@ func main() {
 		"ai_enabled":  cfg.AI.Enabled,
 	}).Info("Configuration loaded")
 
+	// 校验配置安全性：release 模式下不安全的 JWT 密钥（默认值/为空/过短）将拒绝启动
+	if warnings, vErr := cfg.Validate(); vErr != nil {
+		util.WithFields(logrus.Fields{"error": vErr}).Error("配置校验未通过，拒绝启动")
+		os.Exit(1)
+	} else {
+		for _, w := range warnings {
+			util.WithField("warning", w).Warn("配置安全提醒")
+		}
+	}
+
 	// 初始化数据库
 	if err := database.Initialize(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize database: %v\n", err)
@@ -143,7 +153,7 @@ func main() {
 	// 初始化仓库
 	userRepo := repository.NewUserRepository(database.GetDB())
 	roleRepo := repository.NewRoleRepository(database.GetDB())
-	proxyDownloadLogRepo := repository.NewProxyDownloadLogRepository(database.GetDB())
+	downloadLogRepo := repository.NewDownloadLogRepository(database.GetDB())
 
 	// 初始化服务
 	auditSvc := service.NewAuditService()
@@ -228,12 +238,12 @@ func main() {
 	defer countBatcher.Stop()
 
 	// 初始化日志批量处理器
-	logBatcher := service.NewLogBatcher(proxyDownloadLogRepo, 100, 5*time.Second)
+	logBatcher := service.NewLogBatcher(downloadLogRepo, 100, 5*time.Second)
 	defer logBatcher.Stop()
 
 	// 初始化日志清理服务
 	logCleanupSvc := service.NewLogCleanupService(
-		proxyDownloadLogRepo,
+		downloadLogRepo,
 		cfg.Logging.LogRetentionDays,
 		cfg.Logging.CleanupInterval,
 	)
@@ -269,8 +279,8 @@ func main() {
 	compositeResolver := &runtime.CompositeResolver{
 		Resolvers: []runtime.RepositoryPathResolver{
 			&runtime.Nexus3Resolver{},
-			&runtime.Nexus2Resolver{},
-			&runtime.Nexus2GroupResolver{},
+			runtime.NewNexus2RepoResolver(),
+			runtime.NewNexus2GroupResolver(),
 		},
 	}
 	repositoryRouter := runtime.NewRepositoryRouter(compositeResolver, repoManager)
@@ -346,7 +356,7 @@ func main() {
 	repositoryRouter.Blocker = blocker
 	repositoryRouter.AuditLog = &auditLoggerAdapter{svc: auditSvc}
 	repositoryRouter.DownloadCount = newDownloadCountAdapter(countBatcher)
-	repositoryRouter.ProxyLog = newProxyLogAdapter(logBatcher)
+	repositoryRouter.ProxyLog = newDownloadLogAdapter(logBatcher)
 
 	// 注册所有缓存到缓存管理器
 	cacheSvcProvider := proxy.NewCacheServiceProvider(cacheSvc, "proxy-content", "代理下载内容缓存")
@@ -435,8 +445,8 @@ func main() {
 	migV2Svc.RecoverInterruptedPlans(context.Background())
 	migV2Handler := migv2handler.NewMigrationV2Handler(migV2Svc)
 
-	// 初始化代理下载日志 handler
-	proxyDownloadLogHandler := handler.NewProxyDownloadLogHandler(proxyDownloadLogRepo)
+	// 初始化下载日志 handler
+	downloadLogHandler := handler.NewDownloadLogHandler(downloadLogRepo)
 
 	// 初始化健康检查 handler
 	healthCheckHandler := handler.NewHealthCheckHandler(healthCheckSvc)
@@ -521,7 +531,7 @@ func main() {
 	routerCtx.Handlers.FileBrowse = fileBrowseHandler
 	routerCtx.Handlers.MigrationV2 = migV2Handler
 	routerCtx.Handlers.AI = aiHandler
-	routerCtx.Handlers.ProxyDownloadLog = proxyDownloadLogHandler
+	routerCtx.Handlers.DownloadLog = downloadLogHandler
 	routerCtx.Handlers.HealthCheck = healthCheckHandler
 	routerCtx.Handlers.VulnRule = vulnRuleHandler
 	routerCtx.Handlers.PackageVersion = packageVersionHandler

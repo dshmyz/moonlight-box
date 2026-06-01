@@ -77,7 +77,7 @@ if [ -n "$TOKEN" ]; then
         pass "yum-local 仓库已存在"
     fi
 else
-    info "跳过仓库创建 (无认证令牌)"
+    fail "跳过仓库创建 (无认证令牌)"
 fi
 
 echo
@@ -112,7 +112,7 @@ if [ -n "$TOKEN" ]; then
         warn "RPM 包上传失败 (HTTP $HTTP_CODE)"
     fi
 else
-    info "跳过上传 (无认证令牌)"
+    fail "跳过上传 (无认证令牌)"
 fi
 
 echo

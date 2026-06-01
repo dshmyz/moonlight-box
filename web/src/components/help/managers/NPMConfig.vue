@@ -231,7 +231,7 @@ const downloadTemplate = (filename: string) => {
   background: #f3f4f6;
   padding: 2px 8px;
   border-radius: 4px;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   color: #7c3aed;
 }
@@ -343,7 +343,7 @@ const downloadTemplate = (filename: string) => {
   background: #f3f4f6;
   padding: 2px 8px;
   border-radius: 4px;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   color: #7c3aed;
 }

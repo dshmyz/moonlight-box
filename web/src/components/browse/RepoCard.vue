@@ -125,7 +125,7 @@ const typeLabel = computed(() => {
 }
 
 .config-cmd {
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+  font-family: var(--font-family-mono);
   font-size: 12px;
   color: var(--lunar-accent);
   flex: 1;

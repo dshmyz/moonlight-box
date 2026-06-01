@@ -90,9 +90,12 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 
 	// 按版本号分组，聚合文件列表
 	type versionGroup struct {
-		latestAt time.Time
-		files    []gin.H
-		blobs    []blobInfo
+		latestAt    time.Time
+		publishedAt string
+		license     string
+		triggerIP   string
+		files       []gin.H
+		blobs       []blobInfo
 	}
 	verGroups := make(map[string]*versionGroup)
 	var verOrder []string
@@ -112,8 +115,32 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		if a.CreatedAt.After(vp.latestAt) {
 			vp.latestAt = a.CreatedAt
 		}
+		if vp.publishedAt == "" && a.Metadata != nil {
+			if pa, ok := a.Metadata["published_at"]; ok {
+				if s, ok := pa.(string); ok && s != "" {
+					vp.publishedAt = s
+				}
+			}
+		}
+		if vp.license == "" && a.Metadata != nil {
+			if lic, ok := a.Metadata["license"]; ok {
+				if s, ok := lic.(string); ok && s != "" {
+					vp.license = s
+				}
+			}
+		}
+		if vp.triggerIP == "" && a.Metadata != nil {
+			if tip, ok := a.Metadata["trigger_ip"]; ok {
+				if s, ok := tip.(string); ok && s != "" {
+					vp.triggerIP = s
+				}
+			}
+		}
 
 		filename := coordinateStr(a.Coordinates, "filename")
+		if filename == "" {
+			filename = coordinateStr(a.Coordinates, "file")
+		}
 		if filename == "" {
 			filename = coordinateStr(a.Coordinates, "ext")
 		}
@@ -150,16 +177,30 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 			sha256 = vp.blobs[0].Digest
 		}
 
-		versions = append(versions, gin.H{
+		publishedAt := vp.latestAt
+		if vp.publishedAt != "" {
+			if t, err := time.Parse(time.RFC3339, vp.publishedAt); err == nil {
+				publishedAt = t
+			}
+		}
+
+		entry := gin.H{
 			"version":          ver,
 			"status":           "published",
-			"published_at":     vp.latestAt,
+			"published_at":     publishedAt,
 			"size_bytes":       totalSize,
 			"checksum_sha256":  sha256,
 			"files":            vp.files,
 			"files_downloaded": len(vp.blobs) > 0,
 			"download_count":   0,
-		})
+		}
+		if vp.license != "" {
+			entry["license"] = vp.license
+		}
+		if vp.triggerIP != "" {
+			entry["trigger_ip"] = vp.triggerIP
+		}
+		versions = append(versions, entry)
 	}
 
 	response.Success(c, gin.H{

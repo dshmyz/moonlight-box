@@ -14,7 +14,7 @@ FAIL=0
 
 pass() { PASS=$((PASS+1)); echo -e "  \033[32m✓ PASS\033[0m $1"; }
 fail() { FAIL=$((FAIL+1)); echo -e "  \033[31m✗ FAIL\033[0m $1"; }
-info() { echo -e "  \033[36mℹ INFO\033[0m $1"; }
+info() { echo -e "  ${BLUE}ℹ INFO${NC} $1"; }
 
 echo "============================================"
 echo " 阻断(Block)功能测试"

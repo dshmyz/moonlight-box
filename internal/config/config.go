@@ -202,9 +202,11 @@ func Load(configPath string) (*Config, error) {
 		}
 	}
 
-	// 支持环境变量覆盖
-	v.AutomaticEnv()
+	// 支持环境变量覆盖（如 MOONLIGHT_AUTH_JWT_SECRET 覆盖 auth.jwt_secret）
+	// 必须先设置 prefix 与 key replacer，再开启 AutomaticEnv，嵌套 key 才能正确映射
 	v.SetEnvPrefix("MOONLIGHT")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {

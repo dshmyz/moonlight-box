@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 )
@@ -173,6 +174,15 @@ func (s *fakeMetadataStore) Put(ctx context.Context, artifact *Artifact) error {
 	return nil
 }
 
+func (s *fakeMetadataStore) BatchPut(ctx context.Context, artifacts []*Artifact) error {
+	s.putCalls += len(artifacts)
+	if len(artifacts) > 0 {
+		s.artifact = artifacts[len(artifacts)-1]
+		s.deleted = false
+	}
+	return nil
+}
+
 func (s *fakeMetadataStore) Delete(ctx context.Context, key ArtifactKey) error {
 	s.deleted = true
 	s.artifact = nil
@@ -232,17 +242,16 @@ func TestQueryArtifactsIgnoresTTL(t *testing.T) {
 		Format:       "npm",
 		UpdatedAt:    time.Now().Add(-2 * time.Hour), // 2 hours old
 	}
-	fetcherCalled := false
+	fetcher := &fakeFetcher{
+		fn: func() ([]*Artifact, error) {
+			return []*Artifact{{ID: "fresh", RepositoryID: "repo", Format: "npm"}}, nil
+		},
+	}
 	runtime := &ProxyRuntime{
 		MetadataStore: store,
 		RemoteBaseURL: "https://example.test",
 		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
-		Fetcher: &fakeFetcher{
-			fn: func() ([]*Artifact, error) {
-				fetcherCalled = true
-				return []*Artifact{{ID: "fresh", RepositoryID: "repo", Format: "npm"}}, nil
-			},
-		},
+		Fetcher:       fetcher,
 	}
 
 	query := ArtifactQuery{
@@ -261,7 +270,7 @@ func TestQueryArtifactsIgnoresTTL(t *testing.T) {
 		t.Log("BUG CONFIRMED: QueryArtifacts returned stale data (ID=stale) without checking TTL")
 		t.Logf("  store artifacts were 2h old, MetadataTTL=1min, but fetcher was NOT called")
 	}
-	if !fetcherCalled {
+	if !fetcher.wasCalled() {
 		t.Log("  Fetcher was NOT called — stale data served without refresh")
 	}
 }
@@ -272,20 +281,19 @@ func TestQueryArtifactsIgnoresTTL(t *testing.T) {
 func TestQueryArtifactsCallsFetcherWhenStoreEmpty(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeMetadataStore() // no artifact → Query returns nil
-	fetcherCalled := false
+	fetcher := &fakeFetcher{
+		fn: func() ([]*Artifact, error) {
+			return []*Artifact{
+				{ID: "remote-1", RepositoryID: "repo", Format: "npm", Coordinates: map[string]string{"name": "lodash"}},
+				{ID: "remote-2", RepositoryID: "repo", Format: "npm", Coordinates: map[string]string{"name": "express"}},
+			}, nil
+		},
+	}
 	runtime := &ProxyRuntime{
 		MetadataStore: store,
 		RemoteBaseURL: "https://example.test",
 		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
-		Fetcher: &fakeFetcher{
-			fn: func() ([]*Artifact, error) {
-				fetcherCalled = true
-				return []*Artifact{
-					{ID: "remote-1", RepositoryID: "repo", Format: "npm", Coordinates: map[string]string{"name": "lodash"}},
-					{ID: "remote-2", RepositoryID: "repo", Format: "npm", Coordinates: map[string]string{"name": "express"}},
-				}, nil
-			},
-		},
+		Fetcher:       fetcher,
 	}
 
 	query := ArtifactQuery{
@@ -297,7 +305,7 @@ func TestQueryArtifactsCallsFetcherWhenStoreEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !fetcherCalled {
+	if !fetcher.wasCalled() {
 		t.Fatal("expected fetcher to be called when store is empty")
 	}
 	if len(artifacts) != 2 {
@@ -477,11 +485,22 @@ func TestNexus3ResolverNoTrailingSlash(t *testing.T) {
 // ── Fake implementations for new tests ──────────────────────
 
 type fakeFetcher struct {
-	fn func() ([]*Artifact, error)
+	fn     func() ([]*Artifact, error)
+	called bool
+	mu     sync.Mutex
 }
 
 func (f *fakeFetcher) FetchRemote(ctx context.Context, remoteURL, path string) ([]*Artifact, error) {
+	f.mu.Lock()
+	f.called = true
+	f.mu.Unlock()
 	return f.fn()
+}
+
+func (f *fakeFetcher) wasCalled() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.called
 }
 
 type fakeQueryNode struct {
@@ -507,6 +526,324 @@ func (f *fakeQueryNode) BeginUpload(ctx context.Context, request UploadRequest) 
 
 func (f *fakeQueryNode) DeleteArtifact(ctx context.Context, key ArtifactKey) error {
 	return ErrReadOnly
+}
+
+// ── Nexus2Resolver 测试 ──────────────────────
+
+func TestNexus2ResolverBasicPath(t *testing.T) {
+	resolver := NewNexus2RepoResolver()
+	tests := []struct {
+		name          string
+		url           string
+		wantRepo      string
+		wantRemaining string
+		wantStyle     RouteStyle
+		wantErr       bool
+	}{
+		{
+			name:          "maven artifact path",
+			url:           "http://localhost:8080/content/repositories/releases/com/google/guava/guava/31.1/guava-31.1.jar",
+			wantRepo:      "releases",
+			wantRemaining: "/com/google/guava/guava/31.1/guava-31.1.jar",
+			wantStyle:     Nexus2Route,
+		},
+		{
+			name:          "repo root with trailing slash",
+			url:           "http://localhost:8080/content/repositories/releases/",
+			wantRepo:      "releases",
+			wantRemaining: "/",
+			wantStyle:     Nexus2Route,
+		},
+		{
+			name:          "repo root without trailing slash",
+			url:           "http://localhost:8080/content/repositories/releases",
+			wantRepo:      "releases",
+			wantRemaining: "/",
+			wantStyle:     Nexus2Route,
+		},
+		{
+			name:          "npm scoped package",
+			url:           "http://localhost:8080/content/repositories/npm-hosted/@scope/pkg/-/pkg-1.0.0.tgz",
+			wantRepo:      "npm-hosted",
+			wantRemaining: "/@scope/pkg/-/pkg-1.0.0.tgz",
+			wantStyle:     Nexus2Route,
+		},
+		{
+			name:          "pypi simple index",
+			url:           "http://localhost:8080/content/repositories/pypi-local/simple/",
+			wantRepo:      "pypi-local",
+			wantRemaining: "/simple/",
+			wantStyle:     Nexus2Route,
+		},
+		{
+			name:    "wrong prefix returns error",
+			url:     "http://localhost:8080/repository/releases/com/google/guava",
+			wantErr: true,
+		},
+		{
+			name:    "content without repositories prefix",
+			url:     "http://localhost:8080/content/something/releases/path",
+			wantErr: true,
+		},
+		{
+			name:          "single segment path after repo name",
+			url:           "http://localhost:8080/content/repositories/snapshots/maven-metadata.xml",
+			wantRepo:      "snapshots",
+			wantRemaining: "/maven-metadata.xml",
+			wantStyle:     Nexus2Route,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", tt.url, nil)
+			resolved, err := resolver.Resolve(req)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got repo=%q remaining=%q", resolved.Repository.Name, resolved.RemainingPath)
+				}
+				if err != ErrNotMatched {
+					t.Fatalf("expected ErrNotMatched, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resolved.Repository.Name != tt.wantRepo {
+				t.Errorf("repo name = %q, want %q", resolved.Repository.Name, tt.wantRepo)
+			}
+			if resolved.RemainingPath != tt.wantRemaining {
+				t.Errorf("remaining path = %q, want %q", resolved.RemainingPath, tt.wantRemaining)
+			}
+			if resolved.RouteStyle != tt.wantStyle {
+				t.Errorf("route style = %d, want %d", resolved.RouteStyle, tt.wantStyle)
+			}
+		})
+	}
+}
+
+func TestNexus2ResolverNoTrailingSlash(t *testing.T) {
+	resolver := NewNexus2RepoResolver()
+	req, _ := http.NewRequest("GET", "http://localhost:8080/content/repositories/releases", nil)
+	resolved, err := resolver.Resolve(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resolved.Repository.Name != "releases" {
+		t.Errorf("repo name = %q, want %q", resolved.Repository.Name, "releases")
+	}
+	if resolved.RemainingPath != "/" {
+		t.Errorf("remaining path = %q, want %q", resolved.RemainingPath, "/")
+	}
+}
+
+// ── Nexus2GroupResolver 测试 ──────────────────────
+
+func TestNexus2GroupResolverBasicPath(t *testing.T) {
+	resolver := NewNexus2GroupResolver()
+	tests := []struct {
+		name          string
+		url           string
+		wantRepo      string
+		wantRemaining string
+		wantStyle     RouteStyle
+		wantErr       bool
+	}{
+		{
+			name:          "group maven artifact",
+			url:           "http://localhost:8080/content/groups/public/com/google/guava/guava/31.1/guava-31.1.jar",
+			wantRepo:      "public",
+			wantRemaining: "/com/google/guava/guava/31.1/guava-31.1.jar",
+			wantStyle:     Nexus2Route,
+		},
+		{
+			name:          "group root with trailing slash",
+			url:           "http://localhost:8080/content/groups/public/",
+			wantRepo:      "public",
+			wantRemaining: "/",
+			wantStyle:     Nexus2Route,
+		},
+		{
+			name:          "group root without trailing slash",
+			url:           "http://localhost:8080/content/groups/public",
+			wantRepo:      "public",
+			wantRemaining: "/",
+			wantStyle:     Nexus2Route,
+		},
+		{
+			name:          "group npm package",
+			url:           "http://localhost:8080/content/groups/npm-all/@angular/core/-/core-16.0.0.tgz",
+			wantRepo:      "npm-all",
+			wantRemaining: "/@angular/core/-/core-16.0.0.tgz",
+			wantStyle:     Nexus2Route,
+		},
+		{
+			name:    "wrong prefix /content/repositories should not match",
+			url:     "http://localhost:8080/content/repositories/public/path",
+			wantErr: true,
+		},
+		{
+			name:    "wrong prefix /repository should not match",
+			url:     "http://localhost:8080/repository/public/path",
+			wantErr: true,
+		},
+		{
+			name:          "group pypi simple",
+			url:           "http://localhost:8080/content/groups/pypi-all/simple/requests/",
+			wantRepo:      "pypi-all",
+			wantRemaining: "/simple/requests/",
+			wantStyle:     Nexus2Route,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", tt.url, nil)
+			resolved, err := resolver.Resolve(req)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got repo=%q remaining=%q", resolved.Repository.Name, resolved.RemainingPath)
+				}
+				if err != ErrNotMatched {
+					t.Fatalf("expected ErrNotMatched, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resolved.Repository.Name != tt.wantRepo {
+				t.Errorf("repo name = %q, want %q", resolved.Repository.Name, tt.wantRepo)
+			}
+			if resolved.RemainingPath != tt.wantRemaining {
+				t.Errorf("remaining path = %q, want %q", resolved.RemainingPath, tt.wantRemaining)
+			}
+			if resolved.RouteStyle != tt.wantStyle {
+				t.Errorf("route style = %d, want %d", resolved.RouteStyle, tt.wantStyle)
+			}
+		})
+	}
+}
+
+// ── CompositeResolver 组合测试 ──────────────────────
+
+func TestCompositeResolverNexus2AndNexus3DoNotConflict(t *testing.T) {
+	composite := &CompositeResolver{
+		Resolvers: []RepositoryPathResolver{
+			&Nexus3Resolver{},
+			NewNexus2RepoResolver(),
+			NewNexus2GroupResolver(),
+		},
+	}
+
+	tests := []struct {
+		name      string
+		url       string
+		wantRepo  string
+		wantStyle RouteStyle
+	}{
+		{
+			name:      "nexus3 path resolved by Nexus3Resolver",
+			url:       "http://localhost:8080/repository/maven-central/com/google/guava/guava/31.1/guava-31.1.jar",
+			wantRepo:  "maven-central",
+			wantStyle: Nexus3Route,
+		},
+		{
+			name:      "nexus2 repo path resolved by Nexus2Resolver",
+			url:       "http://localhost:8080/content/repositories/releases/com/google/guava/guava/31.1/guava-31.1.jar",
+			wantRepo:  "releases",
+			wantStyle: Nexus2Route,
+		},
+		{
+			name:      "nexus2 group path resolved by Nexus2GroupResolver",
+			url:       "http://localhost:8080/content/groups/public/com/google/guava/guava/31.1/guava-31.1.jar",
+			wantRepo:  "public",
+			wantStyle: Nexus2Route,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", tt.url, nil)
+			resolved, err := composite.Resolve(req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resolved.Repository.Name != tt.wantRepo {
+				t.Errorf("repo name = %q, want %q", resolved.Repository.Name, tt.wantRepo)
+			}
+			if resolved.RouteStyle != tt.wantStyle {
+				t.Errorf("route style = %d, want %d", resolved.RouteStyle, tt.wantStyle)
+			}
+		})
+	}
+}
+
+func TestCompositeResolverReturnsNotMatchedForUnknownPath(t *testing.T) {
+	composite := &CompositeResolver{
+		Resolvers: []RepositoryPathResolver{
+			&Nexus3Resolver{},
+			NewNexus2RepoResolver(),
+			NewNexus2GroupResolver(),
+		},
+	}
+
+	req, _ := http.NewRequest("GET", "http://localhost:8080/v2/some/path", nil)
+	_, err := composite.Resolve(req)
+	if err != ErrNotMatched {
+		t.Fatalf("expected ErrNotMatched, got %v", err)
+	}
+}
+
+func TestCompositeResolverRepoNameWithDotsAndHyphens(t *testing.T) {
+	composite := &CompositeResolver{
+		Resolvers: []RepositoryPathResolver{
+			&Nexus3Resolver{},
+			NewNexus2RepoResolver(),
+			NewNexus2GroupResolver(),
+		},
+	}
+
+	tests := []struct {
+		name     string
+		url      string
+		wantRepo string
+	}{
+		{
+			name:     "nexus2 repo with hyphens",
+			url:      "http://localhost:8080/content/repositories/maven-releases/path",
+			wantRepo: "maven-releases",
+		},
+		{
+			name:     "nexus2 repo with dots",
+			url:      "http://localhost:8080/content/repositories/repo.local/path",
+			wantRepo: "repo.local",
+		},
+		{
+			name:     "nexus2 group with hyphens",
+			url:      "http://localhost:8080/content/groups/maven-public/path",
+			wantRepo: "maven-public",
+		},
+		{
+			name:     "nexus3 repo with underscores",
+			url:      "http://localhost:8080/repository/my_repo/path",
+			wantRepo: "my_repo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", tt.url, nil)
+			resolved, err := composite.Resolve(req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resolved.Repository.Name != tt.wantRepo {
+				t.Errorf("repo name = %q, want %q", resolved.Repository.Name, tt.wantRepo)
+			}
+		})
+	}
 }
 
 // ── SanitizeFilename 测试 ──────────────────────

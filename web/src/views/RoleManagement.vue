@@ -91,7 +91,7 @@
       <el-table :data="groupedPermissions" style="width: 100%" max-height="400">
         <el-table-column prop="resource" label="资源" width="150">
           <template #default="{ row }">
-            <span class="resource-name">{{ row.resource }}</span>
+            <span class="resource-name">{{ resourceLabel(row.resource) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="权限">
@@ -194,8 +194,26 @@ function actionLabel(action: string): string {
     read: '读取',
     write: '写入',
     delete: '删除',
+    admin: '管理',
+    delete_own: '删除自己',
   }
   return map[action] || action
+}
+
+function resourceLabel(resource: string): string {
+  const map: Record<string, string> = {
+    system: '系统管理',
+    users: '用户管理',
+    audit: '审计日志',
+    repositories: '仓库管理',
+    cache: '缓存管理',
+    'block-rules': '阻断规则',
+    'storage-backends': '存储后端',
+    security: '安全扫描',
+    webhooks: 'Webhook',
+    package: '包管理',
+  }
+  return map[resource] || resource
 }
 
 async function loadRoles() {

@@ -72,7 +72,13 @@ const routes: RouteRecordRaw[] = [
         path: 'packages',
         name: 'AdminPackages',
         component: () => import('@/views/PackageList.vue'),
-        meta: { title: '包管理' },
+        meta: { title: '包管理', permission: { resource: 'package', action: 'read' } },
+      },
+      {
+        path: 'packages-v2',
+        name: 'AdminPackagesV2',
+        component: () => import('@/views/PackageCenterV2.vue'),
+        meta: { title: '软件包中心', permission: { resource: 'package', action: 'read' } },
       },
       {
         path: 'packages/:type/:name',
@@ -141,10 +147,10 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '审计日志', permission: { resource: 'audit', action: 'read' } },
       },
       {
-        path: 'proxy-download-logs',
-        name: 'ProxyDownloadLogs',
-        component: () => import('@/views/ProxyDownloadLogs.vue'),
-        meta: { title: '代理下载日志', permission: { resource: 'audit', action: 'read' } },
+        path: 'download-logs',
+        name: 'DownloadLogs',
+        component: () => import('@/views/DownloadLogs.vue'),
+        meta: { title: '下载日志', permission: { resource: 'audit', action: 'read' } },
       },
       {
         path: 'roles',

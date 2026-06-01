@@ -118,6 +118,7 @@ const handleRowLeave = () => {
   padding: 16px 12px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.03);
   transition: all 0.2s ease;
+  will-change: background;
 }
 
 :deep(.el-table .row-hovered td) {
@@ -273,7 +274,7 @@ const handleRowLeave = () => {
 }
 
 .btn-view-detail:hover {
-  transform: translateY(-1px);
+  transform: translateY(-1px) translateZ(0);
   box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
 }
 

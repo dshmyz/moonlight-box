@@ -70,24 +70,69 @@ func (s *MetadataStore) Put(ctx context.Context, artifact *runtime.Artifact) err
 			}
 		}
 
-		if err := tx.Where("artifact_id = ?", modelArtifact.ID).Delete(&model.ArtifactBlob{}).Error; err != nil {
+		if err := s.syncBlobRefs(tx, modelArtifact.ID, artifact.BlobRefs); err != nil {
 			return err
 		}
-		for i, ref := range artifact.BlobRefs {
-			if ref.BlobID == 0 {
-				continue
+		return nil
+	})
+}
+
+func (s *MetadataStore) BatchPut(ctx context.Context, artifacts []*runtime.Artifact) error {
+	if len(artifacts) == 0 {
+		return nil
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, artifact := range artifacts {
+			modelArtifact := s.toModelArtifact(artifact)
+
+			var existing model.Artifact
+			coordsJSON, _ := json.Marshal(artifact.Coordinates)
+
+			err := tx.Where("repository_id = ?", artifact.RepositoryID).
+				Where("format = ?", artifact.Format).
+				Where("coordinates = ?", coordsJSON).
+				First(&existing).Error
+
+			if err == gorm.ErrRecordNotFound {
+				if err := tx.Create(modelArtifact).Error; err != nil {
+					return err
+				}
+			} else if err != nil {
+				return err
+			} else {
+				modelArtifact.ID = existing.ID
+				if err := tx.Save(modelArtifact).Error; err != nil {
+					return err
+				}
 			}
-			ab := &model.ArtifactBlob{
-				ArtifactID: modelArtifact.ID,
-				BlobID:     ref.BlobID,
-				Position:   i,
-			}
-			if err := tx.Create(ab).Error; err != nil {
+
+			if err := s.syncBlobRefs(tx, modelArtifact.ID, artifact.BlobRefs); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+}
+
+func (s *MetadataStore) syncBlobRefs(tx *gorm.DB, artifactID uint, blobRefs []runtime.BlobRef) error {
+	if err := tx.Where("artifact_id = ?", artifactID).Delete(&model.ArtifactBlob{}).Error; err != nil {
+		return err
+	}
+	for i, ref := range blobRefs {
+		if ref.BlobID == 0 {
+			continue
+		}
+		ab := &model.ArtifactBlob{
+			ArtifactID: artifactID,
+			BlobID:     ref.BlobID,
+			Position:   i,
+		}
+		if err := tx.Create(ab).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *MetadataStore) Delete(ctx context.Context, key runtime.ArtifactKey) error {

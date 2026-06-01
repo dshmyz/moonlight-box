@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"gorm.io/gorm"
 )
 
@@ -32,7 +33,7 @@ func NewDownloadCountBatcher(db *gorm.DB, flushInterval time.Duration) *Download
 		flushInterval: flushInterval,
 		stopCh:        make(chan struct{}),
 	}
-	go batcher.flushLoop()
+	util.SafeGo("download-count-batcher.flush-loop", batcher.flushLoop)
 	return batcher
 }
 

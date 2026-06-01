@@ -137,16 +137,16 @@ if [ "$HTTP_CODE" = "200" ]; then
     fi
 fi
 
-# 验证 NPM 存储目录结构
-# NPM 包存储路径格式: packages/npm/{package_name}/{version}/package.tgz
-NPM_STORAGE="$STORAGE_PATH/npm"
-if [ -d "$NPM_STORAGE" ]; then
-    log_info "NPM 存储目录存在: $NPM_STORAGE"
-    # 检查是否有下载的包
-    NPM_PKG_COUNT=$(find "$NPM_STORAGE" -name "*.tgz" 2>/dev/null | wc -l | tr -d ' ')
-    log_info "NPM 存储的包数量: $NPM_PKG_COUNT"
+BLOBS_DIR="$STORAGE_PATH/blobs"
+if [ -d "$BLOBS_DIR" ]; then
+    BLOB_COUNT=$(find "$BLOBS_DIR" -type f 2>/dev/null | wc -l)
+    if [ "$BLOB_COUNT" -gt 0 ]; then
+        log_pass "CAS Blob 存储存在 (文件数: $BLOB_COUNT)"
+    else
+        log_info "CAS Blob 存储目录为空"
+    fi
 else
-    log_info "NPM 存储目录尚未创建"
+    log_info "CAS Blob 存储目录不存在"
 fi
 
 # ============================================================
@@ -169,30 +169,38 @@ else
     log_info "PyPI JSON API 返回 HTTP $HTTP_CODE (镜像源可能不支持 JSON API)"
 fi
 
-# 测试 PyPI wheel 包下载
-HTTP_CODE=$(curl -s -o /tmp/test_proxy_pypi_wheel.whl -w "%{http_code}" "$BASE_URL/repository/pypi-proxy-tuna/packages/requests/2.31.0/requests-2.31.0-py3-none-any.whl")
-if [ "$HTTP_CODE" = "200" ]; then
-    assert_status "PyPI wheel 下载" "200" "$HTTP_CODE"
-    assert_file_not_empty "PyPI wheel 文件非空" "/tmp/test_proxy_pypi_wheel.whl"
-    
-    # 验证是有效的 zip 文件 (wheel 本质是 zip)
-    if unzip -t /tmp/test_proxy_pypi_wheel.whl >/dev/null 2>&1; then
-        log_pass "PyPI wheel 是有效的 zip 文件"
+# 测试 PyPI wheel 包下载 - 从 Simple Index 解析真实路径
+WHEEL_REL_PATH=$(grep -o 'href="[^"]*requests-2.31.0-py3-none-any.whl[^"]*"' /tmp/test_proxy_pypi_simple.html | head -1 | sed 's/href="//;s/".*//' | sed 's|^../../||')
+if [ -n "$WHEEL_REL_PATH" ]; then
+    WHEEL_URL="$BASE_URL/repository/pypi-proxy-tuna/$WHEEL_REL_PATH"
+    HTTP_CODE=$(curl -s -o /tmp/test_proxy_pypi_wheel.whl -w "%{http_code}" "$WHEEL_URL")
+    if [ "$HTTP_CODE" = "200" ]; then
+        assert_status "PyPI wheel 下载" "200" "$HTTP_CODE"
+        assert_file_not_empty "PyPI wheel 文件非空" "/tmp/test_proxy_pypi_wheel.whl"
+        
+        # 验证是有效的 zip 文件 (wheel 本质是 zip)
+        if unzip -t /tmp/test_proxy_pypi_wheel.whl >/dev/null 2>&1; then
+            log_pass "PyPI wheel 是有效的 zip 文件"
+        else
+            log_fail "PyPI wheel 文件格式验证失败"
+        fi
     else
-        log_info "PyPI wheel 文件格式验证跳过"
+        log_fail "PyPI wheel 下载返回 HTTP $HTTP_CODE"
     fi
 else
-    log_info "PyPI wheel 下载返回 HTTP $HTTP_CODE (可能需要完整路径)"
+    log_fail "无法从 Simple Index 解析 wheel 下载路径"
 fi
 
-# 验证 PyPI 存储目录结构
-PYPI_STORAGE="$STORAGE_PATH/pypi"
-if [ -d "$PYPI_STORAGE" ]; then
-    log_info "PyPI 存储目录存在: $PYPI_STORAGE"
-    PYPI_PKG_COUNT=$(find "$PYPI_STORAGE" -type f \( -name "*.whl" -o -name "*.tar.gz" \) 2>/dev/null | wc -l | tr -d ' ')
-    log_info "PyPI 存储的包数量: $PYPI_PKG_COUNT"
+BLOBS_DIR="$STORAGE_PATH/blobs"
+if [ -d "$BLOBS_DIR" ]; then
+    BLOB_COUNT=$(find "$BLOBS_DIR" -type f 2>/dev/null | wc -l)
+    if [ "$BLOB_COUNT" -gt 0 ]; then
+        log_pass "CAS Blob 存储存在 (文件数: $BLOB_COUNT)"
+    else
+        log_info "CAS Blob 存储目录为空"
+    fi
 else
-    log_info "PyPI 存储目录尚未创建"
+    log_info "CAS Blob 存储目录不存在"
 fi
 
 # ============================================================
@@ -226,49 +234,20 @@ if [ "$HTTP_CODE" = "200" ]; then
     log_pass "Maven POM 下载 - HTTP 200"
     assert_file_not_empty "Maven POM 文件非空" "/tmp/test_proxy_maven_pom.pom"
 else
-    log_info "Maven POM 返回 HTTP $HTTP_CODE (镜像源可能不提供 POM 文件)"
+    log_fail "Maven POM 返回 HTTP $HTTP_CODE (镜像源可能不提供 POM 文件)"
     log_info "注意: 许多镜像源只提供 jar 文件，不提供 pom 文件"
 fi
 
-# 验证 Maven 存储目录结构
-# Maven 包存储路径格式: packages/maven2/{group_id}/{artifact_id}/{version}/{artifact_id}-{version}.jar
-MAVEN_STORAGE="$STORAGE_PATH/maven2"
-if [ -d "$MAVEN_STORAGE" ]; then
-    log_info "Maven 存储目录存在: $MAVEN_STORAGE"
-    
-    # 检查 guava 是否按规范存储
-    EXPECTED_JAR_PATH="$MAVEN_STORAGE/com.google.guava/guava/32.1.3-jre/guava-32.1.3-jre.jar"
-    if [ -f "$EXPECTED_JAR_PATH" ]; then
-        log_pass "Maven guava jar 按规范路径存储"
-        log_info "存储路径: $EXPECTED_JAR_PATH"
+BLOBS_DIR="$STORAGE_PATH/blobs"
+if [ -d "$BLOBS_DIR" ]; then
+    BLOB_COUNT=$(find "$BLOBS_DIR" -type f 2>/dev/null | wc -l)
+    if [ "$BLOB_COUNT" -gt 0 ]; then
+        log_pass "CAS Blob 存储存在 (文件数: $BLOB_COUNT)"
     else
-        # 检查其他可能的路径
-        FOUND_JAR=$(find "$MAVEN_STORAGE" -name "guava-32.1.3-jre.jar" 2>/dev/null | head -n 1)
-        if [ -n "$FOUND_JAR" ]; then
-            log_info "Maven guava jar 存储路径: $FOUND_JAR"
-            log_info "期望路径: $EXPECTED_JAR_PATH"
-        else
-            log_info "Maven guava jar 未找到"
-        fi
+        log_info "CAS Blob 存储目录为空"
     fi
-    
-    # 检查 metadata.xml 是否存储
-    EXPECTED_METADATA_PATH="$MAVEN_STORAGE/com.google.guava/guava/maven-metadata.xml"
-    if [ -f "$EXPECTED_METADATA_PATH" ]; then
-        log_pass "Maven metadata.xml 按规范路径存储"
-    else
-        FOUND_METADATA=$(find "$MAVEN_STORAGE" -name "maven-metadata.xml" 2>/dev/null | head -n 1)
-        if [ -n "$FOUND_METADATA" ]; then
-            log_info "Maven metadata.xml 存储路径: $FOUND_METADATA"
-        else
-            log_info "Maven metadata.xml 未找到"
-        fi
-    fi
-    
-    MAVEN_JAR_COUNT=$(find "$MAVEN_STORAGE" -name "*.jar" 2>/dev/null | wc -l | tr -d ' ')
-    log_info "Maven 存储的 jar 数量: $MAVEN_JAR_COUNT"
 else
-    log_info "Maven 存储目录尚未创建"
+    log_info "CAS Blob 存储目录不存在"
 fi
 
 # ============================================================
@@ -281,20 +260,19 @@ if [ "$HTTP_CODE" = "200" ]; then
     log_pass "Yum repomd.xml 下载 - HTTP 200"
     assert_body_contains "Yum repomd.xml 包含 xml" "repomd" "$(cat /tmp/test_proxy_yum_repomd.xml)"
 else
-    log_info "Yum repomd.xml 返回 HTTP $HTTP_CODE (镜像源路径可能不同)"
+    log_fail "Yum repomd.xml 返回 HTTP $HTTP_CODE (镜像源路径可能不同)"
 fi
 
-# 验证 Yum 存储目录结构
-# Yum 存储路径格式: packages/repos/{repo-name}/...
-YUM_STORAGE="$STORAGE_PATH/repos/yum-proxy-baseos"
-if [ -d "$YUM_STORAGE" ]; then
-    log_info "Yum 存储目录存在: $YUM_STORAGE"
-    
-    # 检查 repomd.xml 是否存储
-    REPOMD_PATH="$YUM_STORAGE/repodata/repomd.xml"
-    assert_file_exists "Yum repomd.xml 按规范路径存储" "$REPOMD_PATH"
+BLOBS_DIR="$STORAGE_PATH/blobs"
+if [ -d "$BLOBS_DIR" ]; then
+    BLOB_COUNT=$(find "$BLOBS_DIR" -type f 2>/dev/null | wc -l)
+    if [ "$BLOB_COUNT" -gt 0 ]; then
+        log_pass "CAS Blob 存储存在 (文件数: $BLOB_COUNT)"
+    else
+        log_info "CAS Blob 存储目录为空"
+    fi
 else
-    log_info "Yum 存储目录尚未创建"
+    log_info "CAS Blob 存储目录不存在"
 fi
 
 # ============================================================
@@ -329,52 +307,20 @@ if [ "$HTTP_CODE" = "200" ]; then
     if unzip -t /tmp/test_proxy_go_zip.zip >/dev/null 2>&1; then
         log_pass "Go zip 是有效的 zip 文件"
     else
-        log_info "Go zip 文件格式验证失败 (可能是下载了错误内容)"
+        log_fail "Go zip 文件格式验证失败 (可能是下载了错误内容)"
     fi
 fi
 
-# 验证 Go 存储目录结构
-# Go 存储路径格式: packages/go/{module}/@v/{version}.zip, .mod, .info
-GO_STORAGE="$STORAGE_PATH/go"
-if [ -d "$GO_STORAGE" ]; then
-    log_info "Go 存储目录存在: $GO_STORAGE"
-    
-    # 检查 testify 是否按规范存储
-    TESTIFY_PATH="$GO_STORAGE/github.com/stretchr/testify/@v"
-    if [ -d "$TESTIFY_PATH" ]; then
-        log_pass "Go testify @v 目录存在"
-        
-        # 检查文件是否存在
-        if [ -f "$TESTIFY_PATH/v1.8.4.mod" ]; then
-            log_pass "Go v1.8.4.mod 存储"
-        else
-            log_info "Go v1.8.4.mod 未存储"
-        fi
-        
-        if [ -f "$TESTIFY_PATH/v1.8.4.info" ]; then
-            log_pass "Go v1.8.4.info 存储"
-        else
-            log_info "Go v1.8.4.info 未存储 (代理模式下可能不缓存)"
-        fi
-        
-        if [ -f "$TESTIFY_PATH/v1.8.4.zip" ]; then
-            log_pass "Go v1.8.4.zip 存储"
-        else
-            log_info "Go v1.8.4.zip 未存储"
-        fi
+BLOBS_DIR="$STORAGE_PATH/blobs"
+if [ -d "$BLOBS_DIR" ]; then
+    BLOB_COUNT=$(find "$BLOBS_DIR" -type f 2>/dev/null | wc -l)
+    if [ "$BLOB_COUNT" -gt 0 ]; then
+        log_pass "CAS Blob 存储存在 (文件数: $BLOB_COUNT)"
     else
-        log_info "Go testify @v 目录不存在"
-        # 检查是否有其他 Go 模块
-        GO_MODULE_COUNT=$(find "$GO_STORAGE" -type d -name "@v" 2>/dev/null | wc -l | tr -d ' ')
-        if [ "$GO_MODULE_COUNT" -gt 0 ]; then
-            log_info "找到 $GO_MODULE_COUNT 个 Go 模块"
-        fi
+        log_info "CAS Blob 存储目录为空"
     fi
-    
-    GO_MOD_COUNT=$(find "$GO_STORAGE" -name "*.mod" 2>/dev/null | wc -l | tr -d ' ')
-    log_info "Go 存储的 mod 文件数量: $GO_MOD_COUNT"
 else
-    log_info "Go 存储目录尚未创建"
+    log_info "CAS Blob 存储目录不存在"
 fi
 
 # ============================================================
@@ -397,18 +343,22 @@ if [ -n "$NUGET_PROXY_EXISTS" ]; then
         if unzip -t /tmp/test_proxy_nuget.nupkg >/dev/null 2>&1; then
             log_pass "NuGet nupkg 是有效的 zip 文件"
         else
-            log_info "NuGet nupkg 文件格式验证跳过"
+            log_fail "NuGet nupkg 文件格式验证跳过"
         fi
     else
-        log_info "NuGet 包下载返回 HTTP $HTTP_CODE"
+        log_fail "NuGet 包下载返回 HTTP $HTTP_CODE"
     fi
     
-    # 验证 NuGet 存储目录结构
-    NUGET_STORAGE="$STORAGE_PATH/nuget"
-    if [ -d "$NUGET_STORAGE" ]; then
-        log_info "NuGet 存储目录存在: $NUGET_STORAGE"
-        NUGET_PKG_COUNT=$(find "$NUGET_STORAGE" -name "*.nupkg" 2>/dev/null | wc -l | tr -d ' ')
-        log_info "NuGet 存储的包数量: $NUGET_PKG_COUNT"
+    BLOBS_DIR="$STORAGE_PATH/blobs"
+    if [ -d "$BLOBS_DIR" ]; then
+        BLOB_COUNT=$(find "$BLOBS_DIR" -type f 2>/dev/null | wc -l)
+        if [ "$BLOB_COUNT" -gt 0 ]; then
+            log_pass "CAS Blob 存储存在 (文件数: $BLOB_COUNT)"
+        else
+            log_info "CAS Blob 存储目录为空"
+        fi
+    else
+        log_info "CAS Blob 存储目录不存在"
     fi
 else
     log_info "未检测到 NuGet 代理仓库，跳过 NuGet 测试"
@@ -450,21 +400,26 @@ if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then
         fi
     fi
     
-    # 验证 Generic 存储目录结构
-    GENERIC_STORAGE="$STORAGE_PATH/generic"
-    if [ -d "$GENERIC_STORAGE" ]; then
-        log_info "Generic 存储目录存在: $GENERIC_STORAGE"
-        assert_file_exists "Generic 测试文件存储" "$GENERIC_STORAGE/$TEST_FILE_NAME"
+    BLOBS_DIR="$STORAGE_PATH/blobs"
+    if [ -d "$BLOBS_DIR" ]; then
+        BLOB_COUNT=$(find "$BLOBS_DIR" -type f 2>/dev/null | wc -l)
+        if [ "$BLOB_COUNT" -gt 0 ]; then
+            log_pass "CAS Blob 存储存在 (文件数: $BLOB_COUNT)"
+        else
+            log_info "CAS Blob 存储目录为空"
+        fi
+    else
+        log_info "CAS Blob 存储目录不存在"
     fi
 else
-    log_info "Generic 文件上传返回 HTTP $HTTP_CODE (可能需要认证)"
+    log_fail "Generic 文件上传返回 HTTP $HTTP_CODE (可能需要认证)"
 fi
 
 # ============================================================
 log_section "测试 8: 数据库验证 - 仓库配置完整性"
 # ============================================================
 
-DB_PATH="$PROJECT_ROOT/data/registry.db"
+DB_PATH="$PROJECT_ROOT/../data/registry.db"
 if [ -f "$DB_PATH" ]; then
     log_info "数据库文件存在: $DB_PATH"
     
@@ -482,26 +437,24 @@ if [ -f "$DB_PATH" ]; then
     TOTAL_VERSIONS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM package_versions;" 2>/dev/null || echo "0")
     log_info "数据库中记录的包版本总数: $TOTAL_VERSIONS"
 else
-    log_info "数据库文件不存在: $DB_PATH"
+    log_fail "数据库文件不存在: $DB_PATH"
 fi
 
 # ============================================================
 log_section "测试 9: 存储目录结构验证"
 # ============================================================
 
-log_info "验证各包类型的存储目录结构..."
-
-# 检查各包类型的存储目录
-for pkg_type in npm maven2 pypi go nuget generic repos; do
-    TYPE_PATH="$STORAGE_PATH/$pkg_type"
-    if [ -d "$TYPE_PATH" ]; then
-        FILE_COUNT=$(find "$TYPE_PATH" -type f 2>/dev/null | wc -l | tr -d ' ')
-        DIR_COUNT=$(find "$TYPE_PATH" -type d 2>/dev/null | wc -l | tr -d ' ')
-        log_pass "$pkg_type 存储目录存在 (文件: $FILE_COUNT, 目录: $DIR_COUNT)"
+BLOBS_DIR="$STORAGE_PATH/blobs"
+if [ -d "$BLOBS_DIR" ]; then
+    BLOB_COUNT=$(find "$BLOBS_DIR" -type f 2>/dev/null | wc -l)
+    if [ "$BLOB_COUNT" -gt 0 ]; then
+        log_pass "CAS Blob 存储存在 (文件数: $BLOB_COUNT)"
     else
-        log_info "$pkg_type 存储目录不存在或为空"
+        log_info "CAS Blob 存储目录为空"
     fi
-done
+else
+    log_info "CAS Blob 存储目录不存在"
+fi
 
 # ============================================================
 log_section "测试 10: 阻断规则功能验证"
@@ -532,7 +485,7 @@ if [ -n "$TOKEN" ]; then
         log_info "阻断规则创建返回: $BLOCK_RESPONSE"
     fi
 else
-    log_info "管理员登录失败，跳过阻断规则测试"
+    log_fail "管理员登录失败，跳过阻断规则测试"
 fi
 
 # ============================================================

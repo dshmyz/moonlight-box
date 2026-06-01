@@ -49,6 +49,14 @@ func NewJobRepo(db *gorm.DB) *JobRepo { return &JobRepo{db: db} }
 func (r *JobRepo) Create(job *domain.MigrationJob) error         { return r.db.Create(job).Error }
 func (r *JobRepo) BatchCreate(jobs []domain.MigrationJob) error  { return r.db.CreateInBatches(jobs, 50).Error }
 func (r *JobRepo) Update(job *domain.MigrationJob) error         { return r.db.Save(job).Error }
+func (r *JobRepo) FindByID(id uint) (*domain.MigrationJob, error) {
+	var j domain.MigrationJob
+	err := r.db.First(&j, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &j, nil
+}
 func (r *JobRepo) UpdateStatus(id uint, status domain.JobStatus) error {
 	return r.db.Model(&domain.MigrationJob{}).Where("id = ?", id).Update("status", status).Error
 }

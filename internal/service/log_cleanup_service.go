@@ -4,18 +4,19 @@ import (
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 )
 
 type LogCleanupService struct {
-	logRepo         *repository.ProxyDownloadLogRepository
+	logRepo         *repository.DownloadLogRepository
 	retentionDays   int
 	cleanupInterval time.Duration
 	stopCh          chan struct{}
 }
 
 func NewLogCleanupService(
-	logRepo *repository.ProxyDownloadLogRepository,
+	logRepo *repository.DownloadLogRepository,
 	retentionDays int,
 	cleanupInterval time.Duration,
 ) *LogCleanupService {
@@ -41,7 +42,7 @@ func (s *LogCleanupService) Start() {
 		"interval":       s.cleanupInterval,
 	}).Info("Log cleanup service started")
 
-	go s.cleanupLoop()
+	util.SafeGo("log-cleanup", s.cleanupLoop)
 }
 
 func (s *LogCleanupService) cleanupLoop() {

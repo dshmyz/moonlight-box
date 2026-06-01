@@ -37,6 +37,7 @@ type SearchEntry struct {
 	VersionCount   int       `json:"version_count"`
 	DownloadCount  int64     `json:"download_count"`
 	RepositoryName string    `json:"repository_name,omitempty"`
+	License        string    `json:"license,omitempty"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
@@ -63,6 +64,7 @@ type rawArtifact struct {
 	RepositoryID uint      `gorm:"column:repository_id"`
 	Format       string    `gorm:"column:format"`
 	Coordinates  string    `gorm:"column:coordinates"`
+	Metadata     string    `gorm:"column:metadata"`
 	CreatedAt    time.Time `gorm:"column:created_at"`
 	UpdatedAt    time.Time `gorm:"column:updated_at"`
 }
@@ -88,8 +90,16 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 		conditions = append(conditions, "repository_id = (SELECT id FROM repositories WHERE name = ? LIMIT 1)")
 		args = append(args, req.Repository)
 	}
+	if req.Query != "" {
+		conditions = append(conditions, "LOWER(json_extract(coordinates, '$.name')) LIKE ?")
+		args = append(args, "%"+strings.ToLower(req.Query)+"%")
+	}
+	if req.Name != "" {
+		conditions = append(conditions, "json_extract(coordinates, '$.name') = ?")
+		args = append(args, req.Name)
+	}
 
-	query := "SELECT id, repository_id, format, coordinates, created_at, updated_at FROM artifacts"
+	query := "SELECT id, repository_id, format, coordinates, metadata, created_at, updated_at FROM artifacts"
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -115,14 +125,6 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 			continue
 		}
 
-		if req.Query != "" {
-			if !strings.Contains(strings.ToLower(name), strings.ToLower(req.Query)) {
-				continue
-			}
-		}
-		if req.Name != "" && name != req.Name {
-			continue
-		}
 		if req.Version != "" {
 			ver := extractField(row.Coordinates, "version")
 			if ver != req.Version {
@@ -143,6 +145,12 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 		}
 		if acc.firstID == 0 {
 			acc.firstID = row.ID
+		}
+		if acc.license == "" {
+			acc.license = extractField(row.Metadata, "license")
+		}
+		if acc.description == "" {
+			acc.description = extractField(row.Metadata, "description")
 		}
 	}
 
@@ -206,9 +214,11 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 			RepositoryID:   acc.repositoryID,
 			Format:         acc.format,
 			Name:           acc.name,
+			Description:    acc.description,
 			VersionCount:   acc.versionCount,
 			UpdatedAt:      acc.latestTime,
 			RepositoryName: repoNameMap[acc.repositoryID],
+			License:        acc.license,
 		}
 	}
 
@@ -229,6 +239,8 @@ type groupAcc struct {
 	versionCount int
 	latestTime   time.Time
 	firstID      uint
+	license      string
+	description  string
 }
 
 // extractName 从原始 coordinates JSON 中提取包名

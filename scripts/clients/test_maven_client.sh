@@ -260,7 +260,7 @@ EOF
         tail -10 /tmp/maven-deploy.log
     fi
 else
-    info "跳过 mvn deploy (无认证令牌)"
+    fail "跳过 mvn deploy (无认证令牌)"
 fi
 
 # 清理

@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"fmt"
+
+	"github.com/sirupsen/logrus"
 )
 
 type GroupRuntime struct {
@@ -41,11 +43,26 @@ func (g *GroupRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 	allArtifacts := make([]*Artifact, 0)
 	seen := make(map[string]bool)
 
-	for _, node := range g.Members {
+	logrus.WithFields(logrus.Fields{
+		"format":      query.Format,
+		"remotePath":  query.RemotePath,
+		"memberCount": len(g.Members),
+	}).Debug("group: QueryArtifacts called")
+
+	for i, node := range g.Members {
 		artifacts, err := node.QueryArtifacts(ctx, query)
 		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"memberIndex": i,
+				"remotePath":  query.RemotePath,
+				"error":       err.Error(),
+			}).Warn("group: member QueryArtifacts failed, skipping")
 			continue
 		}
+		logrus.WithFields(logrus.Fields{
+			"memberIndex":   i,
+			"artifactCount": len(artifacts),
+		}).Debug("group: member returned artifacts")
 		for _, a := range artifacts {
 			key := artifactDedupeKey(a)
 			if !seen[key] {
@@ -54,6 +71,11 @@ func (g *GroupRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 			}
 		}
 	}
+
+	logrus.WithFields(logrus.Fields{
+		"totalArtifactCount": len(allArtifacts),
+	}).Debug("group: QueryArtifacts completed")
+
 	return allArtifacts, nil
 }
 

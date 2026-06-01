@@ -216,7 +216,7 @@ if [ -n "$TOKEN" ]; then
         fi
     fi
 else
-    info "跳过 npm publish (无认证令牌)"
+    fail "跳过 npm publish (无认证令牌)"
 fi
 
 # 清理

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/sirupsen/logrus"
 )
 
 // mavenVersionPattern 匹配 Maven 版本号：数字开头或包含 SNAPSHOT
@@ -45,6 +46,11 @@ func (p *MavenPlugin) FetchRemote(ctx context.Context, remoteURL, path string) (
 		return nil, errors.New("maven: empty path")
 	}
 
+	logrus.WithFields(logrus.Fields{
+		"remoteURL": remoteURL,
+		"path":      path,
+	}).Debug("maven: FetchRemote called")
+
 	// For maven-metadata.xml requests, fetch and parse the XML from remote.
 	if strings.HasSuffix(path, "maven-metadata.xml") {
 		return p.fetchMetadata(ctx, remoteURL, path)
@@ -53,8 +59,16 @@ func (p *MavenPlugin) FetchRemote(ctx context.Context, remoteURL, path string) (
 	// For other paths (artifact downloads), return a basic artifact indicating the remote resource exists.
 	key, err := p.parseMavenPath(path)
 	if err != nil {
+		logrus.WithError(err).WithField("path", path).Error("maven: parse remote path failed")
 		return nil, fmt.Errorf("maven: parse remote path: %w", err)
 	}
+	logrus.WithFields(logrus.Fields{
+		"path":     path,
+		"group":    key.Coordinates["group"],
+		"artifact": key.Coordinates["artifact"],
+		"version":  key.Coordinates["version"],
+		"filename": key.Filename,
+	}).Debug("maven: FetchRemote returning artifact reference")
 	return []*runtime.Artifact{
 		{
 			Format:      "maven",
@@ -70,33 +84,63 @@ func (p *MavenPlugin) FetchRemote(ctx context.Context, remoteURL, path string) (
 
 // fetchMetadata fetches maven-metadata.xml from the remote repository and extracts versions.
 func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	start := time.Now()
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + path
+
+	logrus.WithFields(logrus.Fields{
+		"remoteURL": remoteURL,
+		"path":      path,
+		"fullURL":   fullURL,
+	}).Debug("maven: fetchMetadata called")
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
+		logrus.WithError(err).WithField("fullURL", fullURL).Error("maven: create request for metadata failed")
 		return nil, fmt.Errorf("maven: create request for metadata: %w", err)
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":  fullURL,
+			"duration": time.Since(start).Seconds(),
+			"error":    err.Error(),
+		}).Error("maven: fetch metadata HTTP request failed")
 		return nil, fmt.Errorf("maven: fetch metadata from %s: %w", fullURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":    fullURL,
+			"statusCode": resp.StatusCode,
+			"duration":   time.Since(start).Seconds(),
+		}).Error("maven: fetch metadata returned non-200 status")
 		return nil, fmt.Errorf("maven: fetch metadata from %s: status %d", fullURL, resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":  fullURL,
+			"duration": time.Since(start).Seconds(),
+			"error":    err.Error(),
+		}).Error("maven: read metadata body failed")
 		return nil, fmt.Errorf("maven: read metadata body: %w", err)
 	}
 
 	var meta mavenMetadata
 	if err := xml.Unmarshal(body, &meta); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"fullURL":  fullURL,
+			"duration": time.Since(start).Seconds(),
+			"error":    err.Error(),
+		}).Error("maven: unmarshal metadata XML failed")
 		return nil, fmt.Errorf("maven: unmarshal metadata XML: %w", err)
 	}
 
 	// Parse the path to extract group and artifact coordinates.
 	parts := strings.Split(strings.Trim(strings.TrimSuffix(path, "/maven-metadata.xml"), "/"), "/")
 	if len(parts) < 2 {
+		logrus.WithField("path", path).Error("maven: invalid metadata path")
 		return nil, fmt.Errorf("maven: invalid metadata path: %s", path)
 	}
 
@@ -110,12 +154,26 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 		groupParts = parts[:len(parts)-2]
 	}
 	group := strings.Join(groupParts, ".")
+	if meta.GroupID != "" {
+		group = meta.GroupID
+	}
+	if meta.ArtifactID != "" {
+		artifact = meta.ArtifactID
+	}
 
 	var artifacts []*runtime.Artifact
 	versions := meta.Versioning.Versions.Items
 	if len(versions) == 0 && meta.Version != "" {
 		versions = []string{meta.Version}
 	}
+
+	var publishedAt string
+	if meta.Versioning.LastU != "" {
+		if t, err := time.Parse("200601021504", meta.Versioning.LastU); err == nil {
+			publishedAt = t.Format(time.RFC3339)
+		}
+	}
+
 	for _, v := range versions {
 		coords := map[string]string{
 			"group":    group,
@@ -125,17 +183,54 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 		if version != "" {
 			coords["base_version"] = version
 		}
+		props := map[string]string{
+			"latest":  meta.Versioning.Latest,
+			"release": meta.Versioning.Release,
+		}
+		if publishedAt != "" {
+			props["published_at"] = publishedAt
+		}
 		artifacts = append(artifacts, &runtime.Artifact{
 			Format:      "maven",
 			Kind:        "version",
 			Coordinates: coords,
-			Properties: map[string]string{
-				"latest":  meta.Versioning.Latest,
-				"release": meta.Versioning.Release,
-			},
+			Properties:  props,
 		})
 	}
+
+	logrus.WithFields(logrus.Fields{
+		"fullURL":      fullURL,
+		"group":        group,
+		"artifact":     artifact,
+		"versionCount": len(artifacts),
+		"duration":     time.Since(start).Seconds(),
+	}).Debug("maven: fetchMetadata success")
 	return artifacts, nil
+}
+
+func (p *MavenPlugin) fetchLicenseFromPOM(ctx context.Context, remoteURL, group, artifact, version string) string {
+	groupPath := strings.ReplaceAll(group, ".", "/")
+	pomURL := strings.TrimRight(remoteURL, "/") + "/" + groupPath + "/" + artifact + "/" + version + "/" + artifact + "-" + version + ".pom"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pomURL, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var pom pomProject
+	if err := xml.NewDecoder(resp.Body).Decode(&pom); err != nil {
+		return ""
+	}
+	if len(pom.Licenses) > 0 {
+		return pom.Licenses[0].Name
+	}
+	return ""
 }
 
 func (p *MavenPlugin) Name() string {
@@ -207,6 +302,14 @@ type mavenSnapshotVersionXML struct {
 	Updated    string `xml:"updated"`
 }
 
+type pomProject struct {
+	Licenses []pomLicense `xml:"licenses>license"`
+}
+
+type pomLicense struct {
+	Name string `xml:"name"`
+}
+
 func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) < 3 {
@@ -255,6 +358,7 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 				"artifact": artifact,
 				"version":  version,
 				"path":     strings.TrimSuffix(strings.Trim(path, "/"), "/maven-metadata.xml"),
+				"filename": "maven-metadata.xml",
 			},
 			Filename: "maven-metadata.xml",
 		}
@@ -435,6 +539,10 @@ func (p *MavenPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime ru
 		return nil
 	}
 	defer artifact.Content.Close()
+
+	ctx.FromCache = artifact.FromCache
+	ctx.RemoteURL = artifact.RemoteURL
+	ctx.SizeBytes = artifact.SizeBytes
 
 	ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
 	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")

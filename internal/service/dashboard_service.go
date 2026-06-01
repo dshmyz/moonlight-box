@@ -194,7 +194,7 @@ func (s *DashboardService) computeStats(ctx context.Context) (*DashboardStats, e
 	}
 	if len(repoIDs) > 0 {
 		todayStart := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 0, 0, 0, 0, time.Now().Location())
-		s.db.Model(&model.ProxyDownloadLog{}).
+		s.db.Model(&model.DownloadLog{}).
 			Select("repository_id, COUNT(*) as count").
 			Where("repository_id IN ? AND created_at >= ? AND status = ?", repoIDs, todayStart, model.DownloadStatusSuccess).
 			Group("repository_id").
@@ -323,7 +323,7 @@ func (s *DashboardService) getTopPackages(limit int) []PackageTop {
 	}
 
 	var downloadStats []DownloadStats
-	err := s.db.Model(&model.ProxyDownloadLog{}).
+	err := s.db.Model(&model.DownloadLog{}).
 		Select("package_name, package_type, COUNT(*) as download_count").
 		Where("status = ?", model.DownloadStatusSuccess).
 		Group("package_name, package_type").
@@ -424,10 +424,10 @@ func (s *DashboardService) computeCacheInfo() CacheInfo {
 	s.db.Model(&model.CacheEntry{}).Count(&totalEntries)
 
 	var totalLogs int64
-	s.db.Model(&model.ProxyDownloadLog{}).Count(&totalLogs)
+	s.db.Model(&model.DownloadLog{}).Count(&totalLogs)
 
 	var cachedLogs int64
-	s.db.Model(&model.ProxyDownloadLog{}).Where("status = ?", model.DownloadStatusCached).Count(&cachedLogs)
+	s.db.Model(&model.DownloadLog{}).Where("status = ?", model.DownloadStatusCached).Count(&cachedLogs)
 
 	var hitRate float64
 	if totalLogs > 0 {
@@ -454,7 +454,7 @@ func (s *DashboardService) getDownloadsLast7Days() []int64 {
 	}
 
 	var dailyCounts []DailyCount
-	s.db.Model(&model.ProxyDownloadLog{}).
+	s.db.Model(&model.DownloadLog{}).
 		Select("DATE(created_at) as date, COUNT(*) as count").
 		Where("created_at >= ? AND status = ?", sevenDaysAgo, model.DownloadStatusSuccess).
 		Group("DATE(created_at)").

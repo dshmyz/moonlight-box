@@ -271,7 +271,7 @@ if [ -n "$TOKEN" ]; then
                     tail -3 /tmp/twine-upload.log
                 fi
             else
-                info "跳过上传测试 (twine 不可用)"
+                fail "跳过上传测试 (twine 不可用)"
             fi
         else
             warn "构建 wheel 包失败"
@@ -281,7 +281,7 @@ if [ -n "$TOKEN" ]; then
         tail -3 /tmp/pip-build.log
     fi
 else
-    info "跳过认证发布测试 (无认证令牌)"
+    fail "跳过认证发布测试 (无认证令牌)"
 fi
 
 # 清理

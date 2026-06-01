@@ -691,7 +691,7 @@ onMounted(() => {
 }
 
 .key-text {
-  font-family: 'Monaco', 'Menlo', monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   color: #374151;
 }
@@ -801,7 +801,7 @@ onMounted(() => {
   background: #f3f4f6;
   padding: 2px 6px;
   border-radius: 4px;
-  font-family: 'Monaco', 'Menlo', monospace;
+  font-family: var(--font-family-mono);
   font-size: 11px;
   color: #374151;
 }

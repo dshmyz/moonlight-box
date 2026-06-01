@@ -219,7 +219,7 @@ if [ "$HTTP_CODE" = "200" ]; then
     if echo "$INFO_CONTENT" | grep -q '"Time"'; then
         pass ".info 文件包含 Time 字段"
     else
-        info ".info 文件不包含 Time 字段"
+        fail ".info 文件不包含 Time 字段"
     fi
 else
     fail "Go .info 文件不可访问 (HTTP $HTTP_CODE)"

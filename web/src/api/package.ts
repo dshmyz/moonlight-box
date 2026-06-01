@@ -55,6 +55,7 @@ export interface PackageVersion {
   size_bytes?: number
   checksum_sha256?: string
   checksum_md5?: string
+  trigger_ip?: string
   files?: PackageFile[]
   dependencies?: Array<{
     id: number

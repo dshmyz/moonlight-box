@@ -761,6 +761,6 @@ onUnmounted(() => stopAllPolling())
 .event-line:last-child { border-bottom: none; }
 .event-line.event-warn { color: #e6a23c; }
 .event-line.event-error { color: #f56c6c; }
-.event-time { color: #9ca3af; white-space: nowrap; font-family: monospace; }
+.event-time { color: #9ca3af; white-space: nowrap; font-family: var(--font-family-mono); }
 .event-msg { flex: 1; }
 </style>

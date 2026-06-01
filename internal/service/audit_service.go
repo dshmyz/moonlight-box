@@ -7,6 +7,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/database"
 	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 )
 
@@ -22,7 +23,7 @@ func NewAuditService() *AuditService {
 		shutdown: make(chan struct{}),
 	}
 	svc.wg.Add(1)
-	go svc.worker()
+	util.SafeGo("audit-worker", svc.worker)
 	return svc
 }
 

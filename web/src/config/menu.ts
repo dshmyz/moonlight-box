@@ -24,6 +24,13 @@ export const menuConfig: MenuItem[] = [
         index: '/admin/packages',
         title: '包管理',
         icon: 'fa-solid fa-box',
+        permission: { resource: 'package', action: 'read' },
+      },
+      {
+        index: '/admin/packages-v2',
+        title: '软件包中心',
+        icon: 'fa-solid fa-store',
+        permission: { resource: 'package', action: 'read' },
       },
       {
         index: '/admin/repositories',
@@ -131,8 +138,8 @@ export const menuConfig: MenuItem[] = [
         permission: { resource: 'audit', action: 'read' },
       },
       {
-        index: '/admin/proxy-download-logs',
-        title: '代理下载日志',
+        index: '/admin/download-logs',
+        title: '下载日志',
         icon: 'fa-solid fa-file-lines',
         permission: { resource: 'audit', action: 'read' },
       },

@@ -147,7 +147,7 @@ const handleOptimize = (pkgName: string, pkgType?: string) => {
   padding: 2px 6px;
   background: var(--el-fill-color-light);
   border-radius: 4px;
-  font-family: 'SF Mono', 'Courier New', Consolas, monospace;
+  font-family: var(--font-family-mono);
   font-size: 0.9em;
   color: var(--el-color-primary);
 }
@@ -162,7 +162,7 @@ const handleOptimize = (pkgName: string, pkgType?: string) => {
 }
 
 .markdown-content :deep(.code-block code) {
-  font-family: 'SF Mono', 'Courier New', Consolas, monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   line-height: 1.5;
   color: var(--el-text-color-primary);
