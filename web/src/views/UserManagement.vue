@@ -90,7 +90,7 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="260" align="center">
+        <el-table-column label="操作" width="300" align="center">
           <template #default="{ row }">
             <div class="operation-buttons">
               <el-button class="btn-role" size="small" @click="showRoleDialog(row)">
@@ -101,6 +101,14 @@
               </el-button>
               <el-button class="btn-toggle" size="small" type="text" @click="toggleActive(row)">
                 {{ row.is_active ? '禁用' : '启用' }}
+              </el-button>
+              <el-button
+                v-if="row.username !== 'admin'"
+                class="btn-delete"
+                size="small"
+                @click="handleDelete(row)"
+              >
+                <i class="fa-solid fa-trash"></i>
               </el-button>
             </div>
           </template>
@@ -325,6 +333,21 @@ async function resetPassword() {
     passwordVisible.value = false
   } catch {
     ElMessage.error('密码重置失败')
+  }
+}
+
+async function handleDelete(user: UserItem) {
+  if (user.username === 'admin') {
+    ElMessage.error('不能删除管理员用户')
+    return
+  }
+
+  try {
+    await userApi.delete(user.id)
+    ElMessage.success('用户删除成功')
+    loadUsers()
+  } catch {
+    ElMessage.error('删除用户失败')
   }
 }
 
@@ -595,6 +618,16 @@ onMounted(() => {
 
 .btn-toggle:hover {
   background: #eef2ff;
+}
+
+.btn-delete {
+  background: #fef2f2;
+  color: #dc2626;
+  border-color: #fecaca;
+}
+
+.btn-delete:hover {
+  background: #fee2e2;
 }
 
 .list-footer {

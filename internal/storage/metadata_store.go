@@ -95,6 +95,24 @@ func (s *MetadataStore) BatchPut(ctx context.Context, artifacts []*runtime.Artif
 				First(&existing).Error
 
 			if err == gorm.ErrRecordNotFound {
+				// 精确匹配失败，尝试用核心坐标匹配（去掉 path 字段），
+				// 以兼容旧记录缺少 path 字段的情况。
+				coreCoords := make(map[string]string)
+				for k, v := range artifact.Coordinates {
+					if k != "path" {
+						coreCoords[k] = v
+					}
+				}
+				if len(coreCoords) != len(artifact.Coordinates) {
+					coreCoordsJSON, _ := json.Marshal(coreCoords)
+					err = tx.Where("repository_id = ?", artifact.RepositoryID).
+						Where("format = ?", artifact.Format).
+						Where("coordinates = ?", coreCoordsJSON).
+						First(&existing).Error
+				}
+			}
+
+			if err == gorm.ErrRecordNotFound {
 				if err := tx.Create(modelArtifact).Error; err != nil {
 					return err
 				}
@@ -265,6 +283,15 @@ func (s *MetadataStore) toModelArtifact(t *runtime.Artifact) *model.Artifact {
 	metadata := make(model.JSONB)
 	for k, v := range t.Properties {
 		metadata[k] = v
+	}
+
+	// 自动从 Coordinates 计算 download_path，供前端下载链接使用
+	if filename, _ := coords["filename"].(string); filename != "" {
+		if p, _ := coords["path"].(string); p != "" {
+			metadata["download_path"] = p + "/" + filename
+		} else {
+			metadata["download_path"] = filename
+		}
 	}
 
 	var repoID uint

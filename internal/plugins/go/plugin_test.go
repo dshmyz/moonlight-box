@@ -1,6 +1,32 @@
 package gomod
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/plugins/testhelper"
+)
+
+func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *httptest.ResponseRecorder) {
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(method, "/repository/go-test/"+path, body)
+	return &runtime.RequestContext{
+		Writer:         w,
+		Request:        req,
+		Repository:     &runtime.Repository{ID: "1", Name: "go-test", Format: "go", Type: "local"},
+		RepositoryPath: "/" + path,
+	}, w
+}
+
+// ---------------------------------------------------------------------------
+// encodeGoPath
+// ---------------------------------------------------------------------------
 
 func TestEncodeGoPath(t *testing.T) {
 	tests := []struct {
@@ -11,6 +37,7 @@ func TestEncodeGoPath(t *testing.T) {
 		{"github.com/Azure/azure-sdk-go/@v/list", "github.com/!azure/azure-sdk-go/@v/list"},
 		{"github.com/BurntSushi/toml/@latest", "github.com/!burnt!sushi/toml/@latest"},
 		{"github.com/foo/bar/@v/v1.0.0.zip", "github.com/foo/bar/@v/v1.0.0.zip"},
+		{"github.com/labstack/echo/v4/@v/list", "github.com/labstack/echo/v4/@v/list"},
 		{"", ""},
 	}
 	for _, tt := range tests {
@@ -18,5 +45,602 @@ func TestEncodeGoPath(t *testing.T) {
 		if got != tt.expected {
 			t.Errorf("encodeGoPath(%q) = %q, want %q", tt.input, got, tt.expected)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// splitModulePath
+// ---------------------------------------------------------------------------
+
+func TestSplitModulePath(t *testing.T) {
+	p := NewGoPlugin()
+	tests := []struct {
+		name       string
+		path       string
+		wantModule string
+		wantFile   string
+	}{
+		{"standard zip", "github.com/gin-gonic/gin/@v/v1.10.0.zip", "github.com/gin-gonic/gin", "v1.10.0.zip"},
+		{"info file", "github.com/gin-gonic/gin/@v/v1.10.0.info", "github.com/gin-gonic/gin", "v1.10.0.info"},
+		{"mod file", "github.com/gin-gonic/gin/@v/v1.10.0.mod", "github.com/gin-gonic/gin", "v1.10.0.mod"},
+		{"latest", "github.com/gin-gonic/gin/@latest", "github.com/gin-gonic/gin", "@latest"},
+		{"semantic import version", "github.com/labstack/echo/v4/@v/v4.13.0.zip", "github.com/labstack/echo/v4", "v4.13.0.zip"},
+		{"semantic import version latest", "github.com/labstack/echo/v4/@latest", "github.com/labstack/echo/v4", "@latest"},
+		{"no @v or @latest", "github.com/foo/bar", "github.com/foo/bar", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mod, file := p.splitModulePath(tt.path)
+			if mod != tt.wantModule {
+				t.Errorf("module = %q, want %q", mod, tt.wantModule)
+			}
+			if file != tt.wantFile {
+				t.Errorf("filename = %q, want %q", file, tt.wantFile)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// selectLatestStableVersion
+// ---------------------------------------------------------------------------
+
+func TestSelectLatestStableVersion(t *testing.T) {
+	p := NewGoPlugin()
+
+	tests := []struct {
+		name     string
+		versions []string
+		want     string
+	}{
+		{
+			name:     "single stable version",
+			versions: []string{"v1.0.0"},
+			want:     "v1.0.0",
+		},
+		{
+			name:     "multiple stable versions, picks highest",
+			versions: []string{"v1.0.0", "v1.2.0", "v1.1.0"},
+			want:     "v1.2.0",
+		},
+		{
+			name:     "pre-release filtered out",
+			versions: []string{"v1.0.0", "v2.0.0-rc1", "v2.0.0-alpha.1"},
+			want:     "v1.0.0",
+		},
+		{
+			name:     "all pre-release returns nil",
+			versions: []string{"v2.0.0-rc1", "v2.0.0-alpha.1"},
+			want:     "",
+		},
+		{
+			name:     "incompatible version (v2 without /v2 in path)",
+			versions: []string{"v1.0.0", "v2.4.0"},
+			want:     "v2.4.0",
+		},
+		{
+			name:     "semantic import version v4",
+			versions: []string{"v4.0.0", "v4.12.0", "v4.13.0"},
+			want:     "v4.13.0",
+		},
+		{
+			name:     "v0 versions are valid stable",
+			versions: []string{"v0.1.0", "v0.2.0"},
+			want:     "v0.2.0",
+		},
+		{
+			name:     "invalid version format skipped",
+			versions: []string{"invalid", "v1.0.0"},
+			want:     "v1.0.0",
+		},
+		{
+			name:     "empty version string skipped",
+			versions: []string{"", "v1.0.0"},
+			want:     "v1.0.0",
+		},
+		{
+			name:     "mixed valid and invalid",
+			versions: []string{"not-a-version", "v0.0.0", "v3.0.0-beta"},
+			want:     "v0.0.0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var arts []*runtime.Artifact
+			for _, v := range tt.versions {
+				arts = append(arts, &runtime.Artifact{
+					Format: "go",
+					Kind:   "version",
+					Coordinates: map[string]string{
+						"module":  "github.com/example/mod",
+						"version": v,
+					},
+				})
+			}
+			result := p.selectLatestStableVersion(arts)
+			if tt.want == "" {
+				if result != nil {
+					t.Fatalf("expected nil, got %v", result.Coordinates["version"])
+				}
+				return
+			}
+			if result == nil {
+				t.Fatalf("expected %q, got nil", tt.want)
+			}
+			if result.Coordinates["version"] != tt.want {
+				t.Errorf("got %q, want %q", result.Coordinates["version"], tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Handle - @latest
+// ---------------------------------------------------------------------------
+
+func TestHandle_Latest(t *testing.T) {
+	p := NewGoPlugin()
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("go", "version", map[string]string{
+			"module": "github.com/gin-gonic/gin", "version": "v1.10.0",
+		}, ""),
+		testhelper.NewArtifact("go", "version", map[string]string{
+			"module": "github.com/gin-gonic/gin", "version": "v1.9.0",
+		}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "github.com/gin-gonic/gin/@latest", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var result map[string]string
+	json.Unmarshal(w.Body.Bytes(), &result)
+	if result["Version"] != "v1.10.0" {
+		t.Errorf("expected v1.10.0, got %q", result["Version"])
+	}
+}
+
+func TestHandle_Latest_SemanticImportVersion(t *testing.T) {
+	p := NewGoPlugin()
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("go", "version", map[string]string{
+			"module": "github.com/labstack/echo/v4", "version": "v4.13.0",
+		}, ""),
+		testhelper.NewArtifact("go", "version", map[string]string{
+			"module": "github.com/labstack/echo/v4", "version": "v4.12.0",
+		}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "github.com/labstack/echo/v4/@latest", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var result map[string]string
+	json.Unmarshal(w.Body.Bytes(), &result)
+	if result["Version"] != "v4.13.0" {
+		t.Errorf("expected v4.13.0, got %q", result["Version"])
+	}
+}
+
+func TestHandle_Latest_FiltersPrerelease(t *testing.T) {
+	p := NewGoPlugin()
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("go", "version", map[string]string{
+			"module": "github.com/example/mod", "version": "v2.0.0-rc1",
+		}, ""),
+		testhelper.NewArtifact("go", "version", map[string]string{
+			"module": "github.com/example/mod", "version": "v1.5.0",
+		}, ""),
+		testhelper.NewArtifact("go", "version", map[string]string{
+			"module": "github.com/example/mod", "version": "v2.0.0-alpha.1",
+		}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "github.com/example/mod/@latest", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var result map[string]string
+	json.Unmarshal(w.Body.Bytes(), &result)
+	if result["Version"] != "v1.5.0" {
+		t.Errorf("expected v1.5.0 (pre-release filtered), got %q", result["Version"])
+	}
+}
+
+func TestHandle_Latest_OnlyPrerelease(t *testing.T) {
+	p := NewGoPlugin()
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("go", "version", map[string]string{
+			"module": "github.com/example/mod", "version": "v2.0.0-rc1",
+		}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "github.com/example/mod/@latest", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 when only pre-release exists, got %d", w.Code)
+	}
+}
+
+func TestHandle_Latest_NotFound(t *testing.T) {
+	p := NewGoPlugin()
+	rt := &testhelper.MockRuntime{Artifacts: nil}
+
+	ctx, w := newCtx("GET", "github.com/nonexist/pkg/@latest", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestHandle_Latest_MethodNotAllowed(t *testing.T) {
+	p := NewGoPlugin()
+	rt := &testhelper.MockRuntime{}
+
+	ctx, _ := newCtx("POST", "github.com/example/mod/@latest", nil)
+	err := p.Handle(ctx, rt)
+	if err == nil {
+		t.Fatal("expected error for POST method")
+	}
+	if !strings.Contains(err.Error(), "method not allowed") {
+		t.Errorf("expected 'method not allowed', got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Handle - @v/list
+// ---------------------------------------------------------------------------
+
+func TestHandle_VersionList(t *testing.T) {
+	p := NewGoPlugin()
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("go", "version", map[string]string{
+			"module": "github.com/gin-gonic/gin", "version": "v1.10.0",
+		}, ""),
+		testhelper.NewArtifact("go", "version", map[string]string{
+			"module": "github.com/gin-gonic/gin", "version": "v1.9.0",
+		}, ""),
+		testhelper.NewArtifact("go", "version", map[string]string{
+			"module": "github.com/gin-gonic/gin", "version": "v1.9.0",
+		}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "github.com/gin-gonic/gin/@v/list", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "v1.10.0\n") || !strings.Contains(body, "v1.9.0\n") {
+		t.Errorf("expected versions in list, got: %q", body)
+	}
+}
+
+func TestHandle_VersionList_Dedup(t *testing.T) {
+	p := NewGoPlugin()
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("go", "version", map[string]string{
+			"module": "github.com/example/mod", "version": "v1.0.0",
+		}, ""),
+		testhelper.NewArtifact("go", "version", map[string]string{
+			"module": "github.com/example/mod", "version": "v1.0.0",
+		}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "github.com/example/mod/@v/list", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	body := strings.TrimSpace(w.Body.String())
+	if body != "v1.0.0" {
+		t.Errorf("expected deduplicated list 'v1.0.0', got: %q", body)
+	}
+}
+
+func TestHandle_VersionList_MethodNotAllowed(t *testing.T) {
+	p := NewGoPlugin()
+	rt := &testhelper.MockRuntime{}
+
+	ctx, _ := newCtx("POST", "github.com/example/mod/@v/list", nil)
+	err := p.Handle(ctx, rt)
+	if err == nil {
+		t.Fatal("expected error for POST method")
+	}
+	if !strings.Contains(err.Error(), "method not allowed") {
+		t.Errorf("expected 'method not allowed', got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Handle - module download (@v/*.info, *.mod, *.zip)
+// ---------------------------------------------------------------------------
+
+func TestHandle_ModuleDownload_Info(t *testing.T) {
+	p := NewGoPlugin()
+	art := testhelper.NewArtifact("go", "info-file", map[string]string{
+		"name":     "github.com/gin-gonic/gin",
+		"module":   "github.com/gin-gonic/gin",
+		"version":  "v1.10.0",
+		"path":     "github.com/gin-gonic/gin/@v",
+		"ext":      "info",
+		"filename": "v1.10.0.info",
+	}, `{"Version":"v1.10.0","Time":"2024-01-01T00:00:00Z"}`)
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "github.com/gin-gonic/gin/@v/v1.10.0.info", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected application/json, got %s", ct)
+	}
+	var result map[string]string
+	json.Unmarshal(w.Body.Bytes(), &result)
+	if result["Version"] != "v1.10.0" {
+		t.Errorf("expected Version v1.10.0, got %q", result["Version"])
+	}
+}
+
+func TestHandle_ModuleDownload_Mod(t *testing.T) {
+	p := NewGoPlugin()
+	art := testhelper.NewArtifact("go", "module-file", map[string]string{
+		"name":     "github.com/gin-gonic/gin",
+		"module":   "github.com/gin-gonic/gin",
+		"version":  "v1.10.0",
+		"path":     "github.com/gin-gonic/gin/@v",
+		"ext":      "mod",
+		"filename": "v1.10.0.mod",
+	}, "module golang.org/x/net")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "github.com/gin-gonic/gin/@v/v1.10.0.mod", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "text/plain" {
+		t.Errorf("expected text/plain, got %s", ct)
+	}
+}
+
+func TestHandle_ModuleDownload_Zip(t *testing.T) {
+	p := NewGoPlugin()
+	art := testhelper.NewArtifact("go", "module-file", map[string]string{
+		"name":     "github.com/gin-gonic/gin",
+		"module":   "github.com/gin-gonic/gin",
+		"version":  "v1.10.0",
+		"path":     "github.com/gin-gonic/gin/@v",
+		"ext":      "zip",
+		"filename": "v1.10.0.zip",
+	}, "zip-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "github.com/gin-gonic/gin/@v/v1.10.0.zip", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/zip" {
+		t.Errorf("expected application/zip, got %s", ct)
+	}
+	if w.Body.String() != "zip-content" {
+		t.Errorf("expected 'zip-content', got %q", w.Body.String())
+	}
+}
+
+func TestHandle_ModuleDownload_NotFound(t *testing.T) {
+	p := NewGoPlugin()
+	rt := &testhelper.MockRuntime{Artifacts: nil}
+
+	ctx, w := newCtx("GET", "github.com/nonexist/pkg/@v/v1.0.0.zip", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestHandle_ModuleDownload_InvalidPath(t *testing.T) {
+	p := NewGoPlugin()
+	rt := &testhelper.MockRuntime{}
+
+	ctx, w := newCtx("GET", "invalid-path-no-atv", nil)
+	if err := p.Handle(ctx, rt); err == nil {
+		t.Fatal("expected error for invalid path")
+	}
+	_ = w
+}
+
+func TestHandle_QueryRemotePath(t *testing.T) {
+	p := NewGoPlugin()
+	rt := &testhelper.MockRuntime{}
+
+	ctx, _ := newCtx("GET", "github.com/gin-gonic/gin/@v/list", nil)
+	p.Handle(ctx, rt)
+
+	if len(rt.QueryCalls) != 1 {
+		t.Fatalf("expected 1 query call, got %d", len(rt.QueryCalls))
+	}
+	if rt.QueryCalls[0].RemotePath != "github.com/gin-gonic/gin/@v/list" {
+		t.Errorf("unexpected RemotePath: %q", rt.QueryCalls[0].RemotePath)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FetchRemote - @v/list
+// ---------------------------------------------------------------------------
+
+func TestFetchRemote_VersionList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("v1.0.0\nv1.1.0\nv1.2.0\n"))
+	}))
+	defer srv.Close()
+
+	p := NewGoPlugin()
+	arts, err := p.FetchRemote(context.Background(), srv.URL, "github.com/example/mod/@v/list")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if len(arts) != 3 {
+		t.Fatalf("expected 3 artifacts, got %d", len(arts))
+	}
+	for _, a := range arts {
+		if a.Coordinates["module"] != "github.com/example/mod" {
+			t.Errorf("module = %q, want 'github.com/example/mod'", a.Coordinates["module"])
+		}
+	}
+}
+
+func TestFetchRemote_VersionList_Empty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(""))
+	}))
+	defer srv.Close()
+
+	p := NewGoPlugin()
+	arts, err := p.FetchRemote(context.Background(), srv.URL, "github.com/example/mod/@v/list")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if len(arts) != 0 {
+		t.Fatalf("expected 0 artifacts for empty list, got %d", len(arts))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FetchRemote - @latest
+// ---------------------------------------------------------------------------
+
+func TestFetchRemote_Latest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"Version": "v1.2.0", "Time": "2023-01-01T00:00:00Z"}`))
+	}))
+	defer srv.Close()
+
+	p := NewGoPlugin()
+	arts, err := p.FetchRemote(context.Background(), srv.URL, "github.com/example/mod/@latest")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+	if arts[0].Coordinates["version"] != "v1.2.0" {
+		t.Errorf("version = %q, want 'v1.2.0'", arts[0].Coordinates["version"])
+	}
+}
+
+func TestFetchRemote_Latest_EmptyVersion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"Version": "", "Time": ""}`))
+	}))
+	defer srv.Close()
+
+	p := NewGoPlugin()
+	arts, err := p.FetchRemote(context.Background(), srv.URL, "github.com/example/mod/@latest")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if arts != nil {
+		t.Fatalf("expected nil for empty version, got %d artifacts", len(arts))
+	}
+}
+
+func TestFetchRemote_Latest_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	p := NewGoPlugin()
+	_, err := p.FetchRemote(context.Background(), srv.URL, "github.com/example/mod/@latest")
+	if err == nil {
+		t.Fatal("expected error for 404 response")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FetchRemote - generic paths
+// ---------------------------------------------------------------------------
+
+func TestFetchRemote_ModuleFile(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	p := NewGoPlugin()
+	arts, err := p.FetchRemote(context.Background(), srv.URL, "github.com/example/mod/@v/v1.0.0.zip")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+	if arts[0].Coordinates["filename"] != "v1.0.0.zip" {
+		t.Errorf("filename = %q, want 'v1.0.0.zip'", arts[0].Coordinates["filename"])
+	}
+}
+
+func TestFetchRemote_EmptyPath(t *testing.T) {
+	p := NewGoPlugin()
+	_, err := p.FetchRemote(context.Background(), "http://example.com", "")
+	if err == nil {
+		t.Fatal("expected error for empty path")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FetchRemote - semantic import version
+// ---------------------------------------------------------------------------
+
+func TestFetchRemote_SemanticImportVersion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("v4.12.0\nv4.13.0\n"))
+	}))
+	defer srv.Close()
+
+	p := NewGoPlugin()
+	arts, err := p.FetchRemote(context.Background(), srv.URL, "github.com/labstack/echo/v4/@v/list")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if len(arts) != 2 {
+		t.Fatalf("expected 2 artifacts, got %d", len(arts))
+	}
+	if arts[0].Coordinates["module"] != "github.com/labstack/echo/v4" {
+		t.Errorf("module = %q, want 'github.com/labstack/echo/v4'", arts[0].Coordinates["module"])
 	}
 }

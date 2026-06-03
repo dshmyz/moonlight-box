@@ -14,6 +14,7 @@ NC='\033[0m'
 
 PASS_COUNT=0
 FAIL_COUNT=0
+WARN_COUNT=0
 
 pass() {
     echo -e "  ${GREEN}✓ PASS${NC} $1"
@@ -31,6 +32,7 @@ info() {
 
 warn() {
     echo -e "  ${YELLOW}⚠ WARN${NC} $1"
+    WARN_COUNT=$((WARN_COUNT + 1))
 }
 
 get_auth_token() {
@@ -215,8 +217,11 @@ if [ "$HTTP_CODE" = "200" ]; then
     
     if echo "$METADATA_CONTENT" | grep -q "<buildNumber>"; then
         pass "maven-metadata.xml 包含 <buildNumber> 标签"
+        BUILD_NUMBER=$(echo "$METADATA_CONTENT" | grep -o "<buildNumber>[^<]*</buildNumber>" | sed 's/<buildNumber>//;s/<\/buildNumber>//')
+        info "SNAPSHOT buildNumber: $BUILD_NUMBER"
     else
         info "maven-metadata.xml 未包含 <buildNumber> 标签"
+        BUILD_NUMBER="1"
     fi
 else
     fail "maven-metadata.xml 不可访问 (HTTP $HTTP_CODE)"
@@ -228,7 +233,9 @@ echo "  测试 5: 验证 SNAPSHOT JAR 文件可下载"
 echo "════════════════════════════════════════"
 
 if [ -n "$TIMESTAMP" ]; then
-    SNAPSHOT_JAR_URL="$BASE_URL/repository/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/snapshot-lib-1.0-${TIMESTAMP}-1.jar"
+    # 使用从 metadata 中提取的 buildNumber，默认为 1
+    BUILD_NUMBER=${BUILD_NUMBER:-1}
+    SNAPSHOT_JAR_URL="$BASE_URL/repository/maven-snapshots/com/test/snapshot-lib/1.0-SNAPSHOT/snapshot-lib-1.0-${TIMESTAMP}-${BUILD_NUMBER}.jar"
     
     HTTP_CODE=$(curl -s -o /tmp/snapshot-download-test.jar -w "%{http_code}" "$SNAPSHOT_JAR_URL")
     
@@ -375,13 +382,18 @@ echo " 测试汇总"
 echo "============================================"
 echo -e "  通过: ${GREEN}$PASS_COUNT${NC}"
 echo -e "  失败: ${RED}$FAIL_COUNT${NC}"
-echo -e "  总计: $((PASS_COUNT + FAIL_COUNT))"
+echo -e "  警告: ${YELLOW}$WARN_COUNT${NC}"
+echo -e "  总计: $((PASS_COUNT + FAIL_COUNT + WARN_COUNT))"
 echo
 
 if [ $FAIL_COUNT -eq 0 ]; then
-    echo -e "${GREEN}所有测试通过! ✓${NC}"
+    if [ $WARN_COUNT -eq 0 ]; then
+        echo -e "${GREEN}所有测试通过! ✓${NC}"
+    else
+        echo -e "${YELLOW}测试通过，但有 $WARN_COUNT 个警告${NC}"
+    fi
     exit 0
 else
-    echo -e "${YELLOW}部分测试失败! ❌${NC}"
+    echo -e "${RED}部分测试失败! ❌${NC}"
     exit 1
 fi

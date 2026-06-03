@@ -103,4 +103,10 @@ type RequestContext struct {
 	FromCache      bool   // 是否命中缓存，由 Runtime 设置
 	RemoteURL      string // 回源 URL，由 Runtime 设置
 	SizeBytes      int64  // 下载字节数，由 Runtime 设置
+
+	// 协议解析结果（由 ProtocolPlugin 在 Handle 中填充），Runtime 层不感知协议格式。
+	// 仅在请求对应"具体包/产物"时填写；目录/索引/projection 类请求可留空。
+	PackageName string // 包名（npm pkg / go module / pypi project / maven groupId:artifactId）
+	Version     string // 版本（若该请求与具体版本相关）
+	Filename    string // 实际下载文件名
 }

@@ -284,7 +284,7 @@ func (m *ExecutorManager) executeUser(ctx context.Context, job *domain.Migration
 		}
 	}
 
-	hashedPassword, _ := util.HashPassword(util.GenerateRandomString(16))
+	hashedPassword, _ := util.HashPassword(job.SourceKey)
 	user := &model.User{
 		Username:     job.SourceKey,
 		PasswordHash: hashedPassword,

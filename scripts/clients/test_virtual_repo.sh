@@ -16,10 +16,14 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-pass() { echo -e "  ${GREEN}✓ PASS${NC} $1"; }
-fail() { echo -e "  ${RED}✗ FAIL${NC} $1"; }
+PASS_COUNT=0
+FAIL_COUNT=0
+WARN_COUNT=0
+
+pass() { echo -e "  ${GREEN}✓ PASS${NC} $1"; PASS_COUNT=$((PASS_COUNT + 1)); }
+fail() { echo -e "  ${RED}✗ FAIL${NC} $1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 info() { echo -e "  ${BLUE}ℹ INFO${NC} $1"; }
-warn() { echo -e "  ${YELLOW}⚠ WARN${NC} $1"; }
+warn() { echo -e "  ${YELLOW}⚠ WARN${NC} $1"; WARN_COUNT=$((WARN_COUNT + 1)); }
 
 echo "============================================"
 echo " 组合仓库 (Virtual/Group) 功能验证"
@@ -341,3 +345,7 @@ echo
 echo "============================================"
 echo " 组合仓库功能验证完成"
 echo "============================================"
+echo -e "  通过: ${GREEN}$PASS_COUNT${NC}"
+echo -e "  失败: ${RED}$FAIL_COUNT${NC}"
+echo -e "  警告: ${YELLOW}$WARN_COUNT${NC}"
+echo

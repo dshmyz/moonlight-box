@@ -1,3 +1,34 @@
+// Package pypi implements the PyPI Simple API protocol plugin (PEP 503).
+//
+// # PyPI Simple API 协议要点 (PEP 503)
+//
+// ## 路径结构
+//   - Simple Index: /simple/ -> 列出所有包
+//   - Package Files: /simple/{package}/ -> 列出该包所有版本文件
+//   - 文件下载: /packages/{hash_prefix}/{filename}
+//   - 例如: /packages/cc/15/.../requests-2.19.0-py3-none-any.whl
+//
+// ## HTML 链接格式
+//   - 必须包含 #sha256= hash fragment: <a href="../../packages/.../file.whl#sha256=abc123">
+//   - pip 依赖 hash fragment 做完整性校验
+//   - --require-hashes 模式下缺少 hash 会直接失败
+//
+// ## 包名规范化 (PEP 503)
+//   - 规则: 将 [-_.]+ 归一化为单个 "-"，然后转小写
+//   - 例如: My__Pkg..Name -> my-pkg-name
+//
+// ## JSON API (PEP 691)
+//   - Accept: application/vnd.pypi.simple.v1+json
+//   - 返回 JSON 格式的包文件列表
+//
+// ## 关键实现点
+//   - remote_path: 必须包含 packages/ 前缀，如 packages/cc/15/.../file.whl
+//   - path 坐标: 不含 packages/ 前缀，如 cc/15/.../file.whl
+//   - HTML 链接: 使用 remote_path，前缀是 ../../ 而非 ../../packages/
+//
+// ## 参考规范
+//   - PEP 503: https://peps.python.org/pep-0503/
+//   - PEP 691: https://peps.python.org/pep-0691/
 package pypi
 
 import (
@@ -8,6 +39,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -17,6 +49,9 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 )
+
+// pypiNormalizeRe 匹配 PEP 503 规范中需要归一化的连续字符：[-_.]+
+var pypiNormalizeRe = regexp.MustCompile(`[-_.]+`)
 
 type PyPIPlugin struct {
 	httpClient *http.Client // 统一 HTTP 客户端
@@ -242,6 +277,8 @@ func (p *PyPIPlugin) handlePackageList(ctx *runtime.RequestContext, repoRuntime 
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	packageName := normalizePackageName(parts[1])
 
+	ctx.PackageName = packageName
+
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
@@ -280,8 +317,18 @@ func (p *PyPIPlugin) writePackageFilesHTML(ctx *runtime.RequestContext, packageN
 		if filename == "" || remotePath == "" {
 			continue
 		}
-		sb.WriteString(`<a href="../../packages/`)
+		// PEP 503: 包文件链接必须包含 #sha256= hash fragment
+		hashFragment := ""
+		for _, blobRef := range artifact.BlobRefs {
+			if blobRef.Algorithm == "sha256" {
+				hashFragment = "#sha256=" + blobRef.Digest
+				break
+			}
+		}
+		// remote_path 已经包含 packages/ 前缀（如 packages/cc/15/.../file.whl）
+		sb.WriteString(`<a href="../../`)
 		sb.WriteString(html.EscapeString(remotePath))
+		sb.WriteString(html.EscapeString(hashFragment))
 		sb.WriteString(`">`)
 		sb.WriteString(html.EscapeString(filename))
 		sb.WriteString(`</a><br>` + "\n")
@@ -347,6 +394,10 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 	packageName := p.extractPackageNameFromFilename(filename)
 	version := p.extractVersionFromFilename(filename)
 
+	ctx.PackageName = packageName
+	ctx.Version = version
+	ctx.Filename = filename
+
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
@@ -362,23 +413,30 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 	switch ctx.Request.Method {
 	case http.MethodGet:
 		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
-		if err == nil {
-			defer artifact.Content.Close()
-			ctx.FromCache = artifact.FromCache
-			ctx.RemoteURL = artifact.RemoteURL
-			ctx.SizeBytes = artifact.SizeBytes
-			ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
-			ctx.Writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, runtime.SanitizeFilename(key.Filename)))
-			ctx.Writer.WriteHeader(http.StatusOK)
-			io.Copy(ctx.Writer, artifact.Content)
+		if err != nil {
+			util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
+				"path":  path,
+				"key":   key.String(),
+				"error": err.Error(),
+			}).Warn("pypi: handlePackagesDownload GetArtifact failed")
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
 		}
-		util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
-			"path":  path,
-			"key":   key.String(),
-			"error": err.Error(),
-		}).Warn("pypi: handlePackagesDownload GetArtifact failed")
-		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		if artifact.Content == nil {
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
+		defer artifact.Content.Close()
+		ctx.FromCache = artifact.FromCache
+		ctx.RemoteURL = artifact.RemoteURL
+		ctx.SizeBytes = artifact.SizeBytes
+		ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
+		ctx.Writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, runtime.SanitizeFilename(key.Filename)))
+		ctx.Writer.WriteHeader(http.StatusOK)
+		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+			logrus.WithError(err).Warn("failed to write artifact content to client")
+			return nil
+		}
 		return nil
 	case http.MethodPut:
 		return p.handleUpload(ctx, repoRuntime, key)
@@ -463,7 +521,7 @@ func (p *PyPIPlugin) handleJsonAPI(ctx *runtime.RequestContext, repoRuntime runt
 
 		file := map[string]interface{}{
 			"filename": filename,
-			"url":      "../../packages/" + filename,
+			"url":      "../../packages/" + remotePath,
 		}
 
 		if len(artifact.BlobRefs) > 0 {
@@ -519,7 +577,8 @@ func (p *PyPIPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime run
 	ctx.Writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, runtime.SanitizeFilename(key.Filename)))
 	ctx.Writer.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
-		return err
+		logrus.WithError(err).Warn("failed to write artifact content to client")
+		return nil
 	}
 	return nil
 }
@@ -575,6 +634,15 @@ func (p *PyPIPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runti
 
 	ctx.Writer.WriteHeader(http.StatusCreated)
 	return nil
+}
+
+func extractRelativePackagePath(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" {
+		return rawURL
+	}
+	path := strings.TrimPrefix(u.Path, "/")
+	return path
 }
 
 func (p *PyPIPlugin) extractPackageNameFromFilename(filename string) string {
@@ -640,7 +708,8 @@ func validatePyPIPath(path string) error {
 }
 
 func normalizePackageName(name string) string {
-	return strings.ToLower(strings.ReplaceAll(name, "_", "-"))
+	// PEP 503: 将 [-_.]+ 归一化为单个 "-"，然后转小写
+	return pypiNormalizeRe.ReplaceAllString(strings.ToLower(name), "-")
 }
 
 func isValidWheelFilename(filename string) bool {
@@ -698,12 +767,22 @@ func (p *PyPIPlugin) fetchPyPIPackageInfo(ctx context.Context, remoteURL, packag
 }
 
 func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[string]interface{}) []*runtime.Artifact {
-	license := p.extractStringField(info, "license")
-	if license == "" {
-		license = p.extractStringField(info, "license_expression")
+	infoData, _ := info["info"].(map[string]interface{})
+	var license, description, homepage string
+	if infoData != nil {
+		if l, ok := infoData["license"].(string); ok && l != "" {
+			license = l
+		}
+		if le, ok := infoData["license_expression"].(string); ok && le != "" && license == "" {
+			license = le
+		}
+		if s, ok := infoData["summary"].(string); ok && s != "" {
+			description = s
+		}
+		if h, ok := infoData["home_page"].(string); ok && h != "" {
+			homepage = h
+		}
 	}
-	description := p.extractStringField(info, "summary")
-	homepage := p.extractStringField(info, "home_page")
 	releases, _ := info["releases"].(map[string]interface{})
 	if releases == nil {
 		return nil
@@ -724,10 +803,12 @@ func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[stri
 			if filename == "" {
 				continue
 			}
-			remotePath, _ := file["url"].(string)
-			if remotePath == "" {
-				remotePath = "packages/" + string([]rune(filename)[0:1]) + "/" + packageName + "/" + filename
+			rawURL, _ := file["url"].(string)
+			if rawURL == "" {
+				rawURL = "packages/" + string([]rune(filename)[0:1]) + "/" + packageName + "/" + filename
 			}
+			remotePath := extractRelativePackagePath(rawURL)
+			dir := filepath.Dir(remotePath)
 			props := map[string]string{
 				"remote_path": remotePath,
 			}
@@ -756,6 +837,7 @@ func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[stri
 					"package":  packageName,
 					"version":  version,
 					"filename": filename,
+					"path":     dir,
 				},
 				Properties: props,
 			})
@@ -908,7 +990,8 @@ func (p *PyPIPlugin) parsePackageList(packageName string, body io.Reader) ([]*ru
 	matches := re.FindAllStringSubmatch(html, -1)
 	var artifacts []*runtime.Artifact
 	for _, m := range matches {
-		fullPath := m[1]                    // e.g. "62/35/.../requests-0.10.0.tar.gz"
+		fullPath := m[1]                    // e.g. "bf/78/.../requests-0.10.0.tar.gz" (不含 packages/ 前缀)
+		fullPath = "packages/" + fullPath   // 添加 packages/ 前缀，使 remote_path 完整
 		filename := filepath.Base(fullPath) // e.g. "requests-0.10.0.tar.gz"
 		if !isValidPyPIFilename(filename) {
 			continue
@@ -923,7 +1006,7 @@ func (p *PyPIPlugin) parsePackageList(packageName string, body io.Reader) ([]*ru
 				"package":  packageName,
 				"version":  version,
 				"filename": filename,
-				"path":     "packages/" + dir,
+				"path":     dir,
 			},
 			Properties: map[string]string{
 				"remote_path": fullPath,

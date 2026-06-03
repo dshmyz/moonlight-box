@@ -1,3 +1,32 @@
+// Package yum implements the YUM/DNF repository protocol plugin.
+//
+// # YUM/DNF 仓库协议要点
+//
+// ## 目录结构
+//   - repodata/repomd.xml: 仓库元数据索引
+//   - repodata/*-primary.xml.gz: 包列表（名称、版本、依赖）
+//   - repodata/*-filelists.xml.gz: 文件列表
+//   - repodata/*-other.xml.gz: changelog 等
+//   - packages/*.rpm: RPM 包文件
+//
+// ## repomd.xml 结构
+//   - 必须包含: type, location, checksum, timestamp
+//   - type 类型: primary, filelists, other, updateinfo 等
+//   - revision: 仓库修订号（时间戳）
+//
+// ## primary.xml 结构
+//   - 包含: name, version, arch, summary, description
+//   - location href: RPM 文件相对路径
+//   - checksum: 包文件校验和
+//
+// ## 关键实现点
+//   - 动态生成 repomd.xml 时从 artifact.Coordinates["type"] 读取类型
+//   - 添加 revision 字段（时间戳）
+//   - 压缩格式 (.gz) 应透传上游原始文件，不动态生成
+//
+// ## 参考规范
+//   - http://linux.duke.edu/metadata/repo/
+//   - https://dnf.readthedocs.io/
 package yum
 
 import (
@@ -254,7 +283,8 @@ func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtim
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
-			return err
+			logrus.WithError(err).Warn("failed to write artifact content to client")
+			return nil
 		}
 		return nil
 	}
@@ -287,17 +317,25 @@ func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtim
 		} `xml:"location"`
 	}
 	type repomd struct {
-		XMLName xml.Name `xml:"repomd"`
-		Xmlns   string   `xml:"xmlns,attr"`
-		Data    []data   `xml:"data"`
+		XMLName  xml.Name `xml:"repomd"`
+		Xmlns    string   `xml:"xmlns,attr"`
+		Revision string   `xml:"revision"`
+		Data     []data   `xml:"data"`
 	}
-	out := repomd{Xmlns: "http://linux.duke.edu/metadata/repo"}
+	out := repomd{
+		Xmlns:    "http://linux.duke.edu/metadata/repo",
+		Revision: fmt.Sprintf("%d", time.Now().Unix()),
+	}
 	for _, a := range artifacts {
 		f := a.Coordinates["file"]
 		if f == "" {
 			continue
 		}
-		d := data{Type: "primary"}
+		dataType := a.Coordinates["type"]
+		if dataType == "" {
+			dataType = "primary"
+		}
+		d := data{Type: dataType}
 		d.Location.Href = f
 		out.Data = append(out.Data, d)
 	}
@@ -340,7 +378,8 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
-			return err
+			logrus.WithError(err).Warn("failed to write artifact content to client")
+			return nil
 		}
 		return nil
 	}
@@ -391,6 +430,8 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
 	filename := filepath.Base(path)
 
+	ctx.Filename = filename
+
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "yum",
@@ -419,7 +460,8 @@ func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime ru
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
-			return err
+			logrus.WithError(err).Warn("failed to write artifact content to client")
+			return nil
 		}
 		return nil
 	}

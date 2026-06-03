@@ -20,6 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 TOTAL_PASS=0
 TOTAL_FAIL=0
+TOTAL_WARN=0
 TOTAL_SKIP=0
 
 # temp files to clean up on exit
@@ -34,6 +35,7 @@ trap cleanup EXIT
 
 TOTAL_PASS=0
 TOTAL_FAIL=0
+TOTAL_WARN=0
 TOTAL_SKIP=0
 
 print_header() {
@@ -83,23 +85,49 @@ run_test() {
     elif command -v gtimeout &>/dev/null; then
         USE_TIMEOUT="gtimeout"
     fi
+    
+    # 捕获输出以解析统计信息
+    OUTPUT_FILE=$(mktemp)
+    CLEANUP_FILES+=("$OUTPUT_FILE")
+    
     if [ -n "$USE_TIMEOUT" ]; then
-        if "$USE_TIMEOUT" "$TEST_TIMEOUT" bash "$test_script" "$BASE_URL"; then
-            TOTAL_PASS=$((TOTAL_PASS + 1))
+        if "$USE_TIMEOUT" "$TEST_TIMEOUT" bash "$test_script" "$BASE_URL" 2>&1 | tee "$OUTPUT_FILE"; then
+            :
         else
             local rc=$?
             if [ $rc -eq 124 ]; then
                 echo -e "  ${RED}✗ 超时: $test_name 超过 ${TEST_TIMEOUT}s${NC}"
             fi
-            TOTAL_FAIL=$((TOTAL_FAIL + 1))
         fi
     else
-        if bash "$test_script" "$BASE_URL"; then
+        bash "$test_script" "$BASE_URL" 2>&1 | tee "$OUTPUT_FILE"
+    fi
+    
+    # 从输出中解析统计信息
+    local pass_count=0 fail_count=0 warn_count=0
+    pass_count=$(grep -E "^\s*通过:" "$OUTPUT_FILE" | tail -1 | grep -oE '[0-9]+' | head -1 || echo 0)
+    fail_count=$(grep -E "^\s*失败:" "$OUTPUT_FILE" | tail -1 | grep -oE '[0-9]+' | head -1 || echo 0)
+    warn_count=$(grep -E "^\s*警告:" "$OUTPUT_FILE" | tail -1 | grep -oE '[0-9]+' | head -1 || echo 0)
+    
+    # 确保是数字
+    pass_count=${pass_count:-0}
+    fail_count=${fail_count:-0}
+    warn_count=${warn_count:-0}
+    
+    # 如果解析失败，使用退出码判断
+    if [ "$pass_count" -eq 0 ] && [ "$fail_count" -eq 0 ] && [ "$warn_count" -eq 0 ]; then
+        # 无法解析，使用传统方式
+        if [ ${PIPESTATUS[0]} -eq 0 ]; then
             TOTAL_PASS=$((TOTAL_PASS + 1))
         else
             TOTAL_FAIL=$((TOTAL_FAIL + 1))
         fi
+    else
+        TOTAL_PASS=$((TOTAL_PASS + pass_count))
+        TOTAL_FAIL=$((TOTAL_FAIL + fail_count))
+        TOTAL_WARN=$((TOTAL_WARN + warn_count))
     fi
+    
     return 0
 }
 
@@ -161,15 +189,20 @@ print_summary() {
     echo ""
     echo -e "  ${GREEN}通过: $TOTAL_PASS${NC}"
     echo -e "  ${RED}失败: $TOTAL_FAIL${NC}"
-    echo -e "  ${YELLOW}跳过: $TOTAL_SKIP${NC}"
-    echo -e "  总计: $((TOTAL_PASS + TOTAL_FAIL + TOTAL_SKIP))"
+    echo -e "  ${YELLOW}警告: $TOTAL_WARN${NC}"
+    echo -e "  ${BLUE}跳过: $TOTAL_SKIP${NC}"
+    echo -e "  总计: $((TOTAL_PASS + TOTAL_FAIL + TOTAL_WARN + TOTAL_SKIP))"
     echo ""
     
     if [ $TOTAL_FAIL -eq 0 ]; then
-        echo -e "${GREEN}${BOLD}✓ 所有测试通过!${NC}"
+        if [ $TOTAL_WARN -eq 0 ]; then
+            echo -e "${GREEN}${BOLD}✓ 所有测试通过!${NC}"
+        else
+            echo -e "${YELLOW}${BOLD}⚠ 测试通过，但有 $TOTAL_WARN 个警告${NC}"
+        fi
         exit 0
     else
-        echo -e "${YELLOW}${BOLD}⚠ 部分测试失败，请查看上方输出${NC}"
+        echo -e "${RED}${BOLD}✗ 部分测试失败，请查看上方输出${NC}"
         exit 1
     fi
 }

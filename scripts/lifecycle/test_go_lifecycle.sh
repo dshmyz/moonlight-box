@@ -14,6 +14,7 @@ NC='\033[0m'
 
 PASS_COUNT=0
 FAIL_COUNT=0
+WARN_COUNT=0
 
 pass() {
     echo -e "  ${GREEN}✓ PASS${NC} $1"
@@ -31,6 +32,7 @@ info() {
 
 warn() {
     echo -e "  ${YELLOW}⚠ WARN${NC} $1"
+    WARN_COUNT=$((WARN_COUNT + 1))
 }
 
 get_auth_token() {
@@ -387,7 +389,8 @@ echo " 测试汇总"
 echo "============================================"
 echo -e "  通过: ${GREEN}$PASS_COUNT${NC}"
 echo -e "  失败: ${RED}$FAIL_COUNT${NC}"
-echo -e "  总计: $((PASS_COUNT + FAIL_COUNT))"
+echo -e "  警告: ${YELLOW}$WARN_COUNT${NC}"
+echo -e "  总计: $((PASS_COUNT + FAIL_COUNT + WARN_COUNT))"
 echo
 
 if [ $FAIL_COUNT -eq 0 ]; then

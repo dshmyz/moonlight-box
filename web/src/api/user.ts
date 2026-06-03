@@ -62,4 +62,8 @@ export const userApi = {
   resetPassword(userId: number, password: string) {
     return request.put(`/users/${userId}/password`, { password })
   },
+
+  delete(userId: number) {
+    return request.delete(`/users/${userId}`)
+  },
 }

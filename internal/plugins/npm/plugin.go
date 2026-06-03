@@ -1,3 +1,24 @@
+// Package npm implements the npm registry protocol plugin.
+//
+// # npm Registry 协议要点
+//
+// ## 路径结构
+//   - 包元数据: /{package} 或 /@scope/{package}
+//   - Tarball 下载: /{package}/-/{package}-{version}.tgz
+//   - Scoped 包: /@scope/pkg/-/pkg-{version}.tgz (tarball 文件名不含 scope 前缀)
+//
+// ## 关键实现点
+//   - Scoped 包版本提取: tarball 文件名是 pkg-1.0.0.tgz，不是 @scope/pkg-1.0.0.tgz
+//   - Tarball URL 构造: scoped 包使用短名称（去掉 @scope/ 前缀）
+//   - dist-tags: 优先从 artifact.Properties["dist-tag"] 提取，fallback 自动计算 latest
+//   - 流式 base64: 使用 base64.NewDecoder 避免内存翻倍
+//
+// ## 包元数据响应
+//   - 必须包含 name、versions、dist-tags、time 字段
+//   - each version 必须包含 dist.tarball URL
+//
+// ## 参考规范
+//   - https://github.com/npm/registry/blob/main/docs/REGISTRY-API.md
 package npm
 
 import (
@@ -173,6 +194,18 @@ func extractLicense(obj map[string]interface{}) string {
 	}
 }
 
+// extractNpmVersionFromTarball 从 tarball 文件名中提取版本号。
+// npm 规范：scoped 包的 tarball 文件名不含 scope 前缀，
+// 例如 @babel/core 的 tarball 是 core-7.22.0.tgz 而非 @babel/core-7.22.0.tgz。
+func extractNpmVersionFromTarball(packageName, filename string) string {
+	nameForTrim := packageName
+	// scoped package: 取 "/" 后的短名称
+	if idx := strings.LastIndex(packageName, "/"); idx >= 0 {
+		nameForTrim = packageName[idx+1:]
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(filename, nameForTrim+"-"), ".tgz")
+}
+
 func (p *NpmPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
 	path := ctx.RepositoryPath
 	path = strings.TrimPrefix(path, "/")
@@ -265,7 +298,11 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 
 	packageName := parts[0]
 	filename := parts[1]
-	version := strings.TrimSuffix(strings.TrimPrefix(filename, packageName+"-"), ".tgz")
+	version := extractNpmVersionFromTarball(packageName, filename)
+
+	ctx.PackageName = packageName
+	ctx.Version = version
+	ctx.Filename = filename
 
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
@@ -305,13 +342,16 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 	ctx.Writer.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
-		return err
+		logrus.WithError(err).Warn("failed to write artifact content to client")
+		return nil
 	}
 	return nil
 }
 
 func (p *NpmPlugin) handlePackage(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
 	packageName := strings.TrimSuffix(path, "/")
+
+	ctx.PackageName = packageName
 
 	switch ctx.Request.Method {
 	case http.MethodGet:
@@ -330,7 +370,7 @@ func (p *NpmPlugin) handleTarballDelete(ctx *runtime.RequestContext, repoRuntime
 	}
 	packageName := parts[0]
 	filename := parts[1]
-	version := strings.TrimSuffix(strings.TrimPrefix(filename, packageName+"-"), ".tgz")
+	version := extractNpmVersionFromTarball(packageName, filename)
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
@@ -386,7 +426,13 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 		if _, exists := versions[version]; exists {
 			continue
 		}
-		tarballName := packageName + "-" + version + ".tgz"
+		// npm 规范：scoped 包的 tarball 文件名不含 scope 前缀
+		// 例如 @babel/core 的 tarball 是 core-7.22.0.tgz
+		shortName := packageName
+		if idx := strings.LastIndex(packageName, "/"); idx >= 0 {
+			shortName = packageName[idx+1:]
+		}
+		tarballName := shortName + "-" + version + ".tgz"
 		versions[version] = map[string]interface{}{
 			"name":    packageName,
 			"version": version,
@@ -397,9 +443,17 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 		versionList = append(versionList, version)
 	}
 
-	// Compute dist-tags.
+	// Compute dist-tags: 优先从 artifact Properties 中提取自定义 tag，fallback 自动计算 latest
 	distTags := map[string]string{}
-	if len(versionList) > 0 {
+	for _, artifact := range artifacts {
+		if tag := artifact.Properties["dist-tag"]; tag != "" {
+			v := artifact.Coordinates["version"]
+			if v != "" {
+				distTags[tag] = v
+			}
+		}
+	}
+	if _, hasLatest := distTags["latest"]; !hasLatest && len(versionList) > 0 {
 		sort.Slice(versionList, func(i, j int) bool {
 			return semver.Compare(versionList[i], versionList[j]) > 0
 		})
@@ -502,21 +556,14 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 			http.Error(ctx.Writer, "tarball too large (max 100MB)", http.StatusRequestEntityTooLarge)
 			return nil
 		}
-		tarballBytes, err := base64.StdEncoding.DecodeString(data)
+		tarballBlob, err := session.PutBlob(ctx.Request.Context(), base64.NewDecoder(base64.StdEncoding, strings.NewReader(data)))
 		if err != nil {
 			session.Abort(ctx.Request.Context())
 			http.Error(ctx.Writer, "invalid tarball base64: "+err.Error(), http.StatusBadRequest)
 			return nil
 		}
 
-		tarballBlob, err := session.PutBlob(ctx.Request.Context(), strings.NewReader(string(tarballBytes)))
-		if err != nil {
-			session.Abort(ctx.Request.Context())
-			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
-			return nil
-		}
-
-		tarballVersion := strings.TrimSuffix(strings.TrimPrefix(tarballName, packageName+"-"), ".tgz")
+		tarballVersion := extractNpmVersionFromTarball(packageName, tarballName)
 		tarballArtifact := &runtime.Artifact{
 			RepositoryID: ctx.Repository.ID,
 			Format:       "npm",

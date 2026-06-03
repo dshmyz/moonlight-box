@@ -83,6 +83,10 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 			return nil, err
 		}
 		artifact.FromCache = true
+		artifact.RemoteURL = ""
+		if len(artifact.BlobRefs) > 0 {
+			artifact.SizeBytes = artifact.BlobRefs[0].Size
+		}
 		return artifact, nil
 	}
 
@@ -94,6 +98,9 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 		if ensureErr := n.ensureArtifactBlob(ctx, artifact, key); ensureErr != nil {
 			return nil, ensureErr
 		}
+		if len(artifact.BlobRefs) > 0 {
+			artifact.SizeBytes = artifact.BlobRefs[0].Size
+		}
 		if err := n.openArtifactContent(artifact); err != nil {
 			return nil, err
 		}
@@ -102,7 +109,11 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 			"key":      key.String(),
 			"duration": time.Since(start).Seconds(),
 		}).Debug("proxy: GetArtifact metadata store hit")
-		artifact.FromCache = true
+		if artifact.RemoteURL != "" {
+			artifact.FromCache = false
+		} else {
+			artifact.FromCache = true
+		}
 		return artifact, nil
 	}
 
@@ -240,7 +251,24 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 	}
 
 	if len(artifacts) > 0 {
-		return artifacts, nil
+		// 如果缓存中只有单文件下载产生的 artifact 记录（Kind 为 "artifact" 或空），
+		// 没有 metadata 级别的记录（如 "version"、"package-file" 等），
+		// 说明缓存不完整，应该回源获取完整的 metadata。
+		hasMetadataArtifacts := false
+		for _, a := range artifacts {
+			if a.Kind != "" && a.Kind != "artifact" {
+				hasMetadataArtifacts = true
+				break
+			}
+		}
+		if hasMetadataArtifacts {
+			return artifacts, nil
+		}
+		// 缓存不完整，继续走回源逻辑
+		logrus.WithFields(logrus.Fields{
+			"cachedCount": len(artifacts),
+			"remotePath":  query.RemotePath,
+		}).Debug("proxy: cache has only artifact records, fetching from remote for complete metadata")
 	}
 	// 本地缓存为空,通过 RemoteFetcher 回源
 	if n.Fetcher != nil && n.RemoteBaseURL != "" {
@@ -354,6 +382,8 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 		return err
 	}
 	artifact.BlobRefs = []BlobRef{blobRef}
+	artifact.RemoteURL = key.RemoteURL
+	artifact.SizeBytes = blobRef.Size
 	if err := n.MetadataStore.Put(ctx, artifact); err != nil {
 		logrus.WithFields(logrus.Fields{
 			"remoteURL": key.RemoteURL,

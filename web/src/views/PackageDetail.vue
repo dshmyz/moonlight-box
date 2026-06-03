@@ -308,26 +308,12 @@ async function handleDownload(version: PackageVersion & { selectedFile?: any }) 
     }
   }
   
-  let downloadUrl = ''
-  let downloadFilename = file.filename
-  
-  if (pkg.value.type === 'go') {
-    downloadUrl = `/repository/${pkg.value.repository}/${pkg.value.name}/@v/${version.version}.zip`
-    downloadFilename = `${version.version}.zip`
-  } else if (pkg.value.type === 'maven' || pkg.value.type === 'maven2') {
-    const parts = pkg.value.name.split(':')
-    if (parts.length >= 2) {
-      const groupPath = parts[0].replace(/\./g, '/')
-      downloadUrl = `/repository/${pkg.value.repository}/${groupPath}/${parts[1]}/${version.version}/${file.filename}`
-      downloadFilename = file.filename
-    } else {
-      downloadUrl = `/repository/${pkg.value.repository}/${pkg.value.name}/${version.version}/${file.filename}`
-    }
-  } else if (pkg.value.type === 'pypi') {
-    downloadUrl = `/repository/${pkg.value.repository}/packages/${file.filename}`
-  } else {
-    downloadUrl = `/repository/${pkg.value.repository}/${pkg.value.name}/-/${file.filename}`
+  const downloadUrl = file.download_url
+  if (!downloadUrl) {
+    ElMessage.error('无法获取下载地址')
+    return
   }
+  const downloadFilename = file.filename
   
   try {
     ElMessage.info(`开始下载 ${pkg.value.name}@${version.version} - ${file.filename}`)

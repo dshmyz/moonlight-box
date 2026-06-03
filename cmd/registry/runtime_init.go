@@ -344,9 +344,14 @@ type downloadLogAdapter struct {
 }
 
 func (a *downloadLogAdapter) LogDownload(params runtime.DownloadLogParams) {
-	status := "success"
-	if params.StatusCode >= 400 {
-		status = "failed"
+	var status string
+	switch {
+	case params.StatusCode >= 400:
+		status = model.DownloadStatusFailed
+	case params.FromCache:
+		status = model.DownloadStatusCached
+	default:
+		status = model.DownloadStatusSuccess
 	}
 	a.batcher.Record(&model.DownloadLog{
 		RepositoryID: params.RepoID,

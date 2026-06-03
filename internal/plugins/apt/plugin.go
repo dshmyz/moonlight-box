@@ -1,3 +1,36 @@
+// Package apt implements the APT/deb repository protocol plugin.
+//
+// # APT/deb 仓库协议要点
+//
+// ## 目录结构
+//   - dists/{dist}/InRelease: 仓库元数据索引（内联签名）
+//   - dists/{dist}/main/binary-{arch}/Packages: 包索引
+//   - dists/{dist}/main/binary-{arch}/Packages.gz: 压缩格式
+//   - pool/main/{prefix}/{package}/*.deb: DEB 包文件
+//
+// ## Packages 文件格式
+//   - 必需字段: Package, Version, Architecture, Filename, Size, SHA256
+//   - Filename: 相对于仓库根目录的路径（如 pool/main/p/pkg/pkg_1.0_amd64.deb）
+//   - Depends: 依赖关系
+//   - Description: 包描述
+//
+// ## 压缩格式
+//   - 支持: .gz (gzip), .xz (xz), .bz2 (bzip2)
+//   - 压缩文件应透传上游原始文件，不动态生成
+//   - 客户端根据 Accept-Encoding 或 URL 后缀选择格式
+//
+// ## InRelease 文件
+//   - 包含: 仓库元数据 + 内联 GPG 签名
+//   - 替代旧的 Release + Release.gpg 组合
+//
+// ## 关键实现点
+//   - isPackagesRequest: 显式匹配 Packages, Packages.gz, Packages.xz, Packages.bz2
+//   - 压缩格式跳过动态生成，直接返回 404（依赖上游缓存）
+//   - 动态生成 Packages 时需包含 Architecture 等必需字段
+//
+// ## 参考规范
+//   - https://wiki.debian.org/DebianRepository/Format
+//   - https://apt.debian.org/
 package apt
 
 import (
@@ -233,7 +266,10 @@ func (p *AptPlugin) isInReleaseRequest(path string) bool {
 }
 
 func (p *AptPlugin) isPackagesRequest(path string) bool {
-	return strings.Contains(path, "Packages")
+	return strings.HasSuffix(path, "Packages") ||
+		strings.HasSuffix(path, "Packages.gz") ||
+		strings.HasSuffix(path, "Packages.xz") ||
+		strings.HasSuffix(path, "Packages.bz2")
 }
 
 func (p *AptPlugin) isDebPackageRequest(path string) bool {
@@ -274,7 +310,8 @@ func (p *AptPlugin) handleInRelease(ctx *runtime.RequestContext, repoRuntime run
 	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 	ctx.Writer.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
-		return err
+		logrus.WithError(err).Warn("failed to write artifact content to client")
+		return nil
 	}
 	return nil
 }
@@ -304,8 +341,15 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
-			return err
+			logrus.WithError(err).Warn("failed to write artifact content to client")
+			return nil
 		}
+		return nil
+	}
+
+	// 压缩格式的 Packages 索引无法动态生成，只能透传上游原始文件
+	if strings.HasSuffix(path, ".gz") || strings.HasSuffix(path, ".xz") || strings.HasSuffix(path, ".bz2") {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
 
@@ -373,6 +417,8 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
 	filename := filepath.Base(path)
 
+	ctx.Filename = filename
+
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "apt",
@@ -401,7 +447,8 @@ func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime ru
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
-			return err
+			logrus.WithError(err).Warn("failed to write artifact content to client")
+			return nil
 		}
 		return nil
 	}

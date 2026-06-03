@@ -55,7 +55,7 @@ get_log_count() {
     local count
     count=$(curl -s "$BASE_URL/api/v1/download-logs/logs?page=1&page_size=1" \
         -H "Authorization: Bearer $TOKEN" | \
-        python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('total',0))" 2>/dev/null || echo "0")
+        python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('pagination',{}).get('total',0))" 2>/dev/null || echo "0")
     echo "$count"
 }
 

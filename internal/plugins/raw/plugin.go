@@ -1,3 +1,32 @@
+// Package raw implements a generic file storage plugin (no protocol-specific handling).
+//
+// # Generic/Raw 文件存储要点
+//
+// ## 特点
+//   - 无协议特定的元数据或索引文件
+//   - 直接存储和检索任意文件
+//   - 支持目录结构（通过路径）
+//
+// ## 路径处理
+//   - 上传: PUT /repository/{repo}/{path/to/file.ext}
+//   - 下载: GET /repository/{repo}/{path/to/file.ext}
+//   - 删除: DELETE /repository/{repo}/{path/to/file.ext}
+//
+// ## 目录列表
+//   - 当请求路径以 / 结尾时，尝试返回目录列表
+//   - 解析上游 HTML 响应提取文件链接
+//   - 支持简单的浏览功能
+//
+// ## 关键实现点
+//   - 无需解析包名、版本等元数据
+//   - Content-Type: application/octet-stream
+//   - 支持大文件流式传输
+//   - 目录列表解析需处理多种 HTML 格式
+//
+// ## 适用场景
+//   - 静态资源托管
+//   - 二进制文件分发
+//   - 任意文件存储
 package raw
 
 import (
@@ -191,6 +220,9 @@ func (p *GenericPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.
 		dir = ""
 	}
 
+	ctx.PackageName = filename
+	ctx.Filename = filename
+
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "generic",
@@ -251,7 +283,8 @@ func (p *GenericPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime 
 	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 	ctx.Writer.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
-		return err
+		logrus.WithError(err).Warn("failed to write artifact content to client")
+		return nil
 	}
 	return nil
 }

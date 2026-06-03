@@ -64,6 +64,26 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		return
 	}
 
+	// 批量加载仓库名称（用于构造下载 URL）
+	repoNameMap := make(map[uint]string)
+	{
+		repoIDs := make(map[uint]bool)
+		for _, a := range artifacts {
+			repoIDs[a.RepositoryID] = true
+		}
+		if len(repoIDs) > 0 {
+			ids := make([]uint, 0, len(repoIDs))
+			for id := range repoIDs {
+				ids = append(ids, id)
+			}
+			var repos []model.Repository
+			h.db.Where("id IN ?", ids).Find(&repos)
+			for _, r := range repos {
+				repoNameMap[r.ID] = r.Name
+			}
+		}
+	}
+
 	// 批量获取 blob refs
 	artifactIDs := make([]uint, len(artifacts))
 	for i, a := range artifacts {
@@ -142,9 +162,6 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 			filename = coordinateStr(a.Coordinates, "file")
 		}
 		if filename == "" {
-			filename = coordinateStr(a.Coordinates, "ext")
-		}
-		if filename == "" {
 			if v, ok := a.Coordinates["artifact"]; ok {
 				if s, ok2 := v.(string); ok2 {
 					filename = s
@@ -158,10 +175,15 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		for _, b := range blobs {
 			vp.blobs = append(vp.blobs, b)
 		}
+
+		repoName := repoNameMap[a.RepositoryID]
+		downloadURL := buildDownloadURL(repoName, a.Metadata)
+
 		vp.files = append(vp.files, gin.H{
-			"filename":   filename,
-			"file_type":  fileType,
-			"size_bytes": sumBlobSizes(blobs),
+			"filename":     filename,
+			"file_type":    fileType,
+			"size_bytes":   sumBlobSizes(blobs),
+			"download_url": downloadURL,
 		})
 	}
 
@@ -238,6 +260,14 @@ func sumBlobSizes(blobs []blobInfo) int64 {
 		total += b.Size
 	}
 	return total
+}
+
+func buildDownloadURL(repoName string, metadata model.JSONB) string {
+	downloadPath := coordinateStr(metadata, "download_path")
+	if downloadPath == "" {
+		return ""
+	}
+	return "/repository/" + repoName + "/" + downloadPath
 }
 
 func (h *PackageVersionHandler) DeprecateVersion(c *gin.Context) {

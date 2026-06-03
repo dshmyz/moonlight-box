@@ -12,6 +12,7 @@ const (
 	ActionPackageDelete   AuditAction = "package_delete"
 	ActionUserCreate      AuditAction = "user_create"
 	ActionUserUpdate      AuditAction = "user_update"
+	ActionUserDelete      AuditAction = "user_delete"
 	ActionRoleAssign      AuditAction = "role_assign"
 	ActionConfigChange    AuditAction = "config_change"
 	ActionBlock           AuditAction = "block"

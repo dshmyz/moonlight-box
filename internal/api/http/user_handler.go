@@ -233,4 +233,104 @@ func (h *UserHandler) ListRoles(c *gin.Context) {
 	response.Success(c, roles)
 }
 
+func (h *UserHandler) ResetPassword(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid user ID", "user ID must be a positive integer")
+		return
+	}
+
+	var req struct {
+		Password string `json:"password" binding:"required,min=5"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request", err.Error())
+		return
+	}
+
+	user, err := h.userRepo.FindByID(uint(id))
+	if err != nil {
+		response.NotFound(c, "user not found")
+		return
+	}
+
+	hashedPassword, err := util.HashPassword(req.Password)
+	if err != nil {
+		response.InternalError(c, "failed to hash password")
+		return
+	}
+
+	user.PasswordHash = hashedPassword
+	if err := h.userRepo.Update(user); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	if h.auditSvc != nil {
+		operatorID := c.GetUint("userID")
+		var opID *uint
+		if operatorID > 0 {
+			opID = &operatorID
+		}
+		_ = h.auditSvc.LogWithRequest(
+			c.Request.Context(),
+			opID,
+			model.ActionUserUpdate,
+			"user",
+			&user.ID,
+			user.Username,
+			`{"action":"reset_password"}`,
+			c.ClientIP(),
+			c.Request.UserAgent(),
+		)
+	}
+
+	response.Success(c, gin.H{"message": "password reset successfully"})
+}
+
+func (h *UserHandler) Delete(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid user ID", "user ID must be a positive integer")
+		return
+	}
+
+	user, err := h.userRepo.FindByID(uint(id))
+	if err != nil {
+		response.NotFound(c, "user not found")
+		return
+	}
+
+	if user.Username == "admin" {
+		response.BadRequest(c, "cannot delete admin user", "admin user cannot be deleted")
+		return
+	}
+
+	if err := h.userRepo.Delete(uint(id)); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	if h.auditSvc != nil {
+		operatorID := c.GetUint("userID")
+		var opID *uint
+		if operatorID > 0 {
+			opID = &operatorID
+		}
+		_ = h.auditSvc.LogWithRequest(
+			c.Request.Context(),
+			opID,
+			model.ActionUserDelete,
+			"user",
+			nil,
+			user.Username,
+			"",
+			c.ClientIP(),
+			c.Request.UserAgent(),
+		)
+	}
+
+	response.Success(c, gin.H{"message": "user deleted successfully"})
+}
+
 var _ = http.StatusOK

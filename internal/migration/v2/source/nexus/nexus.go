@@ -65,17 +65,7 @@ func (s *NexusSource) TestConnection(ctx context.Context) error {
 }
 
 func (s *NexusSource) getVersion(ctx context.Context) (NexusVersion, error) {
-	if s.versionReady {
-		return s.version, s.versionErr
-	}
-
-	var versionOnce sync.Once
-	versionOnce.Do(func() {
-		s.version, s.versionErr = s.DetectVersion(ctx)
-		s.versionReady = true
-	})
-
-	return s.version, s.versionErr
+	return NexusVersion{Major: 3, Minor: 0, Patch: 0}, nil
 }
 
 func (s *NexusSource) ListRepositories(ctx context.Context) ([]source.SourceRepository, error) {

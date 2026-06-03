@@ -1,3 +1,38 @@
+// Package gomod implements the Go module proxy protocol plugin.
+//
+// # Go Module Proxy 协议要点
+//
+// ## 端点格式
+//   - 版本列表: $GOPROXY/{module}/@v/list -> 每行一个版本号
+//   - 最新版本: $GOPROXY/{module}/@latest -> JSON: {"Version": "v1.2.3", "Time": "..."}
+//   - 版本信息: $GOPROXY/{module}/@v/{version}.info -> JSON: {"Version": "...", "Time": "..."}
+//   - go.mod: $GOPROXY/{module}/@v/{version}.mod -> go.mod 文件内容
+//   - 源码: $GOPROXY/{module}/@v/{version}.zip -> zip 归档
+//
+// ## 大写字母编码
+//   - 客户端请求: 大写字母编码为 !a-!z（如 Azure -> !azure）
+//   - 服务端处理: 必须解码 !a->A, !b->B 等回大写字母
+//   - 向上游请求: 必须编码大写字母为 !x 格式
+//   - 例如: github.com/Azure/... -> github.com/!azure/...
+//
+// ## .info 文件
+//   - Time 字段必须是该版本的实际发布时间（commit time）
+//   - 不能使用 time.Now()，否则会破坏客户端缓存
+//
+// ## +incompatible 版本
+//   - 表示未遵循语义导入版本控制的模块
+//   - 在 @v/list 中正常列出
+//   - @latest 可以返回 +incompatible 版本
+//
+// ## 关键实现点
+//   - decodeGoPath: 在 Handle 入口解码 !x -> 大写字母
+//   - encodeGoPath: 向上游请求时编码大写字母 -> !x
+//   - .info/.mod/.zip 统一走 GetArtifact，不再动态生成
+//   - 并发获取 info 使用 semaphore 限制并发数
+//
+// ## 参考规范
+//   - https://go.dev/ref/mod#module-proxy
+//   - https://proxy.golang.org/
 package gomod
 
 import (
@@ -8,12 +43,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/mod/semver"
 )
 
 type GoPlugin struct {
@@ -56,7 +93,9 @@ func (p *GoPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*
 			Kind:   "module-file",
 			Coordinates: map[string]string{
 				"module":   modulePath,
-				"path":     path,
+				"name":     modulePath,
+				"version":  strings.TrimSuffix(filename, filepath.Ext(filename)),
+				"path":     modulePath + "/@v",
 				"filename": filename,
 			},
 		},
@@ -128,11 +167,15 @@ func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string)
 		infoStart = 0
 	}
 
+	const maxConcurrentInfo = 3
+	sem := make(chan struct{}, maxConcurrentInfo)
 	var wg sync.WaitGroup
 	for _, a := range artifacts[infoStart:] {
 		wg.Add(1)
 		go func(art *runtime.Artifact) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			info, err := p.fetchVersionInfo(ctx, remoteURL, art.Coordinates["module"], art.Coordinates["version"])
 			if err == nil && info.Time != "" {
 				art.Properties = map[string]string{"published_at": info.Time}
@@ -261,6 +304,25 @@ func encodeGoPath(path string) string {
 	return b.String()
 }
 
+// decodeGoPath decodes the Go module proxy path encoding:
+// !a → A, !b → B, ..., !z → Z. Required for parsing client requests
+// where the Go CLI encodes uppercase letters in module paths.
+func decodeGoPath(path string) string {
+	var b strings.Builder
+	b.Grow(len(path))
+	i := 0
+	for i < len(path) {
+		if path[i] == '!' && i+1 < len(path) && path[i+1] >= 'a' && path[i+1] <= 'z' {
+			b.WriteByte(path[i+1] - 32) // lowercase → uppercase
+			i += 2
+		} else {
+			b.WriteByte(path[i])
+			i++
+		}
+	}
+	return b.String()
+}
+
 func (p *GoPlugin) Name() string {
 	return "go"
 }
@@ -268,6 +330,9 @@ func (p *GoPlugin) Name() string {
 func (p *GoPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
 	path := ctx.RepositoryPath
 	path = strings.TrimPrefix(path, "/")
+	// 解码 Go module proxy 路径编码：!a → A, !b → B, ..., !z → Z
+	// Go CLI 发送请求时会将大写字母编码为 !x 格式
+	path = decodeGoPath(path)
 
 	if strings.HasSuffix(path, "/@latest") {
 		return p.handleLatest(ctx, repoRuntime, path)
@@ -291,6 +356,9 @@ func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime
 
 	modulePath := strings.TrimSuffix(path, "/@latest")
 
+	ctx.PackageName = modulePath
+	ctx.Filename = "@latest"
+
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "go",
@@ -309,11 +377,10 @@ func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime
 		return nil
 	}
 
-	latest := artifacts[0]
-	for _, a := range artifacts {
-		if a.CreatedAt.After(latest.CreatedAt) {
-			latest = a
-		}
+	latest := p.selectLatestStableVersion(artifacts)
+	if latest == nil {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
 	}
 
 	ctx.Writer.Header().Set("Content-Type", "application/json")
@@ -322,12 +389,39 @@ func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime
 	return nil
 }
 
+// selectLatestStableVersion selects the highest stable semver version from the list,
+// filtering out pre-release versions (e.g. v2.0.0-rc1). Requires versions with
+// valid semver format (with 'v' prefix) to participate in comparison.
+// Returns nil if no stable version exists.
+func (p *GoPlugin) selectLatestStableVersion(artifacts []*runtime.Artifact) *runtime.Artifact {
+	var best *runtime.Artifact
+	for _, a := range artifacts {
+		v := a.Coordinates["version"]
+		if v == "" {
+			continue
+		}
+		if !semver.IsValid(v) {
+			continue
+		}
+		if semver.Prerelease(v) != "" {
+			continue
+		}
+		if best == nil || semver.Compare(v, best.Coordinates["version"]) > 0 {
+			best = a
+		}
+	}
+	return best
+}
+
 func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
 	if ctx.Request.Method != http.MethodGet {
 		return errors.New("method not allowed")
 	}
 
 	modulePath := strings.TrimSuffix(path, "/@v/list")
+
+	ctx.PackageName = modulePath
+	ctx.Filename = "list"
 
 	logrus.WithFields(logrus.Fields{
 		"repository":   ctx.Repository.Name,
@@ -400,15 +494,10 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 		cleanVersion = strings.TrimSuffix(filename, ".zip")
 	}
 
-	// For .info, generate JSON dynamically so the version is always a valid semver.
-	if fileType == "info" {
-		ctx.Writer.Header().Set("Content-Type", "application/json")
-		ctx.Writer.WriteHeader(http.StatusOK)
-		fmt.Fprintf(ctx.Writer, `{"Version":"%s","Time":"%s"}`, cleanVersion, time.Now().UTC().Format(time.RFC3339))
-		return nil
-	}
+	ctx.PackageName = modulePath
+	ctx.Version = cleanVersion
+	ctx.Filename = filename
 
-	// For .mod and .zip, fetch and stream the stored blob.
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "go",
@@ -432,6 +521,10 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 		}
 		return nil
 	}
+	if artifact.Content == nil {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
 	defer artifact.Content.Close()
 
 	ctx.FromCache = artifact.FromCache
@@ -439,12 +532,17 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 	ctx.SizeBytes = artifact.SizeBytes
 
 	switch fileType {
+	case "info":
+		ctx.Writer.Header().Set("Content-Type", "application/json")
 	case "mod":
 		ctx.Writer.Header().Set("Content-Type", "text/plain")
 	case "zip":
 		ctx.Writer.Header().Set("Content-Type", "application/zip")
 	}
 	ctx.Writer.WriteHeader(http.StatusOK)
-	io.Copy(ctx.Writer, artifact.Content)
+	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+		logrus.WithError(err).Warn("failed to write artifact content to client")
+		return nil
+	}
 	return nil
 }

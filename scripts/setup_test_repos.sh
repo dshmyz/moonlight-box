@@ -14,6 +14,7 @@ NC='\033[0m'
 
 PASS_COUNT=0
 FAIL_COUNT=0
+WARN_COUNT=0
 SKIP_COUNT=0
 
 pass() {
@@ -32,6 +33,7 @@ info() {
 
 warn() {
     echo -e "  ${YELLOW}⚠ WARN${NC} $1"
+    WARN_COUNT=$((WARN_COUNT + 1))
 }
 
 get_auth_token() {
@@ -170,6 +172,7 @@ echo ""
 echo "  ${GREEN}成功创建: $PASS_COUNT${NC}"
 echo "  ${YELLOW}已存在跳过: $SKIP_COUNT${NC}"
 echo "  ${RED}失败: $FAIL_COUNT${NC}"
+echo "  ${YELLOW}警告: $WARN_COUNT${NC}"
 echo ""
 
 if [ $FAIL_COUNT -eq 0 ]; then

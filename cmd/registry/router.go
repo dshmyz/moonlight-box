@@ -331,6 +331,8 @@ func (ctx *RouterContext) setupUserRoutes(protected *gin.RouterGroup) {
 		usersWrite.POST("", ctx.Handlers.User.Create)
 		usersWrite.PUT("/:id/status", ctx.Handlers.User.UpdateStatus)
 		usersWrite.PUT("/:id/roles", ctx.Handlers.User.AssignRoles)
+		usersWrite.PUT("/:id/password", ctx.Handlers.User.ResetPassword)
+		usersWrite.DELETE("/:id", ctx.Handlers.User.Delete)
 	}
 
 	protected.GET("/roles", ctx.requirePermission("users", "read"), ctx.Handlers.Role.List)

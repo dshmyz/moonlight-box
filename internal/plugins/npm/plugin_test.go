@@ -276,3 +276,253 @@ func TestDistTags_SemverSorting(t *testing.T) {
 		t.Errorf("expected latest 'v2.0.0', got %v", distTags["latest"])
 	}
 }
+
+func TestHandle_TarballDownload_ScopedPackage(t *testing.T) {
+	p := NewNpmPlugin()
+	packageName := "@scope/pkg"
+	// npm 规范：scoped 包的 tarball 文件名不含 scope 前缀
+	art := testhelper.NewArtifact("npm", "tarball", map[string]string{
+		"name":     packageName,
+		"version":  "1.0.0",
+		"path":     packageName + "/-",
+		"filename": "pkg-1.0.0.tgz",
+	}, "scoped-tarball-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	// 请求路径: @scope/pkg/-/pkg-1.0.0.tgz（文件名不含 scope 前缀）
+	ctx, w := newCtx("GET", packageName+"/-/pkg-1.0.0.tgz", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if w.Body.String() != "scoped-tarball-content" {
+		t.Errorf("expected 'scoped-tarball-content', got %q", w.Body.String())
+	}
+	if ctx.PackageName != packageName {
+		t.Errorf("expected PackageName %q, got %q", packageName, ctx.PackageName)
+	}
+	if ctx.Version != "1.0.0" {
+		t.Errorf("expected Version '1.0.0', got %q", ctx.Version)
+	}
+}
+
+func TestHandle_TarballDownload_InvalidPath(t *testing.T) {
+	p := NewNpmPlugin()
+	rt := &testhelper.MockRuntime{}
+
+	ctx, w := newCtx("GET", "foo/-/bar/-/baz.tgz", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandle_PackageNotFound(t *testing.T) {
+	p := NewNpmPlugin()
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{}}
+
+	ctx, w := newCtx("GET", "nonexistent-pkg", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestHandle_EmptyVersions(t *testing.T) {
+	p := NewNpmPlugin()
+	art := testhelper.NewArtifact("npm", "metadata", map[string]string{
+		"name": "pkg-no-versions",
+	}, "")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "pkg-no-versions", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestHandle_NpmInternal_NotFound(t *testing.T) {
+	p := NewNpmPlugin()
+	rt := &testhelper.MockRuntime{}
+
+	ctx, w := newCtx("GET", "-/npm/unknown/endpoint", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+	if w.Body.String() != "Not found\n" {
+		t.Errorf("expected 'Not found\\n', got %q", w.Body.String())
+	}
+}
+
+func TestHandle_MethodNotAllowed(t *testing.T) {
+	p := NewNpmPlugin()
+	rt := &testhelper.MockRuntime{}
+
+	ctx, _ := newCtx("POST", "express", nil)
+	err := p.Handle(ctx, rt)
+	if err == nil || err.Error() != "method not allowed" {
+		t.Fatalf("expected 'method not allowed' error, got %v", err)
+	}
+}
+
+func TestFetchRemote_EmptyPackage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"name":     "empty-pkg",
+			"versions": nil,
+		})
+	}))
+	defer srv.Close()
+
+	p := NewNpmPlugin()
+	arts, err := p.FetchRemote(context.Background(), srv.URL, "empty-pkg")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if arts != nil {
+		t.Fatalf("expected nil artifacts for empty package, got %d", len(arts))
+	}
+}
+
+func TestFetchRemote_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	p := NewNpmPlugin()
+	arts, err := p.FetchRemote(context.Background(), srv.URL, "missing-pkg")
+	if err == nil {
+		t.Fatalf("expected error for non-200 response, got nil")
+	}
+	if arts != nil {
+		t.Fatalf("expected nil artifacts on error, got %d", len(arts))
+	}
+	if !strings.Contains(err.Error(), "status 404") {
+		t.Errorf("expected error to contain 'status 404', got %v", err)
+	}
+}
+
+func TestParseNpmMetadata(t *testing.T) {
+	registryJSON := `{
+		"name": "test-pkg",
+		"description": "top-level description",
+		"homepage": "https://example.com",
+		"license": "MIT",
+		"time": {
+			"1.0.0": "2024-01-15T10:00:00.000Z",
+			"2.0.0": "2024-06-20T15:30:00.000Z"
+		},
+		"versions": {
+			"1.0.0": {
+				"name": "test-pkg",
+				"version": "1.0.0",
+				"description": "version-specific description",
+				"license": "Apache-2.0"
+			},
+			"2.0.0": {
+				"name": "test-pkg",
+				"version": "2.0.0",
+				"license": {
+					"type": "BSD-3-Clause",
+					"url": "https://opensource.org/licenses/BSD-3-Clause"
+				},
+				"homepage": "https://v2.example.com"
+			}
+		}
+	}`
+
+	p := NewNpmPlugin()
+	arts, err := p.parseNpmMetadata("test-pkg", strings.NewReader(registryJSON))
+	if err != nil {
+		t.Fatalf("parseNpmMetadata failed: %v", err)
+	}
+	if len(arts) != 2 {
+		t.Fatalf("expected 2 artifacts, got %d", len(arts))
+	}
+
+	artMap := make(map[string]*runtime.Artifact)
+	for _, a := range arts {
+		artMap[a.Coordinates["version"]] = a
+	}
+
+	v1 := artMap["1.0.0"]
+	if v1 == nil {
+		t.Fatal("version 1.0.0 not found")
+	}
+	if v1.Properties["license"] != "Apache-2.0" {
+		t.Errorf("v1 license: expected 'Apache-2.0', got %q", v1.Properties["license"])
+	}
+	if v1.Properties["description"] != "version-specific description" {
+		t.Errorf("v1 description: expected 'version-specific description', got %q", v1.Properties["description"])
+	}
+	if v1.Properties["homepage"] != "https://example.com" {
+		t.Errorf("v1 homepage: expected 'https://example.com', got %q", v1.Properties["homepage"])
+	}
+	if v1.Properties["published_at"] != "2024-01-15T10:00:00.000Z" {
+		t.Errorf("v1 published_at: expected '2024-01-15T10:00:00.000Z', got %q", v1.Properties["published_at"])
+	}
+
+	v2 := artMap["2.0.0"]
+	if v2 == nil {
+		t.Fatal("version 2.0.0 not found")
+	}
+	if v2.Properties["license"] != "BSD-3-Clause" {
+		t.Errorf("v2 license: expected 'BSD-3-Clause' (from object), got %q", v2.Properties["license"])
+	}
+	if v2.Properties["description"] != "top-level description" {
+		t.Errorf("v2 description: expected fallback to top-level, got %q", v2.Properties["description"])
+	}
+	if v2.Properties["homepage"] != "https://v2.example.com" {
+		t.Errorf("v2 homepage: expected version-specific 'https://v2.example.com', got %q", v2.Properties["homepage"])
+	}
+	if v2.Properties["published_at"] != "2024-06-20T15:30:00.000Z" {
+		t.Errorf("v2 published_at: expected '2024-06-20T15:30:00.000Z', got %q", v2.Properties["published_at"])
+	}
+}
+
+func TestDistTags_Prerelease(t *testing.T) {
+	p := NewNpmPlugin()
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v1.0.0-alpha.1"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v1.0.0-beta.1"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v1.0.0-rc.1"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v1.0.0"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v0.9.0"}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "prerelease-pkg", nil)
+	p.Handle(ctx, rt)
+
+	var result map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &result)
+	distTags := result["dist-tags"].(map[string]interface{})
+	if distTags["latest"] != "v1.0.0" {
+		t.Errorf("expected latest 'v1.0.0', got %v", distTags["latest"])
+	}
+
+	versions := result["versions"].(map[string]interface{})
+	if len(versions) != 5 {
+		t.Errorf("expected 5 versions, got %d", len(versions))
+	}
+	expectedVersions := []string{"v1.0.0-alpha.1", "v1.0.0-beta.1", "v1.0.0-rc.1", "v1.0.0", "v0.9.0"}
+	for _, v := range expectedVersions {
+		if _, ok := versions[v]; !ok {
+			t.Errorf("expected version %q not found", v)
+		}
+	}
+}

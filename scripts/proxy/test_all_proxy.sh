@@ -375,12 +375,13 @@ GENERIC_REPO="generic-local"
 TEST_FILE_CONTENT="Hello, this is a test file for generic repository."
 TEST_FILE_NAME="test-file-$(date +%s).txt"
 
-# 上传文件到 Generic 仓库
+# 上传文件到 Generic 仓库（需要认证）
 echo "$TEST_FILE_CONTENT" > /tmp/test_proxy_generic_upload.txt
 HTTP_CODE=$(curl -s -o /tmp/test_proxy_generic_upload_result.json -w "%{http_code}" \
     -X PUT \
     -H "Content-Type: application/octet-stream" \
     --data-binary @/tmp/test_proxy_generic_upload.txt \
+    -u admin:admin123 \
     "$BASE_URL/repository/$GENERIC_REPO/$TEST_FILE_NAME")
 
 if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then

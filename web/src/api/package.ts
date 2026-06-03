@@ -40,6 +40,7 @@ export interface PackageFile {
   checksum_sha256?: string
   checksum_md5?: string
   download_count: number
+  download_url?: string
 }
 
 export interface PackageVersion {

@@ -152,6 +152,36 @@ type DownloadLogger interface {
 	LogDownload(params DownloadLogParams)
 }
 
+// statusRecorder 包装 http.ResponseWriter，捕获实际写入的状态码
+type statusRecorder struct {
+	http.ResponseWriter
+	statusCode int
+	written    bool
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	if !r.written {
+		r.statusCode = code
+		r.written = true
+	}
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if !r.written {
+		r.statusCode = http.StatusOK
+		r.written = true
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+func (r *statusRecorder) StatusCode() int {
+	if r.statusCode == 0 {
+		return http.StatusOK
+	}
+	return r.statusCode
+}
+
 func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	resolved, err := r.Resolver.Resolve(req)
 	if err != nil {
@@ -205,8 +235,9 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	clientIP := getRealClientIP(req)
+	rec := &statusRecorder{ResponseWriter: w}
 	ctx := &RequestContext{
-		Writer:         w,
+		Writer:         rec,
 		Request:        req.WithContext(ContextWithClientIP(req.Context(), clientIP)),
 		Repository:     repo,
 		RepositoryPath: resolved.RemainingPath,
@@ -226,14 +257,13 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		repoID = uint(id)
 	}
 
-	// 从路径中提取包名和版本信息
-	packageName, version, filename := extractPackageInfo(repo.Format, blockPath)
+	// 从路径中提取包名和版本信息（由 ProtocolPlugin 在 Handle 中填充到 ctx）
+	packageName := ctx.PackageName
+	version := ctx.Version
+	filename := ctx.Filename
 
-	// 获取实际响应状态码
-	statusCode := ctx.StatusCode
-	if statusCode == 0 {
-		statusCode = http.StatusOK
-	}
+	// 获取实际响应状态码：优先使用包装器捕获的真实状态码
+	statusCode := rec.StatusCode()
 
 	// 下载计数 — 只在成功时计数
 	if r.DownloadCount != nil && statusCode >= 200 && statusCode < 400 {
@@ -257,62 +287,6 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			RequestID:   req.Header.Get("X-Request-ID"),
 		})
 	}
-}
-
-// extractPackageInfo 从路径中提取包名、版本和文件名
-func extractPackageInfo(format, path string) (packageName, version, filename string) {
-	if path == "" || path == "/" {
-		return "", "", ""
-	}
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	switch format {
-	case "maven", "maven2":
-		// {group...}/{artifact}/{version}/{filename}
-		if len(parts) >= 4 {
-			filename = parts[len(parts)-1]
-			version = parts[len(parts)-2]
-			packageName = strings.Join(parts[:len(parts)-3], ".") + ":" + parts[len(parts)-3]
-		} else if len(parts) >= 2 {
-			packageName = parts[len(parts)-1]
-		}
-	case "npm":
-		// 先检查 /-/ 路径（如：@scope/pkg/-/pkg-1.0.0.tgz 或 pkg/-/pkg-1.0.0.tgz）
-		if strings.Contains(path, "/-/") {
-			slashParts := strings.SplitN(path, "/-/", 2)
-			if len(slashParts) == 2 {
-				packageName = strings.Trim(slashParts[0], "/")
-				filename = slashParts[1]
-				return
-			}
-		}
-		// 普通 NPM 路径
-		if len(parts) >= 2 && strings.HasPrefix(parts[0], "@") {
-			packageName = parts[0] + "/" + parts[1] // scoped: @scope/pkg
-		} else if len(parts) >= 1 {
-			packageName = parts[0]
-		}
-	case "pypi":
-		// /simple/{package}/ 或 /packages/{hash}/{filename}
-		if len(parts) >= 2 && parts[0] == "simple" {
-			packageName = parts[1]
-		} else if len(parts) >= 3 && parts[0] == "packages" {
-			// /packages/{hash}/{filename} - 从文件名提取包名
-			filename = parts[len(parts)-1]
-			// 尝试从文件名提取包名：{package}-{version}.whl 或 {package}-{version}.tar.gz
-			if idx := strings.Index(filename, "-"); idx > 0 {
-				packageName = filename[:idx]
-			}
-		}
-	case "go":
-		if len(parts) >= 1 {
-			packageName = parts[0]
-		}
-	default:
-		if len(parts) >= 1 {
-			filename = parts[len(parts)-1]
-		}
-	}
-	return
 }
 
 func NewRepositoryRouter(resolver RepositoryPathResolver, manager RepositoryManager) *RepositoryRouter {
