@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/model"
@@ -12,11 +13,25 @@ import (
 )
 
 type MetadataStore struct {
-	db *gorm.DB
+	db          *gorm.DB
+	artifactSvc ArtifactServiceAdapter
+}
+
+// ArtifactServiceAdapter 适配 service.ArtifactService，使 MetadataStore 能调用它。
+// 使用接口避免循环依赖。
+type ArtifactServiceAdapter interface {
+	Save(ctx context.Context, artifact *runtime.Artifact) error
+	SaveBatch(ctx context.Context, artifacts []*runtime.Artifact) error
+	Delete(ctx context.Context, key runtime.ArtifactKey) error
 }
 
 func NewMetadataStore(db *gorm.DB) *MetadataStore {
 	return &MetadataStore{db: db}
+}
+
+// NewMetadataStoreWithArtifactService 创建带 ArtifactService 的 MetadataStore
+func NewMetadataStoreWithArtifactService(db *gorm.DB, svc ArtifactServiceAdapter) *MetadataStore {
+	return &MetadataStore{db: db, artifactSvc: svc}
 }
 
 func (s *MetadataStore) Get(ctx context.Context, key runtime.ArtifactKey) (*runtime.Artifact, error) {
@@ -46,6 +61,14 @@ func (s *MetadataStore) Get(ctx context.Context, key runtime.ArtifactKey) (*runt
 }
 
 func (s *MetadataStore) Put(ctx context.Context, artifact *runtime.Artifact) error {
+	if s.artifactSvc != nil {
+		return s.artifactSvc.Save(ctx, artifact)
+	}
+
+	// 回退：直接操作 DB（无 packages 同步）
+	if err := runtime.ValidateArtifactForStore(artifact); err != nil {
+		return err
+	}
 	modelArtifact := s.toModelArtifact(artifact)
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -78,8 +101,19 @@ func (s *MetadataStore) Put(ctx context.Context, artifact *runtime.Artifact) err
 }
 
 func (s *MetadataStore) BatchPut(ctx context.Context, artifacts []*runtime.Artifact) error {
+	if s.artifactSvc != nil {
+		return s.artifactSvc.SaveBatch(ctx, artifacts)
+	}
+
+	// 回退：直接操作 DB（无 packages 同步）
 	if len(artifacts) == 0 {
 		return nil
+	}
+
+	for _, a := range artifacts {
+		if err := runtime.ValidateArtifactForStore(a); err != nil {
+			return err
+		}
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -154,6 +188,11 @@ func (s *MetadataStore) syncBlobRefs(tx *gorm.DB, artifactID uint, blobRefs []ru
 }
 
 func (s *MetadataStore) Delete(ctx context.Context, key runtime.ArtifactKey) error {
+	if s.artifactSvc != nil {
+		return s.artifactSvc.Delete(ctx, key)
+	}
+
+	// 回退：直接操作 DB（无 packages 同步）
 	coordsJSON, _ := json.Marshal(key.Coordinates)
 
 	var repoID uint
@@ -274,6 +313,9 @@ func (s *MetadataStore) toTypesArtifact(m *model.Artifact) *runtime.Artifact {
 	}
 }
 
+// toModelArtifact 将 runtime.Artifact 转为 model.Artifact。
+// 注意：此函数与 ArtifactService.toModelArtifact 逻辑相同（回退路径专用），
+// 如需修改转换逻辑请同步更新两者。
 func (s *MetadataStore) toModelArtifact(t *runtime.Artifact) *model.Artifact {
 	coords := make(model.JSONB)
 	for k, v := range t.Coordinates {
@@ -286,9 +328,13 @@ func (s *MetadataStore) toModelArtifact(t *runtime.Artifact) *model.Artifact {
 	}
 
 	// 自动从 Coordinates 计算 download_path，供前端下载链接使用
-	if filename, _ := coords["filename"].(string); filename != "" {
+	if filename, _ := coords["filename"].(string); filename != "" && metadata["download_path"] == nil {
 		if p, _ := coords["path"].(string); p != "" {
-			metadata["download_path"] = p + "/" + filename
+			if p == filename || strings.HasSuffix(p, "/"+filename) {
+				metadata["download_path"] = p
+			} else {
+				metadata["download_path"] = strings.TrimRight(p, "/") + "/" + filename
+			}
 		} else {
 			metadata["download_path"] = filename
 		}

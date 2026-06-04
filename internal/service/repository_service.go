@@ -26,9 +26,6 @@ type RepositoryHealthInfo struct {
 	CircuitBreaker interface{}         `json:"circuit_breaker,omitempty"`
 }
 
-// RuntimeFactory 创建仓库运行时实例的函数类型
-type RuntimeFactory func(repo *model.Repository, members []string) (*runtime.Repository, error)
-
 // RepositoryService 仓库管理服务层
 type RepositoryService struct {
 	repoRepo       *repository.RepositoryRepository
@@ -37,7 +34,6 @@ type RepositoryService struct {
 	healthCheckSvc *proxy.HealthCheckService
 	db             *gorm.DB
 	repoMgr        *runtime.DefaultRepositoryManager
-	runtimeFactory RuntimeFactory
 
 	// 列表缓存
 	listCacheMu  sync.RWMutex
@@ -76,15 +72,18 @@ func (s *RepositoryService) SetRepoManager(mgr *runtime.DefaultRepositoryManager
 	s.repoMgr = mgr
 }
 
-// SetRuntimeFactory 设置运行时工厂函数
-func (s *RepositoryService) SetRuntimeFactory(f RuntimeFactory) {
-	s.runtimeFactory = f
-}
-
 // invalidateCache 失效缓存
 func (s *RepositoryService) invalidateCache(name string) {
 	if s.repoCache != nil {
 		s.repoCache.Invalidate(name)
+	}
+	// 使 manager 中的内存缓存失效，下次请求时懒加载
+	if s.repoMgr != nil {
+		if name == "*" {
+			s.repoMgr.Reload()
+		} else {
+			s.repoMgr.Invalidate(name)
+		}
 	}
 	// 列表缓存全部失效（仓库变更后列表都可能变化）
 	s.listCacheMu.Lock()
@@ -92,22 +91,23 @@ func (s *RepositoryService) invalidateCache(name string) {
 	s.listCacheMu.Unlock()
 }
 
-// reloadVirtualRepoRuntime 重新加载虚拟仓库的 GroupRuntime
-// 当成员变更时需要调用，确保 in-memory Runtime 与 DB 一致
-func (s *RepositoryService) reloadVirtualRepoRuntime(virtualRepo *model.Repository) {
-	if s.runtimeFactory == nil || s.repoMgr == nil {
+// cascadeInvalidateParents 级联失效：当成员仓库变更时，同时失效包含它的虚拟仓库。
+// 因为虚拟仓库的 GroupRuntime 持有成员的 Runtime 引用，成员变了必须重建。
+func (s *RepositoryService) cascadeInvalidateParents(memberRepoName string) {
+	if s.repoMgr == nil {
 		return
 	}
-	// 重新从 DB 加载（包含最新的成员列表）
-	updated, err := s.repoRepo.FindByName(virtualRepo.Name)
+	repo, err := s.repoRepo.FindByName(memberRepoName)
 	if err != nil {
 		return
 	}
-	rtRepo, err := s.runtimeFactory(updated, nil)
+	parents, err := s.groupRepo.GetParentVirtualRepos(repo.ID)
 	if err != nil {
 		return
 	}
-	s.repoMgr.Set(rtRepo)
+	for _, parent := range parents {
+		s.repoMgr.Invalidate(parent.Name)
+	}
 }
 
 // listCacheKey 生成列表缓存键
@@ -139,7 +139,7 @@ func copyListView(src []RepositoryListView) []RepositoryListView {
 
 // Create 创建仓库，如果是虚拟仓则同时添加成员
 func (s *RepositoryService) Create(repo *model.Repository, members []string) error {
-	err := s.db.Transaction(func(tx *gorm.DB) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(repo).Error; err != nil {
 			return err
 		}
@@ -165,13 +165,6 @@ func (s *RepositoryService) Create(repo *model.Repository, members []string) err
 
 		return nil
 	})
-	if err == nil && s.repoMgr != nil && s.runtimeFactory != nil {
-		rtRepo, factoryErr := s.runtimeFactory(repo, members)
-		if factoryErr == nil {
-			s.repoMgr.Set(rtRepo)
-		}
-	}
-	return err
 }
 
 // List 列出仓库，支持按条件过滤
@@ -317,26 +310,14 @@ func (s *RepositoryService) Update(name string, params *model.UpdateRepositoryPa
 		if err == nil {
 			s.invalidateCache(name)
 		}
-		if err == nil && s.repoMgr != nil && s.runtimeFactory != nil {
-			if updatedRepo, repoErr := s.repoRepo.FindByName(name); repoErr == nil {
-				if rtRepo, factoryErr := s.runtimeFactory(updatedRepo, members); factoryErr == nil {
-					s.repoMgr.Set(rtRepo)
-				}
-			}
-		}
 		return err
 	}
 
 	err := s.repoRepo.Update(name, repo, fields)
 	if err == nil {
 		s.invalidateCache(name)
-	}
-	if err == nil && s.repoMgr != nil && s.runtimeFactory != nil {
-		if updatedRepo, repoErr := s.repoRepo.FindByName(name); repoErr == nil {
-			if rtRepo, factoryErr := s.runtimeFactory(updatedRepo, nil); factoryErr == nil {
-				s.repoMgr.Set(rtRepo)
-			}
-		}
+		// 成员仓库配置变更时，级联失效包含它的虚拟仓库
+		s.cascadeInvalidateParents(name)
 	}
 	return err
 }
@@ -346,9 +327,11 @@ func (s *RepositoryService) Delete(name string) error {
 	err := s.repoRepo.Delete(name)
 	if err == nil {
 		s.invalidateCache(name)
-	}
-	if err == nil && s.repoMgr != nil {
-		s.repoMgr.Delete(name)
+		if s.repoMgr != nil {
+			s.repoMgr.Delete(name)
+		}
+		// 删除成员仓库时，级联失效包含它的虚拟仓库
+		s.cascadeInvalidateParents(name)
 	}
 	return err
 }
@@ -366,7 +349,6 @@ func (s *RepositoryService) AddMember(virtualRepoName, memberRepoName string, pr
 	err = s.groupRepo.AddMember(virtualRepo.ID, memberRepo.ID, priority)
 	if err == nil {
 		s.invalidateCache(virtualRepoName)
-		s.reloadVirtualRepoRuntime(virtualRepo)
 	}
 	return err
 }
@@ -384,7 +366,6 @@ func (s *RepositoryService) RemoveMember(virtualRepoName, memberRepoName string)
 	err = s.groupRepo.RemoveMember(virtualRepo.ID, memberRepo.ID)
 	if err == nil {
 		s.invalidateCache(virtualRepoName)
-		s.reloadVirtualRepoRuntime(virtualRepo)
 	}
 	return err
 }

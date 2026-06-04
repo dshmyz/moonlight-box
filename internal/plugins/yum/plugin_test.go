@@ -74,7 +74,11 @@ func TestHandle_Primary(t *testing.T) {
 
 func TestHandle_RpmDownload(t *testing.T) {
 	p := NewYumPlugin()
-	art := testhelper.NewArtifact("yum", "file", map[string]string{"filename": "nginx-1.20.1-1.el8.x86_64.rpm"}, "rpm-content")
+	art := testhelper.NewArtifact("yum", "file", map[string]string{
+		"file":     "nginx-1.20.1-1.el8.x86_64.rpm",
+		"filename": "nginx-1.20.1-1.el8.x86_64.rpm",
+		"path":     "Packages",
+	}, "rpm-content")
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
 	ctx, w := newCtx("GET", "Packages/nginx-1.20.1-1.el8.x86_64.rpm", nil)
@@ -85,6 +89,27 @@ func TestHandle_RpmDownload(t *testing.T) {
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "application/x-rpm" {
 		t.Errorf("expected application/x-rpm, got %s", ct)
+	}
+}
+
+func TestFetchRemote_RpmUsesDirectoryPathAndRemotePath(t *testing.T) {
+	p := NewYumPlugin()
+	arts, err := p.FetchRemote(context.Background(), "http://example.test", "Packages/nginx-1.20.1-1.el8.x86_64.rpm")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+	a := arts[0]
+	if got := a.Coordinates["path"]; got != "Packages" {
+		t.Fatalf("path = %q, want directory path", got)
+	}
+	if got := a.Coordinates["filename"]; got != "nginx-1.20.1-1.el8.x86_64.rpm" {
+		t.Fatalf("filename = %q", got)
+	}
+	if got := a.Properties["remote_path"]; got != "Packages/nginx-1.20.1-1.el8.x86_64.rpm" {
+		t.Fatalf("remote_path = %q, want full remote path", got)
 	}
 }
 
@@ -174,6 +199,19 @@ func TestFetchRemote_Repomd(t *testing.T) {
 	}
 	if arts[0].Coordinates["file"] != "repomd.xml" {
 		t.Errorf("first artifact should be repomd.xml, got %q", arts[0].Coordinates["file"])
+	}
+	ref := arts[1]
+	if ref.Kind != "metadata-ref" {
+		t.Fatalf("expected metadata-ref, got %q", ref.Kind)
+	}
+	if got := ref.Coordinates["filename"]; got != "abc123-primary.xml.gz" {
+		t.Fatalf("metadata-ref filename = %q", got)
+	}
+	if got := ref.Coordinates["path"]; got != "repodata" {
+		t.Fatalf("metadata-ref path = %q", got)
+	}
+	if got := ref.Properties["remote_path"]; got != "repodata/abc123-primary.xml.gz" {
+		t.Fatalf("metadata-ref remote_path = %q", got)
 	}
 }
 

@@ -4,6 +4,8 @@
 //
 // ## 目录结构
 //   - dists/{dist}/InRelease: 仓库元数据索引（内联签名）
+//   - dists/{dist}/Release: 仓库元数据索引
+//   - dists/{dist}/Release.gpg: 签名文件
 //   - dists/{dist}/main/binary-{arch}/Packages: 包索引
 //   - dists/{dist}/main/binary-{arch}/Packages.gz: 压缩格式
 //   - pool/main/{prefix}/{package}/*.deb: DEB 包文件
@@ -23,10 +25,27 @@
 //   - 包含: 仓库元数据 + 内联 GPG 签名
 //   - 替代旧的 Release + Release.gpg 组合
 //
-// ## 关键实现点
-//   - isPackagesRequest: 显式匹配 Packages, Packages.gz, Packages.xz, Packages.bz2
-//   - 压缩格式跳过动态生成，直接返回 404（依赖上游缓存）
-//   - 动态生成 Packages 时需包含 Architecture 等必需字段
+// ## 回源策略（重要）
+//
+// 所有文件下载（.deb 包、InRelease、压缩 Packages）必须遵循以下回源路径：
+//
+//  1. 先通过 GetArtifact 查询本地缓存/MetadataStore
+//  2. 未命中时通过 QueryArtifacts(RemotePath=path) 触发 FetchRemote 回源
+//  3. 回源成功后再次 GetArtifact 获取带 blob 的完整 artifact
+//
+// 禁止直接构建远程 URL，必须通过 QueryArtifacts + RemotePath 让 Runtime 层
+// 统一管理回源，确保:
+//   - RemotePath 包含完整路径（如 "dists/focal/InRelease"、"pool/main/p/pkg/pkg_1.0_amd64.deb"）
+//   - ArtifactKey.Coordinates 与 FetchRemote 存储的坐标一致（含 file/filename/path）
+//   - 负缓存由 Runtime 层统一管理
+//
+// ## 路由分发
+//
+// Handle 方法按以下优先级匹配路径：
+//  1. InRelease/Release/Release.gpg → handleInRelease（透传原始文件）
+//  2. Packages/Packages.gz/.xz/.bz2 → handlePackages（未压缩动态生成，压缩格式透传）
+//  3. *.deb → handleDebPackage（代理 .deb 包）
+//  4. 其他 → 404
 //
 // ## 参考规范
 //   - https://wiki.debian.org/DebianRepository/Format
@@ -82,13 +101,34 @@ func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 	}).Debug("apt: FetchRemote called")
 
 	// For Packages index requests, fetch and parse the Packages file.
+	// Compressed formats (.gz/.xz/.bz2) are opaque binary files, proxied as-is.
 	if p.isPackagesRequest(path) {
+		if strings.HasSuffix(path, ".gz") || strings.HasSuffix(path, ".xz") || strings.HasSuffix(path, ".bz2") {
+			filename := filepath.Base(path)
+			dir := aptArtifactDir(path)
+			return []*runtime.Artifact{
+				{
+					Format: "apt",
+					Kind:   "package-index",
+					Coordinates: map[string]string{
+						"file":     filename,
+						"filename": filename,
+						"path":     dir,
+					},
+					Properties: map[string]string{
+						"filename":    filename,
+						"remote_path": path,
+					},
+				},
+			}, nil
+		}
 		return p.fetchPackagesIndex(ctx, remoteURL, path)
 	}
 
 	// For InRelease/Release requests, return a basic artifact indicating the remote resource exists.
 	if p.isInReleaseRequest(path) {
 		filename := filepath.Base(path)
+		dir := aptArtifactDir(path)
 		logrus.WithFields(logrus.Fields{
 			"path":     path,
 			"filename": filename,
@@ -99,10 +139,13 @@ func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 				Format: "apt",
 				Kind:   "release",
 				Coordinates: map[string]string{
-					"file": filename,
+					"file":     filename,
+					"filename": filename,
+					"path":     dir,
 				},
 				Properties: map[string]string{
-					"filename": filename,
+					"filename":    filename,
+					"remote_path": path,
 				},
 			},
 		}, nil
@@ -110,6 +153,7 @@ func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 
 	// For .deb package requests, return a basic artifact indicating the remote resource exists.
 	filename := filepath.Base(path)
+	dir := aptArtifactDir(path)
 	logrus.WithFields(logrus.Fields{
 		"path":     path,
 		"filename": filename,
@@ -120,10 +164,13 @@ func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 			Format: "apt",
 			Kind:   "package",
 			Coordinates: map[string]string{
+				"file":     filename,
 				"filename": filename,
+				"path":     dir,
 			},
 			Properties: map[string]string{
-				"filename": filename,
+				"filename":    filename,
+				"remote_path": path,
 			},
 		},
 	}, nil
@@ -206,6 +253,7 @@ func (p *AptPlugin) parsePackagesIndex(content string) []*runtime.Artifact {
 					"name":     pkgName,
 					"version":  version,
 					"filename": filepath.Base(filename),
+					"path":     aptArtifactDir(filename),
 				},
 				Properties: map[string]string{
 					"filename":    filepath.Base(filename),
@@ -276,42 +324,73 @@ func (p *AptPlugin) isDebPackageRequest(path string) bool {
 	return strings.HasSuffix(path, ".deb")
 }
 
+func aptArtifactDir(remotePath string) string {
+	dir := filepath.Dir(strings.Trim(remotePath, "/"))
+	if dir == "." {
+		return ""
+	}
+	return dir
+}
+
 func (p *AptPlugin) handleInRelease(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
 	if ctx.Request.Method != http.MethodGet {
 		return errors.New("method not allowed")
 	}
 
 	filename := filepath.Base(path)
+	dir := aptArtifactDir(path)
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "apt",
 		Coordinates: map[string]string{
-			"file": filename,
+			"file":     filename,
+			"filename": filename,
+			"path":     dir,
 		},
 		Filename: filename,
 	}
 
 	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
-	if err != nil {
+	if err == nil && artifact.Content != nil {
+		defer artifact.Content.Close()
+		ctx.FromCache = artifact.FromCache
+		ctx.RemoteURL = artifact.RemoteURL
+		ctx.SizeBytes = artifact.SizeBytes
+		ctx.Writer.Header().Set("Content-Type", "text/plain")
+		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
+		ctx.Writer.WriteHeader(http.StatusOK)
+		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+			logrus.WithError(err).Warn("failed to write artifact content to client")
+		}
+		return nil
+	}
+
+	// GetArtifact 未命中，通过 QueryArtifacts + RemotePath 回源
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "apt",
+		RemotePath:   path,
+	})
+	if err != nil || len(artifacts) == 0 {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
-	if artifact.Content == nil {
+
+	// 回源成功后再次获取带 blob 的完整 artifact
+	artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
+	if err != nil || artifact.Content == nil {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
 	defer artifact.Content.Close()
-
 	ctx.FromCache = artifact.FromCache
 	ctx.RemoteURL = artifact.RemoteURL
 	ctx.SizeBytes = artifact.SizeBytes
-
 	ctx.Writer.Header().Set("Content-Type", "text/plain")
 	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 	ctx.Writer.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
 		logrus.WithError(err).Warn("failed to write artifact content to client")
-		return nil
 	}
 	return nil
 }
@@ -323,11 +402,14 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 
 	// Try serve stored Packages file first.
 	filename := filepath.Base(path)
+	dir := aptArtifactDir(path)
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "apt",
 		Coordinates: map[string]string{
-			"file": filename,
+			"file":     filename,
+			"filename": filename,
+			"path":     dir,
 		},
 		Filename: filename,
 	}
@@ -342,14 +424,37 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
 			logrus.WithError(err).Warn("failed to write artifact content to client")
-			return nil
 		}
 		return nil
 	}
 
-	// 压缩格式的 Packages 索引无法动态生成，只能透传上游原始文件
+	// 压缩格式的 Packages 索引无法动态生成，通过 QueryArtifacts 回源获取原始文件
 	if strings.HasSuffix(path, ".gz") || strings.HasSuffix(path, ".xz") || strings.HasSuffix(path, ".bz2") {
-		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+			RepositoryID: ctx.Repository.ID,
+			Format:       "apt",
+			RemotePath:   path,
+		})
+		if err != nil || len(artifacts) == 0 {
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
+		// 回源成功后再次获取带 blob 的完整 artifact
+		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
+		if err != nil || artifact.Content == nil {
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
+		defer artifact.Content.Close()
+		ctx.FromCache = artifact.FromCache
+		ctx.RemoteURL = artifact.RemoteURL
+		ctx.SizeBytes = artifact.SizeBytes
+		ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
+		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(filename)+"\"")
+		ctx.Writer.WriteHeader(http.StatusOK)
+		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+			logrus.WithError(err).Warn("failed to write packages content to client")
+		}
 		return nil
 	}
 
@@ -416,6 +521,7 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 
 func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
 	filename := filepath.Base(path)
+	dir := aptArtifactDir(path)
 
 	ctx.Filename = filename
 
@@ -423,7 +529,9 @@ func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime ru
 		RepositoryID: ctx.Repository.ID,
 		Format:       "apt",
 		Coordinates: map[string]string{
+			"file":     filename,
 			"filename": filename,
+			"path":     dir,
 		},
 		Filename: filename,
 	}
@@ -431,11 +539,34 @@ func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime ru
 	switch ctx.Request.Method {
 	case http.MethodGet:
 		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
-		if err != nil {
+		if err == nil && artifact.Content != nil {
+			defer artifact.Content.Close()
+			ctx.FromCache = artifact.FromCache
+			ctx.RemoteURL = artifact.RemoteURL
+			ctx.SizeBytes = artifact.SizeBytes
+			ctx.Writer.Header().Set("Content-Type", "application/vnd.debian.binary-package")
+			ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
+			ctx.Writer.WriteHeader(http.StatusOK)
+			if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+				logrus.WithError(err).Warn("failed to write artifact content to client")
+			}
+			return nil
+		}
+
+		// GetArtifact 未命中，通过 QueryArtifacts + RemotePath 回源
+		artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+			RepositoryID: ctx.Repository.ID,
+			Format:       "apt",
+			RemotePath:   path,
+		})
+		if err != nil || len(artifacts) == 0 {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
 		}
-		if artifact.Content == nil {
+
+		// 回源成功后再次获取带 blob 的完整 artifact
+		artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
+		if err != nil || artifact.Content == nil {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
 		}
@@ -448,7 +579,6 @@ func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime ru
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
 			logrus.WithError(err).Warn("failed to write artifact content to client")
-			return nil
 		}
 		return nil
 	}

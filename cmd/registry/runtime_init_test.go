@@ -27,7 +27,7 @@ func TestCreateRuntimeForProxyRepoAllowsNilConfig(t *testing.T) {
 
 	nilFetchers := map[string]runtime.RemoteFetcher(nil)
 	var nilBlocker runtime.PackageBlocker
-	repoRuntime, err := createRuntimeForRepo(repo, nil, nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nilFetchers, nilBlocker, nil)
+	repoRuntime, err := createRuntimeForRepo(repo, nil, nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nilFetchers, nilBlocker, nil, nil)
 	if err != nil {
 		t.Fatalf("create runtime: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestCreateGroupRuntimeAllowsProxyMemberWithNilConfig(t *testing.T) {
 
 	nilFetchers := map[string]runtime.RemoteFetcher(nil)
 	var nilBlocker runtime.PackageBlocker
-	repoRuntime, err := createGroupRuntime(&group, repository.NewRepositoryRepository(db), nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nilFetchers, nilBlocker, nil)
+	repoRuntime, err := createGroupRuntime(&group, repository.NewRepositoryRepository(db), nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nilFetchers, nilBlocker, nil, nil)
 	if err != nil {
 		t.Fatalf("create group runtime: %v", err)
 	}

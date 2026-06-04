@@ -87,6 +87,7 @@ func (p *GoPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*
 	}
 	// For other paths (e.g. /@v/*.info, *.mod, *.zip), return a basic artifact indicating the resource exists.
 	modulePath, filename := p.splitModulePath(path)
+	fileType := strings.TrimPrefix(filepath.Ext(filename), ".")
 	return []*runtime.Artifact{
 		{
 			Format: "go",
@@ -96,6 +97,7 @@ func (p *GoPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*
 				"name":     modulePath,
 				"version":  strings.TrimSuffix(filename, filepath.Ext(filename)),
 				"path":     modulePath + "/@v",
+				"ext":      fileType,
 				"filename": filename,
 			},
 		},
@@ -148,6 +150,7 @@ func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string)
 			Format: "go",
 			Kind:   "version",
 			Coordinates: map[string]string{
+				"name":    modulePath,
 				"module":  modulePath,
 				"version": version,
 			},
@@ -265,6 +268,7 @@ func (p *GoPlugin) fetchLatest(ctx context.Context, remoteURL, path string) ([]*
 			Format: "go",
 			Kind:   "version",
 			Coordinates: map[string]string{
+				"name":    modulePath,
 				"module":  modulePath,
 				"version": result.Version,
 			},
@@ -513,6 +517,26 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 	}
 
 	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
+	if err != nil {
+		if errors.Is(err, runtime.ErrNotFound) {
+			artifacts, queryErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+				RepositoryID: ctx.Repository.ID,
+				Format:       "go",
+				RemotePath:   path,
+				Coordinates: map[string]string{
+					"name":     modulePath,
+					"module":   modulePath,
+					"version":  cleanVersion,
+					"path":     modulePath + "/@v",
+					"ext":      fileType,
+					"filename": filename,
+				},
+			})
+			if queryErr == nil && len(artifacts) > 0 {
+				artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
+			}
+		}
+	}
 	if err != nil {
 		if errors.Is(err, runtime.ErrNotFound) {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)

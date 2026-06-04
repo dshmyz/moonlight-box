@@ -174,8 +174,46 @@ func (p *NpmPlugin) parseNpmMetadata(packageName string, body io.Reader) ([]*run
 			},
 			Properties: props,
 		})
+		tarballName := npmTarballName(packageName, ver)
+		tarballProps := map[string]string{}
+		if verObj != nil {
+			if dist, _ := verObj["dist"].(map[string]interface{}); dist != nil {
+				if tarballURL, _ := dist["tarball"].(string); tarballURL != "" {
+					tarballName = pathBase(tarballURL)
+					tarballProps["download_url"] = tarballURL
+				}
+			}
+		}
+		artifacts = append(artifacts, &runtime.Artifact{
+			Format: "npm",
+			Kind:   "tarball",
+			Coordinates: map[string]string{
+				"name":     packageName,
+				"version":  ver,
+				"path":     packageName + "/-",
+				"filename": tarballName,
+			},
+			Properties: tarballProps,
+		})
 	}
 	return artifacts, nil
+}
+
+func npmTarballName(packageName, version string) string {
+	shortName := packageName
+	if idx := strings.LastIndex(packageName, "/"); idx >= 0 {
+		shortName = packageName[idx+1:]
+	}
+	return shortName + "-" + version + ".tgz"
+}
+
+func pathBase(rawURL string) string {
+	if u, err := url.Parse(rawURL); err == nil && u.Path != "" {
+		parts := strings.Split(strings.TrimRight(u.Path, "/"), "/")
+		return parts[len(parts)-1]
+	}
+	parts := strings.Split(strings.TrimRight(rawURL, "/"), "/")
+	return parts[len(parts)-1]
 }
 
 func extractLicense(obj map[string]interface{}) string {
@@ -317,6 +355,21 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 	}
 
 	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
+	if err != nil {
+		if errors.Is(err, runtime.ErrNotFound) {
+			artifacts, queryErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+				RepositoryID: ctx.Repository.ID,
+				Format:       "npm",
+				Coordinates: map[string]string{
+					"name": packageName,
+				},
+				RemotePath: packageName,
+			})
+			if queryErr == nil && len(artifacts) > 0 {
+				artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
+			}
+		}
+	}
 	if err != nil {
 		if errors.Is(err, runtime.ErrBlocked) {
 			return err
@@ -475,14 +528,54 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 // repoBaseURL 构造仓库的基础 URL，支持反向代理 (X-Forwarded-* 头)
 func repoBaseURL(r *http.Request, repoName string) string {
 	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+	if proto := firstForwardedHeader(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+		scheme = proto
+	} else if r.TLS != nil {
 		scheme = "https"
 	}
-	host := r.Header.Get("X-Forwarded-Host")
+	host := firstForwardedHeader(r.Header.Get("X-Forwarded-Host"))
 	if host == "" {
 		host = r.Host
 	}
-	return fmt.Sprintf("%s://%s/repository/%s", scheme, host, repoName)
+	repoPath := "/repository/" + strings.Trim(repoName, "/")
+	prefix, hasPrefix := forwardedPrefix(r, "X-Forwarded-Prefix")
+	if !hasPrefix {
+		prefix, hasPrefix = forwardedPrefix(r, "X-Script-Name")
+	}
+	switch {
+	case hasPrefix && prefix == "":
+		return fmt.Sprintf("%s://%s", scheme, host)
+	case prefix == "":
+		return fmt.Sprintf("%s://%s%s", scheme, host, repoPath)
+	case prefix == repoPath || strings.HasSuffix(prefix, repoPath):
+		return fmt.Sprintf("%s://%s%s", scheme, host, prefix)
+	case strings.HasSuffix(prefix, "/repository"):
+		return fmt.Sprintf("%s://%s%s/%s", scheme, host, prefix, strings.Trim(repoName, "/"))
+	default:
+		return fmt.Sprintf("%s://%s%s%s", scheme, host, prefix, repoPath)
+	}
+}
+
+func firstForwardedHeader(value string) string {
+	if idx := strings.Index(value, ","); idx >= 0 {
+		value = value[:idx]
+	}
+	return strings.TrimSpace(value)
+}
+
+func forwardedPrefix(r *http.Request, header string) (string, bool) {
+	values, ok := r.Header[http.CanonicalHeaderKey(header)]
+	if !ok || len(values) == 0 {
+		return "", false
+	}
+	value := firstForwardedHeader(values[0])
+	if value == "" || value == "/" {
+		return "", true
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	return strings.TrimRight(value, "/"), true
 }
 
 func (p *NpmPlugin) handlePackageDelete(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, packageName string) error {

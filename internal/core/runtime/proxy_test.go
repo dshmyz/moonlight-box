@@ -153,6 +153,7 @@ type fakeMetadataStore struct {
 	getCalls int
 	putCalls int
 	deleted  bool
+	batchErr error
 }
 
 func newFakeMetadataStore() *fakeMetadataStore {
@@ -175,6 +176,9 @@ func (s *fakeMetadataStore) Put(ctx context.Context, artifact *Artifact) error {
 }
 
 func (s *fakeMetadataStore) BatchPut(ctx context.Context, artifacts []*Artifact) error {
+	if s.batchErr != nil {
+		return s.batchErr
+	}
 	s.putCalls += len(artifacts)
 	if len(artifacts) > 0 {
 		s.artifact = artifacts[len(artifacts)-1]
@@ -194,6 +198,35 @@ func (s *fakeMetadataStore) Query(ctx context.Context, query ArtifactQuery) ([]*
 		return nil, nil
 	}
 	return []*Artifact{s.artifact}, nil
+}
+
+func TestProxyRuntimeQueryArtifactsReturnsBatchPutError(t *testing.T) {
+	ctx := context.Background()
+	storeErr := errors.New("store failed")
+	store := &fakeMetadataStore{batchErr: storeErr}
+	fetcher := &fakeFetcher{
+		fn: func() ([]*Artifact, error) {
+			return []*Artifact{{
+				Format:      "npm",
+				Kind:        KindVersion,
+				Coordinates: map[string]string{CoordName: "left-pad", CoordVersion: "1.0.0"},
+			}}, nil
+		},
+	}
+	runtime := &ProxyRuntime{
+		MetadataStore: store,
+		RemoteBaseURL: "https://example.test",
+		Fetcher:       fetcher,
+		Format:        "npm",
+	}
+
+	_, err := runtime.QueryArtifacts(ctx, ArtifactQuery{
+		Format:     "npm",
+		RemotePath: "left-pad",
+	})
+	if !errors.Is(err, storeErr) {
+		t.Fatalf("expected BatchPut error to be returned, got %v", err)
+	}
 }
 
 type fakeRemoteClient struct {

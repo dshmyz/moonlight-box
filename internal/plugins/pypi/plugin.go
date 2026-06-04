@@ -6,6 +6,7 @@
 //   - Simple Index: /simple/ -> 列出所有包
 //   - Package Files: /simple/{package}/ -> 列出该包所有版本文件
 //   - 文件下载: /packages/{hash_prefix}/{filename}
+//   - Checksum: /packages/{hash_prefix}/{filename}.sha256
 //   - 例如: /packages/cc/15/.../requests-2.19.0-py3-none-any.whl
 //
 // ## HTML 链接格式
@@ -20,6 +21,17 @@
 // ## JSON API (PEP 691)
 //   - Accept: application/vnd.pypi.simple.v1+json
 //   - 返回 JSON 格式的包文件列表
+//
+// ## 回源策略（重要）
+//
+// 文件下载必须遵循以下回源路径：
+//
+//  1. 先通过 GetArtifact 查询本地缓存/MetadataStore
+//  2. 未命中时通过 QueryArtifacts(RemotePath=path) 触发 FetchRemote 回源
+//  3. 回源成功后再次 GetArtifact 获取带 blob 的完整 artifact
+//
+// ArtifactKey.Coordinates 必须与 FetchRemote 存储的坐标一致（含 package/version/filename/path）。
+// Checksum 请求使用 QueryArtifacts 按 filename 查找，因为 URL 中不含 package/version 信息。
 //
 // ## 关键实现点
 //   - remote_path: 必须包含 packages/ 前缀，如 packages/cc/15/.../file.whl
@@ -355,7 +367,7 @@ func (p *PyPIPlugin) writePackageFilesJSON(ctx *runtime.RequestContext, packageN
 		}
 
 		file := map[string]interface{}{
-			"url":      "../../packages/" + remotePath,
+			"url":      "../../" + remotePath,
 			"filename": filename,
 		}
 
@@ -402,6 +414,7 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
 		Coordinates: map[string]string{
+			"name":     packageName,
 			"package":  packageName,
 			"version":  version,
 			"filename": filename,
@@ -413,6 +426,18 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 	switch ctx.Request.Method {
 	case http.MethodGet:
 		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
+		if err != nil {
+			if errors.Is(err, runtime.ErrNotFound) {
+				artifacts, queryErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+					RepositoryID: ctx.Repository.ID,
+					Format:       "pypi",
+					RemotePath:   path,
+				})
+				if queryErr == nil && len(artifacts) > 0 {
+					artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
+				}
+			}
+		}
 		if err != nil {
 			util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
 				"path":  path,
@@ -447,21 +472,21 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 func (p *PyPIPlugin) handleChecksumRequest(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, filename string) error {
 	actualFilename := strings.TrimSuffix(filename, ".sha256")
 
-	key := runtime.ArtifactKey{
+	// Use QueryArtifacts to find the artifact by filename, since the exact
+	// coordinates (package/version/path) are not available from the URL alone.
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
 		Coordinates: map[string]string{
 			"filename": actualFilename,
 		},
-		Filename: actualFilename,
-	}
-
-	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
-	if err != nil {
+	})
+	if err != nil || len(artifacts) == 0 {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
 
+	artifact := artifacts[0]
 	ctx.FromCache = artifact.FromCache
 	ctx.RemoteURL = artifact.RemoteURL
 	ctx.SizeBytes = artifact.SizeBytes
@@ -521,7 +546,7 @@ func (p *PyPIPlugin) handleJsonAPI(ctx *runtime.RequestContext, repoRuntime runt
 
 		file := map[string]interface{}{
 			"filename": filename,
-			"url":      "../../packages/" + remotePath,
+			"url":      "../../" + remotePath,
 		}
 
 		if len(artifact.BlobRefs) > 0 {
@@ -812,6 +837,12 @@ func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[stri
 			props := map[string]string{
 				"remote_path": remotePath,
 			}
+			// 存储 PyPI 原始下载 URL，供 ensureArtifactBlob 回源时使用。
+			// PyPI 文件下载域名(files.pythonhosted.org)与 Simple API 域名(pypi.org/simple/)不同，
+			// buildRemoteURL 拼出的 URL 对 PyPI 不可用，必须使用上游返回的真实 URL。
+			if parsed, err := url.Parse(rawURL); err == nil && parsed.IsAbs() {
+				props["download_url"] = rawURL
+			}
 			if license != "" {
 				props["license"] = license
 			}
@@ -986,18 +1017,28 @@ func (p *PyPIPlugin) parsePackageList(packageName string, body io.Reader) ([]*ru
 		return nil, err
 	}
 	html := string(htmlBytes)
-	re := regexp.MustCompile(`<a href="[^"]*/packages/(([^"#]+))(?:#[^"]*)?[^>]*>([^<]+)</a>`)
+	// 捕获完整 href（含域名），供 download_url 使用
+	re := regexp.MustCompile(`<a href="([^"]*?)/packages/([^"#]+)(?:#[^"]*)?[^>]*>([^<]+)</a>`)
 	matches := re.FindAllStringSubmatch(html, -1)
 	var artifacts []*runtime.Artifact
 	for _, m := range matches {
-		fullPath := m[1]                    // e.g. "bf/78/.../requests-0.10.0.tar.gz" (不含 packages/ 前缀)
-		fullPath = "packages/" + fullPath   // 添加 packages/ 前缀，使 remote_path 完整
-		filename := filepath.Base(fullPath) // e.g. "requests-0.10.0.tar.gz"
+		hrefPrefix := m[1]                     // e.g. "https://files.pythonhosted.org" 或 "../../"
+		pathAfterPkg := m[2]                   // e.g. "bf/78/.../requests-0.10.0.tar.gz"
+		fullPath := "packages/" + pathAfterPkg // 添加 packages/ 前缀，使 remote_path 完整
+		filename := filepath.Base(fullPath)    // e.g. "requests-0.10.0.tar.gz"
 		if !isValidPyPIFilename(filename) {
 			continue
 		}
 		version := p.extractVersionFromFilename(filename)
 		dir := filepath.Dir(fullPath) // e.g. "62/35/0230421b8c4efad6624518028163329ad0c2df9e58e6b3bee013427bf8f6"
+		props := map[string]string{
+			"remote_path": fullPath,
+		}
+		// 只有绝对 URL 才能交给后端 HTTP client；相对链接保留 remote_path，
+		// 由 runtime 使用 RemoteBaseURL + remote_path 回源。
+		if parsed, err := url.Parse(hrefPrefix); err == nil && parsed.IsAbs() {
+			props["download_url"] = strings.TrimRight(hrefPrefix, "/") + "/packages/" + pathAfterPkg
+		}
 		artifacts = append(artifacts, &runtime.Artifact{
 			Format: "pypi",
 			Kind:   "package-file",
@@ -1008,9 +1049,7 @@ func (p *PyPIPlugin) parsePackageList(packageName string, body io.Reader) ([]*ru
 				"filename": filename,
 				"path":     dir,
 			},
-			Properties: map[string]string{
-				"remote_path": fullPath,
-			},
+			Properties: props,
 		})
 	}
 	return artifacts, nil

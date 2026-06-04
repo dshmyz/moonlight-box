@@ -179,12 +179,14 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		repoName := repoNameMap[a.RepositoryID]
 		downloadURL := buildDownloadURL(repoName, a.Metadata)
 
-		vp.files = append(vp.files, gin.H{
-			"filename":     filename,
-			"file_type":    fileType,
-			"size_bytes":   sumBlobSizes(blobs),
-			"download_url": downloadURL,
-		})
+		if isDownloadableArtifact(a, filename, downloadURL, blobs) {
+			vp.files = append(vp.files, gin.H{
+				"filename":     filename,
+				"file_type":    fileType,
+				"size_bytes":   sumBlobSizes(blobs),
+				"download_url": downloadURL,
+			})
+		}
 	}
 
 	versions := make([]gin.H, 0, len(verOrder))
@@ -268,6 +270,20 @@ func buildDownloadURL(repoName string, metadata model.JSONB) string {
 		return ""
 	}
 	return "/repository/" + repoName + "/" + downloadPath
+}
+
+func isDownloadableArtifact(a model.Artifact, filename, downloadURL string, blobs []blobInfo) bool {
+	if filename == "" && downloadURL == "" && len(blobs) == 0 {
+		return false
+	}
+	switch a.Kind {
+	case "version", "metadata", "package-index", "metadata-ref", "release":
+		return false
+	}
+	if filename != "" || downloadURL != "" || len(blobs) > 0 {
+		return true
+	}
+	return false
 }
 
 func (h *PackageVersionHandler) DeprecateVersion(c *gin.Context) {

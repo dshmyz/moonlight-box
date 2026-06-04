@@ -25,7 +25,11 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 
 func TestHandle_InRelease(t *testing.T) {
 	p := NewAptPlugin()
-	art := testhelper.NewArtifact("apt", "release", map[string]string{"file": "InRelease"}, "release-content")
+	art := testhelper.NewArtifact("apt", "release", map[string]string{
+		"file":     "InRelease",
+		"filename": "InRelease",
+		"path":     "dists/jammy",
+	}, "release-content")
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
 	ctx, w := newCtx("GET", "dists/jammy/InRelease", nil)
@@ -69,7 +73,11 @@ func TestHandle_Packages(t *testing.T) {
 
 func TestHandle_DebDownload(t *testing.T) {
 	p := NewAptPlugin()
-	art := testhelper.NewArtifact("apt", "package", map[string]string{"filename": "nginx_1.18.0-6.1_amd64.deb"}, "deb-content")
+	art := testhelper.NewArtifact("apt", "package", map[string]string{
+		"file":     "nginx_1.18.0-6.1_amd64.deb",
+		"filename": "nginx_1.18.0-6.1_amd64.deb",
+		"path":     "pool/main/n/nginx",
+	}, "deb-content")
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
 	ctx, w := newCtx("GET", "pool/main/n/nginx/nginx_1.18.0-6.1_amd64.deb", nil)
@@ -80,6 +88,27 @@ func TestHandle_DebDownload(t *testing.T) {
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "application/vnd.debian.binary-package" {
 		t.Errorf("expected debian binary package content type, got %s", ct)
+	}
+}
+
+func TestFetchRemote_DebUsesDirectoryPathAndRemotePath(t *testing.T) {
+	p := NewAptPlugin()
+	arts, err := p.FetchRemote(context.Background(), "http://example.test", "pool/main/n/nginx/nginx_1.18.0-6.1_amd64.deb")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+	a := arts[0]
+	if got := a.Coordinates["path"]; got != "pool/main/n/nginx" {
+		t.Fatalf("path = %q, want directory path", got)
+	}
+	if got := a.Coordinates["filename"]; got != "nginx_1.18.0-6.1_amd64.deb" {
+		t.Fatalf("filename = %q", got)
+	}
+	if got := a.Properties["remote_path"]; got != "pool/main/n/nginx/nginx_1.18.0-6.1_amd64.deb" {
+		t.Fatalf("remote_path = %q, want full remote path", got)
 	}
 }
 

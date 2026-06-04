@@ -2,6 +2,7 @@ package pypi
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -92,6 +93,7 @@ func TestHandle_PackageList(t *testing.T) {
 func TestHandle_PackageDownload(t *testing.T) {
 	p := NewPyPIPlugin()
 	art := testhelper.NewArtifact("pypi", "package", map[string]string{
+		"name":     "requests",
 		"package":  "requests",
 		"version":  "2.28.0",
 		"filename": "requests-2.28.0.tar.gz",
@@ -105,6 +107,70 @@ func TestHandle_PackageDownload(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
+}
+
+func TestHandle_PackageDownloadMissQueriesRemotePathBeforeRetry(t *testing.T) {
+	p := NewPyPIPlugin()
+	rt := &queryThenGetRuntime{
+		artifact: testhelper.NewArtifact("pypi", "package-file", map[string]string{
+			"name":     "requests",
+			"package":  "requests",
+			"version":  "2.28.0",
+			"filename": "requests-2.28.0.tar.gz",
+			"path":     "packages/ab/cd",
+		}, "package-content"),
+	}
+
+	ctx, w := newCtx("GET", "packages/ab/cd/requests-2.28.0.tar.gz", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle returned error: %v", err)
+	}
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after QueryArtifacts retry, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.queryCalls) != 1 {
+		t.Fatalf("expected one QueryArtifacts call, got %d", len(rt.queryCalls))
+	}
+	if got := rt.queryCalls[0].RemotePath; got != "packages/ab/cd/requests-2.28.0.tar.gz" {
+		t.Fatalf("RemotePath = %q", got)
+	}
+	if rt.getCalls != 2 {
+		t.Fatalf("expected two GetArtifact calls, got %d", rt.getCalls)
+	}
+}
+
+type queryThenGetRuntime struct {
+	artifact   *runtime.Artifact
+	getCalls   int
+	queryCalls []runtime.ArtifactQuery
+	queried    bool
+}
+
+func (r *queryThenGetRuntime) GetArtifact(ctx context.Context, key runtime.ArtifactKey) (*runtime.Artifact, error) {
+	r.getCalls++
+	if !r.queried {
+		return nil, runtime.ErrNotFound
+	}
+	return r.artifact, nil
+}
+
+func (r *queryThenGetRuntime) QueryArtifacts(ctx context.Context, query runtime.ArtifactQuery) ([]*runtime.Artifact, error) {
+	r.queryCalls = append(r.queryCalls, query)
+	r.queried = true
+	return []*runtime.Artifact{r.artifact}, nil
+}
+
+func (r *queryThenGetRuntime) RenderProjection(ctx context.Context, query runtime.ProjectionQuery) (*runtime.ProjectionResult, error) {
+	return nil, runtime.ErrNotFound
+}
+
+func (r *queryThenGetRuntime) BeginUpload(ctx context.Context, req runtime.UploadRequest) (runtime.UploadSession, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *queryThenGetRuntime) DeleteArtifact(ctx context.Context, key runtime.ArtifactKey) error {
+	return runtime.ErrReadOnly
 }
 
 func TestNormalizePackageName(t *testing.T) {
@@ -354,6 +420,7 @@ func TestHandle_PackageDownload_NotFound(t *testing.T) {
 func TestHandle_PackageDownload_MissingContent(t *testing.T) {
 	p := NewPyPIPlugin()
 	art := testhelper.NewArtifact("pypi", "package", map[string]string{
+		"name":     "requests",
 		"package":  "requests",
 		"version":  "2.28.0",
 		"filename": "requests-2.28.0.tar.gz",
@@ -578,6 +645,26 @@ func TestFetchRemote_FallbackToSimpleIndex(t *testing.T) {
 	}
 	if !foundWhl {
 		t.Error("expected to find mypackage-1.0-py3-none-any.whl from simple index fallback")
+	}
+}
+
+func TestParsePackageListDoesNotStoreRelativeDownloadURL(t *testing.T) {
+	p := NewPyPIPlugin()
+	arts, err := p.parsePackageList("requests", strings.NewReader(`
+<html><body>
+<a href="../../packages/ab/cd/requests-2.28.0.tar.gz">requests-2.28.0.tar.gz</a><br>
+</body></html>`))
+	if err != nil {
+		t.Fatalf("parsePackageList failed: %v", err)
+	}
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+	if got := arts[0].Properties["remote_path"]; got != "packages/ab/cd/requests-2.28.0.tar.gz" {
+		t.Fatalf("remote_path = %q", got)
+	}
+	if got := arts[0].Properties["download_url"]; got != "" {
+		t.Fatalf("relative link should not be stored as download_url, got %q", got)
 	}
 }
 

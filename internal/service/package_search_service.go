@@ -2,14 +2,18 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/core/cache"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/util"
+	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
 
@@ -51,11 +55,30 @@ type SearchResult struct {
 }
 
 type PackageSearchService struct {
-	db *gorm.DB
+	db             *gorm.DB
+	cache          *cache.MemoryCache
+	hasPackagesTbl bool
 }
 
 func NewPackageSearchService(db *gorm.DB) *PackageSearchService {
-	return &PackageSearchService{db: db}
+	return &PackageSearchService{
+		db:             db,
+		cache:          cache.NewMemoryCache(), // 默认缓存
+		hasPackagesTbl: db.Migrator().HasTable(&model.Package{}),
+	}
+}
+
+// InvalidateCache 清除所有搜索缓存（当 artifact 变更时调用）
+func (s *PackageSearchService) InvalidateCache() {
+	s.cache.Clear()
+}
+
+// generateCacheKey 生成缓存键
+func (s *PackageSearchService) generateCacheKey(req *SearchRequest) string {
+	data := fmt.Sprintf("%s|%s|%s|%s|%s|%d|%d",
+		req.Query, req.Type, req.Name, req.Version, req.Repository, req.Page, req.PageSize)
+	hash := sha256.Sum256([]byte(data))
+	return base64.URLEncoding.EncodeToString(hash[:])
 }
 
 // rawArtifact 原始 SQL 查询结果行，避免 GORM JSONB scan 问题
@@ -70,10 +93,156 @@ type rawArtifact struct {
 }
 
 // Search 从 artifacts 表搜索包，按 name 聚合。
-// 使用原始 SQL 读取 coordinates 列，手动解析 JSON，绕过 GORM JSONB 扫描器的兼容问题。
+// 优化版本：优先使用 packages 表，如果不存在则回退到 artifacts 表聚合。
 func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (*SearchResult, error) {
+	// 尝试从缓存获取结果
+	cacheKey := s.generateCacheKey(req)
+	if cached, ok := s.cache.Get(cacheKey); ok {
+		if result, ok := cached.(*SearchResult); ok {
+			return result, nil
+		}
+	}
+
+	// 尝试从 packages 表查询（快速路径）
+	pkgResult, pkgErr := s.searchFromPackages(ctx, req)
+	if pkgErr == nil && pkgResult != nil && pkgResult.Total > 0 {
+		s.cache.Set(cacheKey, pkgResult, 5*time.Minute)
+		return pkgResult, nil
+	}
+
+	// 回退到 artifacts 表聚合（慢速路径）。当 packages 表存在但为空/重建失败时，
+	// 这里可以避免包列表被快速路径误判为空。
+	logFields := logrus.Fields{util.LogKeyModule: "package-search"}
+	if pkgErr != nil {
+		logFields["reason"] = pkgErr.Error()
+	} else {
+		logFields["reason"] = "packages table returned no rows"
+	}
+	util.WithFields(logFields).Warn("Falling back to artifacts aggregation")
+
+	artifactResult, err := s.searchFromArtifacts(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	result := artifactResult
+	if artifactResult.Total == 0 && pkgErr == nil && pkgResult != nil {
+		result = pkgResult
+	}
+
+	// 缓存结果（5分钟）
+	s.cache.Set(cacheKey, result, 5*time.Minute)
+
+	return result, nil
+}
+
+// searchFromPackages 从 packages 表查询（快速路径）
+func (s *PackageSearchService) searchFromPackages(ctx context.Context, req *SearchRequest) (*SearchResult, error) {
 	start := time.Now()
 
+	// 检查 packages 表是否存在（启动时缓存结果，避免每次请求查询）
+	if !s.hasPackagesTbl {
+		return nil, fmt.Errorf("packages table not exists")
+	}
+
+	query := s.db.WithContext(ctx).Model(&model.Package{})
+
+	// 构建查询条件
+	if req.Type != "" {
+		types := util.ExpandPackageTypeAliases(req.Type)
+		query = query.Where("format IN ?", types)
+	}
+	if req.Repository != "" {
+		query = query.Where("repository_id = (SELECT id FROM repositories WHERE name = ? LIMIT 1)", req.Repository)
+	}
+	if req.Query != "" {
+		query = query.Where("LOWER(name) LIKE ?", "%"+strings.ToLower(req.Query)+"%")
+	}
+	if req.Name != "" {
+		query = query.Where("name = ?", req.Name)
+	}
+
+	// 查询总数
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, err
+	}
+
+	// 排序
+	switch req.Sort {
+	case "name":
+		query = query.Order("name ASC")
+	case "download_count":
+		query = query.Order("download_count DESC")
+	case "updated_at":
+		query = query.Order("updated_at DESC")
+	default:
+		query = query.Order("updated_at DESC")
+	}
+
+	// 分页
+	offset := (req.Page - 1) * req.PageSize
+	var packages []model.Package
+	if err := query.Offset(offset).Limit(req.PageSize).Find(&packages).Error; err != nil {
+		return nil, err
+	}
+
+	// 查询仓库名称
+	repoIDs := make(map[uint]bool)
+	for _, pkg := range packages {
+		repoIDs[pkg.RepositoryID] = true
+	}
+	repoIDList := make([]uint, 0, len(repoIDs))
+	for id := range repoIDs {
+		repoIDList = append(repoIDList, id)
+	}
+
+	repoNameMap := make(map[uint]string)
+	if len(repoIDList) > 0 {
+		type repoRow struct {
+			ID   uint
+			Name string
+		}
+		var repoRows []repoRow
+		s.db.Model(&model.Repository{}).Select("id, name").Where("id IN ?", repoIDList).Find(&repoRows)
+		for _, r := range repoRows {
+			repoNameMap[r.ID] = r.Name
+		}
+	}
+
+	// 构建结果
+	list := make([]SearchEntry, len(packages))
+	for i, pkg := range packages {
+		list[i] = SearchEntry{
+			ID:             pkg.ID,
+			RepositoryID:   pkg.RepositoryID,
+			Format:         pkg.Format,
+			Name:           pkg.Name,
+			DisplayName:    pkg.DisplayName,
+			Description:    pkg.Description,
+			LatestVersion:  pkg.LatestVersion,
+			VersionCount:   pkg.VersionCount,
+			DownloadCount:  pkg.DownloadCount,
+			RepositoryName: repoNameMap[pkg.RepositoryID],
+			License:        pkg.License,
+			UpdatedAt:      pkg.UpdatedAt,
+		}
+	}
+
+	return &SearchResult{
+		List:         list,
+		Total:        total,
+		Page:         req.Page,
+		PageSize:     req.PageSize,
+		SearchTimeMs: time.Since(start).Milliseconds(),
+		RawCount:     len(packages),
+	}, nil
+}
+
+// searchFromArtifacts 从 artifacts 表聚合查询（慢速路径，回退方案）
+func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *SearchRequest) (*SearchResult, error) {
+	start := time.Now()
+
+	// 构建基础查询条件
 	var conditions []string
 	var args []interface{}
 
@@ -99,25 +268,28 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 		args = append(args, req.Name)
 	}
 
-	query := "SELECT id, repository_id, format, coordinates, metadata, created_at, updated_at FROM artifacts"
+	whereClause := ""
 	if len(conditions) > 0 {
-		query += " WHERE " + strings.Join(conditions, " AND ")
+		whereClause = " WHERE " + strings.Join(conditions, " AND ")
 	}
-	query += " ORDER BY created_at DESC"
+
+	// 步骤1：查询所有匹配的 artifacts（用于聚合）
+	// 使用索引优化查询，按时间倒序
+	query := "SELECT id, repository_id, format, coordinates, metadata, created_at, updated_at FROM artifacts" +
+		whereClause + " ORDER BY updated_at DESC"
 
 	var rawRows []rawArtifact
 	if err := s.db.WithContext(ctx).Raw(query, args...).Scan(&rawRows).Error; err != nil {
 		return nil, err
 	}
 
-	// 聚合
+	// 步骤2：在内存中聚合（按 repository_id + format + name 分组）
 	type groupKey struct {
 		repositoryID uint
 		format       string
 		name         string
 	}
 	groups := make(map[groupKey]*groupAcc)
-	var orderedKeys []groupKey
 
 	for _, row := range rawRows {
 		name := extractName("", row.Coordinates)
@@ -137,7 +309,6 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 		if !ok {
 			acc = &groupAcc{name: name, format: row.Format, repositoryID: row.RepositoryID}
 			groups[key] = acc
-			orderedKeys = append(orderedKeys, key)
 		}
 		acc.versionCount++
 		if row.UpdatedAt.After(acc.latestTime) {
@@ -154,36 +325,41 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 		}
 	}
 
-	// 排序
+	// 步骤3：转换为切片并排序
+	var allEntries []groupKey
+	for key := range groups {
+		allEntries = append(allEntries, key)
+	}
+
 	switch req.Sort {
 	case "name":
-		sort.Slice(orderedKeys, func(i, j int) bool {
-			return groups[orderedKeys[i]].name < groups[orderedKeys[j]].name
+		sort.Slice(allEntries, func(i, j int) bool {
+			return groups[allEntries[i]].name < groups[allEntries[j]].name
 		})
 	case "updated_at":
-		sort.Slice(orderedKeys, func(i, j int) bool {
-			return groups[orderedKeys[i]].latestTime.After(groups[orderedKeys[j]].latestTime)
+		sort.Slice(allEntries, func(i, j int) bool {
+			return groups[allEntries[i]].latestTime.After(groups[allEntries[j]].latestTime)
 		})
 	default:
-		sort.Slice(orderedKeys, func(i, j int) bool {
-			return groups[orderedKeys[i]].latestTime.After(groups[orderedKeys[j]].latestTime)
+		sort.Slice(allEntries, func(i, j int) bool {
+			return groups[allEntries[i]].latestTime.After(groups[allEntries[j]].latestTime)
 		})
 	}
 
-	total := int64(len(orderedKeys))
+	total := int64(len(allEntries))
 
-	// 分页
+	// 步骤4：分页
 	offset := (req.Page - 1) * req.PageSize
-	if offset > len(orderedKeys) {
-		offset = len(orderedKeys)
+	if offset > len(allEntries) {
+		offset = len(allEntries)
 	}
 	end := offset + req.PageSize
-	if end > len(orderedKeys) {
-		end = len(orderedKeys)
+	if end > len(allEntries) {
+		end = len(allEntries)
 	}
-	pagedKeys := orderedKeys[offset:end]
+	pagedKeys := allEntries[offset:end]
 
-	// 收集 repo ID
+	// 步骤5：查询仓库名称
 	repoIDs := make(map[uint]bool)
 	for _, k := range pagedKeys {
 		repoIDs[k.repositoryID] = true
@@ -206,6 +382,7 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 		}
 	}
 
+	// 步骤6：构建结果
 	list := make([]SearchEntry, len(pagedKeys))
 	for i, k := range pagedKeys {
 		acc := groups[k]

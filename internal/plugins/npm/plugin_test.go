@@ -229,8 +229,20 @@ func TestFetchRemote_ParsesVersions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
 	}
-	if len(arts) != 2 {
-		t.Fatalf("expected 2 artifacts, got %d", len(arts))
+	if len(arts) != 4 {
+		t.Fatalf("expected 4 artifacts, got %d", len(arts))
+	}
+	var versions, tarballs int
+	for _, a := range arts {
+		switch a.Kind {
+		case "version":
+			versions++
+		case "tarball":
+			tarballs++
+		}
+	}
+	if versions != 2 || tarballs != 2 {
+		t.Fatalf("expected 2 version and 2 tarball artifacts, got versions=%d tarballs=%d", versions, tarballs)
 	}
 }
 
@@ -254,6 +266,45 @@ func TestFetchRemote_ScopedPackageEncoding(t *testing.T) {
 
 	if !strings.Contains(capturedPath, "%40scope%2Fpkg") {
 		t.Errorf("expected URL-encoded scoped package, got path: %s", capturedPath)
+	}
+}
+
+func TestRepoBaseURLUsesForwardedPrefix(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://internal/repository/npm-proxy/lodash", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "registry.example.com")
+	req.Header.Set("X-Forwarded-Prefix", "/moonlight")
+
+	got := repoBaseURL(req, "npm-proxy")
+	want := "https://registry.example.com/moonlight/repository/npm-proxy"
+	if got != want {
+		t.Fatalf("repoBaseURL() = %q, want %q", got, want)
+	}
+}
+
+func TestRepoBaseURLAvoidsDuplicateRepositoryPrefix(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://internal/repository/npm-proxy/lodash", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "registry.example.com")
+	req.Header.Set("X-Forwarded-Prefix", "/moonlight/repository/npm-proxy")
+
+	got := repoBaseURL(req, "npm-proxy")
+	want := "https://registry.example.com/moonlight/repository/npm-proxy"
+	if got != want {
+		t.Fatalf("repoBaseURL() = %q, want %q", got, want)
+	}
+}
+
+func TestRepoBaseURLSupportsRootMountedRepository(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://internal/repository/npm/lodash", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "registry.example.com")
+	req.Header.Set("X-Forwarded-Prefix", "/")
+
+	got := repoBaseURL(req, "npm")
+	want := "https://registry.example.com"
+	if got != want {
+		t.Fatalf("repoBaseURL() = %q, want %q", got, want)
 	}
 }
 
@@ -319,6 +370,68 @@ func TestHandle_TarballDownload_InvalidPath(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
+}
+
+func TestHandle_TarballDownloadMissQueriesPackageMetadataBeforeRetry(t *testing.T) {
+	p := NewNpmPlugin()
+	rt := &npmQueryThenGetRuntime{
+		artifact: testhelper.NewArtifact("npm", "tarball", map[string]string{
+			"name":     "@scope/pkg",
+			"version":  "1.0.0",
+			"path":     "@scope/pkg/-",
+			"filename": "pkg-1.0.0.tgz",
+		}, "tarball-content"),
+	}
+
+	ctx, w := newCtx("GET", "@scope/pkg/-/pkg-1.0.0.tgz", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after QueryArtifacts retry, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.queryCalls) != 1 {
+		t.Fatalf("expected one QueryArtifacts call, got %d", len(rt.queryCalls))
+	}
+	if got := rt.queryCalls[0].RemotePath; got != "@scope/pkg" {
+		t.Fatalf("RemotePath = %q", got)
+	}
+	if rt.getCalls != 2 {
+		t.Fatalf("expected two GetArtifact calls, got %d", rt.getCalls)
+	}
+}
+
+type npmQueryThenGetRuntime struct {
+	artifact   *runtime.Artifact
+	getCalls   int
+	queryCalls []runtime.ArtifactQuery
+	queried    bool
+}
+
+func (r *npmQueryThenGetRuntime) GetArtifact(ctx context.Context, key runtime.ArtifactKey) (*runtime.Artifact, error) {
+	r.getCalls++
+	if !r.queried {
+		return nil, runtime.ErrNotFound
+	}
+	return r.artifact, nil
+}
+
+func (r *npmQueryThenGetRuntime) QueryArtifacts(ctx context.Context, query runtime.ArtifactQuery) ([]*runtime.Artifact, error) {
+	r.queryCalls = append(r.queryCalls, query)
+	r.queried = true
+	return []*runtime.Artifact{r.artifact}, nil
+}
+
+func (r *npmQueryThenGetRuntime) RenderProjection(ctx context.Context, query runtime.ProjectionQuery) (*runtime.ProjectionResult, error) {
+	return nil, runtime.ErrNotFound
+}
+
+func (r *npmQueryThenGetRuntime) BeginUpload(ctx context.Context, req runtime.UploadRequest) (runtime.UploadSession, error) {
+	return nil, runtime.ErrReadOnly
+}
+
+func (r *npmQueryThenGetRuntime) DeleteArtifact(ctx context.Context, key runtime.ArtifactKey) error {
+	return runtime.ErrReadOnly
 }
 
 func TestHandle_PackageNotFound(t *testing.T) {
@@ -450,12 +563,15 @@ func TestParseNpmMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseNpmMetadata failed: %v", err)
 	}
-	if len(arts) != 2 {
-		t.Fatalf("expected 2 artifacts, got %d", len(arts))
+	if len(arts) != 4 {
+		t.Fatalf("expected 4 artifacts, got %d", len(arts))
 	}
 
 	artMap := make(map[string]*runtime.Artifact)
 	for _, a := range arts {
+		if a.Kind != "version" {
+			continue
+		}
 		artMap[a.Coordinates["version"]] = a
 	}
 

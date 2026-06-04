@@ -7,6 +7,8 @@
 //   - repodata/*-primary.xml.gz: 包列表（名称、版本、依赖）
 //   - repodata/*-filelists.xml.gz: 文件列表
 //   - repodata/*-other.xml.gz: changelog 等
+//   - repodata/*-updateinfo.xml.gz: 安全更新信息
+//   - repodata/*-comps.xml.gz: 包组定义
 //   - packages/*.rpm: RPM 包文件
 //
 // ## repomd.xml 结构
@@ -23,6 +25,29 @@
 //   - 动态生成 repomd.xml 时从 artifact.Coordinates["type"] 读取类型
 //   - 添加 revision 字段（时间戳）
 //   - 压缩格式 (.gz) 应透传上游原始文件，不动态生成
+//
+// ## 回源策略（重要）
+//
+// 所有文件下载（RPM 包、repodata 元数据文件）必须遵循以下回源路径：
+//
+//  1. 先通过 GetArtifact 查询本地缓存/MetadataStore
+//  2. 未命中时通过 QueryArtifacts(RemotePath=path) 触发 FetchRemote 回源
+//  3. 回源成功后再次 GetArtifact 获取带 blob 的完整 artifact
+//
+// 禁止直接构建远程 URL，必须通过 QueryArtifacts + RemotePath 让 Runtime 层
+// 统一管理回源，确保:
+//   - RemotePath 包含完整路径（如 "Packages/nginx-1.0.rpm"、"repodata/filelists.xml.gz"）
+//   - ArtifactKey.Coordinates 与 FetchRemote 存储的坐标一致（含 file/filename/path）
+//   - 负缓存由 Runtime 层统一管理
+//
+// ## 路由分发
+//
+// Handle 方法按以下优先级匹配路径：
+//  1. repomd.xml → handleRepomd（动态生成索引）
+//  2. *primary.xml* → handlePrimary（动态生成包列表）
+//  3. *.rpm → handleRpmPackage（代理 RPM 包）
+//  4. repodata/* → handleRepodataGeneric（透传 filelists/other/updateinfo 等）
+//  5. 其他 → 404
 //
 // ## 参考规范
 //   - http://linux.duke.edu/metadata/repo/
@@ -85,6 +110,7 @@ func (p *YumPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 
 	// For other paths (RPM packages, primary.xml, etc.), return a basic artifact indicating the remote resource exists.
 	filename := filepath.Base(path)
+	dir := yumArtifactDir(path)
 	logrus.WithFields(logrus.Fields{
 		"path":     path,
 		"filename": filename,
@@ -96,10 +122,11 @@ func (p *YumPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 			Coordinates: map[string]string{
 				"file":     filename,
 				"filename": filename,
-				"path":     path,
+				"path":     dir,
 			},
 			Properties: map[string]string{
-				"filename": filename,
+				"filename":    filename,
+				"remote_path": path,
 			},
 		},
 	}, nil
@@ -177,10 +204,13 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 		Format: "yum",
 		Kind:   "metadata",
 		Coordinates: map[string]string{
-			"file": "repomd.xml",
+			"file":     "repomd.xml",
+			"filename": "repomd.xml",
+			"path":     yumArtifactDir(path),
 		},
 		Properties: map[string]string{
-			"filename": "repomd.xml",
+			"filename":    "repomd.xml",
+			"remote_path": path,
 		},
 	})
 	// Add each data reference as an artifact.
@@ -193,12 +223,15 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 			Format: "yum",
 			Kind:   "metadata-ref",
 			Coordinates: map[string]string{
-				"file": filepath.Base(href),
-				"type": d.Type,
-				"href": href,
+				"file":     filepath.Base(href),
+				"filename": filepath.Base(href),
+				"path":     yumArtifactDir(href),
+				"type":     d.Type,
+				"href":     href,
 			},
 			Properties: map[string]string{
-				"filename": filepath.Base(href),
+				"filename":    filepath.Base(href),
+				"remote_path": href,
 			},
 		})
 	}
@@ -225,6 +258,7 @@ func (p *YumPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Repo
 		"isRepomd":       p.isRepomdRequest(path),
 		"isPrimary":      p.isPrimaryRequest(path),
 		"isRpmPackage":   p.isRpmPackageRequest(path),
+		"isRepodata":     p.isRepodataRequest(path),
 		"repositoryName": ctx.Repository.Name,
 	}).Debug("yum: Handle called")
 
@@ -238,6 +272,11 @@ func (p *YumPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Repo
 
 	if p.isRpmPackageRequest(path) {
 		return p.handleRpmPackage(ctx, repoRuntime, path)
+	}
+
+	// 其他 repodata 元数据文件（filelists、other、updateinfo、comps 等）
+	if p.isRepodataRequest(path) {
+		return p.handleRepodataGeneric(ctx, repoRuntime, path)
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -258,6 +297,20 @@ func (p *YumPlugin) isPrimaryRequest(path string) bool {
 
 func (p *YumPlugin) isRpmPackageRequest(path string) bool {
 	return strings.HasSuffix(path, ".rpm")
+}
+
+func yumArtifactDir(remotePath string) string {
+	dir := filepath.Dir(strings.Trim(remotePath, "/"))
+	if dir == "." {
+		return ""
+	}
+	return dir
+}
+
+// isRepodataRequest matches any file under repodata/ that isn't handled by
+// isRepomdRequest or isPrimaryRequest (e.g. filelists, other, updateinfo, comps).
+func (p *YumPlugin) isRepodataRequest(path string) bool {
+	return strings.HasPrefix(path, "repodata/") || strings.Contains(path, "/repodata/")
 }
 
 func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
@@ -360,11 +413,14 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 	}
 
 	filename := filepath.Base(path)
+	dir := yumArtifactDir(path)
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "yum",
 		Coordinates: map[string]string{
-			"file": filename,
+			"file":     filename,
+			"filename": filename,
+			"path":     dir,
 		},
 		Filename: filename,
 	}
@@ -429,6 +485,7 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 
 func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
 	filename := filepath.Base(path)
+	dir := yumArtifactDir(path)
 
 	ctx.Filename = filename
 
@@ -436,7 +493,9 @@ func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime ru
 		RepositoryID: ctx.Repository.ID,
 		Format:       "yum",
 		Coordinates: map[string]string{
+			"file":     filename,
 			"filename": filename,
+			"path":     dir,
 		},
 		Filename: filename,
 	}
@@ -444,11 +503,34 @@ func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime ru
 	switch ctx.Request.Method {
 	case http.MethodGet:
 		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
-		if err != nil {
+		if err == nil && artifact.Content != nil {
+			defer artifact.Content.Close()
+			ctx.FromCache = artifact.FromCache
+			ctx.RemoteURL = artifact.RemoteURL
+			ctx.SizeBytes = artifact.SizeBytes
+			ctx.Writer.Header().Set("Content-Type", "application/x-rpm")
+			ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
+			ctx.Writer.WriteHeader(http.StatusOK)
+			if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+				logrus.WithError(err).Warn("failed to write artifact content to client")
+			}
+			return nil
+		}
+
+		// GetArtifact 未命中，通过 QueryArtifacts + RemotePath 回源
+		artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+			RepositoryID: ctx.Repository.ID,
+			Format:       "yum",
+			RemotePath:   path,
+		})
+		if err != nil || len(artifacts) == 0 {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
 		}
-		if artifact.Content == nil {
+
+		// 回源成功后再次通过 GetArtifact 获取带 blob 的完整 artifact
+		artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
+		if err != nil || artifact.Content == nil {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
 		}
@@ -461,9 +543,89 @@ func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime ru
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
 			logrus.WithError(err).Warn("failed to write artifact content to client")
-			return nil
 		}
 		return nil
 	}
 	return errors.New("method not allowed")
+}
+
+// handleRepodataGeneric handles repodata files not covered by handleRepomd/handlePrimary,
+// such as filelists.xml.gz, other.xml.gz, updateinfo.xml.gz, comps.xml.gz, etc.
+// These files are proxied transparently from the upstream repository.
+func (p *YumPlugin) handleRepodataGeneric(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
+	if ctx.Request.Method != http.MethodGet {
+		return errors.New("method not allowed")
+	}
+
+	filename := filepath.Base(path)
+	dir := yumArtifactDir(path)
+
+	key := runtime.ArtifactKey{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "yum",
+		Coordinates: map[string]string{
+			"file":     filename,
+			"filename": filename,
+			"path":     dir,
+		},
+		Filename: filename,
+	}
+
+	// 尝试从本地缓存或 MetadataStore 获取
+	if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
+		defer artifact.Content.Close()
+		ctx.FromCache = artifact.FromCache
+		ctx.RemoteURL = artifact.RemoteURL
+		ctx.SizeBytes = artifact.SizeBytes
+		ctx.Writer.Header().Set("Content-Type", contentTypeForFile(filename))
+		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(filename)+"\"")
+		ctx.Writer.WriteHeader(http.StatusOK)
+		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+			logrus.WithError(err).Warn("failed to write repodata content to client")
+		}
+		return nil
+	}
+
+	// 通过 QueryArtifacts + RemotePath 回源
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "yum",
+		RemotePath:   path,
+	})
+	if err != nil || len(artifacts) == 0 {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+
+	// 回源成功后再次获取带 blob 的完整 artifact
+	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
+	if err != nil || artifact.Content == nil {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	defer artifact.Content.Close()
+	ctx.FromCache = artifact.FromCache
+	ctx.RemoteURL = artifact.RemoteURL
+	ctx.SizeBytes = artifact.SizeBytes
+	ctx.Writer.Header().Set("Content-Type", contentTypeForFile(filename))
+	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(filename)+"\"")
+	ctx.Writer.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+		logrus.WithError(err).Warn("failed to write repodata content to client")
+	}
+	return nil
+}
+
+// contentTypeForFile returns an appropriate Content-Type for repodata files.
+func contentTypeForFile(filename string) string {
+	switch {
+	case strings.HasSuffix(filename, ".xml.gz"):
+		return "application/gzip"
+	case strings.HasSuffix(filename, ".xml"):
+		return "application/xml"
+	case strings.HasSuffix(filename, ".gz"):
+		return "application/gzip"
+	default:
+		return "application/octet-stream"
+	}
 }

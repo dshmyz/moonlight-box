@@ -150,6 +150,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 	artifact = &Artifact{
 		RepositoryID: n.RepositoryID,
 		Format:       key.Format,
+		Kind:         KindArtifact,
 		Coordinates:  key.Coordinates,
 		Properties: map[string]string{
 			"remote_digest": metadata.Digest,
@@ -237,7 +238,13 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 							oldMap := buildArtifactMap(artifacts)
 							toUpdate := n.prepareArtifactsForUpdate(context.Background(), fetched, oldMap)
 							if len(toUpdate) > 0 {
-								_ = n.MetadataStore.BatchPut(context.Background(), toUpdate)
+								if err := n.MetadataStore.BatchPut(context.Background(), toUpdate); err != nil {
+									logrus.WithFields(logrus.Fields{
+										"remoteBaseURL": n.RemoteBaseURL,
+										"remotePath":    query.RemotePath,
+										"error":         err.Error(),
+									}).Warn("QueryArtifacts: background BatchPut failed")
+								}
 							}
 						} else if fetchErr != nil {
 							metrics.RecordProxyFetch(n.Format, "error", fetchDuration)
@@ -298,7 +305,14 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 			a.RepositoryID = n.RepositoryID
 			n.stampTriggerIP(ctx, a)
 		}
-		_ = n.MetadataStore.BatchPut(ctx, fetched)
+		if err := n.MetadataStore.BatchPut(ctx, fetched); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"remoteBaseURL": n.RemoteBaseURL,
+				"remotePath":    query.RemotePath,
+				"error":         err.Error(),
+			}).Error("proxy: BatchPut fetched artifacts failed")
+			return nil, err
+		}
 		return fetched, nil
 	}
 	logrus.WithFields(logrus.Fields{
@@ -339,7 +353,21 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 		return nil
 	}
 
-	key.RemoteURL = n.buildRemoteURL(key)
+	// 优先使用 Plugin 存储的真实下载 URL（如 PyPI 的 files.pythonhosted.org），
+	// 因为 buildRemoteURL 基于 RemoteBaseURL 拼接，对 PyPI 等下载域名与索引域名不同的仓库不适用。
+	if artifact.Properties != nil {
+		if dlURL := artifact.Properties["download_url"]; dlURL != "" {
+			key.RemoteURL = dlURL
+		}
+	}
+	if key.RemoteURL == "" && artifact.Properties != nil {
+		if remotePath := artifact.Properties["remote_path"]; remotePath != "" && n.RemoteBaseURL != "" {
+			key.RemoteURL = strings.TrimRight(n.RemoteBaseURL, "/") + "/" + strings.TrimLeft(remotePath, "/")
+		}
+	}
+	if key.RemoteURL == "" {
+		key.RemoteURL = n.buildRemoteURL(key)
+	}
 	if key.RemoteURL == "" {
 		return ErrNotFound
 	}
@@ -420,7 +448,19 @@ func (n *ProxyRuntime) refreshStaleMetadata(ctx context.Context, artifact *Artif
 		return nil
 	}
 
-	key.RemoteURL = n.buildRemoteURL(key)
+	if artifact.Properties != nil {
+		if dlURL := artifact.Properties["download_url"]; dlURL != "" {
+			key.RemoteURL = dlURL
+		}
+	}
+	if key.RemoteURL == "" && artifact.Properties != nil {
+		if remotePath := artifact.Properties["remote_path"]; remotePath != "" && n.RemoteBaseURL != "" {
+			key.RemoteURL = strings.TrimRight(n.RemoteBaseURL, "/") + "/" + strings.TrimLeft(remotePath, "/")
+		}
+	}
+	if key.RemoteURL == "" {
+		key.RemoteURL = n.buildRemoteURL(key)
+	}
 	if key.RemoteURL == "" {
 		return nil
 	}

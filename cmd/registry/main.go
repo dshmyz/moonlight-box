@@ -22,7 +22,6 @@ import (
 	migv2repo "github.com/dshmyz/moonlight-box/internal/migration/v2/repository"
 	migv2sched "github.com/dshmyz/moonlight-box/internal/migration/v2/scheduler"
 	migv2svc "github.com/dshmyz/moonlight-box/internal/migration/v2/service"
-	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/plugins/apt"
 	gomod "github.com/dshmyz/moonlight-box/internal/plugins/go"
 	"github.com/dshmyz/moonlight-box/internal/plugins/maven"
@@ -304,7 +303,21 @@ func main() {
 	blockRuleSvc := service.NewBlockRuleService(blockRuleRepo, auditSvc)
 	blocker := &blockRuleBlocker{svc: blockRuleSvc}
 
-	initRepoRuntimes(repoManager, repoRepo, groupRepo, db, storageSvc, fetchers, blocker, pluginHTTPClient)
+	// 创建统一的 ArtifactService，用于 artifact 写入时自动同步 packages 聚合表
+	artifactSvc := service.NewArtifactService(db)
+
+	// 设置懒加载 factory：Get() 在内存缓存未命中时自动从 DB 创建 Runtime
+	repoManager.SetFactory(NewRepositoryFactory(
+		repoRepo, groupRepo, db, storageSvc, repoManager, fetchers, blocker, pluginHTTPClient, artifactSvc,
+	))
+
+	// 预热所有仓库 Runtime（可选，避免首次请求冷启动）
+	initRepoRuntimes(repoManager, repoRepo)
+
+	// 首次启动时重建 packages 聚合表（存量数据迁移）
+	if err := artifactSvc.RebuildPackages(context.Background()); err != nil {
+		logrus.WithError(err).Warn("Failed to rebuild packages table, will fall back to artifacts aggregation")
+	}
 
 	// 初始化仓库缓存（5分钟TTL）
 	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
@@ -314,43 +327,6 @@ func main() {
 	repoSvc := service.NewRepositoryService(repoRepo, groupRepo, db)
 	repoSvc.SetRepoCache(repoCache)
 	repoSvc.SetRepoManager(repoManager)
-	repoSvc.SetRuntimeFactory(func(repo *model.Repository, members []string) (*runtime.Repository, error) {
-		defaultBackend := storageSvc.GetDefaultBackend()
-		if defaultBackend == nil {
-			return nil, fmt.Errorf("no default storage backend available")
-		}
-		repoRuntime, createErr := createRuntimeForRepo(repo, repoRepo, groupRepo, db, defaultBackend, repoManager, fetchers, blocker, pluginHTTPClient)
-		if createErr != nil {
-			return nil, createErr
-		}
-		config := map[string]interface{}{
-			"allow_overwrite": repo.AllowOverwrite,
-		}
-		if repo.Config != nil {
-			config["remote_url"] = repo.Config.RemoteURL
-			config["auth_type"] = repo.Config.AuthType
-			config["cache_enabled"] = repo.Config.CacheEnabled
-			config["cache_ttl_seconds"] = repo.Config.CacheTTLSeconds
-			config["cache_negative_ttl"] = repo.Config.CacheNegativeTTL
-			config["timeout_seconds"] = repo.Config.TimeoutSeconds
-			config["insecure_skip_verify"] = repo.Config.InsecureSkipVerify
-		}
-		if repo.Type == model.RepoTypeProxy && config["remote_url"] == "" {
-			var dbRemoteURL string
-			db.Raw("SELECT remote_url FROM repositories WHERE id = ?", repo.ID).Scan(&dbRemoteURL)
-			if dbRemoteURL != "" {
-				config["remote_url"] = dbRemoteURL
-			}
-		}
-		return &runtime.Repository{
-			ID:      fmt.Sprintf("%d", repo.ID),
-			Name:    repo.Name,
-			Format:  repo.PackageType,
-			Type:    string(repo.Type),
-			Config:  config,
-			Runtime: repoRuntime,
-		}, nil
-	})
 
 	// Wire block rules and audit logging into the repository router
 	repositoryRouter.Blocker = blocker
@@ -390,6 +366,7 @@ func main() {
 
 	// 初始化搜索和 Dashboard 服务
 	searchSvc := service.NewPackageSearchService(db)
+	artifactSvc.SetCacheInvalidationCallback(searchSvc.InvalidateCache)
 	searchHandler := handler.NewPackageSearchHandler(searchSvc)
 
 	dashboardSvc := service.NewDashboardService(db, repoRepo, healthCheckSvc, cfg.Storage.Local.BasePath)
@@ -439,7 +416,7 @@ func main() {
 	migV2ItemRepo := migv2repo.NewItemRepo(db)
 	migV2ConflictRepo := migv2repo.NewConflictRepo(db)
 	migV2EventRepo := migv2repo.NewEventRepo(db)
-	migV2ExecMgr := migv2executor.NewExecutorManager(db, nil, storageSvc, migV2ItemRepo, migV2EventRepo, 5)
+	migV2ExecMgr := migv2executor.NewExecutorManager(db, nil, storageSvc, migV2ItemRepo, migV2EventRepo, 5, artifactSvc)
 	migV2Scheduler := migv2sched.New(db, migV2PlanRepo, migV2JobRepo, migV2ItemRepo, migV2EventRepo, migV2ExecMgr, 3)
 	migV2Svc := migv2svc.New(db, migV2PlanRepo, migV2JobRepo, migV2ItemRepo, migV2ConflictRepo, migV2EventRepo, migV2Scheduler)
 	migV2Svc.RecoverInterruptedPlans(context.Background())

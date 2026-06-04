@@ -58,6 +58,14 @@ type RepositoryPathResolver interface {
 	Resolve(req *http.Request) (*ResolvedRepository, error)
 }
 
+// ProtocolPlugin 协议插件接口。
+// 所有包协议（Maven/NPM/PyPI/Go 等）必须实现此接口。
+//
+// 约束（MetadataStore 在写入时会强制校验）：
+//   - Handle 中通过 runtime 写入的 Artifact，如果 Kind 是 version/artifact/package-file/module-file，
+//     Coordinates 中必须包含 CoordName 字段，用于搜索聚合。
+//   - 建议使用 runtime 包中定义的 Coord* 常量作为 Coordinates key，
+//     避免各 Plugin 硬编码字符串导致不一致。
 type ProtocolPlugin interface {
 	Name() string
 	Handle(ctx *RequestContext, runtime RepositoryRuntime) error
@@ -65,6 +73,11 @@ type ProtocolPlugin interface {
 
 // RemoteFetcher 由 ProtocolPlugin 实现，供 ProxyRuntime 回调。
 // Runtime 控制回源时机和缓存策略；Plugin 只负责远端协议交互（HTTP 请求 + 响应解析）。
+//
+// 约束：
+//   - FetchRemote 返回的 Artifact 中，如果 Kind 属于 version/artifact/package-file/module-file，
+//     Coordinates 中必须包含 CoordName 字段（格式由各协议定义，如 Maven 为 group:artifact）。
+//   - 注意：返回的 Artifact 会被 MetadataStore.BatchPut 持久化，缺少 CoordName 会导致存储失败。
 type RemoteFetcher interface {
 	FetchRemote(ctx context.Context, remoteURL, path string) ([]*Artifact, error)
 }

@@ -40,14 +40,49 @@ func artifactDedupeKey(a *Artifact) string {
 }
 
 func (g *GroupRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
-	allArtifacts := make([]*Artifact, 0)
-	seen := make(map[string]bool)
-
 	logrus.WithFields(logrus.Fields{
 		"format":      query.Format,
 		"remotePath":  query.RemotePath,
 		"memberCount": len(g.Members),
 	}).Debug("group: QueryArtifacts called")
+
+	// 对于有具体路径且带坐标的查询（如单个包的回源），使用优先级短路策略。
+	// 纯 RemotePath 也可能是仓库级索引（如 PyPI simple/），必须聚合所有成员。
+	if query.RemotePath != "" && len(query.Coordinates) > 0 {
+		return g.queryWithPriority(ctx, query)
+	}
+
+	// 对于没有具体路径的查询（如列出所有包），聚合所有成员的结果
+	return g.queryWithAggregation(ctx, query)
+}
+
+// queryWithPriority 按优先级短路查询，适用于有具体路径的场景
+func (g *GroupRuntime) queryWithPriority(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
+	for i, node := range g.Members {
+		artifacts, err := node.QueryArtifacts(ctx, query)
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"memberIndex": i,
+				"remotePath":  query.RemotePath,
+				"error":       err.Error(),
+			}).Debug("group: member QueryArtifacts failed, trying next")
+			continue
+		}
+		if len(artifacts) > 0 {
+			logrus.WithFields(logrus.Fields{
+				"memberIndex":   i,
+				"artifactCount": len(artifacts),
+			}).Debug("group: found artifacts from member, returning")
+			return artifacts, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+// queryWithAggregation 聚合查询，适用于列表场景
+func (g *GroupRuntime) queryWithAggregation(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
+	allArtifacts := make([]*Artifact, 0)
+	seen := make(map[string]bool)
 
 	for i, node := range g.Members {
 		artifacts, err := node.QueryArtifacts(ctx, query)

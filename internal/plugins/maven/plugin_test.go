@@ -13,6 +13,16 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/plugins/testhelper"
 )
 
+type closeTrackingReadCloser struct {
+	*strings.Reader
+	closed bool
+}
+
+func (r *closeTrackingReadCloser) Close() error {
+	r.closed = true
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
@@ -184,6 +194,9 @@ func TestFetchRemote_Metadata_Standard(t *testing.T) {
 		}
 		if a.Coordinates["artifact"] != "guava" {
 			t.Errorf("artifact = %q, want 'guava'", a.Coordinates["artifact"])
+		}
+		if a.Coordinates["name"] != "com.google.guava:guava" {
+			t.Errorf("name = %q, want 'com.google.guava:guava'", a.Coordinates["name"])
 		}
 	}
 }
@@ -697,6 +710,119 @@ func TestHandle_Upload(t *testing.T) {
 	}
 	if art.Coordinates["version"] != "1.0.0" {
 		t.Errorf("version = %q, want '1.0.0'", art.Coordinates["version"])
+	}
+}
+
+func TestHandle_UploadArtifactLevelMetadataUsesCorrectCoordinates(t *testing.T) {
+	p := NewMavenPlugin()
+	rt := &testhelper.MockRuntime{}
+
+	ctx, w := newCtx("PUT", "com/example/app/maven-metadata.xml", strings.NewReader("<metadata/>"))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.UploadedArts) != 1 {
+		t.Fatalf("expected 1 uploaded artifact, got %d", len(rt.UploadedArts))
+	}
+	art := rt.UploadedArts[0]
+	if art.Coordinates["name"] != "com.example:app" {
+		t.Fatalf("name = %q, want com.example:app", art.Coordinates["name"])
+	}
+	if art.Coordinates["group"] != "com.example" {
+		t.Fatalf("group = %q, want com.example", art.Coordinates["group"])
+	}
+	if art.Coordinates["artifact"] != "app" {
+		t.Fatalf("artifact = %q, want app", art.Coordinates["artifact"])
+	}
+	if art.Coordinates["version"] != "" {
+		t.Fatalf("version = %q, want empty artifact-level metadata version", art.Coordinates["version"])
+	}
+	if art.Coordinates["filename"] != "maven-metadata.xml" {
+		t.Fatalf("filename = %q", art.Coordinates["filename"])
+	}
+}
+
+func TestHandle_UploadSnapshotMetadataUsesCorrectCoordinates(t *testing.T) {
+	p := NewMavenPlugin()
+	rt := &testhelper.MockRuntime{}
+
+	ctx, w := newCtx("PUT", "com/example/app/1.0-SNAPSHOT/maven-metadata.xml", strings.NewReader("<metadata/>"))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.UploadedArts) != 1 {
+		t.Fatalf("expected 1 uploaded artifact, got %d", len(rt.UploadedArts))
+	}
+	art := rt.UploadedArts[0]
+	if art.Coordinates["name"] != "com.example:app" {
+		t.Fatalf("name = %q, want com.example:app", art.Coordinates["name"])
+	}
+	if art.Coordinates["version"] != "1.0-SNAPSHOT" {
+		t.Fatalf("version = %q, want 1.0-SNAPSHOT", art.Coordinates["version"])
+	}
+	if art.Coordinates["path"] != "com/example/app/1.0-SNAPSHOT" {
+		t.Fatalf("path = %q", art.Coordinates["path"])
+	}
+}
+
+func TestHandle_ChecksumDownloadLooksUpOriginalArtifactCoordinates(t *testing.T) {
+	p := NewMavenPlugin()
+	art := testhelper.NewArtifact("maven", "artifact", map[string]string{
+		"name":       "com.example:app",
+		"group":      "com.example",
+		"artifact":   "app",
+		"version":    "1.0.0",
+		"filename":   "app-1.0.0.jar",
+		"path":       "com/example/app/1.0.0",
+		"classifier": "",
+	}, "jar-data")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "com/example/app/1.0.0/app-1.0.0.jar.sha1", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.GetCalls) != 1 {
+		t.Fatalf("expected 1 GetArtifact call, got %d", len(rt.GetCalls))
+	}
+	if got := rt.GetCalls[0].Coordinates["filename"]; got != "app-1.0.0.jar" {
+		t.Fatalf("lookup filename = %q, want original artifact filename", got)
+	}
+}
+
+func TestHandle_UploadClosesExistingArtifactContent(t *testing.T) {
+	p := NewMavenPlugin()
+	content := &closeTrackingReadCloser{Reader: strings.NewReader("old")}
+	existing := testhelper.NewArtifact("maven", "artifact", map[string]string{
+		"name":       "com.example:app",
+		"group":      "com.example",
+		"artifact":   "app",
+		"version":    "1.0.0",
+		"filename":   "app-1.0.0.jar",
+		"path":       "com/example/app/1.0.0",
+		"classifier": "",
+	}, "")
+	existing.Content = content
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{existing}}
+
+	ctx, w := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", bytes.NewReader([]byte("new")))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 update, got %d", w.Code)
+	}
+	if !content.closed {
+		t.Fatal("expected existing artifact content to be closed")
 	}
 }
 

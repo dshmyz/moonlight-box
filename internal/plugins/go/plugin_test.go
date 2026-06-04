@@ -470,6 +470,70 @@ func TestHandle_ModuleDownload_NotFound(t *testing.T) {
 	}
 }
 
+func TestHandle_ModuleDownloadMissQueriesRemotePathBeforeRetry(t *testing.T) {
+	p := NewGoPlugin()
+	rt := &goQueryThenGetRuntime{
+		artifact: testhelper.NewArtifact("go", "module-file", map[string]string{
+			"name":     "github.com/Azure/azure-sdk-for-go",
+			"module":   "github.com/Azure/azure-sdk-for-go",
+			"version":  "v1.2.3",
+			"path":     "github.com/Azure/azure-sdk-for-go/@v",
+			"ext":      "zip",
+			"filename": "v1.2.3.zip",
+		}, "zip-content"),
+	}
+
+	ctx, w := newCtx("GET", "github.com/Azure/azure-sdk-for-go/@v/v1.2.3.zip", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after QueryArtifacts retry, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.queryCalls) != 1 {
+		t.Fatalf("expected one QueryArtifacts call, got %d", len(rt.queryCalls))
+	}
+	if got := rt.queryCalls[0].RemotePath; got != "github.com/Azure/azure-sdk-for-go/@v/v1.2.3.zip" {
+		t.Fatalf("RemotePath = %q", got)
+	}
+	if rt.getCalls != 2 {
+		t.Fatalf("expected two GetArtifact calls, got %d", rt.getCalls)
+	}
+}
+
+type goQueryThenGetRuntime struct {
+	artifact   *runtime.Artifact
+	getCalls   int
+	queryCalls []runtime.ArtifactQuery
+	queried    bool
+}
+
+func (r *goQueryThenGetRuntime) GetArtifact(ctx context.Context, key runtime.ArtifactKey) (*runtime.Artifact, error) {
+	r.getCalls++
+	if !r.queried {
+		return nil, runtime.ErrNotFound
+	}
+	return r.artifact, nil
+}
+
+func (r *goQueryThenGetRuntime) QueryArtifacts(ctx context.Context, query runtime.ArtifactQuery) ([]*runtime.Artifact, error) {
+	r.queryCalls = append(r.queryCalls, query)
+	r.queried = true
+	return []*runtime.Artifact{r.artifact}, nil
+}
+
+func (r *goQueryThenGetRuntime) RenderProjection(ctx context.Context, query runtime.ProjectionQuery) (*runtime.ProjectionResult, error) {
+	return nil, runtime.ErrNotFound
+}
+
+func (r *goQueryThenGetRuntime) BeginUpload(ctx context.Context, req runtime.UploadRequest) (runtime.UploadSession, error) {
+	return nil, runtime.ErrReadOnly
+}
+
+func (r *goQueryThenGetRuntime) DeleteArtifact(ctx context.Context, key runtime.ArtifactKey) error {
+	return runtime.ErrReadOnly
+}
+
 func TestHandle_ModuleDownload_InvalidPath(t *testing.T) {
 	p := NewGoPlugin()
 	rt := &testhelper.MockRuntime{}
@@ -611,6 +675,32 @@ func TestFetchRemote_ModuleFile(t *testing.T) {
 	}
 	if arts[0].Coordinates["filename"] != "v1.0.0.zip" {
 		t.Errorf("filename = %q, want 'v1.0.0.zip'", arts[0].Coordinates["filename"])
+	}
+}
+
+func TestFetchRemote_ModuleFileCoordinatesMatchDownloadKey(t *testing.T) {
+	p := NewGoPlugin()
+	arts, err := p.FetchRemote(context.Background(), "http://example.test", "github.com/example/mod/@v/v1.2.3.zip")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+
+	got := arts[0].Coordinates
+	want := map[string]string{
+		"name":     "github.com/example/mod",
+		"module":   "github.com/example/mod",
+		"version":  "v1.2.3",
+		"path":     "github.com/example/mod/@v",
+		"ext":      "zip",
+		"filename": "v1.2.3.zip",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("coordinate %q = %q, want %q", k, got[k], v)
+		}
 	}
 }
 

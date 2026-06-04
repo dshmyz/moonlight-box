@@ -14,14 +14,6 @@ var (
 		[]string{"package_type", "repository_type"},
 	)
 
-	PackageVersionsTotal = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "moonlight_package_versions_total",
-			Help: "Total number of package versions by type",
-		},
-		[]string{"package_type"},
-	)
-
 	DownloadsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "moonlight_downloads_total",
@@ -192,10 +184,6 @@ func RecordVulnerability(severity string) {
 
 func UpdatePackagesTotal(packageType, repositoryType string, count float64) {
 	PackagesTotal.WithLabelValues(packageType, repositoryType).Set(count)
-}
-
-func UpdatePackageVersionsTotal(packageType string, count float64) {
-	PackageVersionsTotal.WithLabelValues(packageType).Set(count)
 }
 
 func UpdateStorageBytes(packageType string, bytes float64) {

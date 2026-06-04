@@ -240,6 +240,7 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 
 	for _, v := range versions {
 		coords := map[string]string{
+			"name":     group + ":" + artifact,
 			"group":    group,
 			"artifact": artifact,
 			"version":  v,
@@ -305,8 +306,22 @@ func (p *MavenPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Re
 	path := ctx.RepositoryPath
 	path = strings.TrimPrefix(path, "/")
 
-	if strings.HasSuffix(path, "maven-metadata.xml") && ctx.Request.Method == http.MethodGet {
-		return p.handleMetadata(ctx, repoRuntime, path)
+	if strings.HasSuffix(path, "maven-metadata.xml") {
+		if ctx.Request.Method == http.MethodGet {
+			return p.handleMetadata(ctx, repoRuntime, path)
+		}
+		if ctx.Request.Method == http.MethodPut {
+			key, err := p.parseMavenMetadataPath(path)
+			if err != nil {
+				http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
+				return nil
+			}
+			key.RepositoryID = ctx.Repository.ID
+			ctx.PackageName = key.Coordinates["name"]
+			ctx.Version = key.Coordinates["version"]
+			ctx.Filename = key.Filename
+			return p.handleUpload(ctx, repoRuntime, key)
+		}
 	}
 
 	key, err := p.parseMavenPath(path)
@@ -322,6 +337,10 @@ func (p *MavenPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Re
 
 	switch ctx.Request.Method {
 	case http.MethodGet:
+		// 拦截 checksum 文件请求（.sha1/.md5/.sha256），动态计算并返回
+		if originalFile, algo, ok := parseChecksumRequest(key.Filename); ok {
+			return p.handleChecksumDownload(ctx, repoRuntime, key, originalFile, algo)
+		}
 		return p.handleDownload(ctx, repoRuntime, key)
 	case http.MethodPut:
 		return p.handleUpload(ctx, repoRuntime, key)
@@ -781,6 +800,92 @@ func (p *MavenPlugin) parseMavenPath(path string) (runtime.ArtifactKey, error) {
 	}, nil
 }
 
+func (p *MavenPlugin) parseMavenMetadataPath(path string) (runtime.ArtifactKey, error) {
+	clean := strings.Trim(path, "/")
+	if !strings.HasSuffix(clean, "/maven-metadata.xml") {
+		return runtime.ArtifactKey{}, errors.New("invalid maven metadata path")
+	}
+	base := strings.TrimSuffix(clean, "/maven-metadata.xml")
+	parts := strings.Split(base, "/")
+	if len(parts) < 2 {
+		return runtime.ArtifactKey{}, errors.New("invalid maven metadata path")
+	}
+
+	version := ""
+	artifact := parts[len(parts)-1]
+	groupParts := parts[:len(parts)-1]
+	if len(parts) >= 3 && strings.Contains(parts[len(parts)-1], "-SNAPSHOT") {
+		version = parts[len(parts)-1]
+		artifact = parts[len(parts)-2]
+		groupParts = parts[:len(parts)-2]
+	}
+	if len(groupParts) == 0 || artifact == "" {
+		return runtime.ArtifactKey{}, errors.New("invalid maven metadata path")
+	}
+	group := strings.Join(groupParts, ".")
+
+	return runtime.ArtifactKey{
+		Format: "maven",
+		Coordinates: map[string]string{
+			"name":     group + ":" + artifact,
+			"group":    group,
+			"artifact": artifact,
+			"version":  version,
+			"filename": "maven-metadata.xml",
+			"path":     base,
+		},
+		Filename:  "maven-metadata.xml",
+		Extension: ".xml",
+	}, nil
+}
+
+func (p *MavenPlugin) handleChecksumDownload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey, originalFile string, algo checksumAlgo) error {
+	// 构建原始 artifact 的 key（用原始文件名替换 checksum 文件名）
+	originalKey := key
+	originalKey.Filename = originalFile
+	originalKey.Extension = filepath.Ext(originalFile)
+	if originalKey.Coordinates == nil {
+		originalKey.Coordinates = map[string]string{}
+	}
+	originalKey.Coordinates["filename"] = originalFile
+
+	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), originalKey)
+	if err != nil {
+		if errors.Is(err, runtime.ErrNotFound) {
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		} else {
+			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		}
+		return nil
+	}
+	if artifact.Content == nil {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	defer artifact.Content.Close()
+
+	digest, err := computeChecksum(artifact.Content, algo)
+	if err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"filename": key.Filename,
+			"algo":     string(algo),
+		}).Error("maven: compute checksum failed")
+		http.Error(ctx.Writer, "internal error", http.StatusInternalServerError)
+		return nil
+	}
+
+	ctx.FromCache = artifact.FromCache
+	ctx.RemoteURL = artifact.RemoteURL
+	if len(artifact.BlobRefs) > 0 {
+		ctx.SizeBytes = artifact.BlobRefs[0].Size
+	}
+
+	ctx.Writer.Header().Set("Content-Type", "text/plain")
+	ctx.Writer.WriteHeader(http.StatusOK)
+	_, _ = ctx.Writer.Write([]byte(formatMavenChecksum(digest, originalFile)))
+	return nil
+}
+
 func (p *MavenPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
 	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 	if err != nil {
@@ -816,6 +921,9 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 	key.Coordinates["name"] = key.Coordinates["group"] + ":" + key.Coordinates["artifact"]
 	existingArtifact, _ := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 	isUpdate := existingArtifact != nil
+	if existingArtifact != nil && existingArtifact.Content != nil {
+		_ = existingArtifact.Content.Close()
+	}
 
 	session, err := repoRuntime.BeginUpload(ctx.Request.Context(), runtime.UploadRequest{
 		RepositoryID: ctx.Repository.ID,

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/domain"
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/repository"
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/source"
@@ -29,9 +30,10 @@ type ExecutorManager struct {
 	itemRepo    *repository.ItemRepo
 	eventRepo   *repository.EventRepo
 	concurrency int
+	artifactSvc *service.ArtifactService
 }
 
-func NewExecutorManager(db *gorm.DB, src source.MigrationSource, storageSvc *service.StorageService, itemRepo *repository.ItemRepo, eventRepo *repository.EventRepo, concurrency int) *ExecutorManager {
+func NewExecutorManager(db *gorm.DB, src source.MigrationSource, storageSvc *service.StorageService, itemRepo *repository.ItemRepo, eventRepo *repository.EventRepo, concurrency int, artifactSvc *service.ArtifactService) *ExecutorManager {
 	return &ExecutorManager{
 		db:          db,
 		src:         src,
@@ -39,6 +41,7 @@ func NewExecutorManager(db *gorm.DB, src source.MigrationSource, storageSvc *ser
 		itemRepo:    itemRepo,
 		eventRepo:   eventRepo,
 		concurrency: concurrency,
+		artifactSvc: artifactSvc,
 	}
 }
 
@@ -404,7 +407,17 @@ func (m *ExecutorManager) executeItem(ctx context.Context, planID uint, item *do
 
 	digest := hex.EncodeToString(hash.Sum(nil))
 
-	// Store blob + artifact atomically
+	// 先查询目标仓库 ID（blob 和 artifact 都需要）
+	var repo model.Repository
+	if err := m.db.Where("name = ?", targetRepo).First(&repo).Error; err != nil {
+		return m.failItem(planID, item, domain.ErrArtifactStorageFailed, fmt.Sprintf("target repository not found: %s", targetRepo))
+	}
+
+	// Step 1: 创建 blob 记录
+	// 注意：blob 和 artifact 不在同一个事务中，如果 Step 2 失败会产生孤儿 blob。
+	// 这是有意的 tradeoff——让 ArtifactService 统一管理 artifact 写入 + packages 同步，
+	// 而非拆分其内部事务。孤儿 blob 可通过定期清理任务回收。
+	var blobID uint
 	err = m.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		blob := &model.Blob{
 			Algorithm:   "sha256",
@@ -415,37 +428,27 @@ func (m *ExecutorManager) executeItem(ctx context.Context, planID uint, item *do
 		if err := tx.Create(blob).Error; err != nil {
 			return err
 		}
-
-		// Find target repo ID
-		var repo model.Repository
-		if err := tx.Where("name = ?", targetRepo).First(&repo).Error; err != nil {
-			return fmt.Errorf("target repository not found: %s", targetRepo)
-		}
-
-		coords := model.JSONB{
-			"name":    item.SourceName,
-			"version": item.SourceVersion,
-		}
-
-		artifact := &model.Artifact{
-			RepositoryID: repo.ID,
-			Format:       item.SourceFormat,
-			Kind:         "primary",
-			Coordinates:  coords,
-		}
-		if err := tx.Create(artifact).Error; err != nil {
-			return err
-		}
-
-		ab := &model.ArtifactBlob{
-			ArtifactID: artifact.ID,
-			BlobID:     blob.ID,
-			Position:   0,
-			Role:       "primary",
-		}
-		return tx.Create(ab).Error
+		blobID = blob.ID
+		return nil
 	})
 	if err != nil {
+		return m.failItem(planID, item, domain.ErrArtifactStorageFailed, err.Error())
+	}
+
+	// Step 2: 通过 ArtifactService 创建 artifact + blob 关联 + 同步 packages 表
+	runtimeArtifact := &runtime.Artifact{
+		RepositoryID: fmt.Sprintf("%d", repo.ID),
+		Format:       item.SourceFormat,
+		Kind:         "primary",
+		Coordinates: map[string]string{
+			"name":    item.SourceName,
+			"version": item.SourceVersion,
+		},
+		BlobRefs: []runtime.BlobRef{
+			{BlobID: blobID},
+		},
+	}
+	if err := m.artifactSvc.Save(ctx, runtimeArtifact); err != nil {
 		return m.failItem(planID, item, domain.ErrArtifactStorageFailed, err.Error())
 	}
 

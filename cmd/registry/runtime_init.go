@@ -16,75 +16,89 @@ import (
 	"gorm.io/gorm"
 )
 
-// initRepoRuntimes 从 DB 加载所有仓库，创建对应的 Runtime 并注册到 DefaultRepositoryManager
+// initRepoRuntimes 预热所有仓库的 Runtime。启动时调用可避免首次请求冷启动。
+// 即使不调用，Get() 懒加载也能正常工作。
 func initRepoRuntimes(
 	repoManager *runtime.DefaultRepositoryManager,
 	repoRepo *repository.RepositoryRepository,
-	groupRepo *repository.GroupRepository,
-	db *gorm.DB,
-	storageSvc *service.StorageService,
-	fetchers map[string]runtime.RemoteFetcher,
-	blocker runtime.PackageBlocker,
-	httpClient *http.Client,
 ) {
 	allRepos, err := repoRepo.List(nil)
 	if err != nil {
-		logrus.WithError(err).Error("Failed to load repositories for runtime init")
-		return
-	}
-
-	defaultBackend := storageSvc.GetDefaultBackend()
-	if defaultBackend == nil {
-		logrus.Warn("No default storage backend available, skipping runtime init")
+		logrus.WithError(err).Error("Failed to load repositories for runtime prewarm")
 		return
 	}
 
 	for i := range allRepos {
 		repo := &allRepos[i]
-		repoRuntime, createErr := createRuntimeForRepo(repo, repoRepo, groupRepo, db, defaultBackend, repoManager, fetchers, blocker, httpClient)
-		if createErr != nil {
-			logrus.WithError(createErr).WithField("repo", repo.Name).Warn("Failed to create runtime for repo")
-			continue
+		// 通过 manager.Get 触发懒加载 factory，统一走同一条路径
+		if rt := repoManager.Get(repo.Name); rt != nil {
+			logrus.WithFields(logrus.Fields{
+				"repo":   repo.Name,
+				"type":   repo.Type,
+				"format": repo.PackageType,
+			}).Debug("Prewarmed repo runtime")
+		}
+	}
+}
+
+// NewRepositoryFactory 创建懒加载工厂函数，注入到 DefaultRepositoryManager。
+// Get() 在内存缓存未命中时自动调用此函数从 DB 加载并创建 Runtime。
+func NewRepositoryFactory(
+	repoRepo *repository.RepositoryRepository,
+	groupRepo *repository.GroupRepository,
+	db *gorm.DB,
+	storageSvc *service.StorageService,
+	repoManager *runtime.DefaultRepositoryManager,
+	fetchers map[string]runtime.RemoteFetcher,
+	blocker runtime.PackageBlocker,
+	httpClient *http.Client,
+	artifactSvc *service.ArtifactService,
+) runtime.RepositoryFactory {
+	return func(name string) (*runtime.Repository, error) {
+		repo, err := repoRepo.FindByName(name)
+		if err != nil {
+			return nil, fmt.Errorf("repo not found: %s: %w", name, err)
 		}
 
-		config := map[string]interface{}{
-			"allow_overwrite": repo.AllowOverwrite,
-		}
-		if repo.Config != nil {
-			config["remote_url"] = repo.Config.RemoteURL
-			config["auth_type"] = repo.Config.AuthType
-			config["cache_enabled"] = repo.Config.CacheEnabled
-			config["cache_ttl_seconds"] = repo.Config.CacheTTLSeconds
-			config["cache_negative_ttl"] = repo.Config.CacheNegativeTTL
-			config["timeout_seconds"] = repo.Config.TimeoutSeconds
-			config["insecure_skip_verify"] = repo.Config.InsecureSkipVerify
+		backend := storageSvc.GetDefaultBackend()
+		if backend == nil {
+			return nil, fmt.Errorf("no default storage backend available")
 		}
 
-		if repo.Type == model.RepoTypeProxy {
-			remoteURL := remoteURLForRepo(*repo)
-			if remoteURL == "" {
-				db.Raw("SELECT remote_url FROM repositories WHERE id = ?", repo.ID).Scan(&remoteURL)
-			}
-			if remoteURL != "" {
-				config["remote_url"] = remoteURL
-			}
+		repoRuntime, err := createRuntimeForRepo(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers, blocker, httpClient, artifactSvc)
+		if err != nil {
+			return nil, err
 		}
 
-		rtRepo := &runtime.Repository{
-			ID:      fmt.Sprintf("%d", repo.ID),
-			Name:    repo.Name,
-			Format:  repo.PackageType,
-			Type:    string(repo.Type),
-			Config:  config,
-			Runtime: repoRuntime,
-		}
-		repoManager.Set(rtRepo)
+		return buildRuntimeRepo(repo, repoRuntime), nil
+	}
+}
 
-		logrus.WithFields(logrus.Fields{
-			"repo":   repo.Name,
-			"type":   repo.Type,
-			"format": repo.PackageType,
-		}).Debug("Registered repo runtime")
+// buildRuntimeRepo 将 model.Repository + RepositoryRuntime 转换为 runtime.Repository
+func buildRuntimeRepo(repo *model.Repository, repoRuntime runtime.RepositoryRuntime) *runtime.Repository {
+	config := map[string]interface{}{
+		"allow_overwrite": repo.AllowOverwrite,
+	}
+	if repo.Config != nil {
+		config["remote_url"] = repo.Config.RemoteURL
+		config["auth_type"] = repo.Config.AuthType
+		config["cache_enabled"] = repo.Config.CacheEnabled
+		config["cache_ttl_seconds"] = repo.Config.CacheTTLSeconds
+		config["cache_negative_ttl"] = repo.Config.CacheNegativeTTL
+		config["timeout_seconds"] = repo.Config.TimeoutSeconds
+		config["insecure_skip_verify"] = repo.Config.InsecureSkipVerify
+	}
+	if repo.Type == model.RepoTypeProxy && repo.Config == nil {
+		// Config 为 nil 时尝试从 DB 补充 remote_url
+		config["remote_url"] = ""
+	}
+	return &runtime.Repository{
+		ID:      fmt.Sprintf("%d", repo.ID),
+		Name:    repo.Name,
+		Format:  repo.PackageType,
+		Type:    string(repo.Type),
+		Config:  config,
+		Runtime: repoRuntime,
 	}
 }
 
@@ -98,8 +112,9 @@ func createRuntimeForRepo(
 	fetchers map[string]runtime.RemoteFetcher,
 	blocker runtime.PackageBlocker,
 	httpClient *http.Client,
+	artifactSvc *service.ArtifactService,
 ) (runtime.RepositoryRuntime, error) {
-	metadataStore := storage.NewMetadataStore(db)
+	metadataStore := storage.NewMetadataStoreWithArtifactService(db, artifactSvc)
 	blobStore := storage.NewCASBlobStore(backend, db)
 
 	switch repo.Type {
@@ -145,7 +160,7 @@ func createRuntimeForRepo(
 		return pr, nil
 
 	case model.RepoTypeVirtual:
-		return createGroupRuntime(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers, blocker, httpClient)
+		return createGroupRuntime(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers, blocker, httpClient, artifactSvc)
 
 	default:
 		return nil, fmt.Errorf("unsupported repo type: %s", repo.Type)
@@ -169,6 +184,7 @@ func createGroupRuntime(
 	fetchers map[string]runtime.RemoteFetcher,
 	blocker runtime.PackageBlocker,
 	httpClient *http.Client,
+	artifactSvc *service.ArtifactService,
 ) (runtime.RepositoryRuntime, error) {
 	members, err := repoRepo.FindByName(repo.Name)
 	if err != nil {
@@ -187,8 +203,6 @@ func createGroupRuntime(
 	for i, member := range members.Members {
 		memberRepo := member.MemberRepo
 		memberID := strconv.FormatUint(uint64(memberRepo.ID), 10)
-		memberMeta := storage.NewMetadataStore(db)
-		memberBlob := storage.NewCASBlobStore(backend, db)
 
 		logrus.WithFields(logrus.Fields{
 			"index":        i,
@@ -197,90 +211,72 @@ func createGroupRuntime(
 			"memberFormat": memberRepo.PackageType,
 		}).Debug("createGroupRuntime: processing member")
 
-		var node runtime.RepositoryNode
-		switch memberRepo.Type {
-		case model.RepoTypeLocal:
-			n := &runtime.HostedRuntime{
-				MetadataStore: memberMeta,
-				BlobStore:     memberBlob,
-				RepositoryID:  memberID,
+		// 通过 manager.Get 获取成员仓库的 Runtime（懒加载，统一路径）
+		memberRT := repoManager.Get(memberRepo.Name)
+		if memberRT == nil || memberRT.Runtime == nil {
+			// 成员仓库还没注册或没有 Runtime，手动创建
+			memberMeta := storage.NewMetadataStoreWithArtifactService(db, artifactSvc)
+			memberBlob := storage.NewCASBlobStore(backend, db)
+
+			var node runtime.RepositoryNode
+			switch memberRepo.Type {
+			case model.RepoTypeLocal:
+				n := &runtime.HostedRuntime{
+					MetadataStore: memberMeta,
+					BlobStore:     memberBlob,
+					RepositoryID:  memberID,
+				}
+				node = n
+				if writable == nil {
+					writable = n
+				}
+			case model.RepoTypeProxy:
+				remoteBaseURL := ""
+				if memberRepo.Config != nil {
+					remoteBaseURL = memberRepo.Config.RemoteURL
+				}
+				if remoteBaseURL == "" {
+					db.Raw("SELECT remote_url FROM repositories WHERE id = ?", memberRepo.ID).Scan(&remoteBaseURL)
+				}
+				n := &runtime.ProxyRuntime{
+					MetadataStore: memberMeta,
+					BlobStore:     memberBlob,
+					RemoteClient:  runtime.NewHTTPRemoteClient(httpClient),
+					RepositoryID:  memberID,
+					RemoteBaseURL: remoteBaseURL,
+					Format:        memberRepo.PackageType,
+				}
+				if f, ok := fetchers[memberRepo.PackageType]; ok {
+					n.Fetcher = f
+				}
+				n.Blocker = blocker
+				node = n
+			default:
+				logrus.WithFields(logrus.Fields{
+					"memberName": memberRepo.Name,
+					"memberType": memberRepo.Type,
+				}).Warn("createGroupRuntime: skipping unsupported member type")
+				continue
 			}
-			node = n
-			if writable == nil {
-				writable = n
+
+			// 注册到 manager，下次不再重复创建
+			repoManager.Set(buildRuntimeRepo(&memberRepo, node.(runtime.RepositoryRuntime)))
+			nodes = append(nodes, node)
+			if memberRepo.Type == model.RepoTypeLocal && writable == nil {
+				writable = node
 			}
-		case model.RepoTypeProxy:
-			remoteBaseURL := ""
-			if memberRepo.Config != nil {
-				remoteBaseURL = memberRepo.Config.RemoteURL
-			}
-			if remoteBaseURL == "" {
-				db.Raw("SELECT remote_url FROM repositories WHERE id = ?", memberRepo.ID).Scan(&remoteBaseURL)
-			}
-			n := &runtime.ProxyRuntime{
-				MetadataStore: memberMeta,
-				BlobStore:     memberBlob,
-				RemoteClient:  runtime.NewHTTPRemoteClient(httpClient),
-				RepositoryID:  memberID,
-				RemoteBaseURL: remoteBaseURL,
-				Format:        memberRepo.PackageType,
-			}
-			if f, ok := fetchers[memberRepo.PackageType]; ok {
-				n.Fetcher = f
-			}
-			n.Blocker = blocker
-			node = n
-			logrus.WithFields(logrus.Fields{
-				"memberName":    memberRepo.Name,
-				"remoteBaseURL": remoteBaseURL,
-				"hasFetcher":    n.Fetcher != nil,
-			}).Debug("createGroupRuntime: proxy member configured")
-		default:
-			logrus.WithFields(logrus.Fields{
-				"memberName": memberRepo.Name,
-				"memberType": memberRepo.Type,
-			}).Warn("createGroupRuntime: skipping unsupported member type")
 			continue
 		}
 
-		nodes = append(nodes, node)
-
-		// 确保成员仓库也在 manager 中注册
-		existingRepo := repoManager.Get(memberRepo.Name)
-		if existingRepo == nil {
-			rtRepo := &runtime.Repository{
-				ID:     memberID,
-				Name:   memberRepo.Name,
-				Format: memberRepo.PackageType,
-				Type:   string(memberRepo.Type),
-				Config: map[string]interface{}{
-					"remote_url": remoteURLForRepo(memberRepo),
-				},
-				Runtime: runtime.RepositoryRuntime(nil),
-			}
-			switch n := node.(type) {
-			case *runtime.HostedRuntime:
-				rtRepo.Runtime = n
-			case *runtime.ProxyRuntime:
-				rtRepo.Runtime = n
-			}
-			repoManager.Set(rtRepo)
-			logrus.WithFields(logrus.Fields{
-				"memberName": memberRepo.Name,
-			}).Debug("createGroupRuntime: registered new member in manager")
-		} else if existingRepo.Runtime == nil {
-			// 如果成员仓库已注册但 Runtime 为 nil，更新它
-			switch n := node.(type) {
-			case *runtime.HostedRuntime:
-				existingRepo.Runtime = n
-			case *runtime.ProxyRuntime:
-				existingRepo.Runtime = n
-			}
-			repoManager.Set(existingRepo)
-			logrus.WithFields(logrus.Fields{
-				"memberName": memberRepo.Name,
-			}).Debug("createGroupRuntime: updated existing member runtime")
+		// 成员已有 Runtime，直接复用
+		nodes = append(nodes, memberRT.Runtime.(runtime.RepositoryNode))
+		if memberRepo.Type == model.RepoTypeLocal && writable == nil {
+			writable = memberRT.Runtime.(runtime.RepositoryNode)
 		}
+
+		logrus.WithFields(logrus.Fields{
+			"memberName": memberRepo.Name,
+		}).Debug("createGroupRuntime: reused existing member runtime")
 	}
 
 	logrus.WithFields(logrus.Fields{

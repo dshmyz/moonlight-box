@@ -47,6 +47,16 @@ func (r *GroupRepository) GetMembersByVirtualRepoContext(ctx context.Context, vi
 	return members, err
 }
 
+// GetParentVirtualRepos 查询包含指定成员仓库的所有虚拟仓库
+func (r *GroupRepository) GetParentVirtualRepos(memberRepoID uint) ([]model.Repository, error) {
+	var repos []model.Repository
+	err := r.db.Distinct("repositories.*").
+		Joins("JOIN repository_members ON repository_members.repository_id = repositories.id").
+		Where("repository_members.member_id = ? AND repositories.type = ?", memberRepoID, model.RepoTypeVirtual).
+		Find(&repos).Error
+	return repos, err
+}
+
 // UpdatePosition 更新成员顺序
 func (r *GroupRepository) UpdatePosition(virtualRepoID, memberRepoID uint, position int) error {
 	return r.db.Model(&model.RepositoryMember{}).

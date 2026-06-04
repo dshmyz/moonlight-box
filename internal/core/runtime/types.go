@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
@@ -11,6 +12,47 @@ import (
 type ctxKey string
 
 const clientIPKey ctxKey = "client_ip"
+
+// Coord* 常量 —— Coordinates map 中跨协议通用的键。
+// 协议特有的键（如 Maven 的 group/artifact）由各 Plugin 各自定义。
+const (
+	CoordName    = "name"     // 包名（搜索聚合用），所有协议必须设置
+	CoordVersion = "version"  // 版本号
+	CoordPath    = "path"     // 路径
+	CoordFileNm  = "filename" // 文件名
+)
+
+// Kind* 常量 —— Artifact.Kind 中跨协议通用的值。
+// 协议特有的 Kind 由各 Plugin 各自定义。
+const (
+	KindVersion  = "version"  // 版本记录（从远程元数据解析的版本列表）
+	KindArtifact = "artifact" // 具体包产物（上传/下载的包文件）
+)
+
+// mustHaveNameKinds 是需要 name 坐标的 Kind 集合。
+// Plugin 生成这些 Kind 的 Artifact 时，必须设置 Coordinates[CoordName]。
+var mustHaveNameKinds = map[string]bool{
+	KindVersion:  true,
+	KindArtifact: true,
+}
+
+// ValidateArtifactForStore 对写入存储的 Artifact 做合规检查。
+// MetadataStore 在 Put/BatchPut 时自动调用；Plugin 无需主动调用。
+func ValidateArtifactForStore(a *Artifact) error {
+	if a == nil {
+		return fmt.Errorf("artifact: nil artifact")
+	}
+	if a.Format == "" {
+		return fmt.Errorf("artifact: format is required")
+	}
+	if a.Kind == "" {
+		return fmt.Errorf("artifact: kind is required")
+	}
+	if mustHaveNameKinds[a.Kind] && a.Coordinates[CoordName] == "" {
+		return fmt.Errorf("artifact: missing required coordinate %q for kind=%q (format=%s)", CoordName, a.Kind, a.Format)
+	}
+	return nil
+}
 
 // ContextWithClientIP 将客户端 IP 注入 context，供 Runtime 层回源时使用。
 func ContextWithClientIP(ctx context.Context, ip string) context.Context {
