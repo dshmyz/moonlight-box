@@ -435,8 +435,13 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 	}
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), query)
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
-		return nil
+		if errors.Is(err, runtime.ErrNotFound) {
+			// 继续走下方的 hasVersionArtifacts 逻辑，尝试 GetArtifact 或返回 404
+			artifacts = nil
+		} else {
+			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			return nil
+		}
 	}
 
 	// 只有当缓存中存在 metadata 回源产生的 version 记录时，才用聚合方式生成 metadata。
