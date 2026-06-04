@@ -5,6 +5,7 @@ set -e
 BASE_URL="${1:-http://localhost:9081}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASS="${ADMIN_PASS:-admin123}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -101,6 +102,11 @@ if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204
 else
     fail "Maven POM 上传失败 (got HTTP $HTTP_CODE)"
 fi
+
+# 验证上传的包能通过搜索 API 检索到，且数据正确
+source "$SCRIPT_DIR/search_validation.sh"
+sleep 1
+assert_package_search "上传后搜索 test-http" "test-http" "com.test:test-http" "maven"
 
 # GET JAR (public, no auth)
 HTTP_CODE=$(curl -s -o "$TEST_JAR.dl" -w "%{http_code}" "$REPO_BASE/$ARTIFACT_PATH.jar")

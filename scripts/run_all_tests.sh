@@ -256,6 +256,9 @@ case "$TEST_SUITE" in
         
         print_section "第十二阶段: QueryArtifacts 回源路径测试"
         run_test "QueryArtifacts 回源" "$SCRIPT_DIR/core/test_queryartifacts.sh" "true"
+        
+        print_section "第十三阶段: 包搜索数据准确性测试"
+        run_test "包搜索数据准确性" "$SCRIPT_DIR/core/test_data_accuracy.sh" "true"
         ;;
     
     basic)

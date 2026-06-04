@@ -10,6 +10,7 @@ set -e
 BASE_URL="${1:-http://localhost:9081}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASS="${ADMIN_PASS:-admin123}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -197,6 +198,26 @@ else
 fi
 
 rm -f /tmp/test-pypi-simple.html
+
+# ── 测试 6: 回源后包搜索 API 数据流验证 ──────────────────────
+log_section "测试 6: 回源后包搜索 API 数据流验证"
+
+source "$SCRIPT_DIR/search_validation.sh"
+wait_for_indexing 2
+
+# Maven guava: 回源后应能搜到，name 应为 group:artifact
+assert_package_search "Maven guava 回源后搜索" "guava" "com.google.guava:guava" "maven"
+
+# Go testify: 回源后应能搜到，name 应为模块路径
+assert_package_search "Go testify 回源后搜索" "testify" "github.com/stretchr/testify" "go"
+
+# PyPI requests: 回源后应能搜到
+assert_package_search "PyPI requests 回源后搜索" "requests" "requests" "pypi"
+
+# 健全性检查
+for query in "guava" "testify" "requests"; do
+    assert_package_search_sanity "搜索 '$query' 数据健全性" "$query"
+done
 
 # ── 汇总 ──────────────────────
 echo ""

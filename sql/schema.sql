@@ -66,7 +66,12 @@ CREATE TABLE `artifacts` (
   `metadata` JSON DEFAULT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX `idx_artifacts_repo` (`repository_id`)
+  INDEX `idx_artifacts_repo` (`repository_id`),
+  INDEX `idx_artifacts_format` (`format`),
+  INDEX `idx_artifacts_created_at` (`created_at`),
+  INDEX `idx_artifacts_updated_at` (`updated_at`),
+  INDEX `idx_artifacts_repo_format_created` (`repository_id`, `format`, `created_at`),
+  INDEX `idx_artifacts_repo_format_updated` (`repository_id`, `format`, `updated_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='制品元数据表';
 
 -- ArtifactBlob 表 - 制品与 blob 的关联关系

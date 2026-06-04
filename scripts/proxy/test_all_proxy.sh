@@ -442,6 +442,31 @@ else
 fi
 
 # ============================================================
+log_section "测试 8.1: 包搜索 API 数据流验证"
+# ============================================================
+
+source "$(dirname "$SCRIPT_DIR")/core/search_validation.sh"
+
+wait_for_indexing 3
+
+# Maven guava: name 应为 group:artifact 格式
+assert_package_search "Maven guava 搜索" "guava" "com.google.guava:guava" "maven"
+
+# NPM lodash: name 应为包名
+assert_package_search "NPM lodash 搜索" "lodash" "lodash" "npm"
+
+# PyPI requests: name 应为包名
+assert_package_search "PyPI requests 搜索" "requests" "requests" "pypi"
+
+# Go testify: name 应为模块路径
+assert_package_search "Go testify 搜索" "testify" "github.com/stretchr/testify" "go"
+
+# 通用健全性检查：所有搜到的包 name 不为空且不像版本号
+for query in "guava" "lodash" "requests" "testify"; do
+    assert_package_search_sanity "搜索 '$query' 数据健全性" "$query"
+done
+
+# ============================================================
 log_section "测试 9: 存储目录结构验证"
 # ============================================================
 
