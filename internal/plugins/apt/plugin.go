@@ -36,7 +36,7 @@
 // 禁止直接构建远程 URL，必须通过 QueryArtifacts + RemotePath 让 Runtime 层
 // 统一管理回源，确保:
 //   - RemotePath 包含完整路径（如 "dists/focal/InRelease"、"pool/main/p/pkg/pkg_1.0_amd64.deb"）
-//   - ArtifactKey.Coordinates 与 FetchRemote 存储的坐标一致（含 file/filename/path）
+//   - ArtifactKey 的强字段与 FetchRemote 存储字段一致（含 filename/path/remote_path）
 //   - 负缓存由 Runtime 层统一管理
 //
 // ## 路由分发
@@ -107,19 +107,18 @@ func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 			filename := filepath.Base(path)
 			dir := aptArtifactDir(path)
 			return []*runtime.Artifact{
-				{
-					Format: "apt",
-					Kind:   "package-index",
-					Coordinates: map[string]string{
-						"file":     filename,
-						"filename": filename,
-						"path":     dir,
-					},
+				runtime.NewArtifact(runtime.ArtifactSpec{
+					Format:     "apt",
+					Kind:       "package-index",
+					Name:       filename,
+					Path:       dir,
+					Filename:   filename,
+					RemotePath: path,
 					Properties: map[string]string{
 						"filename":    filename,
 						"remote_path": path,
 					},
-				},
+				}),
 			}, nil
 		}
 		return p.fetchPackagesIndex(ctx, remoteURL, path)
@@ -135,19 +134,18 @@ func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 			"kind":     "release",
 		}).Debug("apt: FetchRemote returning release file reference")
 		return []*runtime.Artifact{
-			{
-				Format: "apt",
-				Kind:   "release",
-				Coordinates: map[string]string{
-					"file":     filename,
-					"filename": filename,
-					"path":     dir,
-				},
+			runtime.NewArtifact(runtime.ArtifactSpec{
+				Format:     "apt",
+				Kind:       "release",
+				Name:       filename,
+				Path:       dir,
+				Filename:   filename,
+				RemotePath: path,
 				Properties: map[string]string{
 					"filename":    filename,
 					"remote_path": path,
 				},
-			},
+			}),
 		}, nil
 	}
 
@@ -160,19 +158,18 @@ func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 		"kind":     "package",
 	}).Debug("apt: FetchRemote returning package file reference")
 	return []*runtime.Artifact{
-		{
-			Format: "apt",
-			Kind:   "package",
-			Coordinates: map[string]string{
-				"file":     filename,
-				"filename": filename,
-				"path":     dir,
-			},
+		runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "apt",
+			Kind:       runtime.KindPackage,
+			Name:       filename,
+			Path:       dir,
+			Filename:   filename,
+			RemotePath: path,
 			Properties: map[string]string{
 				"filename":    filename,
 				"remote_path": path,
 			},
-		},
+		}),
 	}, nil
 }
 
@@ -245,21 +242,22 @@ func (p *AptPlugin) parsePackagesIndex(content string) []*runtime.Artifact {
 		version := currentPkg["Version"]
 		filename := currentPkg["Filename"]
 		if pkgName != "" && version != "" {
-			artifact := &runtime.Artifact{
-				Format: "apt",
-				Kind:   "package",
-				Coordinates: map[string]string{
+			artifact := runtime.NewArtifact(runtime.ArtifactSpec{
+				Format:     "apt",
+				Kind:       runtime.KindPackage,
+				Name:       pkgName,
+				Version:    version,
+				Path:       aptArtifactDir(filename),
+				Filename:   filepath.Base(filename),
+				RemotePath: filename,
+				Qualifiers: map[string]string{
 					"package":  pkgName,
-					"name":     pkgName,
-					"version":  version,
-					"filename": filepath.Base(filename),
-					"path":     aptArtifactDir(filename),
 				},
 				Properties: map[string]string{
 					"filename":    filepath.Base(filename),
 					"remote_path": filename,
 				},
-			}
+			})
 			artifacts = append(artifacts, artifact)
 		}
 		currentPkg = nil
@@ -342,12 +340,10 @@ func (p *AptPlugin) handleInRelease(ctx *runtime.RequestContext, repoRuntime run
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "apt",
-		Coordinates: map[string]string{
-			"file":     filename,
-			"filename": filename,
-			"path":     dir,
-		},
-		Filename: filename,
+		Name:         filename,
+		Path:         dir,
+		Filename:     filename,
+		RemotePath:   path,
 	}
 
 	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
@@ -406,12 +402,10 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "apt",
-		Coordinates: map[string]string{
-			"file":     filename,
-			"filename": filename,
-			"path":     dir,
-		},
-		Filename: filename,
+		Name:         filename,
+		Path:         dir,
+		Filename:     filename,
+		RemotePath:   path,
 	}
 
 	if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
@@ -482,12 +476,9 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 	}
 	var b strings.Builder
 	for _, a := range artifacts {
-		name := a.Coordinates["package"]
-		if name == "" {
-			name = a.Coordinates["name"]
-		}
-		version := a.Coordinates["version"]
-		file := a.Coordinates["filename"]
+		name := firstNonEmptyApt(a.Name, a.Qualifiers["package"])
+		version := a.Version
+		file := a.Filename
 		if file == "" {
 			file = a.Properties["filename"]
 		}
@@ -519,6 +510,15 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 	return nil
 }
 
+func firstNonEmptyApt(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
 	filename := filepath.Base(path)
 	dir := aptArtifactDir(path)
@@ -528,12 +528,10 @@ func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime ru
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "apt",
-		Coordinates: map[string]string{
-			"file":     filename,
-			"filename": filename,
-			"path":     dir,
-		},
-		Filename: filename,
+		Name:         filename,
+		Path:         dir,
+		Filename:     filename,
+		RemotePath:   path,
 	}
 
 	switch ctx.Request.Method {

@@ -141,14 +141,14 @@ func TestParseMavenPath(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseMavenPath(%q) unexpected error: %v", tt.path, err)
 			}
-			if key.Coordinates["group"] != tt.group {
-				t.Errorf("group = %q, want %q", key.Coordinates["group"], tt.group)
+			if key.Qualifiers["group"] != tt.group {
+				t.Errorf("group = %q, want %q", key.Qualifiers["group"], tt.group)
 			}
-			if key.Coordinates["artifact"] != tt.artifact {
-				t.Errorf("artifact = %q, want %q", key.Coordinates["artifact"], tt.artifact)
+			if key.Qualifiers["artifact"] != tt.artifact {
+				t.Errorf("artifact = %q, want %q", key.Qualifiers["artifact"], tt.artifact)
 			}
-			if key.Coordinates["version"] != tt.version {
-				t.Errorf("version = %q, want %q", key.Coordinates["version"], tt.version)
+			if key.Version != tt.version {
+				t.Errorf("version = %q, want %q", key.Version, tt.version)
 			}
 			if key.Filename != tt.filename {
 				t.Errorf("filename = %q, want %q", key.Filename, tt.filename)
@@ -189,14 +189,14 @@ func TestFetchRemote_Metadata_Standard(t *testing.T) {
 		t.Fatalf("expected 2 version artifacts, got %d", len(arts))
 	}
 	for _, a := range arts {
-		if a.Coordinates["group"] != "com.google.guava" {
-			t.Errorf("group = %q, want 'com.google.guava'", a.Coordinates["group"])
+		if a.Qualifiers["group"] != "com.google.guava" {
+			t.Errorf("group = %q, want 'com.google.guava'", a.Qualifiers["group"])
 		}
-		if a.Coordinates["artifact"] != "guava" {
-			t.Errorf("artifact = %q, want 'guava'", a.Coordinates["artifact"])
+		if a.Qualifiers["artifact"] != "guava" {
+			t.Errorf("artifact = %q, want 'guava'", a.Qualifiers["artifact"])
 		}
-		if a.Coordinates["name"] != "com.google.guava:guava" {
-			t.Errorf("name = %q, want 'com.google.guava:guava'", a.Coordinates["name"])
+		if a.Name != "com.google.guava:guava" {
+			t.Errorf("name = %q, want 'com.google.guava:guava'", a.Name)
 		}
 	}
 }
@@ -230,14 +230,14 @@ func TestFetchRemote_Metadata_ValidationApi(t *testing.T) {
 		t.Fatalf("expected 3 version artifacts, got %d", len(arts))
 	}
 	for _, a := range arts {
-		if a.Coordinates["group"] != "javax.validation" {
-			t.Errorf("group = %q, want 'javax.validation'", a.Coordinates["group"])
+		if a.Qualifiers["group"] != "javax.validation" {
+			t.Errorf("group = %q, want 'javax.validation'", a.Qualifiers["group"])
 		}
-		if a.Coordinates["artifact"] != "validation-api" {
-			t.Errorf("artifact = %q, want 'validation-api'", a.Coordinates["artifact"])
+		if a.Qualifiers["artifact"] != "validation-api" {
+			t.Errorf("artifact = %q, want 'validation-api'", a.Qualifiers["artifact"])
 		}
-		if a.Coordinates["version"] == "validation-api" {
-			t.Errorf("version should NOT be 'validation-api', got %q", a.Coordinates["version"])
+		if a.Version == "validation-api" {
+			t.Errorf("version should NOT be 'validation-api', got %q", a.Version)
 		}
 	}
 }
@@ -322,11 +322,11 @@ func TestFetchRemote_Metadata_ArtifactIdLooksLikeVersion(t *testing.T) {
 				t.Fatalf("expected %d artifacts, got %d", len(tt.expectVers), len(arts))
 			}
 			for _, a := range arts {
-				if a.Coordinates["group"] != tt.expectGroup {
-					t.Errorf("group = %q, want %q", a.Coordinates["group"], tt.expectGroup)
+				if a.Qualifiers["group"] != tt.expectGroup {
+					t.Errorf("group = %q, want %q", a.Qualifiers["group"], tt.expectGroup)
 				}
-				if a.Coordinates["artifact"] != tt.expectArt {
-					t.Errorf("artifact = %q, want %q", a.Coordinates["artifact"], tt.expectArt)
+				if a.Qualifiers["artifact"] != tt.expectArt {
+					t.Errorf("artifact = %q, want %q", a.Qualifiers["artifact"], tt.expectArt)
 				}
 			}
 		})
@@ -370,14 +370,14 @@ func TestFetchRemote_Metadata_SNAPSHOT_VersionPath(t *testing.T) {
 		t.Fatalf("expected at least 1 artifact, got %d", len(arts))
 	}
 	a := arts[0]
-	if a.Coordinates["group"] != "com.example" {
-		t.Errorf("group = %q, want 'com.example'", a.Coordinates["group"])
+	if a.Qualifiers["group"] != "com.example" {
+		t.Errorf("group = %q, want 'com.example'", a.Qualifiers["group"])
 	}
-	if a.Coordinates["artifact"] != "lib" {
-		t.Errorf("artifact = %q, want 'lib'", a.Coordinates["artifact"])
+	if a.Qualifiers["artifact"] != "lib" {
+		t.Errorf("artifact = %q, want 'lib'", a.Qualifiers["artifact"])
 	}
-	if a.Coordinates["base_version"] != "1.0-SNAPSHOT" {
-		t.Errorf("base_version = %q, want '1.0-SNAPSHOT'", a.Coordinates["base_version"])
+	if a.Qualifiers["base_version"] != "1.0-SNAPSHOT" {
+		t.Errorf("base_version = %q, want '1.0-SNAPSHOT'", a.Qualifiers["base_version"])
 	}
 }
 
@@ -442,17 +442,17 @@ func TestFetchRemote_ArtifactDownload(t *testing.T) {
 		t.Fatalf("expected 1 artifact, got %d", len(arts))
 	}
 	a := arts[0]
-	if a.Coordinates["filename"] != "guava-31.1-jre.jar" {
-		t.Errorf("filename = %q, want 'guava-31.1-jre.jar'", a.Coordinates["filename"])
+	if a.Filename != "guava-31.1-jre.jar" {
+		t.Errorf("filename = %q, want 'guava-31.1-jre.jar'", a.Filename)
 	}
-	if a.Coordinates["group"] != "com.google.guava" {
-		t.Errorf("group = %q, want 'com.google.guava'", a.Coordinates["group"])
+	if a.Qualifiers["group"] != "com.google.guava" {
+		t.Errorf("group = %q, want 'com.google.guava'", a.Qualifiers["group"])
 	}
-	if a.Coordinates["artifact"] != "guava" {
-		t.Errorf("artifact = %q, want 'guava'", a.Coordinates["artifact"])
+	if a.Qualifiers["artifact"] != "guava" {
+		t.Errorf("artifact = %q, want 'guava'", a.Qualifiers["artifact"])
 	}
-	if a.Coordinates["version"] != "31.1-jre" {
-		t.Errorf("version = %q, want '31.1-jre'", a.Coordinates["version"])
+	if a.Version != "31.1-jre" {
+		t.Errorf("version = %q, want '31.1-jre'", a.Version)
 	}
 }
 
@@ -702,18 +702,18 @@ func TestHandle_Upload(t *testing.T) {
 		t.Fatalf("expected 1 uploaded artifact, got %d", len(rt.UploadedArts))
 	}
 	art := rt.UploadedArts[0]
-	if art.Coordinates["group"] != "com.example" {
-		t.Errorf("group = %q, want 'com.example'", art.Coordinates["group"])
+	if art.Qualifiers["group"] != "com.example" {
+		t.Errorf("group = %q, want 'com.example'", art.Qualifiers["group"])
 	}
-	if art.Coordinates["artifact"] != "app" {
-		t.Errorf("artifact = %q, want 'app'", art.Coordinates["artifact"])
+	if art.Qualifiers["artifact"] != "app" {
+		t.Errorf("artifact = %q, want 'app'", art.Qualifiers["artifact"])
 	}
-	if art.Coordinates["version"] != "1.0.0" {
-		t.Errorf("version = %q, want '1.0.0'", art.Coordinates["version"])
+	if art.Version != "1.0.0" {
+		t.Errorf("version = %q, want '1.0.0'", art.Version)
 	}
 }
 
-func TestHandle_UploadArtifactLevelMetadataUsesCorrectCoordinates(t *testing.T) {
+func TestHandle_UploadArtifactLevelMetadataUsesStructuredFields(t *testing.T) {
 	p := NewMavenPlugin()
 	rt := &testhelper.MockRuntime{}
 
@@ -728,24 +728,24 @@ func TestHandle_UploadArtifactLevelMetadataUsesCorrectCoordinates(t *testing.T) 
 		t.Fatalf("expected 1 uploaded artifact, got %d", len(rt.UploadedArts))
 	}
 	art := rt.UploadedArts[0]
-	if art.Coordinates["name"] != "com.example:app" {
-		t.Fatalf("name = %q, want com.example:app", art.Coordinates["name"])
+	if art.Name != "com.example:app" {
+		t.Fatalf("name = %q, want com.example:app", art.Name)
 	}
-	if art.Coordinates["group"] != "com.example" {
-		t.Fatalf("group = %q, want com.example", art.Coordinates["group"])
+	if art.Qualifiers["group"] != "com.example" {
+		t.Fatalf("group = %q, want com.example", art.Qualifiers["group"])
 	}
-	if art.Coordinates["artifact"] != "app" {
-		t.Fatalf("artifact = %q, want app", art.Coordinates["artifact"])
+	if art.Qualifiers["artifact"] != "app" {
+		t.Fatalf("artifact = %q, want app", art.Qualifiers["artifact"])
 	}
-	if art.Coordinates["version"] != "" {
-		t.Fatalf("version = %q, want empty artifact-level metadata version", art.Coordinates["version"])
+	if art.Version != "" {
+		t.Fatalf("version = %q, want empty artifact-level metadata version", art.Version)
 	}
-	if art.Coordinates["filename"] != "maven-metadata.xml" {
-		t.Fatalf("filename = %q", art.Coordinates["filename"])
+	if art.Filename != "maven-metadata.xml" {
+		t.Fatalf("filename = %q", art.Filename)
 	}
 }
 
-func TestHandle_UploadSnapshotMetadataUsesCorrectCoordinates(t *testing.T) {
+func TestHandle_UploadSnapshotMetadataUsesStructuredFields(t *testing.T) {
 	p := NewMavenPlugin()
 	rt := &testhelper.MockRuntime{}
 
@@ -760,18 +760,18 @@ func TestHandle_UploadSnapshotMetadataUsesCorrectCoordinates(t *testing.T) {
 		t.Fatalf("expected 1 uploaded artifact, got %d", len(rt.UploadedArts))
 	}
 	art := rt.UploadedArts[0]
-	if art.Coordinates["name"] != "com.example:app" {
-		t.Fatalf("name = %q, want com.example:app", art.Coordinates["name"])
+	if art.Name != "com.example:app" {
+		t.Fatalf("name = %q, want com.example:app", art.Name)
 	}
-	if art.Coordinates["version"] != "1.0-SNAPSHOT" {
-		t.Fatalf("version = %q, want 1.0-SNAPSHOT", art.Coordinates["version"])
+	if art.Version != "1.0-SNAPSHOT" {
+		t.Fatalf("version = %q, want 1.0-SNAPSHOT", art.Version)
 	}
-	if art.Coordinates["path"] != "com/example/app/1.0-SNAPSHOT" {
-		t.Fatalf("path = %q", art.Coordinates["path"])
+	if art.Path != "com/example/app/1.0-SNAPSHOT" {
+		t.Fatalf("path = %q", art.Path)
 	}
 }
 
-func TestHandle_ChecksumDownloadLooksUpOriginalArtifactCoordinates(t *testing.T) {
+func TestHandle_ChecksumDownloadLooksUpOriginalArtifactFields(t *testing.T) {
 	p := NewMavenPlugin()
 	art := testhelper.NewArtifact("maven", "artifact", map[string]string{
 		"name":       "com.example:app",
@@ -794,7 +794,7 @@ func TestHandle_ChecksumDownloadLooksUpOriginalArtifactCoordinates(t *testing.T)
 	if len(rt.GetCalls) != 1 {
 		t.Fatalf("expected 1 GetArtifact call, got %d", len(rt.GetCalls))
 	}
-	if got := rt.GetCalls[0].Coordinates["filename"]; got != "app-1.0.0.jar" {
+	if got := rt.GetCalls[0].Filename; got != "app-1.0.0.jar" {
 		t.Fatalf("lookup filename = %q, want original artifact filename", got)
 	}
 }

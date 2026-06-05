@@ -68,7 +68,7 @@ func (t *DBQueryTool) queryPackageStats(packageName, packageType string, limit i
 	var artifacts []model.Artifact
 	q := db.Model(&model.Artifact{})
 	if packageName != "" {
-		q = q.Where("coordinates LIKE ?", fmt.Sprintf(`%%"name":"%s%%`, packageName))
+		q = q.Where("name = ?", packageName)
 	}
 	if packageType != "" {
 		q = q.Where("format = ?", packageType)
@@ -82,8 +82,8 @@ func (t *DBQueryTool) queryPackageStats(packageName, packageType string, limit i
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📦 找到 %d 个包:\n\n", len(artifacts)))
 	for i, a := range artifacts {
-		name := coordStr(a.Coordinates, "name")
-		version := coordStr(a.Coordinates, "version")
+		name := a.Name
+		version := a.Version
 		sb.WriteString(fmt.Sprintf("%d. **%s** (%s@%s)\n", i+1, name, a.Format, version))
 		sb.WriteString(fmt.Sprintf("   - ID: %d, Kind: %s\n", a.ID, a.Kind))
 		sb.WriteString(fmt.Sprintf("   - Created: %s\n\n", a.CreatedAt.Format("2006-01-02 15:04:05")))
@@ -107,8 +107,8 @@ func (t *DBQueryTool) queryDownloadStats(timeRange string, limit int) (string, e
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📊 最近制品 (显示 %s):\n\n", d))
 	for i, a := range artifacts {
-		name := coordStr(a.Coordinates, "name")
-		version := coordStr(a.Coordinates, "version")
+		name := a.Name
+		version := a.Version
 		sb.WriteString(fmt.Sprintf("%d. **%s** (%s@%s) - %s\n", i+1, name, a.Format, version, a.CreatedAt.Format("2006-01-02")))
 	}
 	return sb.String(), nil
@@ -175,25 +175,10 @@ func (t *DBQueryTool) queryRecentPackages(limit int) (string, error) {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📦 最近添加的 %d 个包:\n\n", len(artifacts)))
 	for i, a := range artifacts {
-		name := coordStr(a.Coordinates, "name")
-		version := coordStr(a.Coordinates, "version")
+		name := a.Name
+		version := a.Version
 		sb.WriteString(fmt.Sprintf("%d. **%s** (%s@%s)\n", i+1, name, a.Format, version))
 		sb.WriteString(fmt.Sprintf("   - 创建时间: %s\n\n", a.CreatedAt.Format("2006-01-02 15:04:05")))
 	}
 	return sb.String(), nil
-}
-
-func coordStr(coords model.JSONB, key string) string {
-	if coords == nil {
-		return ""
-	}
-	v, ok := coords[key]
-	if !ok {
-		return ""
-	}
-	s, ok := v.(string)
-	if !ok {
-		return fmt.Sprintf("%v", v)
-	}
-	return s
 }

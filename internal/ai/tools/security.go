@@ -95,10 +95,9 @@ func (t *SecurityTool) analyzePackageScan(packageName string) (string, error) {
 		return "", fmt.Errorf("缺少包名称参数")
 	}
 
-	// 查询 artifacts 表中包名匹配的记录（从 coordinates JSONB 提取）
+	// 查询 artifacts 表中包名匹配的记录。
 	var artifacts []model.Artifact
-	namePattern := fmt.Sprintf(`%%"name":%%"%s"%%`, packageName)
-	if err := db.Where("coordinates LIKE ?", namePattern).
+	if err := db.Where("name = ?", packageName).
 		Order("created_at DESC").
 		Find(&artifacts).Error; err != nil {
 		return "", fmt.Errorf("查询版本信息失败: %v", err)
@@ -126,7 +125,7 @@ func (t *SecurityTool) analyzePackageScan(packageName string) (string, error) {
 	var uniqueVersions []versionAgg
 
 	for _, a := range artifacts {
-		ver := coordinateStr(a.Coordinates, "version")
+		ver := a.Version
 		if ver == "" {
 			continue
 		}
@@ -428,19 +427,4 @@ func (t *SecurityTool) getSeverityEmoji(severity model.VulnerabilitySeverity) st
 	default:
 		return "⚪"
 	}
-}
-
-func coordinateStr(coords model.JSONB, key string) string {
-	if coords == nil {
-		return ""
-	}
-	v, ok := coords[key]
-	if !ok {
-		return ""
-	}
-	s, ok := v.(string)
-	if !ok {
-		return fmt.Sprintf("%v", v)
-	}
-	return s
 }

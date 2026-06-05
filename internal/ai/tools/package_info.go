@@ -45,12 +45,12 @@ func (t *PackageInfoTool) Execute(ctx context.Context, params map[string]interfa
 	}
 
 	var artifacts []model.Artifact
-	q := db.Model(&model.Artifact{}).Where("coordinates LIKE ?", fmt.Sprintf(`%%"name":"%s%%`, packageName))
+	q := db.Model(&model.Artifact{}).Where("name = ?", packageName)
 	if packageType != "" {
 		q = q.Where("format = ?", packageType)
 	}
 	if version != "" {
-		q = q.Where("coordinates LIKE ?", fmt.Sprintf(`%%"version":"%s%%`, version))
+		q = q.Where("version = ?", version)
 	}
 	if err := q.Order("created_at DESC").Find(&artifacts).Error; err != nil {
 		return "", fmt.Errorf("查询包信息失败: %v", err)
@@ -60,7 +60,7 @@ func (t *PackageInfoTool) Execute(ctx context.Context, params map[string]interfa
 	}
 
 	a := artifacts[0]
-	name := coordStr(a.Coordinates, "name")
+	name := a.Name
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📦 **%s** (%s)\n\n", name, a.Format))
@@ -72,7 +72,7 @@ func (t *PackageInfoTool) Execute(ctx context.Context, params map[string]interfa
 			sb.WriteString(fmt.Sprintf("   ... 还有 %d 个版本\n", len(artifacts)-10))
 			break
 		}
-		ver := coordStr(v.Coordinates, "version")
+		ver := v.Version
 		status := "published"
 		if v.Metadata != nil {
 			if s, ok := v.Metadata["status"].(string); ok {

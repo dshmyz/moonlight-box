@@ -101,10 +101,10 @@ func TestFetchRemote_DebUsesDirectoryPathAndRemotePath(t *testing.T) {
 		t.Fatalf("expected 1 artifact, got %d", len(arts))
 	}
 	a := arts[0]
-	if got := a.Coordinates["path"]; got != "pool/main/n/nginx" {
+	if got := a.Path; got != "pool/main/n/nginx" {
 		t.Fatalf("path = %q, want directory path", got)
 	}
-	if got := a.Coordinates["filename"]; got != "nginx_1.18.0-6.1_amd64.deb" {
+	if got := a.Filename; got != "nginx_1.18.0-6.1_amd64.deb" {
 		t.Fatalf("filename = %q", got)
 	}
 	if got := a.Properties["remote_path"]; got != "pool/main/n/nginx/nginx_1.18.0-6.1_amd64.deb" {
@@ -154,14 +154,14 @@ Size: 194000
 	if len(arts) != 2 {
 		t.Fatalf("expected 2 packages, got %d", len(arts))
 	}
-	if arts[0].Coordinates["package"] != "nginx" {
-		t.Errorf("expected 'nginx', got %q", arts[0].Coordinates["package"])
+	if arts[0].Qualifiers["package"] != "nginx" {
+		t.Errorf("expected 'nginx', got %q", arts[0].Qualifiers["package"])
 	}
-	if arts[0].Coordinates["version"] != "1.18.0-6.1" {
-		t.Errorf("expected '1.18.0-6.1', got %q", arts[0].Coordinates["version"])
+	if arts[0].Version != "1.18.0-6.1" {
+		t.Errorf("expected '1.18.0-6.1', got %q", arts[0].Version)
 	}
-	if arts[1].Coordinates["package"] != "curl" {
-		t.Errorf("expected 'curl', got %q", arts[1].Coordinates["package"])
+	if arts[1].Qualifiers["package"] != "curl" {
+		t.Errorf("expected 'curl', got %q", arts[1].Qualifiers["package"])
 	}
 }
 

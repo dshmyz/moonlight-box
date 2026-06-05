@@ -35,20 +35,21 @@ func TestListVersionsSkipsMetadataOnlyArtifacts(t *testing.T) {
 		RepositoryID: repo.ID,
 		Format:       "npm",
 		Kind:         "version",
-		Coordinates:  model.JSONB{"name": "left-pad", "version": "1.0.0"},
-		Metadata:     model.JSONB{"published_at": now.Format(time.RFC3339)},
+		Name:         "left-pad",
+		Version:      "1.0.0",
+		Attributes:   model.JSONB{"published_at": now.Format(time.RFC3339), "license": "MIT"},
 	}
 	tarball := model.Artifact{
 		RepositoryID: repo.ID,
 		Format:       "npm",
 		Kind:         "tarball",
-		Coordinates: model.JSONB{
-			"name":     "left-pad",
-			"version":  "1.0.0",
-			"path":     "left-pad/-",
-			"filename": "left-pad-1.0.0.tgz",
-		},
-		Metadata: model.JSONB{"download_path": "left-pad/-/left-pad-1.0.0.tgz"},
+		Name:         "left-pad",
+		Version:      "1.0.0",
+		Path:         "left-pad/-",
+		Filename:     "left-pad-1.0.0.tgz",
+		RemotePath:   "left-pad/-/left-pad-1.0.0.tgz",
+		DownloadPath: "left-pad/-/left-pad-1.0.0.tgz",
+		Qualifiers:   model.JSONB{"package_type": "tarball"},
 	}
 	if err := db.Create(&versionOnly).Error; err != nil {
 		t.Fatalf("create version artifact: %v", err)
@@ -72,9 +73,14 @@ func TestListVersionsSkipsMetadataOnlyArtifacts(t *testing.T) {
 	var resp struct {
 		Data struct {
 			Versions []struct {
-				Files []struct {
-					Filename    string `json:"filename"`
-					DownloadURL string `json:"download_url"`
+				License    string                 `json:"license"`
+				Attributes map[string]interface{} `json:"attributes"`
+				Files      []struct {
+					Filename     string `json:"filename"`
+					DownloadURL  string `json:"download_url"`
+					Path         string `json:"path"`
+					RemotePath   string `json:"remote_path"`
+					DownloadPath string `json:"download_path"`
 				} `json:"files"`
 			} `json:"versions"`
 		} `json:"data"`
@@ -85,7 +91,14 @@ func TestListVersionsSkipsMetadataOnlyArtifacts(t *testing.T) {
 	if len(resp.Data.Versions) != 1 {
 		t.Fatalf("expected 1 version, got %d", len(resp.Data.Versions))
 	}
-	files := resp.Data.Versions[0].Files
+	version := resp.Data.Versions[0]
+	if version.License != "MIT" {
+		t.Fatalf("license = %q", version.License)
+	}
+	if version.Attributes["license"] != "MIT" {
+		t.Fatalf("attributes.license = %#v", version.Attributes["license"])
+	}
+	files := version.Files
 	if len(files) != 1 {
 		t.Fatalf("expected only downloadable file, got %d files: %+v", len(files), files)
 	}
@@ -94,5 +107,8 @@ func TestListVersionsSkipsMetadataOnlyArtifacts(t *testing.T) {
 	}
 	if files[0].DownloadURL != "/repository/npm-proxy/left-pad/-/left-pad-1.0.0.tgz" {
 		t.Fatalf("download_url = %q", files[0].DownloadURL)
+	}
+	if files[0].Path != "left-pad/-" || files[0].RemotePath != "left-pad/-/left-pad-1.0.0.tgz" || files[0].DownloadPath != "left-pad/-/left-pad-1.0.0.tgz" {
+		t.Fatalf("unexpected file paths: %+v", files[0])
 	}
 }

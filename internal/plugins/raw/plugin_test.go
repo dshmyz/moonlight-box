@@ -71,8 +71,8 @@ func TestHandle_PutUpload(t *testing.T) {
 	if len(rt.UploadCalls) != 1 {
 		t.Fatalf("expected 1 upload call, got %d", len(rt.UploadCalls))
 	}
-	if rt.UploadedArts[0].Coordinates["name"] != "new.txt" {
-		t.Errorf("expected name 'new.txt', got %q", rt.UploadedArts[0].Coordinates["name"])
+	if rt.UploadedArts[0].Name != "new.txt" {
+		t.Errorf("expected name 'new.txt', got %q", rt.UploadedArts[0].Name)
 	}
 }
 
@@ -149,8 +149,8 @@ func TestFetchRemote_DirectFile(t *testing.T) {
 	if len(arts) != 1 {
 		t.Fatalf("expected 1 artifact, got %d", len(arts))
 	}
-	if arts[0].Coordinates["name"] != "archive.zip" {
-		t.Errorf("expected name 'archive.zip', got %q", arts[0].Coordinates["name"])
+	if arts[0].Name != "archive.zip" {
+		t.Errorf("expected name 'archive.zip', got %q", arts[0].Name)
 	}
 }
 
@@ -178,7 +178,7 @@ func TestContentTypes(t *testing.T) {
 	}
 }
 
-func TestCoordinatesMapping(t *testing.T) {
+func TestArtifactKeyFieldMapping(t *testing.T) {
 	p := NewGenericPlugin()
 	art := testhelper.NewArtifact("generic", "file", map[string]string{"name": "test.txt", "path": "a/b/c"}, "content")
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
@@ -190,11 +190,11 @@ func TestCoordinatesMapping(t *testing.T) {
 		t.Fatalf("expected 1 get call, got %d", len(rt.GetCalls))
 	}
 	key := rt.GetCalls[0]
-	if key.Coordinates["name"] != "test.txt" {
-		t.Errorf("expected name 'test.txt', got %q", key.Coordinates["name"])
+	if key.Name != "test.txt" {
+		t.Errorf("expected name 'test.txt', got %q", key.Name)
 	}
-	if key.Coordinates["path"] != "a/b/c" {
-		t.Errorf("expected path 'a/b/c', got %q", key.Coordinates["path"])
+	if key.Path != "a/b/c" {
+		t.Errorf("expected path 'a/b/c', got %q", key.Path)
 	}
 	if key.Filename != "test.txt" {
 		t.Errorf("expected filename 'test.txt', got %q", key.Filename)

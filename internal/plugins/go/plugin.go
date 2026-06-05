@@ -89,18 +89,19 @@ func (p *GoPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*
 	modulePath, filename := p.splitModulePath(path)
 	fileType := strings.TrimPrefix(filepath.Ext(filename), ".")
 	return []*runtime.Artifact{
-		{
-			Format: "go",
-			Kind:   "module-file",
-			Coordinates: map[string]string{
-				"module":   modulePath,
-				"name":     modulePath,
-				"version":  strings.TrimSuffix(filename, filepath.Ext(filename)),
-				"path":     modulePath + "/@v",
-				"ext":      fileType,
-				"filename": filename,
+		runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "go",
+			Kind:       "module-file",
+			Name:       modulePath,
+			Version:    strings.TrimSuffix(filename, filepath.Ext(filename)),
+			Path:       modulePath + "/@v",
+			Filename:   filename,
+			RemotePath: path,
+			Qualifiers: map[string]string{
+				"module": modulePath,
+				"ext":    fileType,
 			},
-		},
+		}),
 	}, nil
 }
 
@@ -146,15 +147,15 @@ func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string)
 		if version == "" {
 			continue
 		}
-		artifacts = append(artifacts, &runtime.Artifact{
-			Format: "go",
-			Kind:   "version",
-			Coordinates: map[string]string{
-				"name":    modulePath,
-				"module":  modulePath,
-				"version": version,
+		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:  "go",
+			Kind:    runtime.KindVersion,
+			Name:    modulePath,
+			Version: version,
+			Qualifiers: map[string]string{
+				"module": modulePath,
 			},
-		})
+		}))
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("go: scan version list: %w", err)
@@ -179,9 +180,11 @@ func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string)
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			info, err := p.fetchVersionInfo(ctx, remoteURL, art.Coordinates["module"], art.Coordinates["version"])
+			module := art.Name
+			version := art.Version
+			info, err := p.fetchVersionInfo(ctx, remoteURL, module, version)
 			if err == nil && info.Time != "" {
-				art.Properties = map[string]string{"published_at": info.Time}
+				art.Attributes["published_at"] = info.Time
 			}
 		}(a)
 	}
@@ -264,18 +267,18 @@ func (p *GoPlugin) fetchLatest(ctx context.Context, remoteURL, path string) ([]*
 		return nil, nil
 	}
 	return []*runtime.Artifact{
-		{
-			Format: "go",
-			Kind:   "version",
-			Coordinates: map[string]string{
-				"name":    modulePath,
-				"module":  modulePath,
-				"version": result.Version,
+		runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:  "go",
+			Kind:    runtime.KindVersion,
+			Name:    modulePath,
+			Version: result.Version,
+			Qualifiers: map[string]string{
+				"module": modulePath,
 			},
-			Properties: map[string]string{
-				"time": result.Time,
+			Attributes: map[string]string{
+				"published_at": result.Time,
 			},
-		},
+		}),
 	}, nil
 }
 
@@ -366,10 +369,8 @@ func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "go",
+		Name:         modulePath,
 		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
-		Coordinates: map[string]string{
-			"module": modulePath,
-		},
 	})
 	if err != nil {
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
@@ -389,7 +390,7 @@ func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime
 
 	ctx.Writer.Header().Set("Content-Type", "application/json")
 	ctx.Writer.WriteHeader(http.StatusOK)
-	fmt.Fprintf(ctx.Writer, `{"Version":"%s"}`, latest.Coordinates["version"])
+	fmt.Fprintf(ctx.Writer, `{"Version":"%s"}`, latest.Version)
 	return nil
 }
 
@@ -400,7 +401,7 @@ func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime
 func (p *GoPlugin) selectLatestStableVersion(artifacts []*runtime.Artifact) *runtime.Artifact {
 	var best *runtime.Artifact
 	for _, a := range artifacts {
-		v := a.Coordinates["version"]
+		v := a.Version
 		if v == "" {
 			continue
 		}
@@ -410,7 +411,7 @@ func (p *GoPlugin) selectLatestStableVersion(artifacts []*runtime.Artifact) *run
 		if semver.Prerelease(v) != "" {
 			continue
 		}
-		if best == nil || semver.Compare(v, best.Coordinates["version"]) > 0 {
+		if best == nil || semver.Compare(v, best.Version) > 0 {
 			best = a
 		}
 	}
@@ -432,16 +433,13 @@ func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime ru
 		"repositoryID": ctx.Repository.ID,
 		"path":         path,
 		"modulePath":   modulePath,
-		"repoType":     ctx.Repository.Type,
 	}).Debug("go: handleVersionList called")
 
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "go",
+		Name:         modulePath,
 		RemotePath:   path,
-		Coordinates: map[string]string{
-			"module": modulePath,
-		},
 	})
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
@@ -460,7 +458,7 @@ func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime ru
 	var sb strings.Builder
 	seen := make(map[string]bool)
 	for _, artifact := range artifacts {
-		version := artifact.Coordinates["version"]
+		version := artifact.Version
 		if version != "" && !seen[version] {
 			seen[version] = true
 			sb.WriteString(version + "\n")
@@ -471,6 +469,15 @@ func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime ru
 	ctx.Writer.WriteHeader(http.StatusOK)
 	ctx.Writer.Write([]byte(sb.String()))
 	return nil
+}
+
+func firstNonEmptyGo(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
@@ -505,15 +512,15 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "go",
-		Coordinates: map[string]string{
-			"name":     modulePath,
-			"module":   modulePath,
-			"version":  cleanVersion,
-			"path":     modulePath + "/@v",
-			"ext":      fileType,
-			"filename": filename,
+		Name:         modulePath,
+		Version:      cleanVersion,
+		Path:         modulePath + "/@v",
+		Filename:     filename,
+		RemotePath:   path,
+		Qualifiers: map[string]string{
+			"module": modulePath,
+			"ext":    fileType,
 		},
-		Filename: filename,
 	}
 
 	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
@@ -522,14 +529,14 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 			artifacts, queryErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 				RepositoryID: ctx.Repository.ID,
 				Format:       "go",
+				Name:         modulePath,
+				Version:      cleanVersion,
+				Path:         modulePath + "/@v",
+				Filename:     filename,
 				RemotePath:   path,
-				Coordinates: map[string]string{
-					"name":     modulePath,
-					"module":   modulePath,
-					"version":  cleanVersion,
-					"path":     modulePath + "/@v",
-					"ext":      fileType,
-					"filename": filename,
+				Qualifiers: map[string]string{
+					"module": modulePath,
+					"ext":    fileType,
 				},
 			})
 			if queryErr == nil && len(artifacts) > 0 {

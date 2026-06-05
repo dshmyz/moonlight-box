@@ -132,21 +132,28 @@ func (p *MavenPlugin) FetchRemote(ctx context.Context, remoteURL, path string) (
 	}
 	logrus.WithFields(logrus.Fields{
 		"path":     path,
-		"group":    key.Coordinates["group"],
-		"artifact": key.Coordinates["artifact"],
-		"version":  key.Coordinates["version"],
+		"group":    key.Qualifiers["group"],
+		"artifact": key.Qualifiers["artifact"],
+		"version":  key.Version,
 		"filename": key.Filename,
 	}).Debug("maven: FetchRemote returning artifact reference")
 	return []*runtime.Artifact{
-		{
-			Format:      "maven",
-			Kind:        "artifact",
-			Coordinates: key.Coordinates,
+		runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "maven",
+			Kind:       runtime.KindArtifact,
+			Namespace:  key.Namespace,
+			Name:       key.Name,
+			Version:    key.Version,
+			Path:       key.Path,
+			Filename:   key.Filename,
+			RemotePath: key.RemotePath,
+			Extension:  key.Extension,
+			Qualifiers: key.Qualifiers,
 			Properties: map[string]string{
 				"filename":  key.Filename,
 				"extension": key.Extension,
 			},
-		},
+		}),
 	}, nil
 }
 
@@ -239,14 +246,9 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 	}
 
 	for _, v := range versions {
-		coords := map[string]string{
-			"name":     group + ":" + artifact,
-			"group":    group,
-			"artifact": artifact,
-			"version":  v,
-		}
+		qualifiers := map[string]string{"group": group, "artifact": artifact}
 		if version != "" {
-			coords["base_version"] = version
+			qualifiers["base_version"] = version
 		}
 		props := map[string]string{
 			"latest":  meta.Versioning.Latest,
@@ -255,12 +257,16 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 		if publishedAt != "" {
 			props["published_at"] = publishedAt
 		}
-		artifacts = append(artifacts, &runtime.Artifact{
-			Format:      "maven",
-			Kind:        "version",
-			Coordinates: coords,
-			Properties:  props,
-		})
+		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "maven",
+			Kind:       runtime.KindVersion,
+			Namespace:  group,
+			Name:       group + ":" + artifact,
+			Version:    v,
+			Qualifiers: qualifiers,
+			Attributes: props,
+			Properties: props,
+		}))
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -317,8 +323,8 @@ func (p *MavenPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Re
 				return nil
 			}
 			key.RepositoryID = ctx.Repository.ID
-			ctx.PackageName = key.Coordinates["name"]
-			ctx.Version = key.Coordinates["version"]
+			ctx.PackageName = key.Name
+			ctx.Version = key.Version
 			ctx.Filename = key.Filename
 			return p.handleUpload(ctx, repoRuntime, key)
 		}
@@ -331,8 +337,8 @@ func (p *MavenPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Re
 	}
 	key.RepositoryID = ctx.Repository.ID
 
-	ctx.PackageName = key.Coordinates["name"]
-	ctx.Version = key.Coordinates["version"]
+	ctx.PackageName = key.Name
+	ctx.Version = key.Version
 	ctx.Filename = key.Filename
 
 	switch ctx.Request.Method {
@@ -427,8 +433,11 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 	query := runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "maven",
+		Namespace:    group,
+		Name:         group + ":" + artifact,
+		Version:      version,
 		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
-		Coordinates: map[string]string{
+		Qualifiers: map[string]string{
 			"group":    group,
 			"artifact": artifact,
 		},
@@ -463,10 +472,12 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 			snapQuery := runtime.ArtifactQuery{
 				RepositoryID: ctx.Repository.ID,
 				Format:       "maven",
-				Coordinates: map[string]string{
+				Namespace:    group,
+				Name:         group + ":" + artifact,
+				Version:      version,
+				Qualifiers: map[string]string{
 					"group":    group,
 					"artifact": artifact,
-					"version":  version,
 				},
 			}
 			snapArtifacts, snapErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), snapQuery)
@@ -486,7 +497,7 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 				var snapshotFiles []struct{ ext, classifier string }
 
 				for _, a := range snapArtifacts {
-					filename := a.Coordinates["filename"]
+					filename := a.Filename
 					if filename == "" || strings.Contains(filename, "maven-metadata") {
 						continue
 					}
@@ -597,15 +608,17 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 		metaKey := runtime.ArtifactKey{
 			RepositoryID: ctx.Repository.ID,
 			Format:       "maven",
-			Coordinates: map[string]string{
-				"name":     group + ":" + artifact,
+			Kind:         runtime.KindMetadata,
+			Namespace:    group,
+			Name:         group + ":" + artifact,
+			Version:      version,
+			Path:         strings.TrimSuffix(strings.Trim(path, "/"), "/maven-metadata.xml"),
+			Filename:     "maven-metadata.xml",
+			RemotePath:   strings.Trim(path, "/"),
+			Qualifiers: map[string]string{
 				"group":    group,
 				"artifact": artifact,
-				"version":  version,
-				"path":     strings.TrimSuffix(strings.Trim(path, "/"), "/maven-metadata.xml"),
-				"filename": "maven-metadata.xml",
 			},
-			Filename: "maven-metadata.xml",
 		}
 		if metaArtifact, metaErr := repoRuntime.GetArtifact(ctx.Request.Context(), metaKey); metaErr == nil && metaArtifact.Content != nil {
 			defer metaArtifact.Content.Close()
@@ -621,7 +634,7 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 
 	versionSet := map[string]struct{}{}
 	for _, a := range artifacts {
-		v := a.Coordinates["version"]
+		v := a.Version
 		if v == "" {
 			continue
 		}
@@ -678,7 +691,7 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 		}
 		snapshotItems := make([]mavenSnapshotVersionXML, 0)
 		for _, a := range artifacts {
-			v := a.Coordinates["version"]
+			v := a.Version
 			if !strings.HasPrefix(v, version) {
 				continue
 			}
@@ -687,14 +700,14 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 				ext = strings.TrimPrefix(filepath.Ext(a.Properties["filename"]), ".")
 			}
 			if ext == "" {
-				ext = strings.TrimPrefix(filepath.Ext(a.Coordinates["filename"]), ".")
+				ext = strings.TrimPrefix(filepath.Ext(a.Filename), ".")
 			}
 			if ext == "" {
 				ext = "jar"
 			}
 			classifier := a.Properties["classifier"]
 			if classifier == "" {
-				classifier = a.Coordinates["classifier"]
+				classifier = a.Qualifiers["classifier"]
 			}
 			value := v
 			if value == "" {
@@ -728,6 +741,15 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 	_, _ = ctx.Writer.Write([]byte(xml.Header))
 	_, _ = ctx.Writer.Write(body)
 	return nil
+}
+
+func firstNonEmptyMaven(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (p *MavenPlugin) handleDelete(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
@@ -790,17 +812,19 @@ func (p *MavenPlugin) parseMavenPath(path string) (runtime.ArtifactKey, error) {
 	}
 
 	return runtime.ArtifactKey{
-		Format: "maven",
-		Coordinates: map[string]string{
-			"name":       group + ":" + artifact,
+		Format:     "maven",
+		Kind:       runtime.KindArtifact,
+		Namespace:  group,
+		Name:       group + ":" + artifact,
+		Version:    version,
+		Path:       strings.TrimSuffix(path, "/"+filename),
+		Filename:   filename,
+		RemotePath: path,
+		Qualifiers: map[string]string{
 			"group":      group,
 			"artifact":   artifact,
-			"version":    version,
-			"filename":   filename,
-			"path":       strings.TrimSuffix(path, "/"+filename),
 			"classifier": classifier,
 		},
-		Filename:  filename,
 		Extension: ext,
 	}, nil
 }
@@ -830,16 +854,18 @@ func (p *MavenPlugin) parseMavenMetadataPath(path string) (runtime.ArtifactKey, 
 	group := strings.Join(groupParts, ".")
 
 	return runtime.ArtifactKey{
-		Format: "maven",
-		Coordinates: map[string]string{
-			"name":     group + ":" + artifact,
+		Format:     "maven",
+		Kind:       runtime.KindMetadata,
+		Namespace:  group,
+		Name:       group + ":" + artifact,
+		Version:    version,
+		Path:       base,
+		Filename:   "maven-metadata.xml",
+		RemotePath: clean,
+		Qualifiers: map[string]string{
 			"group":    group,
 			"artifact": artifact,
-			"version":  version,
-			"filename": "maven-metadata.xml",
-			"path":     base,
 		},
-		Filename:  "maven-metadata.xml",
 		Extension: ".xml",
 	}, nil
 }
@@ -849,10 +875,7 @@ func (p *MavenPlugin) handleChecksumDownload(ctx *runtime.RequestContext, repoRu
 	originalKey := key
 	originalKey.Filename = originalFile
 	originalKey.Extension = filepath.Ext(originalFile)
-	if originalKey.Coordinates == nil {
-		originalKey.Coordinates = map[string]string{}
-	}
-	originalKey.Coordinates["filename"] = originalFile
+	originalKey.RemotePath = strings.TrimSuffix(key.RemotePath, "/"+key.Filename) + "/" + originalFile
 
 	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), originalKey)
 	if err != nil {
@@ -923,7 +946,6 @@ func (p *MavenPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime ru
 
 func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
 	// 检查文件是否已存在，用于决定返回 201 还是 200
-	key.Coordinates["name"] = key.Coordinates["group"] + ":" + key.Coordinates["artifact"]
 	existingArtifact, _ := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 	isUpdate := existingArtifact != nil
 	if existingArtifact != nil && existingArtifact.Content != nil {
@@ -948,20 +970,27 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		return nil
 	}
 
-	artifact := &runtime.Artifact{
+	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "maven",
-		Kind:         "artifact",
-		Coordinates:  key.Coordinates,
+		Kind:         runtime.KindArtifact,
+		Namespace:    key.Namespace,
+		Name:         key.Name,
+		Version:      key.Version,
+		Path:         key.Path,
+		Filename:     key.Filename,
+		RemotePath:   key.RemotePath,
+		Extension:    key.Extension,
 		BlobRefs:     []runtime.BlobRef{blobRef},
+		Qualifiers:   key.Qualifiers,
 		Properties: map[string]string{
 			"filename":  key.Filename,
 			"extension": key.Extension,
-			"group":     key.Coordinates["group"],
-			"artifact":  key.Coordinates["artifact"],
-			"version":   key.Coordinates["version"],
+			"group":     key.Qualifiers["group"],
+			"artifact":  key.Qualifiers["artifact"],
+			"version":   key.Version,
 		},
-	}
+	})
 
 	if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
 		session.Abort(ctx.Request.Context())

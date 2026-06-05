@@ -22,7 +22,7 @@
 //   - checksum: 包文件校验和
 //
 // ## 关键实现点
-//   - 动态生成 repomd.xml 时从 artifact.Coordinates["type"] 读取类型
+//   - 动态生成 repomd.xml 时从 artifact.Qualifiers["type"] 读取类型
 //   - 添加 revision 字段（时间戳）
 //   - 压缩格式 (.gz) 应透传上游原始文件，不动态生成
 //
@@ -37,7 +37,7 @@
 // 禁止直接构建远程 URL，必须通过 QueryArtifacts + RemotePath 让 Runtime 层
 // 统一管理回源，确保:
 //   - RemotePath 包含完整路径（如 "Packages/nginx-1.0.rpm"、"repodata/filelists.xml.gz"）
-//   - ArtifactKey.Coordinates 与 FetchRemote 存储的坐标一致（含 file/filename/path）
+//   - ArtifactKey 使用 RemotePath/Path/Filename 与 FetchRemote 存储的字段一致
 //   - 负缓存由 Runtime 层统一管理
 //
 // ## 路由分发
@@ -116,19 +116,18 @@ func (p *YumPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 		"filename": filename,
 	}).Debug("yum: FetchRemote returning file reference")
 	return []*runtime.Artifact{
-		{
-			Format: "yum",
-			Kind:   "file",
-			Coordinates: map[string]string{
-				"file":     filename,
-				"filename": filename,
-				"path":     dir,
-			},
+		runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "yum",
+			Kind:       runtime.KindFile,
+			Name:       filename,
+			Path:       dir,
+			Filename:   filename,
+			RemotePath: path,
 			Properties: map[string]string{
 				"filename":    filename,
 				"remote_path": path,
 			},
-		},
+		}),
 	}, nil
 }
 
@@ -200,40 +199,40 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 
 	var artifacts []*runtime.Artifact
 	// Add the repomd.xml itself as an artifact.
-	artifacts = append(artifacts, &runtime.Artifact{
-		Format: "yum",
-		Kind:   "metadata",
-		Coordinates: map[string]string{
-			"file":     "repomd.xml",
-			"filename": "repomd.xml",
-			"path":     yumArtifactDir(path),
-		},
+	artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
+		Format:     "yum",
+		Kind:       runtime.KindMetadata,
+		Name:       "repomd.xml",
+		Path:       yumArtifactDir(path),
+		Filename:   "repomd.xml",
+		RemotePath: path,
 		Properties: map[string]string{
 			"filename":    "repomd.xml",
 			"remote_path": path,
 		},
-	})
+	}))
 	// Add each data reference as an artifact.
 	for _, d := range repomd.Data {
 		href := d.Location.Href
 		if href == "" {
 			continue
 		}
-		artifacts = append(artifacts, &runtime.Artifact{
-			Format: "yum",
-			Kind:   "metadata-ref",
-			Coordinates: map[string]string{
-				"file":     filepath.Base(href),
-				"filename": filepath.Base(href),
-				"path":     yumArtifactDir(href),
-				"type":     d.Type,
-				"href":     href,
+		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "yum",
+			Kind:       "metadata-ref",
+			Name:       filepath.Base(href),
+			Path:       yumArtifactDir(href),
+			Filename:   filepath.Base(href),
+			RemotePath: href,
+			Qualifiers: map[string]string{
+				"type": d.Type,
+				"href": href,
 			},
 			Properties: map[string]string{
 				"filename":    filepath.Base(href),
 				"remote_path": href,
 			},
-		})
+		}))
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -321,10 +320,10 @@ func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtim
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "yum",
-		Coordinates: map[string]string{
-			"file": "repomd.xml",
-		},
-		Filename: "repomd.xml",
+		Kind:         runtime.KindMetadata,
+		Name:         "repomd.xml",
+		Filename:     "repomd.xml",
+		RemotePath:   path,
 	}
 
 	if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
@@ -380,11 +379,11 @@ func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtim
 		Revision: fmt.Sprintf("%d", time.Now().Unix()),
 	}
 	for _, a := range artifacts {
-		f := a.Coordinates["file"]
+		f := a.Filename
 		if f == "" {
 			continue
 		}
-		dataType := a.Coordinates["type"]
+		dataType := a.Qualifiers["type"]
 		if dataType == "" {
 			dataType = "primary"
 		}
@@ -417,12 +416,10 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "yum",
-		Coordinates: map[string]string{
-			"file":     filename,
-			"filename": filename,
-			"path":     dir,
-		},
-		Filename: filename,
+		Name:         filename,
+		Path:         dir,
+		Filename:     filename,
+		RemotePath:   path,
 	}
 
 	if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
@@ -465,8 +462,8 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
 	b.WriteString(`<metadata xmlns="http://linux.duke.edu/metadata/common">` + "\n")
 	for _, a := range artifacts {
-		name := a.Coordinates["name"]
-		ver := a.Coordinates["version"]
+		name := a.Name
+		ver := a.Version
 		if name == "" || ver == "" {
 			continue
 		}
@@ -483,6 +480,15 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 	return nil
 }
 
+func firstNonEmptyYum(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
 	filename := filepath.Base(path)
 	dir := yumArtifactDir(path)
@@ -492,12 +498,10 @@ func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime ru
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "yum",
-		Coordinates: map[string]string{
-			"file":     filename,
-			"filename": filename,
-			"path":     dir,
-		},
-		Filename: filename,
+		Name:         filename,
+		Path:         dir,
+		Filename:     filename,
+		RemotePath:   path,
 	}
 
 	switch ctx.Request.Method {
@@ -563,12 +567,10 @@ func (p *YumPlugin) handleRepodataGeneric(ctx *runtime.RequestContext, repoRunti
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "yum",
-		Coordinates: map[string]string{
-			"file":     filename,
-			"filename": filename,
-			"path":     dir,
-		},
-		Filename: filename,
+		Name:         filename,
+		Path:         dir,
+		Filename:     filename,
+		RemotePath:   path,
 	}
 
 	// 尝试从本地缓存或 MetadataStore 获取

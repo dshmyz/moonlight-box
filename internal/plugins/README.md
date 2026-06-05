@@ -124,14 +124,18 @@ type RepositoryRuntime interface {
 type ArtifactKey struct {
     RepositoryID string            // 仓库 ID
     Format       string            // 格式（"maven"、"npm" 等）
-    Coordinates  map[string]string // 坐标（group、artifact、version 等）
+    Kind         string            // "file"、"version"、"metadata" 等
+    Name         string            // 包名 / artifactId / module path
+    Namespace    string            // groupId / scope / organization
+    Version      string            // 版本
+    Path         string            // 目录路径，不含文件名
     Filename     string            // 文件名
-    Extension    string            // 扩展名
-    RemoteURL    string            // 远端 URL（由 Runtime 填充）
+    RemotePath   string            // 协议内相对路径
+    Qualifiers   map[string]string // classifier、extension、arch 等身份限定
 }
 ```
 
-**重要**: `Coordinates` 的所有字段都会参与匹配，必须与存储时完全一致。
+**重要**: `RemotePath` 是文件 artifact 的首选身份字段；`Name`/`Version`/`Qualifiers` 用于协议语义查询，必须与存储时保持一致。
 
 ### ArtifactQuery
 
@@ -141,10 +145,14 @@ type ArtifactKey struct {
 type ArtifactQuery struct {
     RepositoryID string
     Format       string
-    Coordinates  map[string]string // 模糊匹配（LIKE）
+    Kind         string
+    Name         string
+    Namespace    string
+    Version      string
+    RemotePath   string            // 协议内相对路径，触发 RemoteFetcher 回调
+    Qualifiers   map[string]string // 精确限定条件
     Limit        int
     Offset       int
-    RemotePath   string            // 远端路径，触发 RemoteFetcher 回调
 }
 ```
 
@@ -160,9 +168,17 @@ type Artifact struct {
     RepositoryID string
     Format       string
     Kind         string            // "artifact"、"version"、"metadata" 等
-    Coordinates  map[string]string
-    Properties   map[string]string // 扩展属性（license、description 等）
-    Relations    []ArtifactRelation
+    Name         string
+    Namespace    string
+    Version      string
+    Path         string
+    Filename     string
+    RemotePath   string
+    DownloadPath string
+    DownloadURL  string            // 上游绝对 URL，仅用于回源
+    Qualifiers   map[string]string // 身份限定
+    Attributes   map[string]string // license、description、published_at 等语义字段
+    Metadata     map[string]any    // 协议原始补充信息
     BlobRefs     []BlobRef         // 关联的 blob 引用
     Content      io.ReadCloser     // 文件内容（GetArtifact 时填充）
     CreatedAt    time.Time
@@ -307,7 +323,9 @@ Plugin.Handle()
    query := ArtifactQuery{
        RepositoryID: ctx.Repository.ID,
        Format:       "maven",
-       Coordinates:  map[string]string{"group": group, "artifact": artifact},
+       Kind:         runtime.KindMetadata,
+       Name:         artifact,
+       Namespace:    group,
        RemotePath:   group + "/" + artifact + "/maven-metadata.xml", // 触发回源
    }
    ```
@@ -335,26 +353,30 @@ Plugin.Handle()
 
 ### 推荐做法
 
-1. **使用 Properties 存储扩展信息**
+1. **区分 Qualifiers / Attributes / Metadata**
    ```go
-   artifact.Properties = map[string]string{
-       "remote_path": remotePath,
-       "license":     license,
-       "description": description,
+   artifact.Qualifiers = map[string]string{
+       "classifier": "sources",
+       "extension":  "jar",
+   }
+   artifact.Attributes = map[string]string{
+       "license":      license,
+       "description":  description,
        "published_at": publishedAt,
    }
    ```
 
-2. **Coordinates 包含所有关键标识**
+2. **使用强字段表达关键标识**
    ```go
-   Coordinates: map[string]string{
-       "name":     group + ":" + artifact, // Maven 坐标
-       "group":    group,
-       "artifact": artifact,
-       "version":  version,
-       "path":     path,
-       "filename": filename,
-   }
+   Name:       artifact,
+   Namespace:  group,
+   Version:    version,
+   RemotePath: path,
+   Filename:   filename,
+   Qualifiers: map[string]string{
+       "classifier": classifier,
+       "extension":  extension,
+   },
    ```
 
 3. **填充 RequestContext 的协议字段**

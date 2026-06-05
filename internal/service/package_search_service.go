@@ -86,8 +86,9 @@ type rawArtifact struct {
 	ID           uint      `gorm:"column:id"`
 	RepositoryID uint      `gorm:"column:repository_id"`
 	Format       string    `gorm:"column:format"`
-	Coordinates  string    `gorm:"column:coordinates"`
-	Metadata     string    `gorm:"column:metadata"`
+	Name         string    `gorm:"column:name"`
+	Version      string    `gorm:"column:version"`
+	Attributes   string    `gorm:"column:attributes"`
 	CreatedAt    time.Time `gorm:"column:created_at"`
 	UpdatedAt    time.Time `gorm:"column:updated_at"`
 }
@@ -260,11 +261,11 @@ func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *Sea
 		args = append(args, req.Repository)
 	}
 	if req.Query != "" {
-		conditions = append(conditions, "LOWER(json_extract(coordinates, '$.name')) LIKE ?")
+		conditions = append(conditions, "LOWER(name) LIKE ?")
 		args = append(args, "%"+strings.ToLower(req.Query)+"%")
 	}
 	if req.Name != "" {
-		conditions = append(conditions, "json_extract(coordinates, '$.name') = ?")
+		conditions = append(conditions, "name = ?")
 		args = append(args, req.Name)
 	}
 
@@ -275,7 +276,7 @@ func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *Sea
 
 	// 步骤1：查询所有匹配的 artifacts（用于聚合）
 	// 使用索引优化查询，按时间倒序
-	query := "SELECT id, repository_id, format, coordinates, metadata, created_at, updated_at FROM artifacts" +
+	query := "SELECT id, repository_id, format, name, version, attributes, created_at, updated_at FROM artifacts" +
 		whereClause + " ORDER BY updated_at DESC"
 
 	var rawRows []rawArtifact
@@ -292,13 +293,13 @@ func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *Sea
 	groups := make(map[groupKey]*groupAcc)
 
 	for _, row := range rawRows {
-		name := extractName("", row.Coordinates)
+		name := row.Name
 		if name == "" {
 			continue
 		}
 
 		if req.Version != "" {
-			ver := extractField(row.Coordinates, "version")
+			ver := row.Version
 			if ver != req.Version {
 				continue
 			}
@@ -318,10 +319,10 @@ func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *Sea
 			acc.firstID = row.ID
 		}
 		if acc.license == "" {
-			acc.license = extractField(row.Metadata, "license")
+			acc.license = extractField(row.Attributes, "license")
 		}
 		if acc.description == "" {
-			acc.description = extractField(row.Metadata, "description")
+			acc.description = extractField(row.Attributes, "description")
 		}
 	}
 
@@ -420,13 +421,7 @@ type groupAcc struct {
 	description  string
 }
 
-// extractName 从原始 coordinates JSON 中提取包名
-// extractName 从原始 coordinates JSON 中提取包名。首选 "name" 键，旧数据回退拼装。
-func extractName(_, coordsJSON string) string {
-	return extractField(coordsJSON, "name")
-}
-
-// extractField 从原始 JSON 字符串中提取单个字段值
+// extractField 从 JSON 字符串中提取单个字段值。
 func extractField(coordsJSON, key string) string {
 	var m map[string]interface{}
 	if err := json.Unmarshal([]byte(coordsJSON), &m); err != nil {

@@ -5,19 +5,21 @@ import (
 	"testing"
 )
 
-func TestGroupQueryArtifactsAggregatesRemotePathWithoutCoordinates(t *testing.T) {
+func TestGroupQueryArtifactsAggregatesRemotePathWithStructuredFields(t *testing.T) {
 	group := &GroupRuntime{
 		Members: []RepositoryNode{
-			&groupQueryNode{artifacts: []*Artifact{{
-				Format:      "pypi",
-				Kind:        "package-index",
-				Coordinates: map[string]string{"name": "requests", "package": "requests"},
-			}}},
-			&groupQueryNode{artifacts: []*Artifact{{
-				Format:      "pypi",
-				Kind:        "package-index",
-				Coordinates: map[string]string{"name": "flask", "package": "flask"},
-			}}},
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
+				Format:     "pypi",
+				Kind:       "package-index",
+				Name:       "requests",
+				Qualifiers: map[string]string{"package": "requests"},
+			})}},
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
+				Format:     "pypi",
+				Kind:       "package-index",
+				Name:       "flask",
+				Qualifiers: map[string]string{"package": "flask"},
+			})}},
 		},
 	}
 
@@ -29,7 +31,11 @@ func TestGroupQueryArtifactsAggregatesRemotePathWithoutCoordinates(t *testing.T)
 		t.Fatalf("QueryArtifacts failed: %v", err)
 	}
 	if len(artifacts) != 2 {
-		t.Fatalf("expected artifacts from both members, got %d", len(artifacts))
+		var got []string
+		for _, a := range artifacts {
+			got = append(got, a.Name+"|"+a.IdentityKey+"|"+artifactDedupeKey(a))
+		}
+		t.Fatalf("expected artifacts from both members, got %d: %#v", len(artifacts), got)
 	}
 }
 

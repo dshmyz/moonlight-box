@@ -63,9 +63,8 @@ type RepositoryPathResolver interface {
 //
 // 约束（MetadataStore 在写入时会强制校验）：
 //   - Handle 中通过 runtime 写入的 Artifact，如果 Kind 是 version/artifact/package-file/module-file，
-//     Coordinates 中必须包含 CoordName 字段，用于搜索聚合。
-//   - 建议使用 runtime 包中定义的 Coord* 常量作为 Coordinates key，
-//     避免各 Plugin 硬编码字符串导致不一致。
+//     必须填充 Name，Version/Path/Filename/RemotePath 按协议语义填充。
+//   - 会影响 artifact 身份的协议限定字段放入 Qualifiers，例如 classifier、extension、arch。
 type ProtocolPlugin interface {
 	Name() string
 	Handle(ctx *RequestContext, runtime RepositoryRuntime) error
@@ -76,8 +75,8 @@ type ProtocolPlugin interface {
 //
 // 约束：
 //   - FetchRemote 返回的 Artifact 中，如果 Kind 属于 version/artifact/package-file/module-file，
-//     Coordinates 中必须包含 CoordName 字段（格式由各协议定义，如 Maven 为 group:artifact）。
-//   - 注意：返回的 Artifact 会被 MetadataStore.BatchPut 持久化，缺少 CoordName 会导致存储失败。
+//     必须填充 Name，必要时用 Qualifiers 表达协议限定字段。
+//   - 注意：返回的 Artifact 会被 MetadataStore.BatchPut 持久化，缺少 Name 会导致存储失败。
 type RemoteFetcher interface {
 	FetchRemote(ctx context.Context, remoteURL, path string) ([]*Artifact, error)
 }

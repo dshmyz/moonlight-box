@@ -35,6 +35,32 @@ func New(src source.MigrationSource, planID uint, scope *domain.ScopeSelection, 
 	}
 }
 
+func migrationAssetCheckpointJSON(asset source.SourceAsset) (string, error) {
+	checkpoint := domain.AssetCheckpoint{
+		DownloadURL: asset.DownloadURL,
+		Path:        asset.Path,
+		Checksum:    asset.Checksum,
+		ContentType: asset.ContentType,
+		FileSize:    asset.FileSize,
+	}
+	data, err := json.Marshal(checkpoint)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func nexusTargetFormat(format string) string {
+	switch format {
+	case "maven2":
+		return "maven"
+	case "raw":
+		return "generic"
+	default:
+		return format
+	}
+}
+
 // Scan runs the full scan phase: repositories, security, and artifacts.
 func (p *Planner) Scan(ctx context.Context) error {
 	p.eventRepo.Log(p.planID, domain.LevelInfo, domain.EventStatusChanged, "开始扫描仓库配置", nil, nil)
@@ -401,18 +427,21 @@ func (p *Planner) scanArtifacts(ctx context.Context, repos []source.SourceReposi
 			}
 			for _, comp := range page.Items {
 				for _, asset := range comp.Assets {
+					assetCheckpoint, _ := migrationAssetCheckpointJSON(asset)
 					allItems = append(allItems, domain.MigrationItem{
 						PlanID:           p.planID,
 						JobID:            copyJob.ID,
 						Kind:             domain.ItemArtifact,
 						SourceRepository: repoName,
 						SourceID:         comp.ID,
-						SourcePath:       asset.DownloadURL,
-						SourceFormat:     comp.Format,
+						SourcePath:       asset.Path,
+						SourceFormat:     nexusTargetFormat(comp.Format),
 						SourceName:       comp.Name,
 						SourceVersion:    comp.Version,
 						TargetRepository: p.determineTargetRepo(repoName),
+						TargetPath:       asset.Path,
 						Status:           domain.ItemPending,
+						Checkpoint:       assetCheckpoint,
 					})
 					if len(allItems) >= 100 {
 						if err := p.itemRepo.BatchCreate(allItems); err != nil {
@@ -490,18 +519,21 @@ func (p *Planner) scanArtifactsStreaming(ctx context.Context, repos []source.Sou
 			}
 			for _, comp := range page.Items {
 				for _, asset := range comp.Assets {
+					assetCheckpoint, _ := migrationAssetCheckpointJSON(asset)
 					allItems = append(allItems, domain.MigrationItem{
 						PlanID:           p.planID,
 						JobID:            copyJob.ID,
 						Kind:             domain.ItemArtifact,
 						SourceRepository: repoName,
 						SourceID:         comp.ID,
-						SourcePath:       asset.DownloadURL,
-						SourceFormat:     comp.Format,
+						SourcePath:       asset.Path,
+						SourceFormat:     nexusTargetFormat(comp.Format),
 						SourceName:       comp.Name,
 						SourceVersion:    comp.Version,
 						TargetRepository: p.determineTargetRepo(repoName),
+						TargetPath:       asset.Path,
 						Status:           domain.ItemPending,
+						Checkpoint:       assetCheckpoint,
 					})
 					if len(allItems) >= 100 {
 						if err := p.itemRepo.BatchCreate(allItems); err != nil {

@@ -314,8 +314,8 @@ func TestFetchRemote_SimpleIndex(t *testing.T) {
 	if len(arts) != 2 {
 		t.Fatalf("expected 2 artifacts, got %d", len(arts))
 	}
-	if arts[0].Coordinates["package"] != "requests" {
-		t.Errorf("expected 'requests', got %q", arts[0].Coordinates["package"])
+	if arts[0].Qualifiers["package"] != "requests" {
+		t.Errorf("expected 'requests', got %q", arts[0].Qualifiers["package"])
 	}
 }
 
@@ -578,19 +578,19 @@ func TestFetchRemote_PackageInfo(t *testing.T) {
 	found280 := false
 	found2310 := false
 	for _, a := range arts {
-		if a.Coordinates["version"] == "2.28.0" {
+		if a.Version == "2.28.0" {
 			found280 = true
-			if a.Properties["license"] != "Apache 2.0" {
-				t.Errorf("expected license 'Apache 2.0', got %q", a.Properties["license"])
+			if a.Attributes["license"] != "Apache 2.0" {
+				t.Errorf("expected license 'Apache 2.0', got %q", a.Attributes["license"])
 			}
-			if a.Properties["description"] != "Python HTTP for Humans." {
-				t.Errorf("expected description 'Python HTTP for Humans.', got %q", a.Properties["description"])
+			if a.Attributes["description"] != "Python HTTP for Humans." {
+				t.Errorf("expected description 'Python HTTP for Humans.', got %q", a.Attributes["description"])
 			}
-			if a.Properties["homepage"] != "https://requests.readthedocs.io" {
-				t.Errorf("expected homepage 'https://requests.readthedocs.io', got %q", a.Properties["homepage"])
+			if a.Attributes["homepage"] != "https://requests.readthedocs.io" {
+				t.Errorf("expected homepage 'https://requests.readthedocs.io', got %q", a.Attributes["homepage"])
 			}
 		}
-		if a.Coordinates["version"] == "2.31.0" {
+		if a.Version == "2.31.0" {
 			found2310 = true
 		}
 	}
@@ -599,6 +599,41 @@ func TestFetchRemote_PackageInfo(t *testing.T) {
 	}
 	if !found2310 {
 		t.Error("expected to find artifacts for version 2.31.0")
+	}
+}
+
+func TestBuildArtifactsFromJSONAPIPrefersUsableLicense(t *testing.T) {
+	p := NewPyPIPlugin()
+	arts := p.buildArtifactsFromJSONAPI("demo", map[string]interface{}{
+		"info": map[string]interface{}{
+			"license":            "UNKNOWN",
+			"license_expression": "MIT",
+			"summary":            "Demo package",
+			"classifiers": []interface{}{
+				"License :: OSI Approved :: Apache Software License",
+			},
+		},
+		"releases": map[string]interface{}{
+			"1.0.0": []interface{}{
+				map[string]interface{}{
+					"filename":    "demo-1.0.0.tar.gz",
+					"url":         "https://files.pythonhosted.org/packages/ab/cd/demo-1.0.0.tar.gz",
+					"upload_time": "2024-01-01T00:00:00",
+				},
+			},
+		},
+	})
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+	if got := arts[0].Attributes["license"]; got != "MIT" {
+		t.Fatalf("license = %q, want MIT", got)
+	}
+	if _, ok := arts[0].Attributes["remote_path"]; ok {
+		t.Fatalf("remote_path should not be stored in attributes: %#v", arts[0].Attributes)
+	}
+	if got := arts[0].Properties["remote_path"]; got == "" {
+		t.Fatalf("remote_path should stay in properties")
 	}
 }
 
@@ -632,7 +667,7 @@ func TestFetchRemote_FallbackToSimpleIndex(t *testing.T) {
 
 	var foundTarGz, foundWhl bool
 	for _, a := range arts {
-		fn := a.Coordinates["filename"]
+		fn := a.Filename
 		if fn == "mypackage-1.0.tar.gz" {
 			foundTarGz = true
 		}

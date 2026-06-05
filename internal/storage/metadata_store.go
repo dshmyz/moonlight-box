@@ -2,10 +2,8 @@ package storage
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/model"
@@ -37,16 +35,34 @@ func NewMetadataStoreWithArtifactService(db *gorm.DB, svc ArtifactServiceAdapter
 func (s *MetadataStore) Get(ctx context.Context, key runtime.ArtifactKey) (*runtime.Artifact, error) {
 	var artifact model.Artifact
 
-	coordsJSON, _ := json.Marshal(key.Coordinates)
-
 	var repoID uint
 	fmt.Sscanf(key.RepositoryID, "%d", &repoID)
 
-	err := s.db.WithContext(ctx).
+	db := s.db.WithContext(ctx).
 		Where("repository_id = ?", repoID).
-		Where("format = ?", key.Format).
-		Where("coordinates = ?", coordsJSON).
-		First(&artifact).Error
+		Where("format = ?", key.Format)
+	if key.IdentityKey != "" {
+		db = db.Where("identity_key = ?", key.IdentityKey)
+	} else if key.RemotePath != "" {
+		db = db.Where("remote_path = ?", key.RemotePath)
+	} else if key.Name != "" || key.Version != "" || key.Path != "" || key.Filename != "" {
+		if key.Name != "" {
+			db = db.Where("name = ?", key.Name)
+		}
+		if key.Version != "" {
+			db = db.Where("version = ?", key.Version)
+		}
+		if key.Path != "" {
+			db = db.Where("path = ?", key.Path)
+		}
+		if key.Filename != "" {
+			db = db.Where("filename = ?", key.Filename)
+		}
+	} else {
+		return nil, runtime.ErrNotFound
+	}
+
+	err := db.First(&artifact).Error
 
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -73,11 +89,10 @@ func (s *MetadataStore) Put(ctx context.Context, artifact *runtime.Artifact) err
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.Artifact
-		coordsJSON, _ := json.Marshal(artifact.Coordinates)
 
 		err := tx.Where("repository_id = ?", artifact.RepositoryID).
 			Where("format = ?", artifact.Format).
-			Where("coordinates = ?", coordsJSON).
+			Where("identity_key = ?", modelArtifact.IdentityKey).
 			First(&existing).Error
 
 		if err == gorm.ErrRecordNotFound {
@@ -117,52 +132,83 @@ func (s *MetadataStore) BatchPut(ctx context.Context, artifacts []*runtime.Artif
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, artifact := range artifacts {
-			modelArtifact := s.toModelArtifact(artifact)
+		// 批量查询已有记录，避免逐条 SELECT
+		modelArtifacts := make([]*model.Artifact, len(artifacts))
+		for i, artifact := range artifacts {
+			modelArtifacts[i] = s.toModelArtifact(artifact)
+		}
 
-			var existing model.Artifact
-			coordsJSON, _ := json.Marshal(artifact.Coordinates)
-
-			err := tx.Where("repository_id = ?", artifact.RepositoryID).
-				Where("format = ?", artifact.Format).
-				Where("coordinates = ?", coordsJSON).
-				First(&existing).Error
-
-			if err == gorm.ErrRecordNotFound {
-				// 精确匹配失败，尝试用核心坐标匹配（去掉 path 字段），
-				// 以兼容旧记录缺少 path 字段的情况。
-				coreCoords := make(map[string]string)
-				for k, v := range artifact.Coordinates {
-					if k != "path" {
-						coreCoords[k] = v
-					}
-				}
-				if len(coreCoords) != len(artifact.Coordinates) {
-					coreCoordsJSON, _ := json.Marshal(coreCoords)
-					err = tx.Where("repository_id = ?", artifact.RepositoryID).
-						Where("format = ?", artifact.Format).
-						Where("coordinates = ?", coreCoordsJSON).
-						First(&existing).Error
-				}
+		// 收集所有 identity_key 用于批量查询
+		identityKeys := make([]string, 0, len(artifacts))
+		repoIDSet := make(map[uint]bool)
+		for _, ma := range modelArtifacts {
+			if ma.IdentityKey != "" {
+				identityKeys = append(identityKeys, ma.IdentityKey)
 			}
+			repoIDSet[ma.RepositoryID] = true
+		}
 
-			if err == gorm.ErrRecordNotFound {
-				if err := tx.Create(modelArtifact).Error; err != nil {
-					return err
-				}
-			} else if err != nil {
+		// 批量查询已有记录
+		existingMap := make(map[string]model.Artifact) // key: identity_key
+		if len(identityKeys) > 0 {
+			repoIDs := make([]uint, 0, len(repoIDSet))
+			for id := range repoIDSet {
+				repoIDs = append(repoIDs, id)
+			}
+			var existing []model.Artifact
+			if err := tx.Where("repository_id IN ? AND identity_key IN ?", repoIDs, identityKeys).
+				Find(&existing).Error; err != nil {
 				return err
+			}
+			for _, e := range existing {
+				existingMap[e.IdentityKey] = e
+			}
+		}
+
+		// 分为新增和更新两组，记录每个 artifact 的索引以便后续同步 blob
+		type indexedArtifact struct {
+			model *model.Artifact
+			index int // 在原始 artifacts 切片中的索引
+		}
+		var toCreate []indexedArtifact
+		var toUpdate []indexedArtifact
+
+		for i, ma := range modelArtifacts {
+			if existing, ok := existingMap[ma.IdentityKey]; ok {
+				ma.ID = existing.ID
+				toUpdate = append(toUpdate, indexedArtifact{model: ma, index: i})
 			} else {
-				modelArtifact.ID = existing.ID
-				if err := tx.Save(modelArtifact).Error; err != nil {
+				toCreate = append(toCreate, indexedArtifact{model: ma, index: i})
+			}
+		}
+
+		// 批量 INSERT
+		if len(toCreate) > 0 {
+			createBatch := make([]*model.Artifact, len(toCreate))
+			for i, ia := range toCreate {
+				createBatch[i] = ia.model
+			}
+			if err := tx.CreateInBatches(createBatch, 100).Error; err != nil {
+				return err
+			}
+			// 为新建的记录同步 blob 关联（CreateInBatches 后 model.ID 已被填充）
+			for _, ia := range toCreate {
+				if err := s.syncBlobRefs(tx, ia.model.ID, artifacts[ia.index].BlobRefs); err != nil {
 					return err
 				}
 			}
+		}
 
-			if err := s.syncBlobRefs(tx, modelArtifact.ID, artifact.BlobRefs); err != nil {
+		// 批量 UPDATE + 同步 blob
+		for _, ia := range toUpdate {
+			if err := tx.Save(ia.model).Error; err != nil {
+				return err
+			}
+			if err := s.syncBlobRefs(tx, ia.model.ID, artifacts[ia.index].BlobRefs); err != nil {
 				return err
 			}
 		}
+
 		return nil
 	})
 }
@@ -192,18 +238,33 @@ func (s *MetadataStore) Delete(ctx context.Context, key runtime.ArtifactKey) err
 		return s.artifactSvc.Delete(ctx, key)
 	}
 
-	// 回退：直接操作 DB（无 packages 同步）
-	coordsJSON, _ := json.Marshal(key.Coordinates)
-
 	var repoID uint
 	fmt.Sscanf(key.RepositoryID, "%d", &repoID)
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var artifact model.Artifact
-		err := tx.Where("repository_id = ?", repoID).
+		db := tx.Where("repository_id = ?", repoID).
 			Where("format = ?", key.Format).
-			Where("coordinates = ?", coordsJSON).
-			First(&artifact).Error
+			Model(&model.Artifact{})
+		if key.IdentityKey != "" {
+			db = db.Where("identity_key = ?", key.IdentityKey)
+		} else if key.RemotePath != "" {
+			db = db.Where("remote_path = ?", key.RemotePath)
+		} else {
+			if key.Name != "" {
+				db = db.Where("name = ?", key.Name)
+			}
+			if key.Version != "" {
+				db = db.Where("version = ?", key.Version)
+			}
+			if key.Path != "" {
+				db = db.Where("path = ?", key.Path)
+			}
+			if key.Filename != "" {
+				db = db.Where("filename = ?", key.Filename)
+			}
+		}
+		err := db.First(&artifact).Error
 		if err != nil {
 			if err == gorm.ErrRecordNotFound {
 				return runtime.ErrNotFound
@@ -252,12 +313,29 @@ func (s *MetadataStore) Query(ctx context.Context, query runtime.ArtifactQuery) 
 	if query.Format != "" {
 		db = db.Where("format = ?", query.Format)
 	}
-
-	if len(query.Coordinates) > 0 {
-		for k, v := range query.Coordinates {
-			pattern := fmt.Sprintf("%%\"%s\":\"%s\"%%", k, v)
-			db = db.Where("coordinates LIKE ?", pattern)
-		}
+	if query.Kind != "" {
+		db = db.Where("kind = ?", query.Kind)
+	}
+	if query.IdentityKey != "" {
+		db = db.Where("identity_key = ?", query.IdentityKey)
+	}
+	if query.Name != "" {
+		db = db.Where("name = ?", query.Name)
+	}
+	if query.Namespace != "" {
+		db = db.Where("namespace = ?", query.Namespace)
+	}
+	if query.Version != "" {
+		db = db.Where("version = ?", query.Version)
+	}
+	if query.Path != "" {
+		db = db.Where("path = ?", query.Path)
+	}
+	if query.Filename != "" {
+		db = db.Where("filename = ?", query.Filename)
+	}
+	if query.RemotePath != "" {
+		db = db.Where("remote_path = ?", query.RemotePath)
 	}
 
 	if query.Limit > 0 {
@@ -281,16 +359,6 @@ func (s *MetadataStore) Query(ctx context.Context, query runtime.ArtifactQuery) 
 }
 
 func (s *MetadataStore) toTypesArtifact(m *model.Artifact) *runtime.Artifact {
-	var coords map[string]string
-	if m.Coordinates != nil {
-		coords = make(map[string]string)
-		for k, v := range m.Coordinates {
-			if str, ok := v.(string); ok {
-				coords[k] = str
-			}
-		}
-	}
-
 	var props map[string]string
 	if m.Metadata != nil {
 		props = make(map[string]string)
@@ -301,43 +369,43 @@ func (s *MetadataStore) toTypesArtifact(m *model.Artifact) *runtime.Artifact {
 		}
 	}
 
-	return &runtime.Artifact{
+	a := &runtime.Artifact{
 		ID:           fmt.Sprintf("%d", m.ID),
 		RepositoryID: fmt.Sprintf("%d", m.RepositoryID),
 		Format:       m.Format,
 		Kind:         m.Kind,
-		Coordinates:  coords,
+		IdentityKey:  m.IdentityKey,
+		Name:         m.Name,
+		Namespace:    m.Namespace,
+		Version:      m.Version,
+		Path:         m.Path,
+		Filename:     m.Filename,
+		RemotePath:   m.RemotePath,
+		DownloadPath: m.DownloadPath,
+		DownloadURL:  m.DownloadURL,
+		Extension:    m.Extension,
+		ContentType:  m.ContentType,
+		SizeBytes:    m.SizeBytes,
+		Checksums:    jsonbToStringMap(m.Checksums),
+		Qualifiers:   jsonbToStringMap(m.Qualifiers),
+		Attributes:   jsonbToStringMap(m.Attributes),
 		Properties:   props,
 		CreatedAt:    m.CreatedAt,
 		UpdatedAt:    m.UpdatedAt,
 	}
+	runtime.NormalizeArtifactForStore(a)
+	return a
 }
 
 // toModelArtifact 将 runtime.Artifact 转为 model.Artifact。
+// 前置条件：调用方必须确保 artifact 已通过 ValidateArtifactForStore 归一化。
 // 注意：此函数与 ArtifactService.toModelArtifact 逻辑相同（回退路径专用），
 // 如需修改转换逻辑请同步更新两者。
 func (s *MetadataStore) toModelArtifact(t *runtime.Artifact) *model.Artifact {
-	coords := make(model.JSONB)
-	for k, v := range t.Coordinates {
-		coords[k] = v
-	}
 
 	metadata := make(model.JSONB)
 	for k, v := range t.Properties {
 		metadata[k] = v
-	}
-
-	// 自动从 Coordinates 计算 download_path，供前端下载链接使用
-	if filename, _ := coords["filename"].(string); filename != "" && metadata["download_path"] == nil {
-		if p, _ := coords["path"].(string); p != "" {
-			if p == filename || strings.HasSuffix(p, "/"+filename) {
-				metadata["download_path"] = p
-			} else {
-				metadata["download_path"] = strings.TrimRight(p, "/") + "/" + filename
-			}
-		} else {
-			metadata["download_path"] = filename
-		}
 	}
 
 	var repoID uint
@@ -347,7 +415,21 @@ func (s *MetadataStore) toModelArtifact(t *runtime.Artifact) *model.Artifact {
 		RepositoryID: repoID,
 		Format:       t.Format,
 		Kind:         t.Kind,
-		Coordinates:  coords,
+		IdentityKey:  t.IdentityKey,
+		Name:         t.Name,
+		Namespace:    t.Namespace,
+		Version:      t.Version,
+		Path:         t.Path,
+		Filename:     t.Filename,
+		RemotePath:   t.RemotePath,
+		DownloadPath: t.DownloadPath,
+		DownloadURL:  t.DownloadURL,
+		Extension:    t.Extension,
+		ContentType:  t.ContentType,
+		SizeBytes:    t.SizeBytes,
+		Checksums:    stringMapToJSONB(t.Checksums),
+		Qualifiers:   stringMapToJSONB(t.Qualifiers),
+		Attributes:   stringMapToJSONB(t.Attributes),
 		Metadata:     metadata,
 		CreatedAt:    t.CreatedAt,
 		UpdatedAt:    t.UpdatedAt,
@@ -393,4 +475,28 @@ func (s *MetadataStore) fillBlobRefs(ctx context.Context, artifacts []*runtime.A
 			})
 		}
 	}
+}
+
+func jsonbToStringMap(src model.JSONB) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		if str, ok := v.(string); ok {
+			dst[k] = str
+		}
+	}
+	return dst
+}
+
+func stringMapToJSONB(src map[string]string) model.JSONB {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(model.JSONB, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }

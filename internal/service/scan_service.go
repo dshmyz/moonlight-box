@@ -300,25 +300,8 @@ func (s *SecurityScanner) ScanAllPackages(ctx context.Context) {
 
 		s.logger.Infof("Scanning %d %s packages", len(artifacts), pkgType)
 		for _, a := range artifacts {
-			name := ""
-			if v, ok := a.Coordinates["name"]; ok {
-				if s, ok := v.(string); ok {
-					name = s
-				}
-			}
-			if name == "" {
-				if v, ok := a.Coordinates["package"]; ok {
-					if s, ok := v.(string); ok {
-						name = s
-					}
-				}
-			}
-			version := ""
-			if v, ok := a.Coordinates["version"]; ok {
-				if s, ok := v.(string); ok {
-					version = s
-				}
-			}
+			name := a.Name
+			version := a.Version
 			s.TriggerScan(ctx, a.ID, pkgType, name, version)
 			time.Sleep(50 * time.Millisecond)
 		}

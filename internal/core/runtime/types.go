@@ -4,7 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sort"
+	"net/url"
+	pathpkg "path"
 	"strings"
 	"time"
 )
@@ -13,24 +14,18 @@ type ctxKey string
 
 const clientIPKey ctxKey = "client_ip"
 
-// Coord* 常量 —— Coordinates map 中跨协议通用的键。
-// 协议特有的键（如 Maven 的 group/artifact）由各 Plugin 各自定义。
-const (
-	CoordName    = "name"     // 包名（搜索聚合用），所有协议必须设置
-	CoordVersion = "version"  // 版本号
-	CoordPath    = "path"     // 路径
-	CoordFileNm  = "filename" // 文件名
-)
-
 // Kind* 常量 —— Artifact.Kind 中跨协议通用的值。
 // 协议特有的 Kind 由各 Plugin 各自定义。
 const (
+	KindPackage  = "package"  // 包聚合入口
 	KindVersion  = "version"  // 版本记录（从远程元数据解析的版本列表）
 	KindArtifact = "artifact" // 具体包产物（上传/下载的包文件）
+	KindFile     = "file"     // 可下载文件
+	KindMetadata = "metadata" // metadata/index/release 等协议元数据
+	KindChecksum = "checksum" // checksum 文件或 checksum 投影
 )
 
-// mustHaveNameKinds 是需要 name 坐标的 Kind 集合。
-// Plugin 生成这些 Kind 的 Artifact 时，必须设置 Coordinates[CoordName]。
+// mustHaveNameKinds 是需要 Artifact.Name 的 Kind 集合。
 var mustHaveNameKinds = map[string]bool{
 	KindVersion:  true,
 	KindArtifact: true,
@@ -42,16 +37,186 @@ func ValidateArtifactForStore(a *Artifact) error {
 	if a == nil {
 		return fmt.Errorf("artifact: nil artifact")
 	}
+	NormalizeArtifactForStore(a)
 	if a.Format == "" {
 		return fmt.Errorf("artifact: format is required")
 	}
 	if a.Kind == "" {
 		return fmt.Errorf("artifact: kind is required")
 	}
-	if mustHaveNameKinds[a.Kind] && a.Coordinates[CoordName] == "" {
-		return fmt.Errorf("artifact: missing required coordinate %q for kind=%q (format=%s)", CoordName, a.Kind, a.Format)
+	if mustHaveNameKinds[a.Kind] && a.Name == "" {
+		return fmt.Errorf("artifact: name is required for kind=%q (format=%s)", a.Kind, a.Format)
+	}
+	if a.Filename != "" && strings.Contains(a.Filename, "/") {
+		return fmt.Errorf("artifact: filename must not contain slash: %q", a.Filename)
+	}
+	if a.Path != "" && a.Filename != "" {
+		cleanPath := strings.Trim(a.Path, "/")
+		if cleanPath == a.Filename || strings.HasSuffix(cleanPath, "/"+a.Filename) {
+			return fmt.Errorf("artifact: path must be a directory and must not include filename: path=%q filename=%q", a.Path, a.Filename)
+		}
+	}
+	if a.DownloadURL != "" {
+		u, err := url.Parse(a.DownloadURL)
+		if err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") {
+			return fmt.Errorf("artifact: download_url must be an absolute http(s) URL: %q", a.DownloadURL)
+		}
 	}
 	return nil
+}
+
+type ArtifactSpec struct {
+	RepositoryID string
+	Format       string
+	Kind         string
+
+	Name      string
+	Namespace string
+	Version   string
+
+	Path         string
+	Filename     string
+	RemotePath   string
+	DownloadPath string
+	DownloadURL  string
+
+	Extension   string
+	ContentType string
+	SizeBytes   int64
+
+	Checksums  map[string]string
+	Qualifiers map[string]string
+	Attributes map[string]string
+	Properties map[string]string
+	BlobRefs   []BlobRef
+	Content    io.ReadCloser
+}
+
+func NewArtifact(spec ArtifactSpec) *Artifact {
+	a := &Artifact{
+		RepositoryID: spec.RepositoryID,
+		Format:       spec.Format,
+		Kind:         spec.Kind,
+		Name:         spec.Name,
+		Namespace:    spec.Namespace,
+		Version:      spec.Version,
+		Path:         spec.Path,
+		Filename:     spec.Filename,
+		RemotePath:   spec.RemotePath,
+		DownloadPath: spec.DownloadPath,
+		DownloadURL:  spec.DownloadURL,
+		Extension:    spec.Extension,
+		ContentType:  spec.ContentType,
+		SizeBytes:    spec.SizeBytes,
+		Checksums:    cloneStringMap(spec.Checksums),
+		Qualifiers:   cloneStringMap(spec.Qualifiers),
+		Attributes:   cloneStringMap(spec.Attributes),
+		Properties:   cloneStringMap(spec.Properties),
+		BlobRefs:     spec.BlobRefs,
+		Content:      spec.Content,
+	}
+	NormalizeArtifactForStore(a)
+	return a
+}
+
+func NormalizeArtifactForStore(a *Artifact) {
+	if a == nil {
+		return
+	}
+	if a.Properties == nil {
+		a.Properties = map[string]string{}
+	}
+	if a.Qualifiers == nil {
+		a.Qualifiers = map[string]string{}
+	}
+	if a.Attributes == nil {
+		a.Attributes = map[string]string{}
+	}
+	if a.Checksums == nil {
+		a.Checksums = map[string]string{}
+	}
+
+	if a.RemotePath == "" {
+		a.RemotePath = a.Properties["remote_path"]
+	}
+	if a.DownloadPath == "" {
+		a.DownloadPath = a.Properties["download_path"]
+	}
+	if a.DownloadURL == "" {
+		a.DownloadURL = a.Properties["download_url"]
+	}
+
+	a.RemotePath = cleanArtifactPath(a.RemotePath)
+	a.Path = cleanArtifactPath(a.Path)
+	a.DownloadPath = cleanArtifactPath(a.DownloadPath)
+
+	if a.RemotePath != "" {
+		if a.Filename == "" {
+			a.Filename = pathpkg.Base(a.RemotePath)
+		}
+		if a.Path == "" {
+			dir := pathpkg.Dir(a.RemotePath)
+			if dir != "." {
+				a.Path = dir
+			}
+		}
+	}
+	if a.RemotePath == "" && a.Path != "" && a.Filename != "" {
+		a.RemotePath = joinArtifactPath(a.Path, a.Filename)
+	}
+	if a.DownloadPath == "" {
+		a.DownloadPath = a.RemotePath
+	}
+	if a.DownloadPath == "" && a.Path != "" && a.Filename != "" {
+		a.DownloadPath = joinArtifactPath(a.Path, a.Filename)
+	}
+	if a.Extension == "" && a.Filename != "" {
+		a.Extension = pathpkg.Ext(a.Filename)
+	}
+
+	if a.RemotePath != "" {
+		a.Properties["remote_path"] = a.RemotePath
+	}
+	if a.DownloadPath != "" {
+		a.Properties["download_path"] = a.DownloadPath
+	}
+	if a.DownloadURL != "" {
+		a.Properties["download_url"] = a.DownloadURL
+	}
+	if a.IdentityKey == "" {
+		a.IdentityKey = BuildArtifactIdentityKey(a)
+	}
+}
+
+func BuildArtifactIdentityKey(a *Artifact) string {
+	if a == nil {
+		return ""
+	}
+	switch a.Kind {
+	case KindPackage:
+		return "package/" + a.Name
+	case KindVersion:
+		return "version/" + a.Name + "/" + a.Version
+	case KindMetadata:
+		if a.RemotePath != "" {
+			return "metadata/" + a.RemotePath
+		}
+	case KindChecksum:
+		if a.RemotePath != "" {
+			return "checksum/" + a.RemotePath
+		}
+	}
+	if a.RemotePath != "" {
+		return "file/" + a.RemotePath
+	}
+	if a.Name != "" || a.Version != "" || a.Path != "" || a.Filename != "" {
+		return "artifact/" + a.Name + "/" + a.Version + "/" + joinArtifactPath(a.Path, a.Filename)
+	}
+	return "artifact/" + a.Format + "/" + a.Kind
+}
+
+func QueryHasIdentityFields(q ArtifactQuery) bool {
+	return q.Kind != "" || q.Name != "" || q.Namespace != "" || q.Version != "" || q.Path != "" || q.Filename != "" || q.IdentityKey != "" || len(q.Qualifiers) > 0
 }
 
 // ContextWithClientIP 将客户端 IP 注入 context，供 Runtime 层回源时使用。
@@ -70,22 +235,41 @@ func ClientIPFromContext(ctx context.Context) string {
 type ArtifactKey struct {
 	RepositoryID string
 	Format       string
-	Coordinates  map[string]string
+	Kind         string
+	Name         string
+	Namespace    string
+	Version      string
+	Path         string
 	Filename     string
+	RemotePath   string
+	IdentityKey  string
+	Qualifiers   map[string]string
 	Extension    string
 	RemoteURL    string
 }
 
 func (k *ArtifactKey) String() string {
 	base := k.RepositoryID + "/" + k.Format
-	// 按 key 排序 Coordinates 保证稳定输出
-	coords := make([]string, 0, len(k.Coordinates))
-	for key := range k.Coordinates {
-		coords = append(coords, key)
+	if k.IdentityKey != "" {
+		base += "/identity=" + k.IdentityKey
 	}
-	sort.Strings(coords)
-	for _, key := range coords {
-		base += "/" + key + "=" + k.Coordinates[key]
+	if k.Kind != "" {
+		base += "/kind=" + k.Kind
+	}
+	if k.Namespace != "" {
+		base += "/namespace=" + k.Namespace
+	}
+	if k.Name != "" {
+		base += "/name=" + k.Name
+	}
+	if k.Version != "" {
+		base += "/version=" + k.Version
+	}
+	if k.Path != "" {
+		base += "/path=" + k.Path
+	}
+	if k.RemotePath != "" {
+		base += "/remote_path=" + k.RemotePath
 	}
 	if k.Filename != "" {
 		base += "/" + k.Filename
@@ -96,18 +280,31 @@ func (k *ArtifactKey) String() string {
 type ArtifactQuery struct {
 	RepositoryID string
 	Format       string
-	Coordinates  map[string]string
+	Kind         string
+	Name         string
+	Namespace    string
+	Version      string
+	Path         string
+	Filename     string
+	RemotePath   string
+	IdentityKey  string
+	Qualifiers   map[string]string
 	Limit        int
 	Offset       int
-	RemotePath   string // 远端拉取路径，ProxyRuntime 据此回调 RemoteFetcher
 }
 
 type ProjectionQuery struct {
 	RepositoryID string
 	Format       string
 	Kind         string
-	Coordinates  map[string]string
-	RemotePath   string // 远端拉取路径，ProxyRuntime 据此回调 RemoteFetcher
+	Name         string
+	Namespace    string
+	Version      string
+	Path         string
+	Filename     string
+	RemotePath   string
+	IdentityKey  string
+	Qualifiers   map[string]string
 }
 
 type ProjectionResult struct {
@@ -148,8 +345,21 @@ type Artifact struct {
 	RepositoryID string
 	Format       string
 	Kind         string
-	Coordinates  map[string]string
+	IdentityKey  string
+	Name         string
+	Namespace    string
+	Version      string
+	Path         string
+	Filename     string
+	RemotePath   string
+	DownloadPath string
+	DownloadURL  string
+	Extension    string
+	ContentType  string
 	Properties   map[string]string
+	Checksums    map[string]string
+	Qualifiers   map[string]string
+	Attributes   map[string]string
 	Relations    []ArtifactRelation
 	BlobRefs     []BlobRef
 	Content      io.ReadCloser
@@ -159,6 +369,42 @@ type Artifact struct {
 	FromCache bool   // 是否命中缓存
 	RemoteURL string // 回源 URL（未命中缓存时）
 	SizeBytes int64  // 文件大小
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func cleanArtifactPath(value string) string {
+	return strings.Trim(strings.ReplaceAll(value, "\\", "/"), "/")
+}
+
+func joinArtifactPath(dir, file string) string {
+	dir = cleanArtifactPath(dir)
+	file = strings.Trim(file, "/")
+	if dir == "" {
+		return file
+	}
+	if file == "" {
+		return dir
+	}
+	return dir + "/" + file
 }
 
 type RemoteMetadata struct {

@@ -137,15 +137,14 @@ func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string)
 		"duration":    time.Since(start).Seconds(),
 	}).Debug("generic: FetchRemote file success")
 	return []*runtime.Artifact{
-		{
-			Format: "generic",
-			Kind:   "file",
-			Coordinates: map[string]string{
-				"name":     filename,
-				"path":     dir,
-				"filename": filename,
-			},
-		},
+		runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "generic",
+			Kind:       "file",
+			Name:       filename,
+			Path:       dir,
+			Filename:   filename,
+			RemotePath: strings.TrimPrefix(filepath.ToSlash(filepath.Join(dir, filename)), "/"),
+		}),
 	}, nil
 }
 
@@ -189,15 +188,14 @@ func (p *GenericPlugin) parseDirectoryListing(basePath string, body io.Reader) (
 		if dir == "." {
 			dir = ""
 		}
-		artifacts = append(artifacts, &runtime.Artifact{
-			Format: "generic",
-			Kind:   kind,
-			Coordinates: map[string]string{
-				"name":     name,
-				"path":     dir,
-				"filename": name,
-			},
-		})
+		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "generic",
+			Kind:       kind,
+			Name:       name,
+			Path:       dir,
+			Filename:   name,
+			RemotePath: strings.TrimPrefix(filepath.ToSlash(filepath.Join(dir, name)), "/"),
+		}))
 	}
 	return artifacts, nil
 }
@@ -226,12 +224,10 @@ func (p *GenericPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "generic",
-		Coordinates: map[string]string{
-			"name":     filename,
-			"path":     dir,
-			"filename": filename,
-		},
-		Filename:  filename,
+		Name:         filename,
+		Path:         dir,
+		Filename:     filename,
+		RemotePath:   path,
 		Extension: filepath.Ext(filename),
 	}
 
@@ -308,17 +304,20 @@ func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime ru
 		return nil
 	}
 
-	artifact := &runtime.Artifact{
+	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "generic",
-		Coordinates:  key.Coordinates,
 		Kind:         "file",
+		Name:         key.Name,
+		Path:         key.Path,
+		Filename:     key.Filename,
+		RemotePath:   key.RemotePath,
 		BlobRefs:     []runtime.BlobRef{blobRef},
 		Properties: map[string]string{
 			"filename": key.Filename,
-			"path":     key.Coordinates["path"],
+			"path":     key.Path,
 		},
-	}
+	})
 
 	if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
 		session.Abort(ctx.Request.Context())

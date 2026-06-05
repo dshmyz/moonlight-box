@@ -20,7 +20,10 @@ func (n *HostedRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Arti
 			return nil, openErr
 		}
 		artifact.Content = rc
+		artifact.SizeBytes = artifact.BlobRefs[0].Size
 	}
+	// Hosted 仓库的文件就在本地，始终视为缓存命中
+	artifact.FromCache = true
 	return artifact, nil
 }
 
@@ -33,7 +36,15 @@ func (n *HostedRuntime) RenderProjection(ctx context.Context, query ProjectionQu
 	artifacts, err := n.MetadataStore.Query(ctx, ArtifactQuery{
 		RepositoryID: n.RepositoryID,
 		Format:       query.Format,
-		Coordinates:  query.Coordinates,
+		Kind:         query.Kind,
+		Name:         query.Name,
+		Namespace:    query.Namespace,
+		Version:      query.Version,
+		Path:         query.Path,
+		Filename:     query.Filename,
+		RemotePath:   query.RemotePath,
+		IdentityKey:  query.IdentityKey,
+		Qualifiers:   query.Qualifiers,
 	})
 	if err != nil {
 		return nil, err

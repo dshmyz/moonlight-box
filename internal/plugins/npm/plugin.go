@@ -165,36 +165,36 @@ func (p *NpmPlugin) parseNpmMetadata(packageName string, body io.Reader) ([]*run
 				props["published_at"] = ts
 			}
 		}
-		artifacts = append(artifacts, &runtime.Artifact{
-			Format: "npm",
-			Kind:   "version",
-			Coordinates: map[string]string{
-				"name":    packageName,
-				"version": ver,
-			},
-			Properties: props,
-		})
+		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "npm",
+			Kind:       runtime.KindVersion,
+			Name:       packageName,
+			Version:    ver,
+			Attributes: props,
+		}))
 		tarballName := npmTarballName(packageName, ver)
 		tarballProps := map[string]string{}
 		if verObj != nil {
 			if dist, _ := verObj["dist"].(map[string]interface{}); dist != nil {
 				if tarballURL, _ := dist["tarball"].(string); tarballURL != "" {
 					tarballName = pathBase(tarballURL)
-					tarballProps["download_url"] = tarballURL
+					if parsed, err := url.Parse(tarballURL); err == nil && parsed.IsAbs() {
+						tarballProps["download_url"] = tarballURL
+					}
 				}
 			}
 		}
-		artifacts = append(artifacts, &runtime.Artifact{
-			Format: "npm",
-			Kind:   "tarball",
-			Coordinates: map[string]string{
-				"name":     packageName,
-				"version":  ver,
-				"path":     packageName + "/-",
-				"filename": tarballName,
-			},
-			Properties: tarballProps,
-		})
+		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:      "npm",
+			Kind:        "tarball",
+			Name:        packageName,
+			Version:     ver,
+			Path:        packageName + "/-",
+			Filename:    tarballName,
+			RemotePath:  packageName + "/-/" + tarballName,
+			DownloadURL: tarballProps["download_url"],
+			Properties:  tarballProps,
+		}))
 	}
 	return artifacts, nil
 }
@@ -279,7 +279,7 @@ func (p *NpmPlugin) handleAllPackages(ctx *runtime.RequestContext, repoRuntime r
 
 	packages := make(map[string]interface{})
 	for _, artifact := range artifacts {
-		name := artifact.Coordinates["name"]
+		name := artifact.Name
 		if name == "" {
 			continue
 		}
@@ -345,13 +345,12 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
-		Coordinates: map[string]string{
-			"name":     packageName,
-			"version":  version,
-			"path":     packageName + "/-",
-			"filename": filename,
-		},
-		Filename: filename,
+		Kind:         "tarball",
+		Name:         packageName,
+		Version:      version,
+		Path:         packageName + "/-",
+		Filename:     filename,
+		RemotePath:   path,
 	}
 
 	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
@@ -360,10 +359,8 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 			artifacts, queryErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 				RepositoryID: ctx.Repository.ID,
 				Format:       "npm",
-				Coordinates: map[string]string{
-					"name": packageName,
-				},
-				RemotePath: packageName,
+				Name:         packageName,
+				RemotePath:   packageName,
 			})
 			if queryErr == nil && len(artifacts) > 0 {
 				artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
@@ -427,13 +424,12 @@ func (p *NpmPlugin) handleTarballDelete(ctx *runtime.RequestContext, repoRuntime
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
-		Coordinates: map[string]string{
-			"name":     packageName,
-			"version":  version,
-			"path":     packageName + "/-",
-			"filename": filename,
-		},
-		Filename: filename,
+		Kind:         "tarball",
+		Name:         packageName,
+		Version:      version,
+		Path:         packageName + "/-",
+		Filename:     filename,
+		RemotePath:   path,
 	}
 	return deleteArtifact(ctx, repoRuntime, key)
 }
@@ -442,10 +438,8 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
-		Coordinates: map[string]string{
-			"name": packageName,
-		},
-		RemotePath: packageName,
+		Name:         packageName,
+		RemotePath:   packageName,
 	})
 	if err != nil {
 		if errors.Is(err, runtime.ErrBlocked) {
@@ -457,7 +451,7 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 
 	hasVersions := false
 	for _, a := range artifacts {
-		if a.Coordinates["version"] != "" {
+		if a.Version != "" {
 			hasVersions = true
 			break
 		}
@@ -472,7 +466,7 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 	versions := make(map[string]interface{})
 	var versionList []string
 	for _, artifact := range artifacts {
-		version := artifact.Coordinates["version"]
+		version := artifact.Version
 		if version == "" {
 			continue
 		}
@@ -500,7 +494,7 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 	distTags := map[string]string{}
 	for _, artifact := range artifacts {
 		if tag := artifact.Properties["dist-tag"]; tag != "" {
-			v := artifact.Coordinates["version"]
+			v := artifact.Version
 			if v != "" {
 				distTags[tag] = v
 			}
@@ -523,6 +517,15 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 	ctx.Writer.WriteHeader(http.StatusOK)
 	json.NewEncoder(ctx.Writer).Encode(data)
 	return nil
+}
+
+func firstNonEmptyNpm(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // repoBaseURL 构造仓库的基础 URL，支持反向代理 (X-Forwarded-* 头)
@@ -582,9 +585,7 @@ func (p *NpmPlugin) handlePackageDelete(ctx *runtime.RequestContext, repoRuntime
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
-		Coordinates: map[string]string{
-			"name": packageName,
-		},
+		Name:         packageName,
 	}
 	return deleteArtifact(ctx, repoRuntime, key)
 }
@@ -657,22 +658,21 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		}
 
 		tarballVersion := extractNpmVersionFromTarball(packageName, tarballName)
-		tarballArtifact := &runtime.Artifact{
+		tarballArtifact := runtime.NewArtifact(runtime.ArtifactSpec{
 			RepositoryID: ctx.Repository.ID,
 			Format:       "npm",
 			Kind:         "tarball",
-			Coordinates: map[string]string{
-				"name":     packageName,
-				"version":  tarballVersion,
-				"path":     packageName + "/-",
-				"filename": tarballName,
-			},
-			BlobRefs: []runtime.BlobRef{tarballBlob},
+			Name:         packageName,
+			Version:      tarballVersion,
+			Path:         packageName + "/-",
+			Filename:     tarballName,
+			RemotePath:   packageName + "/-/" + tarballName,
+			BlobRefs:     []runtime.BlobRef{tarballBlob},
 			Properties: map[string]string{
 				"package": packageName,
 				"version": tarballVersion,
 			},
-		}
+		})
 		if err := session.PutArtifact(ctx.Request.Context(), tarballArtifact); err != nil {
 			session.Abort(ctx.Request.Context())
 			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
@@ -688,20 +688,18 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		return nil
 	}
 
-	artifact := &runtime.Artifact{
+	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
-		Kind:         "metadata",
-		Coordinates: map[string]string{
-			"name":    packageName,
-			"version": version,
-		},
-		BlobRefs: []runtime.BlobRef{blob},
+		Kind:         runtime.KindMetadata,
+		Name:         packageName,
+		Version:      version,
+		BlobRefs:     []runtime.BlobRef{blob},
 		Properties: map[string]string{
 			"package": packageName,
 			"version": version,
 		},
-	}
+	})
 
 	if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
 		session.Abort(ctx.Request.Context())

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -42,14 +41,13 @@ func (s *ArtifactService) notifyCacheInvalidation() {
 }
 
 // Save 创建或更新一个 artifact，同步 blob 关联，并自动更新 packages 聚合表。
-// 如果 coordinates 已存在则更新，否则新建。
+// 如果 identity_key 已存在则更新，否则新建。
 func (s *ArtifactService) Save(ctx context.Context, artifact *runtime.Artifact) error {
 	if err := runtime.ValidateArtifactForStore(artifact); err != nil {
 		return err
 	}
 
 	modelArtifact := s.toModelArtifact(artifact)
-	coordsJSON, _ := json.Marshal(artifact.Coordinates)
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.Artifact
@@ -57,25 +55,8 @@ func (s *ArtifactService) Save(ctx context.Context, artifact *runtime.Artifact) 
 
 		err := tx.Where("repository_id = ?", modelArtifact.RepositoryID).
 			Where("format = ?", artifact.Format).
-			Where("coordinates = ?", coordsJSON).
+			Where("identity_key = ?", modelArtifact.IdentityKey).
 			First(&existing).Error
-
-		if err == gorm.ErrRecordNotFound {
-			// 精确匹配失败，尝试用核心坐标匹配（去掉 path 字段）
-			coreCoords := make(map[string]string)
-			for k, v := range artifact.Coordinates {
-				if k != "path" {
-					coreCoords[k] = v
-				}
-			}
-			if len(coreCoords) != len(artifact.Coordinates) {
-				coreCoordsJSON, _ := json.Marshal(coreCoords)
-				err = tx.Where("repository_id = ?", modelArtifact.RepositoryID).
-					Where("format = ?", artifact.Format).
-					Where("coordinates = ?", coreCoordsJSON).
-					First(&existing).Error
-			}
-		}
 
 		if err == gorm.ErrRecordNotFound {
 			isNew = true
@@ -124,63 +105,99 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		seenPackages := make(map[string]bool) // 用于批量更新 packages 去重
 
-		for _, artifact := range artifacts {
-			modelArtifact := s.toModelArtifact(artifact)
-			coordsJSON, _ := json.Marshal(artifact.Coordinates)
-			isNew := false
+		// 批量查询已有记录，避免逐条 SELECT
+		modelArtifacts := make([]*model.Artifact, len(artifacts))
+		for i, artifact := range artifacts {
+			modelArtifacts[i] = s.toModelArtifact(artifact)
+		}
 
-			var existing model.Artifact
-			err := tx.Where("repository_id = ?", modelArtifact.RepositoryID).
-				Where("format = ?", artifact.Format).
-				Where("coordinates = ?", coordsJSON).
-				First(&existing).Error
+		identityKeys := make([]string, 0, len(artifacts))
+		repoIDSet := make(map[uint]bool)
+		for _, ma := range modelArtifacts {
+			if ma.IdentityKey != "" {
+				identityKeys = append(identityKeys, ma.IdentityKey)
+			}
+			repoIDSet[ma.RepositoryID] = true
+		}
 
-			if err == gorm.ErrRecordNotFound {
-				// 回退到"核心坐标"匹配
-				coreCoords := make(map[string]string)
-				for k, v := range artifact.Coordinates {
-					if k != "path" {
-						coreCoords[k] = v
+		existingMap := make(map[string]model.Artifact) // key: identity_key
+		if len(identityKeys) > 0 {
+			repoIDs := make([]uint, 0, len(repoIDSet))
+			for id := range repoIDSet {
+				repoIDs = append(repoIDs, id)
+			}
+			var existing []model.Artifact
+			if err := tx.Where("repository_id IN ? AND identity_key IN ?", repoIDs, identityKeys).
+				Find(&existing).Error; err != nil {
+				return err
+			}
+			for _, e := range existing {
+				existingMap[e.IdentityKey] = e
+			}
+		}
+
+		type indexedArtifact struct {
+			model *model.Artifact
+			index int
+		}
+		var toCreate []indexedArtifact
+		var toUpdate []indexedArtifact
+
+		for i, ma := range modelArtifacts {
+			if existing, ok := existingMap[ma.IdentityKey]; ok {
+				ma.ID = existing.ID
+				toUpdate = append(toUpdate, indexedArtifact{model: ma, index: i})
+			} else {
+				toCreate = append(toCreate, indexedArtifact{model: ma, index: i})
+			}
+		}
+
+		// 批量 INSERT
+		if len(toCreate) > 0 {
+			createBatch := make([]*model.Artifact, len(toCreate))
+			for i, ia := range toCreate {
+				createBatch[i] = ia.model
+			}
+			if err := tx.CreateInBatches(createBatch, 100).Error; err != nil {
+				return err
+			}
+			for _, ia := range toCreate {
+				if err := s.syncBlobRefs(tx, ia.model.ID, artifacts[ia.index].BlobRefs); err != nil {
+					return err
+				}
+				// 同步 packages
+				var scanRepoID uint
+				scanUint(artifacts[ia.index].RepositoryID, &scanRepoID)
+				pkgKey := packageKey(scanRepoID, artifacts[ia.index].Format, artifacts[ia.index].Name)
+				if !seenPackages[pkgKey] {
+					seenPackages[pkgKey] = true
+					if syncErr := s.syncPackageAfterSave(tx, ia.model, true); syncErr != nil {
+						return syncErr
 					}
 				}
-				if len(coreCoords) != len(artifact.Coordinates) {
-					coreCoordsJSON, _ := json.Marshal(coreCoords)
-					err = tx.Where("repository_id = ?", modelArtifact.RepositoryID).
-						Where("format = ?", artifact.Format).
-						Where("coordinates = ?", coreCoordsJSON).
-						First(&existing).Error
-				}
 			}
+		}
 
-			if err == gorm.ErrRecordNotFound {
-				isNew = true
-				if err := tx.Create(modelArtifact).Error; err != nil {
-					return err
-				}
-			} else if err != nil {
-				return err
-			} else {
-				modelArtifact.ID = existing.ID
-				if err := tx.Save(modelArtifact).Error; err != nil {
-					return err
-				}
-			}
-
-			if err := s.syncBlobRefs(tx, modelArtifact.ID, artifact.BlobRefs); err != nil {
+		// 批量 UPDATE
+		for _, ia := range toUpdate {
+			if err := tx.Save(ia.model).Error; err != nil {
 				return err
 			}
-
-			// 去重后同步 packages（批量场景下同名的多个 artifact 只需同步一次）
+			if err := s.syncBlobRefs(tx, ia.model.ID, artifacts[ia.index].BlobRefs); err != nil {
+				return err
+			}
+			// 同步 packages
 			var scanRepoID uint
-			scanUint(artifact.RepositoryID, &scanRepoID)
-			pkgKey := packageKey(scanRepoID, artifact.Format, artifact.Coordinates["name"])
+			scanUint(artifacts[ia.index].RepositoryID, &scanRepoID)
+			pkgKey := packageKey(scanRepoID, artifacts[ia.index].Format, artifacts[ia.index].Name)
 			if !seenPackages[pkgKey] {
 				seenPackages[pkgKey] = true
-				if syncErr := s.syncPackageAfterSave(tx, modelArtifact, isNew); syncErr != nil {
+				if syncErr := s.syncPackageAfterSave(tx, ia.model, false); syncErr != nil {
 					return syncErr
 				}
 			}
 		}
+
 		// 批量结束后，精确更新所有涉及 packages 的 version_count
 		return s.recalcPackageVersions(tx, seenPackages)
 	})
@@ -192,16 +209,36 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 
 // Delete 删除 artifact 及其 blob 关联，并同步更新 packages 聚合表。
 func (s *ArtifactService) Delete(ctx context.Context, key runtime.ArtifactKey) error {
-	coordsJSON, _ := json.Marshal(key.Coordinates)
+	if key.IdentityKey == "" && key.RemotePath == "" && key.Name == "" && key.Version == "" && key.Path == "" && key.Filename == "" {
+		return runtime.ErrNotFound
+	}
 	var repoID uint
 	scanUint(key.RepositoryID, &repoID)
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var artifact model.Artifact
-		err := tx.Where("repository_id = ?", repoID).
+		db := tx.Where("repository_id = ?", repoID).
 			Where("format = ?", key.Format).
-			Where("coordinates = ?", coordsJSON).
-			First(&artifact).Error
+			Model(&model.Artifact{})
+		if key.IdentityKey != "" {
+			db = db.Where("identity_key = ?", key.IdentityKey)
+		} else if key.RemotePath != "" {
+			db = db.Where("remote_path = ?", key.RemotePath)
+		} else {
+			if key.Name != "" {
+				db = db.Where("name = ?", key.Name)
+			}
+			if key.Version != "" {
+				db = db.Where("version = ?", key.Version)
+			}
+			if key.Path != "" {
+				db = db.Where("path = ?", key.Path)
+			}
+			if key.Filename != "" {
+				db = db.Where("filename = ?", key.Filename)
+			}
+		}
+		err := db.First(&artifact).Error
 		if err != nil {
 			if err == gorm.ErrRecordNotFound {
 				return runtime.ErrNotFound
@@ -248,30 +285,57 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 		return err
 	}
 
+	licenseExpr := jsonTextExpr(s.db, "a3.attributes", "license")
+	descriptionExpr := jsonTextExpr(s.db, "a4.attributes", "description")
+
 	// 聚合 artifacts 数据
 	query := `
-		INSERT INTO packages (repository_id, format, name, version_count, latest_version, created_at, updated_at)
+		INSERT INTO packages (repository_id, format, name, version_count, latest_version, license, description, created_at, updated_at)
 		SELECT
 			repository_id,
 			format,
-			JSON_UNQUOTE(JSON_EXTRACT(coordinates, '$.name')) AS name,
+			name,
 			COUNT(*) AS version_count,
 			COALESCE(
-				(SELECT JSON_UNQUOTE(JSON_EXTRACT(a2.coordinates, '$.version'))
+				(SELECT a2.version
 				 FROM artifacts a2
 				 WHERE a2.repository_id = a.repository_id
 				   AND a2.format = a.format
-				   AND JSON_UNQUOTE(JSON_EXTRACT(a2.coordinates, '$.name')) = JSON_UNQUOTE(JSON_EXTRACT(a.coordinates, '$.name'))
+				   AND a2.name = a.name
 				 ORDER BY a2.updated_at DESC
 				 LIMIT 1),
 				''
-			) AS latest_version,
+				) AS latest_version,
+			COALESCE(
+				(SELECT ` + licenseExpr + `
+				 FROM artifacts a3
+				 WHERE a3.repository_id = a.repository_id
+				   AND a3.format = a.format
+				   AND a3.name = a.name
+				   AND ` + licenseExpr + ` IS NOT NULL
+				   AND ` + licenseExpr + ` != ''
+				 ORDER BY a3.updated_at DESC
+				 LIMIT 1),
+				''
+			) AS license,
+			COALESCE(
+				(SELECT ` + descriptionExpr + `
+				 FROM artifacts a4
+				 WHERE a4.repository_id = a.repository_id
+				   AND a4.format = a.format
+				   AND a4.name = a.name
+				   AND ` + descriptionExpr + ` IS NOT NULL
+				   AND ` + descriptionExpr + ` != ''
+				 ORDER BY a4.updated_at DESC
+				 LIMIT 1),
+				''
+			) AS description,
 			MIN(created_at) AS created_at,
 			MAX(updated_at) AS updated_at
 		FROM artifacts a
-		WHERE JSON_UNQUOTE(JSON_EXTRACT(a.coordinates, '$.name')) IS NOT NULL
-		  AND JSON_UNQUOTE(JSON_EXTRACT(a.coordinates, '$.name')) != ''
-		GROUP BY repository_id, format, JSON_UNQUOTE(JSON_EXTRACT(a.coordinates, '$.name'))
+		WHERE name IS NOT NULL
+		  AND name != ''
+		GROUP BY repository_id, format, name
 	`
 
 	if err := s.db.WithContext(ctx).Exec(query).Error; err != nil {
@@ -289,7 +353,7 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 
 // syncPackageAfterSave 在 artifact 创建/更新后同步 packages 表
 func (s *ArtifactService) syncPackageAfterSave(tx *gorm.DB, artifact *model.Artifact, isNew bool) error {
-	name := extractCoordsValue(artifact.Coordinates, "name")
+	name := artifact.Name
 	if name == "" {
 		return nil
 	}
@@ -306,11 +370,11 @@ func (s *ArtifactService) syncPackageAfterSave(tx *gorm.DB, artifact *model.Arti
 	if result.Error == gorm.ErrRecordNotFound {
 		// 创建新记录
 		pkg.VersionCount = 1
-		pkg.LatestVersion = extractCoordsValue(artifact.Coordinates, "version")
+		pkg.LatestVersion = artifact.Version
 		pkg.CreatedAt = artifact.CreatedAt
 		pkg.UpdatedAt = artifact.UpdatedAt
-		pkg.License = extractCoordsValue(artifact.Metadata, "license")
-		pkg.Description = extractCoordsValue(artifact.Metadata, "description")
+		pkg.License = extractJSONBString(artifact.Attributes, "license")
+		pkg.Description = extractJSONBString(artifact.Attributes, "description")
 		if pkg.CreatedAt.IsZero() {
 			pkg.CreatedAt = time.Now()
 		}
@@ -330,14 +394,20 @@ func (s *ArtifactService) syncPackageAfterSave(tx *gorm.DB, artifact *model.Arti
 		updates["version_count"] = gorm.Expr("version_count + 1")
 	}
 	if artifact.UpdatedAt.After(pkg.UpdatedAt) {
-		updates["latest_version"] = extractCoordsValue(artifact.Coordinates, "version")
+		updates["latest_version"] = artifact.Version
+	}
+	if license := extractJSONBString(artifact.Attributes, "license"); license != "" && license != pkg.License {
+		updates["license"] = license
+	}
+	if description := extractJSONBString(artifact.Attributes, "description"); description != "" && description != pkg.Description {
+		updates["description"] = description
 	}
 	return tx.Model(pkg).Updates(updates).Error
 }
 
 // syncPackageAfterDelete 在 artifact 删除后同步 packages 表
 func (s *ArtifactService) syncPackageAfterDelete(tx *gorm.DB, artifact *model.Artifact) error {
-	name := extractCoordsValue(artifact.Coordinates, "name")
+	name := artifact.Name
 	if name == "" {
 		return nil
 	}
@@ -356,16 +426,16 @@ func (s *ArtifactService) syncPackageAfterDelete(tx *gorm.DB, artifact *model.Ar
 		updates := map[string]interface{}{
 			"version_count": gorm.Expr("version_count - 1"),
 		}
-		deletedVersion := extractCoordsValue(artifact.Coordinates, "version")
+		deletedVersion := artifact.Version
 		if deletedVersion == pkg.LatestVersion {
 			// 重新计算最新版本
 			var latestArtifact model.Artifact
 			if err := tx.Where("repository_id = ? AND format = ?",
 				artifact.RepositoryID, artifact.Format).
-				Where("JSON_UNQUOTE(JSON_EXTRACT(coordinates, '$.name')) = ?", name).
+				Where("name = ?", name).
 				Order("updated_at DESC").
 				First(&latestArtifact).Error; err == nil {
-				updates["latest_version"] = extractCoordsValue(latestArtifact.Coordinates, "version")
+				updates["latest_version"] = latestArtifact.Version
 			}
 		}
 		return tx.Model(pkg).Updates(updates).Error
@@ -395,28 +465,13 @@ func (s *ArtifactService) syncBlobRefs(tx *gorm.DB, artifactID uint, blobRefs []
 	return nil
 }
 
-// toModelArtifact 将 runtime.Artifact 转换为 model.Artifact
+// toModelArtifact 将 runtime.Artifact 转换为 model.Artifact。
+// 前置条件：调用方必须确保 artifact 已通过 ValidateArtifactForStore 归一化。
 func (s *ArtifactService) toModelArtifact(t *runtime.Artifact) *model.Artifact {
-	coords := make(model.JSONB)
-	for k, v := range t.Coordinates {
-		coords[k] = v
-	}
 
 	metadata := make(model.JSONB)
 	for k, v := range t.Properties {
 		metadata[k] = v
-	}
-
-	if filename, _ := coords["filename"].(string); filename != "" && metadata["download_path"] == nil {
-		if p, _ := coords["path"].(string); p != "" {
-			if p == filename || strings.HasSuffix(p, "/"+filename) {
-				metadata["download_path"] = p
-			} else {
-				metadata["download_path"] = strings.TrimRight(p, "/") + "/" + filename
-			}
-		} else {
-			metadata["download_path"] = filename
-		}
 	}
 
 	var repoID uint
@@ -426,7 +481,21 @@ func (s *ArtifactService) toModelArtifact(t *runtime.Artifact) *model.Artifact {
 		RepositoryID: repoID,
 		Format:       t.Format,
 		Kind:         t.Kind,
-		Coordinates:  coords,
+		IdentityKey:  t.IdentityKey,
+		Name:         t.Name,
+		Namespace:    t.Namespace,
+		Version:      t.Version,
+		Path:         t.Path,
+		Filename:     t.Filename,
+		RemotePath:   t.RemotePath,
+		DownloadPath: t.DownloadPath,
+		DownloadURL:  t.DownloadURL,
+		Extension:    t.Extension,
+		ContentType:  t.ContentType,
+		SizeBytes:    t.SizeBytes,
+		Checksums:    stringMapToJSONB(t.Checksums),
+		Qualifiers:   stringMapToJSONB(t.Qualifiers),
+		Attributes:   stringMapToJSONB(t.Attributes),
 		Metadata:     metadata,
 		CreatedAt:    t.CreatedAt,
 		UpdatedAt:    t.UpdatedAt,
@@ -451,19 +520,19 @@ func (s *ArtifactService) recalcPackageVersions(tx *gorm.DB, seenPackages map[st
 		var count int64
 		if err := tx.Model(&model.Artifact{}).
 			Where("repository_id = ? AND format = ?", repoID, format).
-			Where("JSON_UNQUOTE(JSON_EXTRACT(coordinates, '$.name')) = ?", name).
+			Where("name = ?", name).
 			Count(&count).Error; err != nil {
 			return err
 		}
 
 		var latest model.Artifact
 		if err := tx.Where("repository_id = ? AND format = ?", repoID, format).
-			Where("JSON_UNQUOTE(JSON_EXTRACT(coordinates, '$.name')) = ?", name).
+			Where("name = ?", name).
 			Order("updated_at DESC").First(&latest).Error; err != nil {
 			return err
 		}
 
-		latestVersion := extractCoordsValue(latest.Coordinates, "version")
+		latestVersion := latest.Version
 
 		if err := tx.Model(&model.Package{}).
 			Where("repository_id = ? AND format = ? AND name = ?", repoID, format, name).
@@ -477,11 +546,11 @@ func (s *ArtifactService) recalcPackageVersions(tx *gorm.DB, seenPackages map[st
 	return nil
 }
 
-func extractCoordsValue(coords model.JSONB, key string) string {
-	if coords == nil {
+func extractJSONBString(data model.JSONB, key string) string {
+	if data == nil {
 		return ""
 	}
-	v, ok := coords[key]
+	v, ok := data[key]
 	if !ok {
 		return ""
 	}
@@ -490,6 +559,17 @@ func extractCoordsValue(coords model.JSONB, key string) string {
 		return ""
 	}
 	return s
+}
+
+func jsonTextExpr(db *gorm.DB, column, key string) string {
+	switch db.Dialector.Name() {
+	case "postgres":
+		return column + "->>'" + key + "'"
+	case "mysql":
+		return "JSON_UNQUOTE(JSON_EXTRACT(" + column + ", '$." + key + "'))"
+	default:
+		return "JSON_EXTRACT(" + column + ", '$." + key + "')"
+	}
 }
 
 func packageKey(repoID uint, format, name string) string {
@@ -503,4 +583,13 @@ func scanUint(s string, v *uint) {
 	_, _ = fmt.Sscanf(s, "%d", v)
 }
 
-// 导入 fmt（已在辅助函数中使用）
+func stringMapToJSONB(src map[string]string) model.JSONB {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(model.JSONB, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}

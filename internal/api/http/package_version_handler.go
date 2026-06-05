@@ -2,7 +2,6 @@ package http
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -51,8 +50,7 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 	db := h.db.WithContext(c.Request.Context()).Model(&model.Artifact{}).
 		Where("format = ?", pkgType)
 
-	// 按统一 name 键匹配（所有协议已在 plugin 层标准化）
-	db = db.Where("coordinates LIKE ?", fmt.Sprintf(`%%"name":"%s%%`, pkgName))
+	db = db.Where("name = ?", pkgName)
 
 	if repositoryID > 0 {
 		db = db.Where("repository_id = ?", repositoryID)
@@ -114,6 +112,12 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		publishedAt string
 		license     string
 		triggerIP   string
+		name        string
+		namespace   string
+		identityKey string
+		attributes  model.JSONB
+		qualifiers  model.JSONB
+		metadata    model.JSONB
 		files       []gin.H
 		blobs       []blobInfo
 	}
@@ -121,7 +125,7 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 	var verOrder []string
 
 	for _, a := range artifacts {
-		version := coordinateStr(a.Coordinates, "version")
+		version := a.Version
 		if version == "" {
 			continue
 		}
@@ -135,15 +139,36 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		if a.CreatedAt.After(vp.latestAt) {
 			vp.latestAt = a.CreatedAt
 		}
-		if vp.publishedAt == "" && a.Metadata != nil {
-			if pa, ok := a.Metadata["published_at"]; ok {
+		if vp.name == "" {
+			vp.name = a.Name
+		}
+		if vp.namespace == "" {
+			vp.namespace = a.Namespace
+		}
+		if vp.identityKey == "" {
+			vp.identityKey = a.IdentityKey
+		}
+		mergeJSONB(vp.attributes, a.Attributes)
+		if vp.attributes == nil && len(a.Attributes) > 0 {
+			vp.attributes = cloneJSONB(a.Attributes)
+		}
+		mergeJSONB(vp.qualifiers, a.Qualifiers)
+		if vp.qualifiers == nil && len(a.Qualifiers) > 0 {
+			vp.qualifiers = cloneJSONB(a.Qualifiers)
+		}
+		mergeJSONB(vp.metadata, a.Metadata)
+		if vp.metadata == nil && len(a.Metadata) > 0 {
+			vp.metadata = cloneJSONB(a.Metadata)
+		}
+		if vp.publishedAt == "" && a.Attributes != nil {
+			if pa, ok := a.Attributes["published_at"]; ok {
 				if s, ok := pa.(string); ok && s != "" {
 					vp.publishedAt = s
 				}
 			}
 		}
-		if vp.license == "" && a.Metadata != nil {
-			if lic, ok := a.Metadata["license"]; ok {
+		if vp.license == "" && a.Attributes != nil {
+			if lic, ok := a.Attributes["license"]; ok {
 				if s, ok := lic.(string); ok && s != "" {
 					vp.license = s
 				}
@@ -157,19 +182,9 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 			}
 		}
 
-		filename := coordinateStr(a.Coordinates, "filename")
-		if filename == "" {
-			filename = coordinateStr(a.Coordinates, "file")
-		}
-		if filename == "" {
-			if v, ok := a.Coordinates["artifact"]; ok {
-				if s, ok2 := v.(string); ok2 {
-					filename = s
-				}
-			}
-		}
+		filename := a.Filename
 
-		fileType := classifyFileType(a.Format, filename, a.Coordinates)
+		fileType := classifyFileType(a.Format, filename)
 
 		blobs := blobMap[a.ID]
 		for _, b := range blobs {
@@ -177,14 +192,23 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		}
 
 		repoName := repoNameMap[a.RepositoryID]
-		downloadURL := buildDownloadURL(repoName, a.Metadata)
+		downloadURL := buildDownloadURL(repoName, a)
 
 		if isDownloadableArtifact(a, filename, downloadURL, blobs) {
 			vp.files = append(vp.files, gin.H{
-				"filename":     filename,
-				"file_type":    fileType,
-				"size_bytes":   sumBlobSizes(blobs),
-				"download_url": downloadURL,
+				"id":            a.ID,
+				"version_id":    a.ID,
+				"filename":      filename,
+				"file_type":     fileType,
+				"storage_path":  firstNonEmptyString(a.DownloadPath, a.RemotePath, a.Path),
+				"path":          a.Path,
+				"remote_path":   a.RemotePath,
+				"download_path": a.DownloadPath,
+				"size_bytes":    sumBlobSizes(blobs),
+				"download_url":  downloadURL,
+				"qualifiers":    a.Qualifiers,
+				"attributes":    a.Attributes,
+				"metadata":      a.Metadata,
 			})
 		}
 	}
@@ -210,6 +234,9 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 
 		entry := gin.H{
 			"version":          ver,
+			"name":             vp.name,
+			"namespace":        vp.namespace,
+			"identity_key":     vp.identityKey,
 			"status":           "published",
 			"published_at":     publishedAt,
 			"size_bytes":       totalSize,
@@ -217,6 +244,9 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 			"files":            vp.files,
 			"files_downloaded": len(vp.blobs) > 0,
 			"download_count":   0,
+			"attributes":       vp.attributes,
+			"qualifiers":       vp.qualifiers,
+			"metadata":         vp.metadata,
 		}
 		if vp.license != "" {
 			entry["license"] = vp.license
@@ -234,7 +264,7 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 	})
 }
 
-func classifyFileType(format, filename string, coords model.JSONB) string {
+func classifyFileType(format, filename string) string {
 	if strings.HasSuffix(filename, ".pom") {
 		return "pom"
 	}
@@ -264,8 +294,11 @@ func sumBlobSizes(blobs []blobInfo) int64 {
 	return total
 }
 
-func buildDownloadURL(repoName string, metadata model.JSONB) string {
-	downloadPath := coordinateStr(metadata, "download_path")
+func buildDownloadURL(repoName string, artifact model.Artifact) string {
+	if artifact.DownloadURL != "" {
+		return artifact.DownloadURL
+	}
+	downloadPath := firstNonEmptyString(artifact.DownloadPath, artifact.RemotePath)
 	if downloadPath == "" {
 		return ""
 	}
@@ -284,6 +317,37 @@ func isDownloadableArtifact(a model.Artifact, filename, downloadURL string, blob
 		return true
 	}
 	return false
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func cloneJSONB(src model.JSONB) model.JSONB {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(model.JSONB, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func mergeJSONB(dst model.JSONB, src model.JSONB) {
+	if len(dst) == 0 || len(src) == 0 {
+		return
+	}
+	for k, v := range src {
+		if _, exists := dst[k]; !exists {
+			dst[k] = v
+		}
+	}
 }
 
 func (h *PackageVersionHandler) DeprecateVersion(c *gin.Context) {
@@ -318,7 +382,7 @@ func (h *PackageVersionHandler) DeprecateVersion(c *gin.Context) {
 
 	response.Success(c, gin.H{
 		"message": "version deprecated",
-		"version": coordinateStr(artifact.Coordinates, "version"),
+		"version": artifact.Version,
 		"reason":  req.Reason,
 	})
 }
@@ -348,7 +412,7 @@ func (h *PackageVersionHandler) RestoreVersion(c *gin.Context) {
 
 	response.Success(c, gin.H{
 		"message": "version restored",
-		"version": coordinateStr(artifact.Coordinates, "version"),
+		"version": artifact.Version,
 	})
 }
 
@@ -384,7 +448,7 @@ func (h *PackageVersionHandler) YankVersion(c *gin.Context) {
 
 	response.Success(c, gin.H{
 		"message": "version yanked",
-		"version": coordinateStr(artifact.Coordinates, "version"),
+		"version": artifact.Version,
 		"reason":  req.Reason,
 	})
 }
@@ -422,13 +486,13 @@ func (h *PackageVersionHandler) DeletePackage(c *gin.Context) {
 		return
 	}
 
-	name := coordinateStr(artifact.Coordinates, "name")
+	name := artifact.Name
 
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
 		var allIDs []uint
 		if err := tx.Model(&model.Artifact{}).
-			Where("repository_id = ? AND format = ? AND coordinates LIKE ?",
-				artifact.RepositoryID, artifact.Format, fmt.Sprintf(`%%"name":"%s%%`, name)).
+			Where("repository_id = ? AND format = ? AND name = ?",
+				artifact.RepositoryID, artifact.Format, name).
 			Pluck("id", &allIDs).Error; err != nil {
 			return err
 		}
@@ -447,21 +511,6 @@ func (h *PackageVersionHandler) DeletePackage(c *gin.Context) {
 	response.Success(c, gin.H{
 		"message": "package deleted",
 	})
-}
-
-func coordinateStr(coords model.JSONB, key string) string {
-	if coords == nil {
-		return ""
-	}
-	v, ok := coords[key]
-	if !ok {
-		return ""
-	}
-	s, ok := v.(string)
-	if !ok {
-		return fmt.Sprintf("%v", v)
-	}
-	return s
 }
 
 var _ = context.Background

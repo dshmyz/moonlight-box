@@ -30,7 +30,7 @@
 //  2. 未命中时通过 QueryArtifacts(RemotePath=path) 触发 FetchRemote 回源
 //  3. 回源成功后再次 GetArtifact 获取带 blob 的完整 artifact
 //
-// ArtifactKey.Coordinates 必须与 FetchRemote 存储的坐标一致（含 package/version/filename/path）。
+// ArtifactKey 必须与 FetchRemote 存储的 Name/Version/Filename/RemotePath 字段一致。
 // Checksum 请求使用 QueryArtifacts 按 filename 查找，因为 URL 中不含 package/version 信息。
 //
 // ## 关键实现点
@@ -234,7 +234,7 @@ func (p *PyPIPlugin) writeSimpleIndexHTML(ctx *runtime.RequestContext, artifacts
 	var sb strings.Builder
 	sb.WriteString("<!DOCTYPE html>\n<html><head><title>Simple Index</title></head><body>\n")
 	for _, artifact := range artifacts {
-		name := artifact.Coordinates["package"]
+		name := artifact.Name
 		if name == "" || seen[name] {
 			continue
 		}
@@ -259,7 +259,7 @@ func (p *PyPIPlugin) writeSimpleIndexJSON(ctx *runtime.RequestContext, artifacts
 	seen := make(map[string]bool)
 	projects := make([]map[string]string, 0)
 	for _, artifact := range artifacts {
-		name := artifact.Coordinates["package"]
+		name := artifact.Name
 		if name == "" || seen[name] {
 			continue
 		}
@@ -294,10 +294,8 @@ func (p *PyPIPlugin) handlePackageList(ctx *runtime.RequestContext, repoRuntime 
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
-		Coordinates: map[string]string{
-			"package": packageName,
-		},
-		RemotePath: path,
+		Name:         packageName,
+		RemotePath:   path,
 	})
 	if err != nil {
 		if errors.Is(err, runtime.ErrNotFound) {
@@ -321,11 +319,11 @@ func (p *PyPIPlugin) writePackageFilesHTML(ctx *runtime.RequestContext, packageN
 	sb.WriteString(fmt.Sprintf("<!DOCTYPE html>\n<html><head><title>Links for %s</title></head><body>\n<h1>Links for %s</h1>\n", escapedPkg, escapedPkg))
 
 	for _, artifact := range artifacts {
-		if artifact.Coordinates["package"] != packageName {
+		if artifact.Name != packageName {
 			continue
 		}
-		filename := artifact.Coordinates["filename"]
-		remotePath := artifact.Properties["remote_path"]
+		filename := artifact.Filename
+		remotePath := firstNonEmptyPyPI(artifact.RemotePath, artifact.Properties["remote_path"])
 		if filename == "" || remotePath == "" {
 			continue
 		}
@@ -357,11 +355,11 @@ func (p *PyPIPlugin) writePackageFilesHTML(ctx *runtime.RequestContext, packageN
 func (p *PyPIPlugin) writePackageFilesJSON(ctx *runtime.RequestContext, packageName string, artifacts []*runtime.Artifact) error {
 	files := make([]map[string]interface{}, 0)
 	for _, artifact := range artifacts {
-		if artifact.Coordinates["package"] != packageName {
+		if artifact.Name != packageName {
 			continue
 		}
-		filename := artifact.Coordinates["filename"]
-		remotePath := artifact.Properties["remote_path"]
+		filename := artifact.Filename
+		remotePath := firstNonEmptyPyPI(artifact.RemotePath, artifact.Properties["remote_path"])
 		if filename == "" || remotePath == "" {
 			continue
 		}
@@ -413,14 +411,15 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
-		Coordinates: map[string]string{
-			"name":     packageName,
-			"package":  packageName,
-			"version":  version,
-			"filename": filename,
-			"path":     dir,
+		Kind:         "package-file",
+		Name:         packageName,
+		Version:      version,
+		Path:         dir,
+		Filename:     filename,
+		RemotePath:   path,
+		Qualifiers: map[string]string{
+			"package": packageName,
 		},
-		Filename: filename,
 	}
 
 	switch ctx.Request.Method {
@@ -473,13 +472,11 @@ func (p *PyPIPlugin) handleChecksumRequest(ctx *runtime.RequestContext, repoRunt
 	actualFilename := strings.TrimSuffix(filename, ".sha256")
 
 	// Use QueryArtifacts to find the artifact by filename, since the exact
-	// coordinates (package/version/path) are not available from the URL alone.
+	// package/version/path are not available from the URL alone.
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
-		Coordinates: map[string]string{
-			"filename": actualFilename,
-		},
+		Filename:     actualFilename,
 	})
 	if err != nil || len(artifacts) == 0 {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
@@ -530,16 +527,16 @@ func (p *PyPIPlugin) handleJsonAPI(ctx *runtime.RequestContext, repoRuntime runt
 
 	releases := make(map[string][]map[string]interface{})
 	for _, artifact := range artifacts {
-		if artifact.Coordinates["package"] != packageName {
+		if artifact.Name != packageName {
 			continue
 		}
-		v := artifact.Coordinates["version"]
+		v := artifact.Version
 		if version != "" && v != version {
 			continue
 		}
 
-		filename := artifact.Coordinates["filename"]
-		remotePath := artifact.Properties["remote_path"]
+		filename := artifact.Filename
+		remotePath := firstNonEmptyPyPI(artifact.RemotePath, artifact.Properties["remote_path"])
 		if filename == "" || remotePath == "" {
 			continue
 		}
@@ -630,21 +627,22 @@ func (p *PyPIPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runti
 		return nil
 	}
 
-	artifact := &runtime.Artifact{
+	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
-		Kind:         "package",
-		Coordinates: map[string]string{
-			"name":     packageName,
-			"package":  packageName,
-			"version":  version,
-			"filename": key.Filename,
+		Kind:         runtime.KindPackage,
+		Name:         packageName,
+		Version:      version,
+		Filename:     key.Filename,
+		RemotePath:   key.RemotePath,
+		Qualifiers: map[string]string{
+			"package": packageName,
 		},
 		BlobRefs: []runtime.BlobRef{blobRef},
 		Properties: map[string]string{
 			"filename": key.Filename,
 		},
-	}
+	})
 
 	if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
 		session.Abort(ctx.Request.Context())
@@ -795,12 +793,7 @@ func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[stri
 	infoData, _ := info["info"].(map[string]interface{})
 	var license, description, homepage string
 	if infoData != nil {
-		if l, ok := infoData["license"].(string); ok && l != "" {
-			license = l
-		}
-		if le, ok := infoData["license_expression"].(string); ok && le != "" && license == "" {
-			license = le
-		}
+		license = selectPyPILicense(infoData)
 		if s, ok := infoData["summary"].(string); ok && s != "" {
 			description = s
 		}
@@ -837,6 +830,7 @@ func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[stri
 			props := map[string]string{
 				"remote_path": remotePath,
 			}
+			attrs := map[string]string{}
 			// 存储 PyPI 原始下载 URL，供 ensureArtifactBlob 回源时使用。
 			// PyPI 文件下载域名(files.pythonhosted.org)与 Simple API 域名(pypi.org/simple/)不同，
 			// buildRemoteURL 拼出的 URL 对 PyPI 不可用，必须使用上游返回的真实 URL。
@@ -844,13 +838,13 @@ func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[stri
 				props["download_url"] = rawURL
 			}
 			if license != "" {
-				props["license"] = license
+				attrs["license"] = license
 			}
 			if description != "" {
-				props["description"] = description
+				attrs["description"] = description
 			}
 			if homepage != "" {
-				props["homepage"] = homepage
+				attrs["homepage"] = homepage
 			}
 			if uploadTime, ok := file["upload_time"].(string); ok && uploadTime != "" {
 				if t, err := parsePyPITime(uploadTime); err == nil {
@@ -860,23 +854,26 @@ func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[stri
 					}
 				}
 			}
-			artifacts = append(artifacts, &runtime.Artifact{
-				Format: "pypi",
-				Kind:   "package-file",
-				Coordinates: map[string]string{
-					"name":     packageName,
-					"package":  packageName,
-					"version":  version,
-					"filename": filename,
-					"path":     dir,
+			artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
+				Format:      "pypi",
+				Kind:        "package-file",
+				Name:        packageName,
+				Version:     version,
+				Path:        dir,
+				Filename:    filename,
+				RemotePath:  props["remote_path"],
+				DownloadURL: props["download_url"],
+				Attributes:  attrs,
+				Qualifiers: map[string]string{
+					"package": packageName,
 				},
 				Properties: props,
-			})
+			}))
 		}
 		if earliestTime != "" {
 			for _, a := range artifacts {
-				if a.Coordinates["version"] == version && a.Properties["published_at"] == "" {
-					a.Properties["published_at"] = earliestTime
+				if a.Version == version && a.Attributes["published_at"] == "" {
+					a.Attributes["published_at"] = earliestTime
 				}
 			}
 		}
@@ -893,18 +890,57 @@ func (p *PyPIPlugin) extractStringField(info map[string]interface{}, key string)
 	return ""
 }
 
+func selectPyPILicense(info map[string]interface{}) string {
+	if info == nil {
+		return ""
+	}
+	if expr, ok := info["license_expression"].(string); ok {
+		if normalized := normalizePyPILicense(expr); normalized != "" {
+			return normalized
+		}
+	}
+	if raw, ok := info["license"].(string); ok {
+		if normalized := normalizePyPILicense(raw); normalized != "" {
+			return normalized
+		}
+	}
+	if classifiers, ok := info["classifiers"].([]interface{}); ok {
+		for _, item := range classifiers {
+			classifier, ok := item.(string)
+			if !ok || !strings.HasPrefix(classifier, "License ::") {
+				continue
+			}
+			parts := strings.Split(classifier, "::")
+			if len(parts) == 0 {
+				continue
+			}
+			if normalized := normalizePyPILicense(parts[len(parts)-1]); normalized != "" {
+				return normalized
+			}
+		}
+	}
+	return ""
+}
+
+func normalizePyPILicense(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	switch strings.ToLower(value) {
+	case "unknown", "none", "n/a", "na", "not specified":
+		return ""
+	}
+	return value
+}
+
 func (p *PyPIPlugin) mergePackageInfo(artifacts []*runtime.Artifact, info map[string]interface{}) {
 	infoData, _ := info["info"].(map[string]interface{})
 	releases, _ := info["releases"].(map[string]interface{})
 
 	var license, description, homepage string
 	if infoData != nil {
-		if l, ok := infoData["license"].(string); ok && l != "" {
-			license = l
-		}
-		if le, ok := infoData["license_expression"].(string); ok && le != "" && license == "" {
-			license = le
-		}
+		license = selectPyPILicense(infoData)
 		if s, ok := infoData["summary"].(string); ok && s != "" {
 			description = s
 		}
@@ -947,22 +983,22 @@ func (p *PyPIPlugin) mergePackageInfo(artifacts []*runtime.Artifact, info map[st
 	}
 
 	for _, artifact := range artifacts {
-		if artifact.Properties == nil {
-			artifact.Properties = make(map[string]string)
+		if artifact.Attributes == nil {
+			artifact.Attributes = make(map[string]string)
 		}
 		if license != "" {
-			artifact.Properties["license"] = license
+			artifact.Attributes["license"] = license
 		}
 		if description != "" {
-			artifact.Properties["description"] = description
+			artifact.Attributes["description"] = description
 		}
 		if homepage != "" {
-			artifact.Properties["homepage"] = homepage
+			artifact.Attributes["homepage"] = homepage
 		}
-		version := artifact.Coordinates["version"]
+		version := artifact.Version
 		if version != "" {
 			if uploadTime, ok := versionUploadTimes[version]; ok {
-				artifact.Properties["published_at"] = uploadTime
+				artifact.Attributes["published_at"] = uploadTime
 			}
 		}
 	}
@@ -998,14 +1034,14 @@ func (p *PyPIPlugin) parseSimpleIndex(body io.Reader) ([]*runtime.Artifact, erro
 			continue
 		}
 		seen[pkgName] = true
-		artifacts = append(artifacts, &runtime.Artifact{
+		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
 			Format: "pypi",
 			Kind:   "package-index",
-			Coordinates: map[string]string{
-				"name":    pkgName,
+			Name:   pkgName,
+			Qualifiers: map[string]string{
 				"package": pkgName,
 			},
-		})
+		}))
 	}
 	return artifacts, nil
 }
@@ -1039,18 +1075,29 @@ func (p *PyPIPlugin) parsePackageList(packageName string, body io.Reader) ([]*ru
 		if parsed, err := url.Parse(hrefPrefix); err == nil && parsed.IsAbs() {
 			props["download_url"] = strings.TrimRight(hrefPrefix, "/") + "/packages/" + pathAfterPkg
 		}
-		artifacts = append(artifacts, &runtime.Artifact{
-			Format: "pypi",
-			Kind:   "package-file",
-			Coordinates: map[string]string{
-				"name":     packageName,
-				"package":  packageName,
-				"version":  version,
-				"filename": filename,
-				"path":     dir,
+		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:      "pypi",
+			Kind:        "package-file",
+			Name:        packageName,
+			Version:     version,
+			Path:        dir,
+			Filename:    filename,
+			RemotePath:  fullPath,
+			DownloadURL: props["download_url"],
+			Qualifiers: map[string]string{
+				"package": packageName,
 			},
 			Properties: props,
-		})
+		}))
 	}
 	return artifacts, nil
+}
+
+func firstNonEmptyPyPI(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

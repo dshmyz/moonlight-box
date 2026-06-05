@@ -149,27 +149,28 @@ func TestSelectLatestStableVersion(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var arts []*runtime.Artifact
 			for _, v := range tt.versions {
-				arts = append(arts, &runtime.Artifact{
-					Format: "go",
-					Kind:   "version",
-					Coordinates: map[string]string{
-						"module":  "github.com/example/mod",
-						"version": v,
+				arts = append(arts, runtime.NewArtifact(runtime.ArtifactSpec{
+					Format:  "go",
+					Kind:    runtime.KindVersion,
+					Name:    "github.com/example/mod",
+					Version: v,
+					Qualifiers: map[string]string{
+						"module": "github.com/example/mod",
 					},
-				})
+				}))
 			}
 			result := p.selectLatestStableVersion(arts)
 			if tt.want == "" {
 				if result != nil {
-					t.Fatalf("expected nil, got %v", result.Coordinates["version"])
+					t.Fatalf("expected nil, got %v", result.Version)
 				}
 				return
 			}
 			if result == nil {
 				t.Fatalf("expected %q, got nil", tt.want)
 			}
-			if result.Coordinates["version"] != tt.want {
-				t.Errorf("got %q, want %q", result.Coordinates["version"], tt.want)
+			if result.Version != tt.want {
+				t.Errorf("got %q, want %q", result.Version, tt.want)
 			}
 		})
 	}
@@ -579,8 +580,8 @@ func TestFetchRemote_VersionList(t *testing.T) {
 		t.Fatalf("expected 3 artifacts, got %d", len(arts))
 	}
 	for _, a := range arts {
-		if a.Coordinates["module"] != "github.com/example/mod" {
-			t.Errorf("module = %q, want 'github.com/example/mod'", a.Coordinates["module"])
+		if a.Qualifiers["module"] != "github.com/example/mod" {
+			t.Errorf("module = %q, want 'github.com/example/mod'", a.Qualifiers["module"])
 		}
 	}
 }
@@ -620,8 +621,8 @@ func TestFetchRemote_Latest(t *testing.T) {
 	if len(arts) != 1 {
 		t.Fatalf("expected 1 artifact, got %d", len(arts))
 	}
-	if arts[0].Coordinates["version"] != "v1.2.0" {
-		t.Errorf("version = %q, want 'v1.2.0'", arts[0].Coordinates["version"])
+	if arts[0].Version != "v1.2.0" {
+		t.Errorf("version = %q, want 'v1.2.0'", arts[0].Version)
 	}
 }
 
@@ -673,12 +674,12 @@ func TestFetchRemote_ModuleFile(t *testing.T) {
 	if len(arts) != 1 {
 		t.Fatalf("expected 1 artifact, got %d", len(arts))
 	}
-	if arts[0].Coordinates["filename"] != "v1.0.0.zip" {
-		t.Errorf("filename = %q, want 'v1.0.0.zip'", arts[0].Coordinates["filename"])
+	if arts[0].Filename != "v1.0.0.zip" {
+		t.Errorf("filename = %q, want 'v1.0.0.zip'", arts[0].Filename)
 	}
 }
 
-func TestFetchRemote_ModuleFileCoordinatesMatchDownloadKey(t *testing.T) {
+func TestFetchRemote_ModuleFileFieldsMatchDownloadKey(t *testing.T) {
 	p := NewGoPlugin()
 	arts, err := p.FetchRemote(context.Background(), "http://example.test", "github.com/example/mod/@v/v1.2.3.zip")
 	if err != nil {
@@ -688,19 +689,12 @@ func TestFetchRemote_ModuleFileCoordinatesMatchDownloadKey(t *testing.T) {
 		t.Fatalf("expected 1 artifact, got %d", len(arts))
 	}
 
-	got := arts[0].Coordinates
-	want := map[string]string{
-		"name":     "github.com/example/mod",
-		"module":   "github.com/example/mod",
-		"version":  "v1.2.3",
-		"path":     "github.com/example/mod/@v",
-		"ext":      "zip",
-		"filename": "v1.2.3.zip",
+	got := arts[0]
+	if got.Name != "github.com/example/mod" || got.Version != "v1.2.3" || got.Path != "github.com/example/mod/@v" || got.Filename != "v1.2.3.zip" {
+		t.Fatalf("unexpected artifact fields: name=%q version=%q path=%q filename=%q", got.Name, got.Version, got.Path, got.Filename)
 	}
-	for k, v := range want {
-		if got[k] != v {
-			t.Fatalf("coordinate %q = %q, want %q", k, got[k], v)
-		}
+	if got.Qualifiers["module"] != "github.com/example/mod" || got.Qualifiers["ext"] != "zip" {
+		t.Fatalf("unexpected qualifiers: %#v", got.Qualifiers)
 	}
 }
 
@@ -730,7 +724,7 @@ func TestFetchRemote_SemanticImportVersion(t *testing.T) {
 	if len(arts) != 2 {
 		t.Fatalf("expected 2 artifacts, got %d", len(arts))
 	}
-	if arts[0].Coordinates["module"] != "github.com/labstack/echo/v4" {
-		t.Errorf("module = %q, want 'github.com/labstack/echo/v4'", arts[0].Coordinates["module"])
+	if arts[0].Qualifiers["module"] != "github.com/labstack/echo/v4" {
+		t.Errorf("module = %q, want 'github.com/labstack/echo/v4'", arts[0].Qualifiers["module"])
 	}
 }

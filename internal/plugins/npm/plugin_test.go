@@ -572,41 +572,41 @@ func TestParseNpmMetadata(t *testing.T) {
 		if a.Kind != "version" {
 			continue
 		}
-		artMap[a.Coordinates["version"]] = a
+		artMap[a.Version] = a
 	}
 
 	v1 := artMap["1.0.0"]
 	if v1 == nil {
 		t.Fatal("version 1.0.0 not found")
 	}
-	if v1.Properties["license"] != "Apache-2.0" {
-		t.Errorf("v1 license: expected 'Apache-2.0', got %q", v1.Properties["license"])
+	if v1.Attributes["license"] != "Apache-2.0" {
+		t.Errorf("v1 attributes license: expected 'Apache-2.0', got %q", v1.Attributes["license"])
 	}
-	if v1.Properties["description"] != "version-specific description" {
-		t.Errorf("v1 description: expected 'version-specific description', got %q", v1.Properties["description"])
+	if v1.Attributes["description"] != "version-specific description" {
+		t.Errorf("v1 description: expected 'version-specific description', got %q", v1.Attributes["description"])
 	}
-	if v1.Properties["homepage"] != "https://example.com" {
-		t.Errorf("v1 homepage: expected 'https://example.com', got %q", v1.Properties["homepage"])
+	if v1.Attributes["homepage"] != "https://example.com" {
+		t.Errorf("v1 homepage: expected 'https://example.com', got %q", v1.Attributes["homepage"])
 	}
-	if v1.Properties["published_at"] != "2024-01-15T10:00:00.000Z" {
-		t.Errorf("v1 published_at: expected '2024-01-15T10:00:00.000Z', got %q", v1.Properties["published_at"])
+	if v1.Attributes["published_at"] != "2024-01-15T10:00:00.000Z" {
+		t.Errorf("v1 published_at: expected '2024-01-15T10:00:00.000Z', got %q", v1.Attributes["published_at"])
 	}
 
 	v2 := artMap["2.0.0"]
 	if v2 == nil {
 		t.Fatal("version 2.0.0 not found")
 	}
-	if v2.Properties["license"] != "BSD-3-Clause" {
-		t.Errorf("v2 license: expected 'BSD-3-Clause' (from object), got %q", v2.Properties["license"])
+	if v2.Attributes["license"] != "BSD-3-Clause" {
+		t.Errorf("v2 license: expected 'BSD-3-Clause' (from object), got %q", v2.Attributes["license"])
 	}
-	if v2.Properties["description"] != "top-level description" {
-		t.Errorf("v2 description: expected fallback to top-level, got %q", v2.Properties["description"])
+	if v2.Attributes["description"] != "top-level description" {
+		t.Errorf("v2 description: expected fallback to top-level, got %q", v2.Attributes["description"])
 	}
-	if v2.Properties["homepage"] != "https://v2.example.com" {
-		t.Errorf("v2 homepage: expected version-specific 'https://v2.example.com', got %q", v2.Properties["homepage"])
+	if v2.Attributes["homepage"] != "https://v2.example.com" {
+		t.Errorf("v2 homepage: expected version-specific 'https://v2.example.com', got %q", v2.Attributes["homepage"])
 	}
-	if v2.Properties["published_at"] != "2024-06-20T15:30:00.000Z" {
-		t.Errorf("v2 published_at: expected '2024-06-20T15:30:00.000Z', got %q", v2.Properties["published_at"])
+	if v2.Attributes["published_at"] != "2024-06-20T15:30:00.000Z" {
+		t.Errorf("v2 published_at: expected '2024-06-20T15:30:00.000Z', got %q", v2.Attributes["published_at"])
 	}
 }
 

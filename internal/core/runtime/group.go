@@ -30,13 +30,16 @@ func artifactDedupeKey(a *Artifact) string {
 	if a.ID != "" {
 		return a.ID
 	}
-	name := a.Coordinates["name"]
-	pkg := a.Coordinates["package"]
-	version := a.Coordinates["version"]
-	group := a.Coordinates["group"]
-	artifact := a.Coordinates["artifact"]
-	filename := a.Coordinates["filename"]
-	return fmt.Sprintf("%s/%s/%s/%s/%s/%s/%s", a.Format, name, pkg, version, group, artifact, filename)
+	if a.IdentityKey != "" {
+		return a.Format + "/" + a.IdentityKey
+	}
+	name := a.Name
+	version := a.Version
+	group := a.Namespace
+	artifact := a.Qualifiers["artifact"]
+	filename := a.Filename
+	remotePath := firstNonEmpty(a.RemotePath, a.Properties["remote_path"])
+	return fmt.Sprintf("%s/%s/%s/%s/%s/%s/%s", a.Format, name, version, group, artifact, filename, remotePath)
 }
 
 func (g *GroupRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
@@ -46,9 +49,9 @@ func (g *GroupRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		"memberCount": len(g.Members),
 	}).Debug("group: QueryArtifacts called")
 
-	// 对于有具体路径且带坐标的查询（如单个包的回源），使用优先级短路策略。
+	// 对于有具体路径且带身份字段的查询（如单个包的回源），使用优先级短路策略。
 	// 纯 RemotePath 也可能是仓库级索引（如 PyPI simple/），必须聚合所有成员。
-	if query.RemotePath != "" && len(query.Coordinates) > 0 {
+	if query.RemotePath != "" && QueryHasIdentityFields(query) {
 		return g.queryWithPriority(ctx, query)
 	}
 

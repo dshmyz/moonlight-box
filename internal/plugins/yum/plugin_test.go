@@ -102,10 +102,10 @@ func TestFetchRemote_RpmUsesDirectoryPathAndRemotePath(t *testing.T) {
 		t.Fatalf("expected 1 artifact, got %d", len(arts))
 	}
 	a := arts[0]
-	if got := a.Coordinates["path"]; got != "Packages" {
+	if got := a.Path; got != "Packages" {
 		t.Fatalf("path = %q, want directory path", got)
 	}
-	if got := a.Coordinates["filename"]; got != "nginx-1.20.1-1.el8.x86_64.rpm" {
+	if got := a.Filename; got != "nginx-1.20.1-1.el8.x86_64.rpm" {
 		t.Fatalf("filename = %q", got)
 	}
 	if got := a.Properties["remote_path"]; got != "Packages/nginx-1.20.1-1.el8.x86_64.rpm" {
@@ -197,17 +197,17 @@ func TestFetchRemote_Repomd(t *testing.T) {
 	if len(arts) != 3 {
 		t.Fatalf("expected 3 artifacts (repomd + 2 refs), got %d", len(arts))
 	}
-	if arts[0].Coordinates["file"] != "repomd.xml" {
-		t.Errorf("first artifact should be repomd.xml, got %q", arts[0].Coordinates["file"])
+	if arts[0].Filename != "repomd.xml" {
+		t.Errorf("first artifact should be repomd.xml, got %q", arts[0].Filename)
 	}
 	ref := arts[1]
 	if ref.Kind != "metadata-ref" {
 		t.Fatalf("expected metadata-ref, got %q", ref.Kind)
 	}
-	if got := ref.Coordinates["filename"]; got != "abc123-primary.xml.gz" {
+	if got := ref.Filename; got != "abc123-primary.xml.gz" {
 		t.Fatalf("metadata-ref filename = %q", got)
 	}
-	if got := ref.Coordinates["path"]; got != "repodata" {
+	if got := ref.Path; got != "repodata" {
 		t.Fatalf("metadata-ref path = %q", got)
 	}
 	if got := ref.Properties["remote_path"]; got != "repodata/abc123-primary.xml.gz" {
@@ -224,8 +224,8 @@ func TestFetchRemote_RpmFile(t *testing.T) {
 	if len(arts) != 1 {
 		t.Fatalf("expected 1 artifact, got %d", len(arts))
 	}
-	if arts[0].Coordinates["filename"] != "nginx-1.20.1-1.el8.x86_64.rpm" {
-		t.Errorf("expected filename, got %q", arts[0].Coordinates["filename"])
+	if arts[0].Filename != "nginx-1.20.1-1.el8.x86_64.rpm" {
+		t.Errorf("expected filename, got %q", arts[0].Filename)
 	}
 }
 

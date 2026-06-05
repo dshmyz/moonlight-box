@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/model"
@@ -60,7 +59,7 @@ func (s *ArtifactQueryService) GetVersions(ctx context.Context, repoID uint, for
 		db = db.Where("format = ?", format)
 	}
 	if name != "" {
-		db = db.Where("coordinates LIKE ?", fmt.Sprintf(`%%"name":"%s%%`, name))
+		db = db.Where("name = ?", name)
 	}
 
 	if err := db.Order("created_at DESC").Find(&artifacts).Error; err != nil {
@@ -101,18 +100,7 @@ func (s *ArtifactQueryService) GetVersions(ctx context.Context, repoID uint, for
 	}
 
 	for _, a := range artifacts {
-		version := ""
-		if v, ok := a.Coordinates["version"]; ok {
-			if s, ok := v.(string); ok {
-				version = s
-			}
-		}
-		nameVal := ""
-		if v, ok := a.Coordinates["name"]; ok {
-			if s, ok := v.(string); ok {
-				nameVal = s
-			}
-		}
+		version := a.Version
 
 		var totalSize int64
 		for _, ref := range blobRefMap[a.ID] {
@@ -128,7 +116,6 @@ func (s *ArtifactQueryService) GetVersions(ctx context.Context, repoID uint, for
 			CreatedAt: a.CreatedAt,
 			BlobRefs:  blobRefMap[a.ID],
 		})
-		_ = nameVal
 	}
 
 	return versions, nil
@@ -192,12 +179,7 @@ func (s *ArtifactQueryService) GetTopPackages(ctx context.Context, limit int) ([
 	topPackages := make([]PackageTop, 0, len(artifacts))
 	seen := make(map[string]bool)
 	for _, a := range artifacts {
-		name := ""
-		if v, ok := a.Coordinates["name"]; ok {
-			if s, ok := v.(string); ok {
-				name = s
-			}
-		}
+		name := a.Name
 		if name == "" || seen[name] {
 			continue
 		}

@@ -327,7 +327,7 @@ type downloadCountAdapter struct {
 }
 
 func (a *downloadCountAdapter) IncrementDownload(repoID uint, format, name, version string) {
-	a.batcher.Increment(0, 0, repoID)
+	a.batcher.Increment(repoID, format, name, version)
 }
 
 func newDownloadCountAdapter(batcher *service.DownloadCountBatcher) *downloadCountAdapter {

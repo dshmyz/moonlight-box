@@ -55,7 +55,7 @@ func (t *DependencyOptimizerTool) Execute(ctx context.Context, params map[string
 
 	// 查询匹配的 artifacts
 	var artifacts []model.Artifact
-	q := db.Model(&model.Artifact{}).Where("coordinates LIKE ?", fmt.Sprintf(`%%"name":"%s%%`, projectName))
+	q := db.Model(&model.Artifact{}).Where("name = ?", projectName)
 	if packageType != "" {
 		q = q.Where("format = ?", packageType)
 	}
@@ -122,8 +122,8 @@ func (t *DependencyOptimizerTool) analyzeSecurity(db *gorm.DB, artifacts []model
 			}
 			if hasRelevant {
 				vulnCount++
-				name := coordStr(a.Coordinates, "name")
-				ver := coordStr(a.Coordinates, "version")
+				name := a.Name
+				ver := a.Version
 				sb.WriteString(fmt.Sprintf("🔒 `%s@%s`: 严重:%d 高危:%d 中危:%d\n",
 					name, ver, scan.CriticalCount, scan.HighCount, scan.MediumCount))
 			}

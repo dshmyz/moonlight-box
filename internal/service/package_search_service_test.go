@@ -31,11 +31,9 @@ func TestSearchFallsBackWhenPackagesTableIsEmptyButArtifactsExist(t *testing.T) 
 		RepositoryID: repo.ID,
 		Format:       "npm",
 		Kind:         "version",
-		Coordinates: model.JSONB{
-			"name":    "left-pad",
-			"version": "1.0.0",
-		},
-		UpdatedAt: time.Now(),
+		Name:         "left-pad",
+		Version:      "1.0.0",
+		UpdatedAt:    time.Now(),
 	}).Error; err != nil {
 		t.Fatalf("create artifact: %v", err)
 	}

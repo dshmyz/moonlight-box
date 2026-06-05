@@ -29,6 +29,7 @@
             {{ getVersionStatusLabel(activeVersion.status) }}
           </el-tag>
         </el-descriptions-item>
+        <el-descriptions-item label="版本许可证">{{ activeVersion.license || '-' }}</el-descriptions-item>
         <el-descriptions-item label="发布时间">{{ formatDate(activeVersion.published_at) }}</el-descriptions-item>
         <el-descriptions-item label="大小">{{ formatSize(activeVersion.size_bytes) }}</el-descriptions-item>
         <el-descriptions-item label="下载量">{{ formatNumber(activeVersion.download_count) }}</el-descriptions-item>
@@ -37,6 +38,12 @@
           <span class="checksum-text" @click="copyText(activeVersion.checksum_sha256 || '')">{{ activeVersion.checksum_sha256 || '-' }}</span>
         </el-descriptions-item>
       </el-descriptions>
+      <div v-if="protocolFields.length > 0" class="protocol-fields">
+        <span v-for="field in protocolFields" :key="field.key" class="protocol-field">
+          <span class="protocol-key">{{ field.key }}</span>
+          <span class="protocol-value">{{ field.value }}</span>
+        </span>
+      </div>
     </div>
 
     <div class="repo-config-section">
@@ -75,6 +82,26 @@ const props = defineProps<{
 
 const activeVersion = computed(() => {
   return props.versions.find(v => v.version === props.selectedVersion) || null
+})
+
+const protocolFields = computed(() => {
+  const version = activeVersion.value
+  if (!version) return []
+
+  const skipped = new Set(['license', 'description', 'published_at'])
+  const fields: Array<{ key: string; value: string }> = []
+  const addFields = (source?: Record<string, unknown>) => {
+    if (!source) return
+    Object.entries(source).forEach(([key, value]) => {
+      if (skipped.has(key) || value === undefined || value === null || value === '') return
+      if (typeof value === 'object') return
+      fields.push({ key, value: String(value) })
+    })
+  }
+
+  addFields(version.qualifiers)
+  addFields(version.attributes)
+  return fields.slice(0, 8)
 })
 
 const registryUrl = computed(() => {
@@ -154,6 +181,33 @@ function copyText(text: string) {
 
 .checksum-text:hover {
   color: var(--lunar-accent);
+}
+
+.protocol-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.protocol-field {
+  max-width: 100%;
+  border: 1px solid var(--lunar-border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  background: var(--lunar-bg-glass);
+}
+
+.protocol-key {
+  color: var(--lunar-silver-dim);
+  margin-right: 4px;
+}
+
+.protocol-value {
+  color: var(--lunar-silver);
+  word-break: break-word;
 }
 
 .repo-config-section {

@@ -40,14 +40,14 @@ const (
 type JobKind string
 
 const (
-	JobRepoConfig       JobKind = "repo_config"
-	JobGroupMembership  JobKind = "group_membership"
-	JobPermission       JobKind = "permission"
-	JobRole             JobKind = "role"
-	JobUser             JobKind = "user"
-	JobArtifactScan     JobKind = "artifact_scan"
-	JobArtifactCopy     JobKind = "artifact_copy"
-	JobVerify           JobKind = "verify"
+	JobRepoConfig      JobKind = "repo_config"
+	JobGroupMembership JobKind = "group_membership"
+	JobPermission      JobKind = "permission"
+	JobRole            JobKind = "role"
+	JobUser            JobKind = "user"
+	JobArtifactScan    JobKind = "artifact_scan"
+	JobArtifactCopy    JobKind = "artifact_copy"
+	JobVerify          JobKind = "verify"
 )
 
 // Job statuses
@@ -92,7 +92,7 @@ const (
 
 // ConflictResolution represents a user's resolution for a conflict.
 type ConflictResolution struct {
-	ConflictID uint          `json:"conflict_id"`
+	ConflictID uint           `json:"conflict_id"`
 	Policy     ConflictPolicy `json:"policy"`
 }
 
@@ -126,20 +126,20 @@ const (
 type ErrorCode string
 
 const (
-	ErrSourceUnavailable              ErrorCode = "SOURCE_UNAVAILABLE"
-	ErrSourceAuthFailed               ErrorCode = "SOURCE_AUTH_FAILED"
-	ErrSourceRepoDetailUnavailable    ErrorCode = "SOURCE_REPOSITORY_DETAIL_UNAVAILABLE"
-	ErrSourceComponentPageFailed      ErrorCode = "SOURCE_COMPONENT_PAGE_FAILED"
-	ErrTargetRepoExists               ErrorCode = "TARGET_REPOSITORY_EXISTS"
-	ErrTargetEmailExists              ErrorCode = "TARGET_EMAIL_EXISTS"
-	ErrTargetRoleExists               ErrorCode = "TARGET_ROLE_EXISTS"
-	ErrTargetGroupMemberMissing       ErrorCode = "TARGET_GROUP_MEMBER_MISSING"
-	ErrTargetStorageBackendMissing    ErrorCode = "TARGET_STORAGE_BACKEND_MISSING"
-	ErrArtifactDownloadFailed         ErrorCode = "ARTIFACT_DOWNLOAD_FAILED"
-	ErrArtifactChecksumMismatch       ErrorCode = "ARTIFACT_CHECKSUM_MISMATCH"
-	ErrArtifactStorageFailed          ErrorCode = "ARTIFACT_STORAGE_FAILED"
-	ErrJobCancelled                   ErrorCode = "JOB_CANCELLED"
-	ErrJobRetryExhausted              ErrorCode = "JOB_RETRY_EXHAUSTED"
+	ErrSourceUnavailable           ErrorCode = "SOURCE_UNAVAILABLE"
+	ErrSourceAuthFailed            ErrorCode = "SOURCE_AUTH_FAILED"
+	ErrSourceRepoDetailUnavailable ErrorCode = "SOURCE_REPOSITORY_DETAIL_UNAVAILABLE"
+	ErrSourceComponentPageFailed   ErrorCode = "SOURCE_COMPONENT_PAGE_FAILED"
+	ErrTargetRepoExists            ErrorCode = "TARGET_REPOSITORY_EXISTS"
+	ErrTargetEmailExists           ErrorCode = "TARGET_EMAIL_EXISTS"
+	ErrTargetRoleExists            ErrorCode = "TARGET_ROLE_EXISTS"
+	ErrTargetGroupMemberMissing    ErrorCode = "TARGET_GROUP_MEMBER_MISSING"
+	ErrTargetStorageBackendMissing ErrorCode = "TARGET_STORAGE_BACKEND_MISSING"
+	ErrArtifactDownloadFailed      ErrorCode = "ARTIFACT_DOWNLOAD_FAILED"
+	ErrArtifactChecksumMismatch    ErrorCode = "ARTIFACT_CHECKSUM_MISMATCH"
+	ErrArtifactStorageFailed       ErrorCode = "ARTIFACT_STORAGE_FAILED"
+	ErrJobCancelled                ErrorCode = "JOB_CANCELLED"
+	ErrJobRetryExhausted           ErrorCode = "JOB_RETRY_EXHAUSTED"
 )
 
 // Event levels
@@ -185,43 +185,43 @@ type ScopeSelection struct {
 
 // Stats summary
 type PlanStats struct {
-	TotalRepos      int `json:"total_repos"`
-	SyncedRepos     int `json:"synced_repos"`
-	SkippedRepos    int `json:"skipped_repos"`
-	FailedRepos     int `json:"failed_repos"`
-	TotalUsers      int `json:"total_users"`
-	SyncedUsers     int `json:"synced_users"`
-	SkippedUsers    int `json:"skipped_users"`
-	FailedUsers     int `json:"failed_users"`
-	TotalRoles      int `json:"total_roles"`
-	SyncedRoles     int `json:"synced_roles"`
-	SkippedRoles    int `json:"skipped_roles"`
-	TotalArtifacts  int `json:"total_artifacts"`
-	SyncedArtifacts int `json:"synced_artifacts"`
+	TotalRepos       int `json:"total_repos"`
+	SyncedRepos      int `json:"synced_repos"`
+	SkippedRepos     int `json:"skipped_repos"`
+	FailedRepos      int `json:"failed_repos"`
+	TotalUsers       int `json:"total_users"`
+	SyncedUsers      int `json:"synced_users"`
+	SkippedUsers     int `json:"skipped_users"`
+	FailedUsers      int `json:"failed_users"`
+	TotalRoles       int `json:"total_roles"`
+	SyncedRoles      int `json:"synced_roles"`
+	SkippedRoles     int `json:"skipped_roles"`
+	TotalArtifacts   int `json:"total_artifacts"`
+	SyncedArtifacts  int `json:"synced_artifacts"`
 	SkippedArtifacts int `json:"skipped_artifacts"`
-	FailedArtifacts int `json:"failed_artifacts"`
+	FailedArtifacts  int `json:"failed_artifacts"`
 }
 
 var encryptionKey = []byte("moonlight-box-registry-32bytes!!")
 
 // MigrationPlan
 type MigrationPlan struct {
-	ID              uint           `json:"id" gorm:"primaryKey"`
-	Name            string         `json:"name" gorm:"size:200"`
-	SourceType      string         `json:"source_type" gorm:"size:50;default:nexus"`
-	SourceURL       string         `json:"source_url" gorm:"size:500"`
-	Username        string         `json:"username" gorm:"size:100"`
-	PasswordEnc     string         `json:"-" gorm:"column:password_encrypted;type:text"`
-	Status          PlanStatus     `json:"status" gorm:"size:20;default:draft;index"`
-	CurrentStage    PlanStage      `json:"current_stage" gorm:"size:20"`
-	ScopeJSON       string         `json:"-" gorm:"column:selected_scope_json;type:text"`
-	PolicyJSON      string         `json:"-" gorm:"column:conflict_policy_json;type:text"`
-	StatsJSON       string         `json:"-" gorm:"column:stats_json;type:text"`
-	Stats           *PlanStats     `json:"stats,omitempty" gorm:"-"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	StartedAt       *time.Time     `json:"started_at"`
-	CompletedAt     *time.Time     `json:"completed_at"`
+	ID           uint       `json:"id" gorm:"primaryKey"`
+	Name         string     `json:"name" gorm:"size:200"`
+	SourceType   string     `json:"source_type" gorm:"size:50;default:nexus"`
+	SourceURL    string     `json:"source_url" gorm:"size:500"`
+	Username     string     `json:"username" gorm:"size:100"`
+	PasswordEnc  string     `json:"-" gorm:"column:password_encrypted;type:text"`
+	Status       PlanStatus `json:"status" gorm:"size:20;default:draft;index"`
+	CurrentStage PlanStage  `json:"current_stage" gorm:"size:20"`
+	ScopeJSON    string     `json:"-" gorm:"column:selected_scope_json;type:text"`
+	PolicyJSON   string     `json:"-" gorm:"column:conflict_policy_json;type:text"`
+	StatsJSON    string     `json:"-" gorm:"column:stats_json;type:text"`
+	Stats        *PlanStats `json:"stats,omitempty" gorm:"-"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	StartedAt    *time.Time `json:"started_at"`
+	CompletedAt  *time.Time `json:"completed_at"`
 }
 
 func (MigrationPlan) TableName() string { return "migration_v2_plans" }
@@ -288,20 +288,20 @@ func (p *MigrationPlan) GetStats() (*PlanStats, error) {
 
 // MigrationJob
 type MigrationJob struct {
-	ID           uint      `json:"id" gorm:"primaryKey"`
-	PlanID       uint      `json:"plan_id" gorm:"index:idx_job_plan_status"`
-	Kind         JobKind   `json:"kind" gorm:"size:30"`
-	Status       JobStatus `json:"status" gorm:"size:20;index:idx_job_plan_status"`
-	SourceKey    string    `json:"source_key" gorm:"size:500"`
-	TargetKey    string    `json:"target_key" gorm:"size:500"`
-	DependsOn    string    `json:"-" gorm:"column:depends_on_json;type:text"`
-	AttemptCount int       `json:"attempt_count" gorm:"default:0"`
-	MaxAttempts  int       `json:"max_attempts" gorm:"default:3"`
-	Checkpoint   string    `json:"-" gorm:"column:checkpoint_json;type:text"`
-	ErrorCode    ErrorCode `json:"error_code" gorm:"size:50"`
-	ErrorMessage string    `json:"error_message" gorm:"type:text"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           uint       `json:"id" gorm:"primaryKey"`
+	PlanID       uint       `json:"plan_id" gorm:"index:idx_job_plan_status"`
+	Kind         JobKind    `json:"kind" gorm:"size:30"`
+	Status       JobStatus  `json:"status" gorm:"size:20;index:idx_job_plan_status"`
+	SourceKey    string     `json:"source_key" gorm:"size:500"`
+	TargetKey    string     `json:"target_key" gorm:"size:500"`
+	DependsOn    string     `json:"-" gorm:"column:depends_on_json;type:text"`
+	AttemptCount int        `json:"attempt_count" gorm:"default:0"`
+	MaxAttempts  int        `json:"max_attempts" gorm:"default:3"`
+	Checkpoint   string     `json:"-" gorm:"column:checkpoint_json;type:text"`
+	ErrorCode    ErrorCode  `json:"error_code" gorm:"size:50"`
+	ErrorMessage string     `json:"error_message" gorm:"type:text"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 	StartedAt    *time.Time `json:"started_at"`
 	CompletedAt  *time.Time `json:"completed_at"`
 }
@@ -319,10 +319,10 @@ type UserCheckpoint struct {
 // RepoCheckpoint stores repository configuration during the scanning phase
 // so the executor can create repositories without re-fetching from the source.
 type RepoCheckpoint struct {
-	Type       string `json:"type"`
-	Format     string `json:"format"`
-	RemoteURL  string `json:"remote_url,omitempty"`
-	IsVirtual  bool   `json:"is_virtual"`
+	Type      string `json:"type"`
+	Format    string `json:"format"`
+	RemoteURL string `json:"remote_url,omitempty"`
+	IsVirtual bool   `json:"is_virtual"`
 }
 
 // RoleCheckpoint stores role information during the scanning phase
@@ -331,6 +331,16 @@ type RoleCheckpoint struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
 	Privileges  []string `json:"privileges,omitempty"`
+}
+
+// AssetCheckpoint stores Nexus asset information that must stay separate from
+// the protocol path used as artifact identity.
+type AssetCheckpoint struct {
+	DownloadURL string            `json:"download_url"`
+	Path        string            `json:"path"`
+	Checksum    map[string]string `json:"checksum,omitempty"`
+	ContentType string            `json:"content_type,omitempty"`
+	FileSize    int64             `json:"file_size,omitempty"`
 }
 
 // MigrationItem
@@ -363,33 +373,33 @@ func (MigrationItem) TableName() string { return "migration_v2_items" }
 
 // MigrationConflict
 type MigrationConflict struct {
-	ID              uint            `json:"id" gorm:"primaryKey"`
-	PlanID          uint            `json:"plan_id" gorm:"index"`
-	Kind            ConflictKind    `json:"kind" gorm:"size:50"`
+	ID              uint             `json:"id" gorm:"primaryKey"`
+	PlanID          uint             `json:"plan_id" gorm:"index"`
+	Kind            ConflictKind     `json:"kind" gorm:"size:50"`
 	Severity        ConflictSeverity `json:"severity" gorm:"size:20"`
-	SourceKey       string          `json:"source_key" gorm:"size:500"`
-	TargetKey       string          `json:"target_key" gorm:"size:500"`
-	Message         string          `json:"message" gorm:"type:text"`
-	SuggestedPolicy ConflictPolicy  `json:"suggested_policy" gorm:"size:30"`
-	SelectedPolicy  *ConflictPolicy `json:"selected_policy" gorm:"size:30"`
-	PayloadJSON     string          `json:"-" gorm:"column:payload_json;type:text"`
-	ResolvedAt      *time.Time      `json:"resolved_at"`
-	CreatedAt       time.Time       `json:"created_at"`
+	SourceKey       string           `json:"source_key" gorm:"size:500"`
+	TargetKey       string           `json:"target_key" gorm:"size:500"`
+	Message         string           `json:"message" gorm:"type:text"`
+	SuggestedPolicy ConflictPolicy   `json:"suggested_policy" gorm:"size:30"`
+	SelectedPolicy  *ConflictPolicy  `json:"selected_policy" gorm:"size:30"`
+	PayloadJSON     string           `json:"-" gorm:"column:payload_json;type:text"`
+	ResolvedAt      *time.Time       `json:"resolved_at"`
+	CreatedAt       time.Time        `json:"created_at"`
 }
 
 func (MigrationConflict) TableName() string { return "migration_v2_conflicts" }
 
 // MigrationEvent
 type MigrationEvent struct {
-	ID          uint      `json:"id" gorm:"primaryKey"`
-	PlanID      uint      `json:"plan_id" gorm:"index"`
-	JobID       *uint     `json:"job_id"`
-	ItemID      *uint     `json:"item_id"`
+	ID          uint       `json:"id" gorm:"primaryKey"`
+	PlanID      uint       `json:"plan_id" gorm:"index"`
+	JobID       *uint      `json:"job_id"`
+	ItemID      *uint      `json:"item_id"`
 	Level       EventLevel `json:"level" gorm:"size:10"`
 	EventType   EventType  `json:"event_type" gorm:"size:30"`
-	Message     string    `json:"message" gorm:"type:text"`
-	PayloadJSON string    `json:"-" gorm:"column:payload_json;type:text"`
-	CreatedAt   time.Time `json:"created_at"`
+	Message     string     `json:"message" gorm:"type:text"`
+	PayloadJSON string     `json:"-" gorm:"column:payload_json;type:text"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 func (MigrationEvent) TableName() string { return "migration_v2_events" }

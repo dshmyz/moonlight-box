@@ -207,9 +207,10 @@ func TestProxyRuntimeQueryArtifactsReturnsBatchPutError(t *testing.T) {
 	fetcher := &fakeFetcher{
 		fn: func() ([]*Artifact, error) {
 			return []*Artifact{{
-				Format:      "npm",
-				Kind:        KindVersion,
-				Coordinates: map[string]string{CoordName: "left-pad", CoordVersion: "1.0.0"},
+				Format:  "npm",
+				Kind:    KindVersion,
+				Name:    "left-pad",
+				Version: "1.0.0",
 			}}, nil
 		},
 	}
@@ -317,8 +318,8 @@ func TestQueryArtifactsCallsFetcherWhenStoreEmpty(t *testing.T) {
 	fetcher := &fakeFetcher{
 		fn: func() ([]*Artifact, error) {
 			return []*Artifact{
-				{ID: "remote-1", RepositoryID: "repo", Format: "npm", Coordinates: map[string]string{"name": "lodash"}},
-				{ID: "remote-2", RepositoryID: "repo", Format: "npm", Coordinates: map[string]string{"name": "express"}},
+				{ID: "remote-1", RepositoryID: "repo", Format: "npm", Name: "lodash"},
+				{ID: "remote-2", RepositoryID: "repo", Format: "npm", Name: "express"},
 			}, nil
 		},
 	}
@@ -384,7 +385,7 @@ func TestArtifactKeyStringCollision(t *testing.T) {
 		RepositoryID: "repo1",
 		Format:       "maven",
 		Filename:     "maven-metadata.xml",
-		Coordinates: map[string]string{
+		Qualifiers: map[string]string{
 			"group":    "com.google.guava",
 			"artifact": "guava",
 		},
@@ -393,7 +394,7 @@ func TestArtifactKeyStringCollision(t *testing.T) {
 		RepositoryID: "repo1",
 		Format:       "maven",
 		Filename:     "maven-metadata.xml",
-		Coordinates: map[string]string{
+		Qualifiers: map[string]string{
 			"group":    "org.apache.commons",
 			"artifact": "commons-lang3",
 		},
@@ -404,8 +405,8 @@ func TestArtifactKeyStringCollision(t *testing.T) {
 
 	if s1 == s2 {
 		t.Logf("BUG CONFIRMED: ArtifactKey.String() collision detected")
-		t.Logf("  key1 string: %q (group=%s, artifact=%s)", s1, key1.Coordinates["group"], key1.Coordinates["artifact"])
-		t.Logf("  key2 string: %q (group=%s, artifact=%s)", s2, key2.Coordinates["group"], key2.Coordinates["artifact"])
+		t.Logf("  key1 string: %q (group=%s, artifact=%s)", s1, key1.Qualifiers["group"], key1.Qualifiers["artifact"])
+		t.Logf("  key2 string: %q (group=%s, artifact=%s)", s2, key2.Qualifiers["group"], key2.Qualifiers["artifact"])
 		t.Log("  These are different packages but produce the same cache key")
 	}
 }
@@ -419,14 +420,14 @@ func TestGroupRuntimeDeduplicationWithEmptyID(t *testing.T) {
 	// Simulate two proxy members returning artifacts with empty ID
 	node1 := &fakeQueryNode{
 		artifacts: []*Artifact{
-			{ID: "", RepositoryID: "proxy1", Format: "npm", Coordinates: map[string]string{"name": "lodash", "version": "4.17.21"}},
-			{ID: "", RepositoryID: "proxy1", Format: "npm", Coordinates: map[string]string{"name": "express", "version": "4.18.2"}},
+			{ID: "", RepositoryID: "proxy1", Format: "npm", Name: "lodash", Version: "4.17.21"},
+			{ID: "", RepositoryID: "proxy1", Format: "npm", Name: "express", Version: "4.18.2"},
 		},
 	}
 	node2 := &fakeQueryNode{
 		artifacts: []*Artifact{
-			{ID: "", RepositoryID: "proxy2", Format: "npm", Coordinates: map[string]string{"name": "lodash", "version": "4.17.21"}},
-			{ID: "", RepositoryID: "proxy2", Format: "npm", Coordinates: map[string]string{"name": "axios", "version": "1.4.0"}},
+			{ID: "", RepositoryID: "proxy2", Format: "npm", Name: "lodash", Version: "4.17.21"},
+			{ID: "", RepositoryID: "proxy2", Format: "npm", Name: "axios", Version: "1.4.0"},
 		},
 	}
 

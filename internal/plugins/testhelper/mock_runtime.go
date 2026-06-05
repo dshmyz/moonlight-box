@@ -52,12 +52,12 @@ func (m *MockRuntime) QueryArtifacts(ctx context.Context, query runtime.Artifact
 	if m.QueryErr != nil {
 		return nil, m.QueryErr
 	}
-	if len(query.Coordinates) == 0 {
+	if isEmptyQuery(query) {
 		return m.Artifacts, nil
 	}
 	var matched []*runtime.Artifact
 	for _, a := range m.Artifacts {
-		if matchCoordinates(a, query.Coordinates) {
+		if matchQuery(a, query) {
 			matched = append(matched, a)
 		}
 	}
@@ -116,18 +116,58 @@ func (s *mockUploadSession) Commit(ctx context.Context) error {
 func (s *mockUploadSession) Abort(ctx context.Context) error { return nil }
 
 func matchArtifact(a *runtime.Artifact, key runtime.ArtifactKey) bool {
-	for k, v := range key.Coordinates {
-		if a.Coordinates[k] != v {
+	if key.IdentityKey != "" && a.IdentityKey != "" && a.IdentityKey != key.IdentityKey {
+		return false
+	}
+	if key.Name != "" && a.Name != "" && a.Name != key.Name {
+		return false
+	}
+	if key.Version != "" && a.Version != "" && a.Version != key.Version {
+		return false
+	}
+	if key.RemotePath != "" && a.RemotePath != "" && a.RemotePath != key.RemotePath {
+		return false
+	}
+	if key.Path != "" && a.Path != "" && a.Path != key.Path {
+		return false
+	}
+	if key.Filename != "" && a.Filename != "" && a.Filename != key.Filename {
+		return false
+	}
+	for k, v := range key.Qualifiers {
+		if a.Qualifiers[k] != v {
 			return false
 		}
 	}
 	return true
 }
 
-func matchCoordinates(a *runtime.Artifact, coords map[string]string) bool {
-	for k, v := range coords {
-		av, ok := a.Coordinates[k]
-		if !ok || av != v {
+func isEmptyQuery(query runtime.ArtifactQuery) bool {
+	return query.IdentityKey == "" && query.Name == "" && query.Version == "" && query.RemotePath == "" &&
+		query.Path == "" && query.Filename == "" && len(query.Qualifiers) == 0
+}
+
+func matchQuery(a *runtime.Artifact, query runtime.ArtifactQuery) bool {
+	if query.IdentityKey != "" && a.IdentityKey != query.IdentityKey {
+		return false
+	}
+	if query.Name != "" && a.Name != query.Name {
+		return false
+	}
+	if query.Version != "" && a.Version != query.Version {
+		return false
+	}
+	if query.RemotePath != "" && a.RemotePath != "" && a.RemotePath != query.RemotePath {
+		return false
+	}
+	if query.Path != "" && a.Path != "" && a.Path != query.Path {
+		return false
+	}
+	if query.Filename != "" && a.Filename != "" && a.Filename != query.Filename {
+		return false
+	}
+	for k, v := range query.Qualifiers {
+		if a.Qualifiers[k] != v {
 			return false
 		}
 	}
@@ -136,14 +176,40 @@ func matchCoordinates(a *runtime.Artifact, coords map[string]string) bool {
 
 // NewArtifact is a helper to create test artifacts.
 func NewArtifact(format, kind string, coords map[string]string, content string) *runtime.Artifact {
-	a := &runtime.Artifact{
-		Format:      format,
-		Kind:        kind,
-		Coordinates: coords,
-		Properties:  map[string]string{},
+	name := firstNonEmptyTest(coords["name"], coords["package"], coords["module"])
+	if name == "" && coords["group"] != "" && coords["artifact"] != "" {
+		name = coords["group"] + ":" + coords["artifact"]
 	}
+	qualifiers := map[string]string{}
+	for k, v := range coords {
+		switch k {
+		case "name", "version", "path", "filename", "file":
+			continue
+		default:
+			qualifiers[k] = v
+		}
+	}
+	a := runtime.NewArtifact(runtime.ArtifactSpec{
+		Format:     format,
+		Kind:       kind,
+		Name:       name,
+		Version:    coords["version"],
+		Path:       coords["path"],
+		Filename:   firstNonEmptyTest(coords["filename"], coords["file"]),
+		Qualifiers: qualifiers,
+		Properties: map[string]string{},
+	})
 	if content != "" {
 		a.Content = io.NopCloser(strings.NewReader(content))
 	}
 	return a
+}
+
+func firstNonEmptyTest(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

@@ -376,7 +376,9 @@ func (m *ExecutorManager) executeItem(ctx context.Context, planID uint, item *do
 		return m.failItem(planID, item, domain.ErrArtifactDownloadFailed, "source is not a Nexus source")
 	}
 
-	assetStream, err := ns.DownloadAsset(ctx, item.SourcePath)
+	assetCheckpoint := assetCheckpointFromItem(item)
+	downloadURL := itemDownloadURL(item, assetCheckpoint)
+	assetStream, err := ns.DownloadAsset(ctx, downloadURL)
 	if err != nil {
 		return m.failItem(planID, item, domain.ErrArtifactDownloadFailed, err.Error())
 	}
@@ -400,7 +402,8 @@ func (m *ExecutorManager) executeItem(ctx context.Context, planID uint, item *do
 	storageVersion += "/" + filepath.Base(item.SourcePath)
 
 	size := assetStream.Size
-	storageKey, err := m.storageSvc.StorePackage(ctx, item.SourceFormat, item.SourceName, storageVersion, teeReader, size)
+	format := nexus.MapRepositoryFormat(item.SourceFormat)
+	storageKey, err := m.storageSvc.StorePackageWithBackend(ctx, targetRepo, format, item.SourceName, storageVersion, teeReader, size, 0)
 	if err != nil {
 		return m.failItem(planID, item, domain.ErrArtifactStorageFailed, err.Error())
 	}
@@ -436,18 +439,8 @@ func (m *ExecutorManager) executeItem(ctx context.Context, planID uint, item *do
 	}
 
 	// Step 2: 通过 ArtifactService 创建 artifact + blob 关联 + 同步 packages 表
-	runtimeArtifact := &runtime.Artifact{
-		RepositoryID: fmt.Sprintf("%d", repo.ID),
-		Format:       item.SourceFormat,
-		Kind:         "primary",
-		Coordinates: map[string]string{
-			"name":    item.SourceName,
-			"version": item.SourceVersion,
-		},
-		BlobRefs: []runtime.BlobRef{
-			{BlobID: blobID},
-		},
-	}
+	checksums := mergeChecksums(assetCheckpoint.Checksum, map[string]string{"sha256": digest})
+	runtimeArtifact := buildMigratedArtifact(repo.ID, item, assetStream, blobID, checksums)
 	if err := m.artifactSvc.Save(ctx, runtimeArtifact); err != nil {
 		return m.failItem(planID, item, domain.ErrArtifactStorageFailed, err.Error())
 	}
@@ -463,6 +456,77 @@ func (m *ExecutorManager) executeItem(ctx context.Context, planID uint, item *do
 	m.eventRepo.Log(planID, domain.LevelInfo, domain.EventItemCompleted,
 		fmt.Sprintf("制品迁移成功: %s/%s (%s)", item.SourceRepository, item.SourcePath, item.SourceName), nil, &item.ID)
 	return nil
+}
+
+func buildMigratedArtifact(repoID uint, item *domain.MigrationItem, asset source.AssetStream, blobID uint, checksums map[string]string) *runtime.Artifact {
+	downloadPath := item.TargetPath
+	if downloadPath == "" {
+		downloadPath = item.SourcePath
+	}
+	format := nexus.MapRepositoryFormat(item.SourceFormat)
+	checkpoint := assetCheckpointFromItem(item)
+	contentType := asset.ContentType
+	if contentType == "" {
+		contentType = checkpoint.ContentType
+	}
+	size := asset.Size
+	if size == 0 {
+		size = checkpoint.FileSize
+	}
+
+	return runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: fmt.Sprintf("%d", repoID),
+		Format:       format,
+		Kind:         runtime.KindFile,
+		Name:         item.SourceName,
+		Version:      item.SourceVersion,
+		RemotePath:   item.SourcePath,
+		DownloadPath: downloadPath,
+		ContentType:  contentType,
+		SizeBytes:    size,
+		Checksums:    checksums,
+		Attributes: map[string]string{
+			"source_repository":   item.SourceRepository,
+			"source_id":           item.SourceID,
+			"source_download_url": checkpoint.DownloadURL,
+		},
+		BlobRefs: []runtime.BlobRef{
+			{BlobID: blobID},
+		},
+	})
+}
+
+func assetCheckpointFromItem(item *domain.MigrationItem) domain.AssetCheckpoint {
+	if item == nil || item.Checkpoint == "" {
+		return domain.AssetCheckpoint{}
+	}
+	var checkpoint domain.AssetCheckpoint
+	if err := json.Unmarshal([]byte(item.Checkpoint), &checkpoint); err != nil {
+		return domain.AssetCheckpoint{}
+	}
+	return checkpoint
+}
+
+func itemDownloadURL(item *domain.MigrationItem, checkpoint domain.AssetCheckpoint) string {
+	if checkpoint.DownloadURL != "" {
+		return checkpoint.DownloadURL
+	}
+	if item == nil {
+		return ""
+	}
+	return item.SourcePath
+}
+
+func mergeChecksums(values ...map[string]string) map[string]string {
+	merged := map[string]string{}
+	for _, value := range values {
+		for k, v := range value {
+			if k != "" && v != "" {
+				merged[k] = v
+			}
+		}
+	}
+	return merged
 }
 
 func (m *ExecutorManager) failItem(planID uint, item *domain.MigrationItem, code domain.ErrorCode, msg string) error {

@@ -35,23 +35,35 @@ export interface PackageFile {
   version_id: number
   filename: string
   file_type: PackageFileType
-  storage_path: string
+  storage_path?: string
+  path?: string
+  remote_path?: string
+  download_path?: string
   size_bytes: number
   checksum_sha256?: string
   checksum_md5?: string
   download_count: number
   download_url?: string
+  qualifiers?: Record<string, unknown>
+  attributes?: Record<string, unknown>
+  metadata?: Record<string, unknown>
 }
 
 export interface PackageVersion {
   id: number
   package_id: number
   version: string
+  name?: string
+  namespace?: string
+  identity_key?: string
   status: string
   storage_path: string
   published_at: string
   published_by: number
-  metadata?: string
+  license?: string
+  metadata?: Record<string, unknown> | string
+  attributes?: Record<string, unknown>
+  qualifiers?: Record<string, unknown>
   download_count: number
   size_bytes?: number
   checksum_sha256?: string

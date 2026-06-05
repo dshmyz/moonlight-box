@@ -44,8 +44,8 @@ func (n *ProxyRuntime) checkBlocked(key ArtifactKey) error {
 	if n.Blocker == nil {
 		return nil
 	}
-	name := key.Coordinates["name"]
-	ver := key.Coordinates["version"]
+	name := key.Name
+	ver := key.Version
 	if name != "" && n.Blocker.IsBlocked(n.Format, name, ver) {
 		return ErrBlocked
 	}
@@ -63,7 +63,9 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 	logrus.WithFields(logrus.Fields{
 		"repositoryID": n.RepositoryID,
 		"format":       key.Format,
-		"coordinates":  key.Coordinates,
+		"name":         key.Name,
+		"version":      key.Version,
+		"remotePath":   key.RemotePath,
 		"filename":     key.Filename,
 	}).Debug("proxy: GetArtifact called")
 
@@ -151,7 +153,13 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 		RepositoryID: n.RepositoryID,
 		Format:       key.Format,
 		Kind:         KindArtifact,
-		Coordinates:  key.Coordinates,
+		Name:         key.Name,
+		Namespace:    key.Namespace,
+		Version:      key.Version,
+		Path:         key.Path,
+		Filename:     key.Filename,
+		RemotePath:   key.RemotePath,
+		Qualifiers:   cloneStringMap(key.Qualifiers),
 		Properties: map[string]string{
 			"remote_digest": metadata.Digest,
 			"remote_size":   strconv.FormatInt(metadata.Size, 10),
@@ -193,7 +201,9 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 
 func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
 	if n.Blocker != nil {
-		if name := query.Coordinates["name"]; name != "" && n.Blocker.IsBlocked(n.Format, name, query.Coordinates["version"]) {
+		name := query.Name
+		version := query.Version
+		if name != "" && n.Blocker.IsBlocked(n.Format, name, version) {
 			return nil, ErrBlocked
 		}
 	}
@@ -326,7 +336,15 @@ func (n *ProxyRuntime) RenderProjection(ctx context.Context, query ProjectionQue
 	artifacts, err := n.MetadataStore.Query(ctx, ArtifactQuery{
 		RepositoryID: n.RepositoryID,
 		Format:       query.Format,
-		Coordinates:  query.Coordinates,
+		Kind:         query.Kind,
+		Name:         query.Name,
+		Namespace:    query.Namespace,
+		Version:      query.Version,
+		Path:         query.Path,
+		Filename:     query.Filename,
+		RemotePath:   query.RemotePath,
+		IdentityKey:  query.IdentityKey,
+		Qualifiers:   query.Qualifiers,
 	})
 	if err != nil {
 		return nil, err
@@ -353,21 +371,7 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 		return nil
 	}
 
-	// 优先使用 Plugin 存储的真实下载 URL（如 PyPI 的 files.pythonhosted.org），
-	// 因为 buildRemoteURL 基于 RemoteBaseURL 拼接，对 PyPI 等下载域名与索引域名不同的仓库不适用。
-	if artifact.Properties != nil {
-		if dlURL := artifact.Properties["download_url"]; dlURL != "" {
-			key.RemoteURL = dlURL
-		}
-	}
-	if key.RemoteURL == "" && artifact.Properties != nil {
-		if remotePath := artifact.Properties["remote_path"]; remotePath != "" && n.RemoteBaseURL != "" {
-			key.RemoteURL = strings.TrimRight(n.RemoteBaseURL, "/") + "/" + strings.TrimLeft(remotePath, "/")
-		}
-	}
-	if key.RemoteURL == "" {
-		key.RemoteURL = n.buildRemoteURL(key)
-	}
+	key.RemoteURL = n.artifactRemoteURL(artifact, key)
 	if key.RemoteURL == "" {
 		return ErrNotFound
 	}
@@ -448,19 +452,7 @@ func (n *ProxyRuntime) refreshStaleMetadata(ctx context.Context, artifact *Artif
 		return nil
 	}
 
-	if artifact.Properties != nil {
-		if dlURL := artifact.Properties["download_url"]; dlURL != "" {
-			key.RemoteURL = dlURL
-		}
-	}
-	if key.RemoteURL == "" && artifact.Properties != nil {
-		if remotePath := artifact.Properties["remote_path"]; remotePath != "" && n.RemoteBaseURL != "" {
-			key.RemoteURL = strings.TrimRight(n.RemoteBaseURL, "/") + "/" + strings.TrimLeft(remotePath, "/")
-		}
-	}
-	if key.RemoteURL == "" {
-		key.RemoteURL = n.buildRemoteURL(key)
-	}
+	key.RemoteURL = n.artifactRemoteURL(artifact, key)
 	if key.RemoteURL == "" {
 		return nil
 	}
@@ -619,7 +611,10 @@ func (n *ProxyRuntime) buildRemoteURL(key ArtifactKey) string {
 		return ""
 	}
 	base := strings.TrimRight(n.RemoteBaseURL, "/")
-	p := strings.TrimLeft(key.Coordinates["path"], "/")
+	if key.RemotePath != "" {
+		return base + "/" + strings.TrimLeft(key.RemotePath, "/")
+	}
+	p := strings.TrimLeft(key.Path, "/")
 	filename := strings.TrimLeft(key.Filename, "/")
 	switch {
 	case p == "" && filename == "":
@@ -633,20 +628,24 @@ func (n *ProxyRuntime) buildRemoteURL(key ArtifactKey) string {
 	}
 }
 
+func (n *ProxyRuntime) artifactRemoteURL(artifact *Artifact, key ArtifactKey) string {
+	if key.RemoteURL != "" {
+		return key.RemoteURL
+	}
+	if artifact != nil {
+		if artifact.DownloadURL != "" {
+			return artifact.DownloadURL
+		}
+		remotePath := firstNonEmpty(artifact.RemotePath, artifact.DownloadPath)
+		if remotePath != "" && n.RemoteBaseURL != "" {
+			return strings.TrimRight(n.RemoteBaseURL, "/") + "/" + strings.TrimLeft(remotePath, "/")
+		}
+	}
+	return n.buildRemoteURL(key)
+}
+
 func artifactMapKey(a *Artifact) string {
-	keys := make([]string, 0, len(a.Coordinates))
-	for k := range a.Coordinates {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(a.Coordinates[k])
-		b.WriteByte(';')
-	}
-	return b.String()
+	return a.Format + "/" + a.IdentityKey
 }
 
 func buildArtifactMap(artifacts []*Artifact) map[string]*Artifact {

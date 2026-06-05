@@ -29,25 +29,6 @@ CREATE TABLE IF NOT EXISTS `packages` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='包聚合表';
 
 -- ========================================
--- 创建包版本聚合表
--- ========================================
-
-CREATE TABLE IF NOT EXISTS `package_versions` (
-  `id` INTEGER UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  `package_id` INTEGER UNSIGNED NOT NULL,
-  `version` VARCHAR(255) NOT NULL,
-  `artifact_id` INTEGER UNSIGNED NOT NULL,
-  `size_bytes` BIGINT NOT NULL DEFAULT 0,
-  `download_count` BIGINT NOT NULL DEFAULT 0,
-  `published_at` TIMESTAMP NULL DEFAULT NULL,
-  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  INDEX `idx_pkg_version_package` (`package_id`),
-  INDEX `idx_pkg_version_version` (`version`),
-  INDEX `idx_pkg_version_artifact` (`artifact_id`),
-  FOREIGN KEY (`package_id`) REFERENCES `packages` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='包版本聚合表';
-
--- ========================================
 -- 迁移历史数据
 -- ========================================
 
@@ -59,21 +40,21 @@ INSERT INTO `packages` (`repository_id`, `format`, `name`, `version_count`, `lat
 SELECT
   a.repository_id,
   a.format,
-  JSON_UNQUOTE(JSON_EXTRACT(a.coordinates, '$.name')) AS name,
+  a.name AS name,
   COUNT(*) AS version_count,
-  (SELECT JSON_UNQUOTE(JSON_EXTRACT(a2.coordinates, '$.version'))
+  (SELECT a2.version
    FROM artifacts a2
    WHERE a2.repository_id = a.repository_id
      AND a2.format = a.format
-     AND JSON_UNQUOTE(JSON_EXTRACT(a2.coordinates, '$.name')) = JSON_UNQUOTE(JSON_EXTRACT(a.coordinates, '$.name'))
+     AND a2.name = a.name
    ORDER BY a2.updated_at DESC
    LIMIT 1) AS latest_version,
   MIN(a.created_at) AS created_at,
   MAX(a.updated_at) AS updated_at
 FROM artifacts a
-WHERE JSON_UNQUOTE(JSON_EXTRACT(a.coordinates, '$.name')) IS NOT NULL
-  AND JSON_UNQUOTE(JSON_EXTRACT(a.coordinates, '$.name')) != ''
-GROUP BY a.repository_id, a.format, JSON_UNQUOTE(JSON_EXTRACT(a.coordinates, '$.name'))
+WHERE a.name IS NOT NULL
+  AND a.name != ''
+GROUP BY a.repository_id, a.format, a.name
 ON DUPLICATE KEY UPDATE
   version_count = VALUES(version_count),
   latest_version = VALUES(latest_version),
