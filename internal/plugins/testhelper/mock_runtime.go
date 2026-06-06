@@ -88,14 +88,14 @@ func (m *MockRuntime) DeleteArtifact(ctx context.Context, key runtime.ArtifactKe
 // mockUploadSession implements runtime.UploadSession.
 type mockUploadSession struct {
 	mock    *MockRuntime
-	blobRef runtime.BlobRef
 	arts    []*runtime.Artifact
+	blobSeq int
 }
 
 func (s *mockUploadSession) PutBlob(ctx context.Context, blob io.Reader) (runtime.BlobRef, error) {
 	data, _ := io.ReadAll(blob)
-	s.blobRef = runtime.BlobRef{Algorithm: "sha256", Digest: "test-digest", Size: int64(len(data))}
-	return s.blobRef, nil
+	s.blobSeq++
+	return runtime.BlobRef{Algorithm: "sha256", Digest: "test-digest-" + string(rune('0'+s.blobSeq)), Size: int64(len(data))}, nil
 }
 
 func (s *mockUploadSession) PutArtifact(ctx context.Context, artifact *runtime.Artifact) error {
@@ -107,7 +107,6 @@ func (s *mockUploadSession) Commit(ctx context.Context) error {
 	s.mock.mu.Lock()
 	defer s.mock.mu.Unlock()
 	for _, a := range s.arts {
-		a.BlobRefs = []runtime.BlobRef{s.blobRef}
 		s.mock.UploadedArts = append(s.mock.UploadedArts, a)
 	}
 	return nil

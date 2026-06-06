@@ -128,28 +128,54 @@ fi
 
 echo
 echo "════════════════════════════════════════"
-echo "  测试 3: 发布 npm 包"
+echo "  测试 3: 发布 npm 包 (使用 Bearer Token)"
 echo "════════════════════════════════════════"
 
-NPMRC_FILE="$TEST_DIR/.npmrc"
-cat > "$NPMRC_FILE" <<EOF
-registry=$NPM_REGISTRY
-//localhost:9081/repository/npm-local/:_authToken=$TOKEN
-EOF
+# 创建测试 tarball
+cd "$TEST_DIR"
+npm pack --quiet 2>/dev/null
+TARBALL=$(ls *.tgz 2>/dev/null | head -1)
 
-if npm publish --userconfig "$NPMRC_FILE" > /dev/null 2>&1; then
-    pass "npm 包发布成功"
-    
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-        "$BASE_URL/repository/npm-local/test-npm-package")
-    
-    if [ "$HTTP_CODE" = "200" ]; then
-        pass "发布的 npm 包可访问 (HTTP 200)"
-    else
-        fail "发布的 npm 包返回 HTTP $HTTP_CODE"
-    fi
+if [ -z "$TARBALL" ]; then
+    warn "npm 包发布失败（tarball 创建失败）"
 else
-    warn "npm 包发布失败（可能需要认证配置）"
+    # 读取 tarball 并转为 base64
+    TARBALL_B64=$(base64 -i "$TARBALL" | tr -d '\n')
+    TARBALL_NAME=$(basename "$TARBALL")
+    
+    # 构建 npm publish 格式的 JSON（包含 _attachments）
+    NODE_DATA=$(node -e "
+const fs = require('fs');
+const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+pkg._attachments = {};
+pkg._attachments['$TARBALL_NAME'] = {
+    content_type: 'application/octet-stream',
+    data: '$TARBALL_B64'
+};
+console.log(JSON.stringify(pkg));
+")
+    
+    # 直接使用 curl 发布
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X PUT "$BASE_URL/repository/npm-local/test-npm-package" \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$NODE_DATA")
+    
+    if [ "$HTTP_CODE" = "201" ]; then
+        pass "npm 包发布成功 (HTTP $HTTP_CODE)"
+        
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "$BASE_URL/repository/npm-local/test-npm-package")
+        
+        if [ "$HTTP_CODE" = "200" ]; then
+            pass "发布的 npm 包可访问 (HTTP 200)"
+        else
+            warn "发布的 npm 包返回 HTTP $HTTP_CODE"
+        fi
+    else
+        warn "npm 包发布失败（HTTP $HTTP_CODE）"
+    fi
 fi
 
 echo

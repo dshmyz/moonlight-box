@@ -10,7 +10,12 @@ import (
 	"testing"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/plugins/testhelper"
+	"github.com/dshmyz/moonlight-box/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/storage"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 type closeTrackingReadCloser struct {
@@ -36,6 +41,29 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 		Repository:     &runtime.Repository{ID: "1", Name: "maven-test", Format: "maven", Type: "local"},
 		RepositoryPath: "/" + path,
 	}, w
+}
+
+func newHostedMavenRuntime(t *testing.T) runtime.RepositoryRuntime {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatal(err)
+	}
+	artifactSvc := service.NewArtifactService(db)
+	metadataStore := storage.NewMetadataStoreWithArtifactService(db, artifactSvc)
+	backend, err := storage.NewLocalStorage(t.TempDir(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobStore := storage.NewCASBlobStore(backend, db)
+	return &runtime.HostedRuntime{
+		MetadataStore: metadataStore,
+		BlobStore:     blobStore,
+		RepositoryID:  "1",
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -710,6 +738,67 @@ func TestHandle_Upload(t *testing.T) {
 	}
 	if art.Version != "1.0.0" {
 		t.Errorf("version = %q, want '1.0.0'", art.Version)
+	}
+}
+
+func TestHandle_UploadJarAndPomWithHostedRuntime(t *testing.T) {
+	p := NewMavenPlugin()
+	rt := newHostedMavenRuntime(t)
+
+	jarCtx, jarW := newCtx("PUT", "com/test/test-http/1.0.0/test-http-1.0.0.jar", strings.NewReader("jar-data"))
+	if err := p.Handle(jarCtx, rt); err != nil {
+		t.Fatalf("jar upload Handle failed: %v", err)
+	}
+	if jarW.Code != http.StatusCreated {
+		t.Fatalf("jar upload status = %d body=%q", jarW.Code, jarW.Body.String())
+	}
+
+	pomCtx, pomW := newCtx("PUT", "com/test/test-http/1.0.0/test-http-1.0.0.pom", strings.NewReader("<project/>"))
+	if err := p.Handle(pomCtx, rt); err != nil {
+		t.Fatalf("pom upload Handle failed: %v", err)
+	}
+	if pomW.Code != http.StatusCreated {
+		t.Fatalf("pom upload status = %d body=%q", pomW.Code, pomW.Body.String())
+	}
+
+	getJarCtx, getJarW := newCtx("GET", "com/test/test-http/1.0.0/test-http-1.0.0.jar", nil)
+	if err := p.Handle(getJarCtx, rt); err != nil {
+		t.Fatalf("jar download Handle failed: %v", err)
+	}
+	if getJarW.Code != http.StatusOK {
+		t.Fatalf("jar download status = %d body=%q", getJarW.Code, getJarW.Body.String())
+	}
+	if getJarW.Body.String() != "jar-data" {
+		t.Fatalf("jar body = %q", getJarW.Body.String())
+	}
+}
+
+func TestHandle_ReuploadJarWithHostedRuntimeUpdatesExistingArtifact(t *testing.T) {
+	p := NewMavenPlugin()
+	rt := newHostedMavenRuntime(t)
+
+	firstCtx, firstW := newCtx("PUT", "com/test/test-http/1.0.0/test-http-1.0.0.jar", strings.NewReader("old"))
+	if err := p.Handle(firstCtx, rt); err != nil {
+		t.Fatalf("first upload Handle failed: %v", err)
+	}
+	if firstW.Code != http.StatusCreated {
+		t.Fatalf("first upload status = %d body=%q", firstW.Code, firstW.Body.String())
+	}
+
+	secondCtx, secondW := newCtx("PUT", "com/test/test-http/1.0.0/test-http-1.0.0.jar", strings.NewReader("new"))
+	if err := p.Handle(secondCtx, rt); err != nil {
+		t.Fatalf("second upload Handle failed: %v", err)
+	}
+	if secondW.Code != http.StatusOK {
+		t.Fatalf("second upload status = %d body=%q", secondW.Code, secondW.Body.String())
+	}
+
+	getCtx, getW := newCtx("GET", "com/test/test-http/1.0.0/test-http-1.0.0.jar", nil)
+	if err := p.Handle(getCtx, rt); err != nil {
+		t.Fatalf("download Handle failed: %v", err)
+	}
+	if getW.Body.String() != "new" {
+		t.Fatalf("jar body = %q", getW.Body.String())
 	}
 }
 

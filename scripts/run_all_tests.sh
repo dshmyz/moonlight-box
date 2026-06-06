@@ -89,18 +89,17 @@ run_test() {
     # 捕获输出以解析统计信息
     OUTPUT_FILE=$(mktemp)
     CLEANUP_FILES+=("$OUTPUT_FILE")
+    local test_rc=0
     
     if [ -n "$USE_TIMEOUT" ]; then
-        if "$USE_TIMEOUT" "$TEST_TIMEOUT" bash "$test_script" "$BASE_URL" 2>&1 | tee "$OUTPUT_FILE"; then
-            :
-        else
-            local rc=$?
-            if [ $rc -eq 124 ]; then
-                echo -e "  ${RED}✗ 超时: $test_name 超过 ${TEST_TIMEOUT}s${NC}"
-            fi
+        "$USE_TIMEOUT" "$TEST_TIMEOUT" bash "$test_script" "$BASE_URL" 2>&1 | tee "$OUTPUT_FILE"
+        test_rc=${PIPESTATUS[0]}
+        if [ $test_rc -eq 124 ]; then
+            echo -e "  ${RED}✗ 超时: $test_name 超过 ${TEST_TIMEOUT}s${NC}"
         fi
     else
         bash "$test_script" "$BASE_URL" 2>&1 | tee "$OUTPUT_FILE"
+        test_rc=${PIPESTATUS[0]}
     fi
     
     # 从输出中解析统计信息
@@ -117,7 +116,7 @@ run_test() {
     # 如果解析失败，使用退出码判断
     if [ "$pass_count" -eq 0 ] && [ "$fail_count" -eq 0 ] && [ "$warn_count" -eq 0 ]; then
         # 无法解析，使用传统方式
-        if [ ${PIPESTATUS[0]} -eq 0 ]; then
+        if [ "$test_rc" -eq 0 ]; then
             TOTAL_PASS=$((TOTAL_PASS + 1))
         else
             TOTAL_FAIL=$((TOTAL_FAIL + 1))

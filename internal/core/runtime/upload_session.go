@@ -10,8 +10,8 @@ import (
 type HostedUploadSession struct {
 	metadataStore MetadataStore
 	blobStore     BlobStore
-	artifact      *Artifact
-	blobRefs      []BlobRef
+	artifacts     []*Artifact // 支持多个 artifact（如 npm 的 tarball + metadata）
+	createdBlobs  []BlobRef
 	aborted       bool
 }
 
@@ -30,7 +30,7 @@ func (s *HostedUploadSession) PutBlob(ctx context.Context, blob io.Reader) (Blob
 	if err != nil {
 		return BlobRef{}, err
 	}
-	s.blobRefs = append(s.blobRefs, ref)
+	s.createdBlobs = append(s.createdBlobs, ref)
 	return ref, nil
 }
 
@@ -38,8 +38,7 @@ func (s *HostedUploadSession) PutArtifact(ctx context.Context, artifact *Artifac
 	if s.aborted {
 		return ErrReadOnly
 	}
-	artifact.BlobRefs = s.blobRefs
-	s.artifact = artifact
+	s.artifacts = append(s.artifacts, artifact)
 	return nil
 }
 
@@ -47,19 +46,19 @@ func (s *HostedUploadSession) Commit(ctx context.Context) error {
 	if s.aborted {
 		return ErrReadOnly
 	}
-	if s.artifact == nil {
+	if len(s.artifacts) == 0 {
 		return ErrInvalidUpload
 	}
-	return s.metadataStore.Put(ctx, s.artifact)
+	return s.metadataStore.BatchPut(ctx, s.artifacts)
 }
 
 func (s *HostedUploadSession) Abort(ctx context.Context) error {
 	s.aborted = true
-	// 清理已上传的 blob
-	for _, ref := range s.blobRefs {
+	// 清理本次 session 创建过但尚未提交的 blob。
+	for _, ref := range s.createdBlobs {
 		s.blobStore.Delete(ref)
 	}
-	s.blobRefs = nil
-	s.artifact = nil
+	s.createdBlobs = nil
+	s.artifacts = nil
 	return nil
 }

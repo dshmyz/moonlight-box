@@ -5,7 +5,7 @@
 # 重点：name 字段不为空、不被误填为 version
 # ============================================================
 
-set -e
+set +e
 
 BASE_URL="${1:-http://localhost:9081}"
 
@@ -137,6 +137,7 @@ log_info "触发代理回源，确保数据已落盘..."
 # Maven
 curl -s -o /dev/null "$BASE_URL/repository/maven-proxy-aliyun/com/google/guava/guava/32.1.3-jre/guava-32.1.3-jre.jar" 2>/dev/null || true
 curl -s -o /dev/null "$BASE_URL/repository/maven-proxy-aliyun/com/google/guava/guava/maven-metadata.xml" 2>/dev/null || true
+curl -s -o /dev/null "$BASE_URL/repository/maven-proxy-aliyun/org/jacoco/jacoco-maven-plugin/maven-metadata.xml" 2>/dev/null || true
 
 # NPM
 curl -s -o /dev/null "$BASE_URL/repository/npm-proxy-cn/lodash" 2>/dev/null || true

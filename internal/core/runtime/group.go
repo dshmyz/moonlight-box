@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 )
@@ -49,7 +50,12 @@ func (g *GroupRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		"memberCount": len(g.Members),
 	}).Debug("group: QueryArtifacts called")
 
-	// 对于有具体路径且带身份字段的查询（如单个包的回源），使用优先级短路策略。
+	// metadata/index 请求需要聚合所有成员，否则 group 仓库会只返回第一个成员的版本列表。
+	if isMetadataProjectionQuery(query) {
+		return g.queryWithAggregation(ctx, query)
+	}
+
+	// 对于有具体路径且带身份字段的查询（如单个包文件回源），使用优先级短路策略。
 	// 纯 RemotePath 也可能是仓库级索引（如 PyPI simple/），必须聚合所有成员。
 	if query.RemotePath != "" && QueryHasIdentityFields(query) {
 		return g.queryWithPriority(ctx, query)
@@ -57,6 +63,21 @@ func (g *GroupRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 
 	// 对于没有具体路径的查询（如列出所有包），聚合所有成员的结果
 	return g.queryWithAggregation(ctx, query)
+}
+
+func isMetadataProjectionQuery(query ArtifactQuery) bool {
+	if query.Kind == KindMetadata {
+		return true
+	}
+	if query.RemotePath == "" {
+		return false
+	}
+	return strings.HasSuffix(query.RemotePath, "maven-metadata.xml") ||
+		strings.HasSuffix(query.RemotePath, "repodata/repomd.xml") ||
+		strings.HasSuffix(query.RemotePath, "Packages") ||
+		strings.HasSuffix(query.RemotePath, "Packages.gz") ||
+		strings.HasSuffix(query.RemotePath, "Release") ||
+		strings.HasSuffix(query.RemotePath, "InRelease")
 }
 
 // queryWithPriority 按优先级短路查询，适用于有具体路径的场景

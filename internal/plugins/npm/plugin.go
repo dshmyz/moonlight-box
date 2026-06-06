@@ -256,6 +256,11 @@ func (p *NpmPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Repo
 		return p.handleNpmInternal(ctx, repoRuntime, path)
 	}
 
+	// npm adduser/login endpoint: POST /-/v1/login
+	if strings.HasPrefix(path, "-/v1/login") {
+		return p.handleNpmLogin(ctx, repoRuntime)
+	}
+
 	if strings.Contains(path, "/-/") {
 		return p.handleTarballDownload(ctx, repoRuntime, path)
 	}
@@ -324,6 +329,37 @@ func (p *NpmPlugin) handleNpmInternal(ctx *runtime.RequestContext, repoRuntime r
 	}
 
 	http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+	return nil
+}
+
+// handleNpmLogin 处理 npm adduser/login 请求。
+// npm CLI 发送 POST /-/v1/login 带有 username, password, email。
+// 我们复用系统认证，返回 JWT token 作为 npm token。
+func (p *NpmPlugin) handleNpmLogin(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
+	if ctx.Request.Method != http.MethodPut && ctx.Request.Method != http.MethodPost {
+		http.Error(ctx.Writer, "method not allowed", http.StatusMethodNotAllowed)
+		return nil
+	}
+
+	var loginReq struct {
+		Username string `json:"name"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+	if err := json.NewDecoder(ctx.Request.Body).Decode(&loginReq); err != nil {
+		http.Error(ctx.Writer, "invalid request: "+err.Error(), http.StatusBadRequest)
+		return nil
+	}
+
+	if loginReq.Username == "" || loginReq.Password == "" {
+		http.Error(ctx.Writer, "username and password required", http.StatusUnauthorized)
+		return nil
+	}
+
+	// 通过 API 验证用户凭证
+	// 注意：这个端点需要访问 AuthService，但 plugin 没有直接访问权限
+	// 暂时返回 401，提示用户使用 JWT token
+	http.Error(ctx.Writer, `{"error": "use JWT token from /api/v1/auth/login"}`, http.StatusUnauthorized)
 	return nil
 }
 
@@ -619,7 +655,22 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 	}
 
 	// 提取 _attachments 中的 tarball 数据
-	attachments, _ := npmMeta["_attachments"].(map[string]interface{})
+	attachmentsRaw, hasAttachments := npmMeta["_attachments"]
+	logrus.WithFields(logrus.Fields{
+		"packageName":     packageName,
+		"version":         version,
+		"hasAttachments":  hasAttachments,
+		"attachmentsType": fmt.Sprintf("%T", attachmentsRaw),
+	}).Debug("npm: handlePackagePut called")
+
+	attachments, ok := attachmentsRaw.(map[string]interface{})
+	if !ok {
+		logrus.WithFields(logrus.Fields{
+			"packageName": packageName,
+			"reason":      "attachments type assertion failed",
+		}).Debug("npm: handlePackagePut skipping attachments")
+		attachments = nil
+	}
 	delete(npmMeta, "_attachments") // 存储 metadata 时移除 attachments 数据
 
 	metadataJSON, _ := json.Marshal(npmMeta)
@@ -635,6 +686,11 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 
 	// 存储 tarball blob（限制单个附件最大 100MB，防止内存耗尽）
 	const maxTarballSize = 100 * 1024 * 1024
+	logrus.WithFields(logrus.Fields{
+		"packageName":    packageName,
+		"attachmentsLen": len(attachments),
+	}).Debug("npm: starting tarball loop")
+
 	for tarballName, att := range attachments {
 		attMap, ok := att.(map[string]interface{})
 		if !ok {
@@ -652,10 +708,20 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		}
 		tarballBlob, err := session.PutBlob(ctx.Request.Context(), base64.NewDecoder(base64.StdEncoding, strings.NewReader(data)))
 		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"packageName": packageName,
+				"tarballName": tarballName,
+				"error":       err.Error(),
+			}).Error("npm: PutBlob failed")
 			session.Abort(ctx.Request.Context())
 			http.Error(ctx.Writer, "invalid tarball base64: "+err.Error(), http.StatusBadRequest)
 			return nil
 		}
+		logrus.WithFields(logrus.Fields{
+			"packageName": packageName,
+			"tarballName": tarballName,
+			"tarballBlob": fmt.Sprintf("%v", tarballBlob),
+		}).Debug("npm: PutBlob success")
 
 		tarballVersion := extractNpmVersionFromTarball(packageName, tarballName)
 		tarballArtifact := runtime.NewArtifact(runtime.ArtifactSpec{
@@ -674,10 +740,19 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 			},
 		})
 		if err := session.PutArtifact(ctx.Request.Context(), tarballArtifact); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"packageName":     packageName,
+				"tarballArtifact": fmt.Sprintf("%+v", tarballArtifact),
+				"error":           err.Error(),
+			}).Error("npm: PutArtifact failed")
 			session.Abort(ctx.Request.Context())
 			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 			return nil
 		}
+		logrus.WithFields(logrus.Fields{
+			"packageName": packageName,
+			"tarballName": tarballName,
+		}).Debug("npm: PutArtifact success")
 	}
 
 	// 存储 metadata blob
@@ -694,6 +769,8 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		Kind:         runtime.KindMetadata,
 		Name:         packageName,
 		Version:      version,
+		Path:         packageName + "/" + version,
+		RemotePath:   packageName,
 		BlobRefs:     []runtime.BlobRef{blob},
 		Properties: map[string]string{
 			"package": packageName,
@@ -708,9 +785,16 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 	}
 
 	if err := session.Commit(ctx.Request.Context()); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"packageName": packageName,
+			"error":       err.Error(),
+		}).Error("npm: Commit failed")
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}
+	logrus.WithFields(logrus.Fields{
+		"packageName": packageName,
+	}).Debug("npm: Commit success")
 
 	ctx.Writer.WriteHeader(http.StatusCreated)
 	return nil

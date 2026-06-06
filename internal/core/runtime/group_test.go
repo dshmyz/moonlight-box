@@ -39,6 +39,45 @@ func TestGroupQueryArtifactsAggregatesRemotePathWithStructuredFields(t *testing.
 	}
 }
 
+func TestGroupQueryArtifactsAggregatesMavenMetadataAcrossMembers(t *testing.T) {
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
+				Format:     "maven",
+				Kind:       KindVersion,
+				Namespace:  "com.google.guava",
+				Name:       "com.google.guava:guava",
+				Version:    "31.1-jre",
+				RemotePath: "com/google/guava/guava/maven-metadata.xml",
+				Qualifiers: map[string]string{"group": "com.google.guava", "artifact": "guava"},
+			})}},
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
+				Format:     "maven",
+				Kind:       KindVersion,
+				Namespace:  "com.google.guava",
+				Name:       "com.google.guava:guava",
+				Version:    "32.1.2-jre",
+				RemotePath: "com/google/guava/guava/maven-metadata.xml",
+				Qualifiers: map[string]string{"group": "com.google.guava", "artifact": "guava"},
+			})}},
+		},
+	}
+
+	artifacts, err := group.QueryArtifacts(context.Background(), ArtifactQuery{
+		Format:     "maven",
+		Namespace:  "com.google.guava",
+		Name:       "com.google.guava:guava",
+		RemotePath: "com/google/guava/guava/maven-metadata.xml",
+		Qualifiers: map[string]string{"group": "com.google.guava", "artifact": "guava"},
+	})
+	if err != nil {
+		t.Fatalf("QueryArtifacts failed: %v", err)
+	}
+	if len(artifacts) != 2 {
+		t.Fatalf("expected metadata versions from both members, got %d", len(artifacts))
+	}
+}
+
 type groupQueryNode struct {
 	artifacts []*Artifact
 }

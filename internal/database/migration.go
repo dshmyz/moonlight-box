@@ -47,7 +47,73 @@ func AutoMigrate() error {
 		return err
 	}
 
-	return nil
+	return cleanupLegacyArtifactColumns()
+}
+
+func cleanupLegacyArtifactColumns() error {
+	if DB == nil {
+		return nil
+	}
+
+	const tableName = "artifacts"
+	const columnName = "coordinates"
+
+	exists, err := legacyColumnExists(tableName, columnName)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	util.WithFields(logrus.Fields{
+		util.LogKeyModule: "database",
+		"table":           tableName,
+		"column":          columnName,
+	}).Warn("Dropping legacy artifact column")
+
+	switch DB.Dialector.Name() {
+	case "sqlite":
+		return DB.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", tableName, columnName)).Error
+	case "postgres":
+		return DB.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS %s", tableName, columnName)).Error
+	case "mysql":
+		return DB.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", tableName, columnName)).Error
+	default:
+		return fmt.Errorf("unsupported database dialect for legacy artifact cleanup: %s", DB.Dialector.Name())
+	}
+}
+
+func legacyColumnExists(tableName, columnName string) (bool, error) {
+	var count int64
+	var err error
+
+	switch DB.Dialector.Name() {
+	case "sqlite":
+		err = DB.Raw("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", tableName, columnName).Scan(&count).Error
+	case "postgres":
+		err = DB.Raw(`
+			SELECT COUNT(*)
+			FROM information_schema.columns
+			WHERE table_schema = current_schema()
+			  AND table_name = ?
+			  AND column_name = ?
+		`, tableName, columnName).Scan(&count).Error
+	case "mysql":
+		err = DB.Raw(`
+			SELECT COUNT(*)
+			FROM information_schema.columns
+			WHERE table_schema = DATABASE()
+			  AND table_name = ?
+			  AND column_name = ?
+		`, tableName, columnName).Scan(&count).Error
+	default:
+		return false, fmt.Errorf("unsupported database dialect for legacy artifact cleanup: %s", DB.Dialector.Name())
+	}
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func SeedData() error {

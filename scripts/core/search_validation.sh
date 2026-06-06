@@ -112,16 +112,16 @@ except Exception as e:
 
     case "$result" in
         OK:*)
-            pass "$desc: 搜索结果数据正常 (${result#OK:} 条)"
+            _sv_pass "$desc: 搜索结果数据正常 (${result#OK:} 条)"
             ;;
         EMPTY)
-            info "$desc: 搜索结果为空"
+            _sv_info "$desc: 搜索结果为空"
             ;;
         FAIL:*)
-            fail "$desc: ${result#FAIL:}"
+            _sv_fail "$desc: ${result#FAIL:}"
             ;;
         *)
-            fail "$desc: 异常: $result"
+            _sv_fail "$desc: 异常: $result"
             ;;
     esac
 }
@@ -129,6 +129,6 @@ except Exception as e:
 # 等待批量写入落盘（用于代理回源后等待数据可搜索）
 wait_for_indexing() {
     local seconds="${1:-3}"
-    log_info "等待 ${seconds}s 索引落盘..."
+    _sv_info "等待 ${seconds}s 索引落盘..."
     sleep "$seconds"
 }

@@ -7,9 +7,9 @@
 
 set -e
 
-BASE_URL="http://localhost:9081"
+BASE_URL="${1:-http://localhost:9081}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 STORAGE_PATH="$PROJECT_ROOT/data/packages"
 DOWNLOAD_DIR="$PROJECT_ROOT/data/test_downloads"
 
@@ -420,7 +420,7 @@ fi
 log_section "测试 8: 数据库验证 - 仓库配置完整性"
 # ============================================================
 
-DB_PATH="$PROJECT_ROOT/../data/registry.db"
+DB_PATH="$PROJECT_ROOT/data/registry.db"
 if [ -f "$DB_PATH" ]; then
     log_info "数据库文件存在: $DB_PATH"
     
@@ -434,9 +434,11 @@ if [ -f "$DB_PATH" ]; then
         fi
     done
     
-    # 检查包版本记录
-    TOTAL_VERSIONS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM package_versions;" 2>/dev/null || echo "0")
-    log_info "数据库中记录的包版本总数: $TOTAL_VERSIONS"
+    # 检查新架构记录：artifacts 是事实源，packages 是可重建摘要表。
+    TOTAL_ARTIFACTS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM artifacts;" 2>/dev/null || echo "0")
+    TOTAL_PACKAGES=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM packages;" 2>/dev/null || echo "0")
+    log_info "数据库中 artifacts 总数: $TOTAL_ARTIFACTS"
+    log_info "数据库中 packages 摘要总数: $TOTAL_PACKAGES"
 else
     log_fail "数据库文件不存在: $DB_PATH"
 fi

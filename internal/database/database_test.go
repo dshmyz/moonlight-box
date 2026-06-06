@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/util"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -27,4 +28,50 @@ func TestGormLoggerTraceDoesNotLogRecordNotFoundAsExecutionFailure(t *testing.T)
 	if strings.Contains(output.String(), "SQL execution failed") {
 		t.Fatalf("record not found should not be logged as execution failure: %s", output.String())
 	}
+}
+
+func TestCleanupLegacyArtifactColumnsDropsCoordinates(t *testing.T) {
+	if err := util.InitLogger(&util.LoggerConfig{Level: "debug", Format: "console", Output: "stdout"}); err != nil {
+		t.Fatalf("init logger: %v", err)
+	}
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	if err := db.Exec(`
+		CREATE TABLE artifacts (
+			id integer primary key autoincrement,
+			repository_id integer not null,
+			format varchar(64) not null,
+			identity_key varchar(1024) not null,
+			coordinates jsonb not null,
+			created_at datetime not null,
+			updated_at datetime not null
+		)
+	`).Error; err != nil {
+		t.Fatalf("create legacy artifacts table: %v", err)
+	}
+
+	oldDB := DB
+	DB = db
+	t.Cleanup(func() { DB = oldDB })
+
+	if err := cleanupLegacyArtifactColumns(); err != nil {
+		t.Fatalf("cleanup legacy artifact columns: %v", err)
+	}
+
+	if sqliteColumnExists(t, db, "artifacts", "coordinates") {
+		t.Fatalf("coordinates should be removed from artifacts")
+	}
+}
+
+func sqliteColumnExists(t *testing.T, db *gorm.DB, table, column string) bool {
+	t.Helper()
+	var count int
+	if err := db.Raw("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", table, column).Scan(&count).Error; err != nil {
+		t.Fatalf("check sqlite column: %v", err)
+	}
+	return count > 0
 }
