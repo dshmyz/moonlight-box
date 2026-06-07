@@ -29,10 +29,9 @@ func TestPackageVersionsRouteIsPublic(t *testing.T) {
 	if err := db.Create(&model.Artifact{
 		RepositoryID: 1,
 		Format:       "npm",
-		Coordinates: model.JSONB{
-			"name":    "lodash",
-			"version": "1.0.0",
-		},
+		Name:         "lodash",
+		Version:      "1.0.0",
+		IdentityKey:  "npm:lodash:1.0.0",
 	}).Error; err != nil {
 		t.Fatalf("create artifact: %v", err)
 	}
