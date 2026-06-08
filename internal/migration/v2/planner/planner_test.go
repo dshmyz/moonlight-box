@@ -39,15 +39,27 @@ func TestMigrationAssetCheckpointSeparatesDownloadURLFromPath(t *testing.T) {
 
 func TestNexusTargetFormatMapsRepositoryFormatsToPluginFormats(t *testing.T) {
 	tests := map[string]string{
-		"maven2": "maven",
-		"raw":    "generic",
-		"npm":    "npm",
-		"pypi":   "pypi",
+		"maven2":  "maven",
+		"maven":   "maven",
+		"raw":     "generic",
+		"generic": "generic",
+		"npm":     "npm",
+		"pypi":    "pypi",
 	}
 
 	for input, want := range tests {
 		if got := nexusTargetFormat(input); got != want {
 			t.Fatalf("nexusTargetFormat(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestArtifactSourceFormatFallsBackToRepositoryFormat(t *testing.T) {
+	comp := source.SourceComponent{
+		Format: "",
+	}
+
+	if got := artifactSourceFormat(comp, "maven2"); got != "maven" {
+		t.Fatalf("artifactSourceFormat(empty component, maven2 repo) = %q, want maven", got)
 	}
 }

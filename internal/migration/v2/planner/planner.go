@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/domain"
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/repository"
@@ -51,14 +52,34 @@ func migrationAssetCheckpointJSON(asset source.SourceAsset) (string, error) {
 }
 
 func nexusTargetFormat(format string) string {
+	format = strings.ToLower(strings.TrimSpace(format))
 	switch format {
-	case "maven2":
+	case "maven2", "maven":
 		return "maven"
-	case "raw":
+	case "raw", "generic":
 		return "generic"
 	default:
 		return format
 	}
+}
+
+func artifactSourceFormat(comp source.SourceComponent, repoFormat string) string {
+	format := strings.TrimSpace(comp.Format)
+	if format == "" {
+		format = repoFormat
+	}
+	return nexusTargetFormat(format)
+}
+
+func repositoryFormatByName(repos []source.SourceRepository) map[string]string {
+	formats := make(map[string]string, len(repos))
+	for _, repo := range repos {
+		if repo.Name == "" {
+			continue
+		}
+		formats[repo.Name] = repo.Format
+	}
+	return formats
 }
 
 // Scan runs the full scan phase: repositories, security, and artifacts.
@@ -378,6 +399,7 @@ func (p *Planner) scanSecurity(ctx context.Context) error {
 
 func (p *Planner) scanArtifacts(ctx context.Context, repos []source.SourceRepository) error {
 	repoNames := p.scope.ArtifactRepos
+	repoFormats := repositoryFormatByName(repos)
 	if len(repoNames) == 0 {
 		for _, repo := range repos {
 			if repo.Name == "" || repo.Type == "group" || !p.shouldIncludeRepo(repo.Type) {
@@ -435,7 +457,7 @@ func (p *Planner) scanArtifacts(ctx context.Context, repos []source.SourceReposi
 						SourceRepository: repoName,
 						SourceID:         comp.ID,
 						SourcePath:       asset.Path,
-						SourceFormat:     nexusTargetFormat(comp.Format),
+						SourceFormat:     artifactSourceFormat(comp, repoFormats[repoName]),
 						SourceName:       comp.Name,
 						SourceVersion:    comp.Version,
 						TargetRepository: p.determineTargetRepo(repoName),
@@ -471,6 +493,7 @@ func (p *Planner) scanArtifacts(ctx context.Context, repos []source.SourceReposi
 // It writes items to DB as they're scanned and notifies via readyCh.
 func (p *Planner) scanArtifactsStreaming(ctx context.Context, repos []source.SourceRepository, readyCh chan<- uint) error {
 	repoNames := p.scope.ArtifactRepos
+	repoFormats := repositoryFormatByName(repos)
 	if len(repoNames) == 0 {
 		for _, repo := range repos {
 			if repo.Name == "" || repo.Type == "group" || !p.shouldIncludeRepo(repo.Type) {
@@ -527,7 +550,7 @@ func (p *Planner) scanArtifactsStreaming(ctx context.Context, repos []source.Sou
 						SourceRepository: repoName,
 						SourceID:         comp.ID,
 						SourcePath:       asset.Path,
-						SourceFormat:     nexusTargetFormat(comp.Format),
+						SourceFormat:     artifactSourceFormat(comp, repoFormats[repoName]),
 						SourceName:       comp.Name,
 						SourceVersion:    comp.Version,
 						TargetRepository: p.determineTargetRepo(repoName),

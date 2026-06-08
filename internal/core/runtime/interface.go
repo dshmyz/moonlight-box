@@ -70,6 +70,30 @@ type ProtocolPlugin interface {
 	Handle(ctx *RequestContext, runtime RepositoryRuntime) error
 }
 
+type NormalizeInput struct {
+	RepositoryID string
+	Format       string
+
+	RemotePath   string
+	DownloadPath string
+	Filename     string
+
+	ContentType string
+	SizeBytes   int64
+
+	Checksums  map[string]string
+	Attributes map[string]string
+	Hints      map[string]string
+	BlobRefs   []BlobRef
+}
+
+// ArtifactNormalizer is an optional plugin capability for offline asset
+// normalization, such as migration. It must not write HTTP responses or invoke
+// repository runtime behavior.
+type ArtifactNormalizer interface {
+	NormalizeAsset(ctx context.Context, input NormalizeInput) (*Artifact, error)
+}
+
 // RemoteFetcher 由 ProtocolPlugin 实现，供 ProxyRuntime 回调。
 // Runtime 控制回源时机和缓存策略；Plugin 只负责远端协议交互（HTTP 请求 + 响应解析）。
 //

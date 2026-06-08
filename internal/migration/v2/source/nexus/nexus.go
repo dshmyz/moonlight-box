@@ -994,10 +994,11 @@ func MapRepositoryType(nexusType string) string {
 // Nexus uses names like "maven2", "raw", "docker" etc., while the target system
 // uses "maven", "generic", etc. (registered plugin names in main.go).
 func MapRepositoryFormat(nexusFormat string) string {
+	nexusFormat = strings.ToLower(strings.TrimSpace(nexusFormat))
 	switch nexusFormat {
-	case "maven2":
+	case "maven2", "maven":
 		return "maven"
-	case "raw":
+	case "raw", "generic":
 		return "generic"
 	case "npm", "pypi", "go", "apt", "yum":
 		return nexusFormat // same name

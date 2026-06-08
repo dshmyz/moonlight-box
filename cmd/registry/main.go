@@ -300,6 +300,9 @@ func main() {
 		"apt":     aptPlugin,
 		"generic": genericPlugin,
 	}
+	normalizers := map[string]runtime.ArtifactNormalizer{
+		"maven": mavenPlugin,
+	}
 	blockRuleSvc := service.NewBlockRuleService(blockRuleRepo, auditSvc)
 	blocker := &blockRuleBlocker{svc: blockRuleSvc}
 
@@ -417,6 +420,7 @@ func main() {
 	migV2ConflictRepo := migv2repo.NewConflictRepo(db)
 	migV2EventRepo := migv2repo.NewEventRepo(db)
 	migV2ExecMgr := migv2executor.NewExecutorManager(db, nil, storageSvc, migV2ItemRepo, migV2EventRepo, 5, artifactSvc)
+	migV2ExecMgr.SetNormalizers(normalizers)
 	migV2Scheduler := migv2sched.New(db, migV2PlanRepo, migV2JobRepo, migV2ItemRepo, migV2EventRepo, migV2ExecMgr, 3)
 	migV2Svc := migv2svc.New(db, migV2PlanRepo, migV2JobRepo, migV2ItemRepo, migV2ConflictRepo, migV2EventRepo, migV2Scheduler)
 	migV2Svc.RecoverInterruptedPlans(context.Background())

@@ -308,6 +308,39 @@ func (p *MavenPlugin) Name() string {
 	return "maven"
 }
 
+func (p *MavenPlugin) NormalizeAsset(ctx context.Context, input runtime.NormalizeInput) (*runtime.Artifact, error) {
+	path := strings.Trim(input.RemotePath, "/")
+	var key runtime.ArtifactKey
+	var err error
+	if strings.HasSuffix(path, "/maven-metadata.xml") {
+		key, err = p.parseMavenMetadataPath(path)
+	} else {
+		key, err = p.parseMavenPath(path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: input.RepositoryID,
+		Format:       key.Format,
+		Kind:         key.Kind,
+		Namespace:    key.Namespace,
+		Name:         key.Name,
+		Version:      key.Version,
+		Path:         key.Path,
+		Filename:     key.Filename,
+		RemotePath:   key.RemotePath,
+		DownloadPath: firstNonEmptyMaven(input.DownloadPath, key.RemotePath),
+		Extension:    key.Extension,
+		ContentType:  input.ContentType,
+		SizeBytes:    input.SizeBytes,
+		Checksums:    input.Checksums,
+		Qualifiers:   key.Qualifiers,
+		Attributes:   input.Attributes,
+		BlobRefs:     input.BlobRefs,
+	}), nil
+}
+
 func (p *MavenPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
 	path := ctx.RepositoryPath
 	path = strings.TrimPrefix(path, "/")

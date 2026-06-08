@@ -2,12 +2,9 @@ package executor
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
@@ -17,6 +14,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/source/nexus"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/storage"
 	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
@@ -31,6 +29,7 @@ type ExecutorManager struct {
 	eventRepo   *repository.EventRepo
 	concurrency int
 	artifactSvc *service.ArtifactService
+	normalizers map[string]runtime.ArtifactNormalizer
 }
 
 func NewExecutorManager(db *gorm.DB, src source.MigrationSource, storageSvc *service.StorageService, itemRepo *repository.ItemRepo, eventRepo *repository.EventRepo, concurrency int, artifactSvc *service.ArtifactService) *ExecutorManager {
@@ -43,6 +42,10 @@ func NewExecutorManager(db *gorm.DB, src source.MigrationSource, storageSvc *ser
 		concurrency: concurrency,
 		artifactSvc: artifactSvc,
 	}
+}
+
+func (m *ExecutorManager) SetNormalizers(normalizers map[string]runtime.ArtifactNormalizer) {
+	m.normalizers = normalizers
 }
 
 // SetSource sets the migration source for plan-specific execution.
@@ -388,27 +391,10 @@ func (m *ExecutorManager) executeItem(ctx context.Context, planID uint, item *do
 		return m.failItem(planID, item, domain.ErrArtifactStorageFailed, "storage service not configured")
 	}
 
-	hash := sha256.New()
-	teeReader := io.TeeReader(assetStream.Reader, hash)
-
 	targetRepo := item.TargetRepository
 	if targetRepo == "" {
 		targetRepo = item.SourceRepository
 	}
-	storageVersion := item.SourceVersion
-	if item.SourceVersion == "" {
-		storageVersion = "unknown"
-	}
-	storageVersion += "/" + filepath.Base(item.SourcePath)
-
-	size := assetStream.Size
-	format := nexus.MapRepositoryFormat(item.SourceFormat)
-	storageKey, err := m.storageSvc.StorePackageWithBackend(ctx, targetRepo, format, item.SourceName, storageVersion, teeReader, size, 0)
-	if err != nil {
-		return m.failItem(planID, item, domain.ErrArtifactStorageFailed, err.Error())
-	}
-
-	digest := hex.EncodeToString(hash.Sum(nil))
 
 	// 先查询目标仓库 ID（blob 和 artifact 都需要）
 	var repo model.Repository
@@ -416,38 +402,26 @@ func (m *ExecutorManager) executeItem(ctx context.Context, planID uint, item *do
 		return m.failItem(planID, item, domain.ErrArtifactStorageFailed, fmt.Sprintf("target repository not found: %s", targetRepo))
 	}
 
-	// Step 1: 创建 blob 记录
-	// 注意：blob 和 artifact 不在同一个事务中，如果 Step 2 失败会产生孤儿 blob。
-	// 这是有意的 tradeoff——让 ArtifactService 统一管理 artifact 写入 + packages 同步，
-	// 而非拆分其内部事务。孤儿 blob 可通过定期清理任务回收。
-	var blobID uint
-	err = m.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		blob := &model.Blob{
-			Algorithm:   "sha256",
-			Digest:      digest,
-			Size:        size,
-			StoragePath: storageKey,
-		}
-		if err := tx.Create(blob).Error; err != nil {
-			return err
-		}
-		blobID = blob.ID
-		return nil
-	})
+	backend := m.storageSvc.GetDefaultBackend()
+	if backend == nil {
+		return m.failItem(planID, item, domain.ErrArtifactStorageFailed, "default storage backend not configured")
+	}
+
+	blobRef, err := putMigratedBlob(ctx, m.db, backend, assetStream.Reader)
 	if err != nil {
 		return m.failItem(planID, item, domain.ErrArtifactStorageFailed, err.Error())
 	}
 
 	// Step 2: 通过 ArtifactService 创建 artifact + blob 关联 + 同步 packages 表
-	checksums := mergeChecksums(assetCheckpoint.Checksum, map[string]string{"sha256": digest})
-	runtimeArtifact := buildMigratedArtifact(repo.ID, item, assetStream, blobID, checksums)
+	checksums := mergeChecksums(assetCheckpoint.Checksum, map[string]string{"sha256": blobRef.Digest})
+	runtimeArtifact := buildMigratedArtifact(repo.ID, item, assetStream, blobRef, checksums, m.normalizers)
 	if err := m.artifactSvc.Save(ctx, runtimeArtifact); err != nil {
 		return m.failItem(planID, item, domain.ErrArtifactStorageFailed, err.Error())
 	}
 
 	item.Status = domain.ItemCompleted
-	item.ChecksumJSON = fmt.Sprintf(`{"sha256":"%s"}`, digest)
-	item.SizeBytes = size
+	item.ChecksumJSON = fmt.Sprintf(`{"sha256":"%s"}`, blobRef.Digest)
+	item.SizeBytes = blobRef.Size
 	if err := m.db.Save(item).Error; err != nil {
 		return err
 	}
@@ -458,7 +432,11 @@ func (m *ExecutorManager) executeItem(ctx context.Context, planID uint, item *do
 	return nil
 }
 
-func buildMigratedArtifact(repoID uint, item *domain.MigrationItem, asset source.AssetStream, blobID uint, checksums map[string]string) *runtime.Artifact {
+func putMigratedBlob(ctx context.Context, db *gorm.DB, backend storage.Backend, reader io.Reader) (runtime.BlobRef, error) {
+	return storage.NewCASBlobStore(backend, db).Put(reader)
+}
+
+func buildMigratedArtifact(repoID uint, item *domain.MigrationItem, asset source.AssetStream, blobRef runtime.BlobRef, checksums map[string]string, normalizers map[string]runtime.ArtifactNormalizer) *runtime.Artifact {
 	downloadPath := item.TargetPath
 	if downloadPath == "" {
 		downloadPath = item.SourcePath
@@ -472,6 +450,33 @@ func buildMigratedArtifact(repoID uint, item *domain.MigrationItem, asset source
 	size := asset.Size
 	if size == 0 {
 		size = checkpoint.FileSize
+	}
+	if normalizer, ok := normalizers[format]; ok {
+		if artifact, err := normalizer.NormalizeAsset(context.Background(), runtime.NormalizeInput{
+			RepositoryID: fmt.Sprintf("%d", repoID),
+			Format:       format,
+			RemotePath:   item.SourcePath,
+			DownloadPath: downloadPath,
+			ContentType:  contentType,
+			SizeBytes:    size,
+			Checksums:    checksums,
+			Attributes:   migratedArtifactAttributes(item),
+			BlobRefs:     []runtime.BlobRef{blobRef},
+			Hints: map[string]string{
+				"source_repository": item.SourceRepository,
+				"source_id":         item.SourceID,
+				"source_name":       item.SourceName,
+				"source_version":    item.SourceVersion,
+			},
+		}); err == nil {
+			return artifact
+		} else {
+			logrus.WithFields(logrus.Fields{
+				"format":      format,
+				"source_path": item.SourcePath,
+				"error":       err,
+			}).Warn("Normalizer failed, falling back to generic artifact creation")
+		}
 	}
 
 	return runtime.NewArtifact(runtime.ArtifactSpec{
@@ -491,9 +496,18 @@ func buildMigratedArtifact(repoID uint, item *domain.MigrationItem, asset source
 			"source_download_url": checkpoint.DownloadURL,
 		},
 		BlobRefs: []runtime.BlobRef{
-			{BlobID: blobID},
+			blobRef,
 		},
 	})
+}
+
+func migratedArtifactAttributes(item *domain.MigrationItem) map[string]string {
+	checkpoint := assetCheckpointFromItem(item)
+	return map[string]string{
+		"source_repository":   item.SourceRepository,
+		"source_id":           item.SourceID,
+		"source_download_url": checkpoint.DownloadURL,
+	}
 }
 
 func assetCheckpointFromItem(item *domain.MigrationItem) domain.AssetCheckpoint {
