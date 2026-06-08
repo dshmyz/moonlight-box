@@ -410,21 +410,13 @@ const handleUpload = async () => {
 }
 
 const uploadPyPI = async (file: File) => {
-  const formData = new FormData()
-  formData.append('content', file)
-  formData.append('name', form.value.pypiName)
-  formData.append('version', form.value.pypiVersion)
-  if (form.value.pypiSummary) {
-    formData.append('summary', form.value.pypiSummary)
-  }
-  if (form.value.repositoryName) {
-    formData.append('repository', form.value.repositoryName)
-  }
+  const repositoryName = form.value.repositoryName || 'pypi-local'
+  const path = `/repository/${repositoryName}/packages/${encodeURIComponent(file.name)}`
   const token = localStorage.getItem('token')
 
-  await axios.post('/pypi/upload', formData, {
+  await axios.put(path, file, {
     headers: {
-      'Content-Type': 'multipart/form-data',
+      'Content-Type': 'application/octet-stream',
       ...(token ? { 'Authorization': `Bearer ${token}` } : {})
     },
     onUploadProgress: (progressEvent) => {

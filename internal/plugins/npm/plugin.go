@@ -177,7 +177,6 @@ func (p *NpmPlugin) parseNpmMetadata(packageName string, body io.Reader) ([]*run
 		if verObj != nil {
 			if dist, _ := verObj["dist"].(map[string]interface{}); dist != nil {
 				if tarballURL, _ := dist["tarball"].(string); tarballURL != "" {
-					tarballName = pathBase(tarballURL)
 					if parsed, err := url.Parse(tarballURL); err == nil && parsed.IsAbs() {
 						tarballProps["download_url"] = tarballURL
 					}
@@ -481,7 +480,14 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 		if errors.Is(err, runtime.ErrBlocked) {
 			return err
 		}
-		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		// 区分"回源失败"（上游不可达等）和"包不存在"
+		// ProxyRuntime.FetchRemote 失败时返回的 error 不是 ErrNotFound
+		if errors.Is(err, runtime.ErrNotFound) {
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		} else {
+			logrus.WithError(err).WithField("package", packageName).Warn("npm: QueryArtifacts failed (upstream error)")
+			http.Error(ctx.Writer, "upstream fetch failed", http.StatusBadGateway)
+		}
 		return nil
 	}
 

@@ -7,7 +7,7 @@
     @keydown.enter="$emit('click')"
     @keydown.space.prevent="$emit('click')"
   >
-    <div class="card-inner" v-memo="[pkg.id, pkg.name, pkg.description, pkg.type, pkg.latest_version, pkg.download_count, pkg.updated_at]">
+    <div class="card-inner" v-memo="[pkg.id, pkg.name, pkg.description, pkg.type, pkg.latest_version, pkg.download_count, pkg.updated_at, pkg.repository_name, pkg.license]">
       <div class="card-top">
         <span class="type-badge" :style="typeBadgeStyle">{{ getPackageTypeLabel(pkg.type) }}</span>
         <span class="package-name">{{ pkg.name }}</span>
@@ -27,13 +27,22 @@
           <span>{{ formatRelativeTime(pkg.updated_at) }}</span>
         </div>
       </div>
+      <div v-if="pkg.repository_name || pkg.license" class="card-tags">
+        <span v-if="pkg.repository_name" class="tag-item tag-repo">
+          <el-icon><FolderOpened /></el-icon>
+          {{ pkg.repository_name }}
+        </span>
+        <span v-if="pkg.license" class="tag-item tag-license">
+          {{ pkg.license }}
+        </span>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Download, PriceTag, Clock } from '@element-plus/icons-vue'
+import { Download, PriceTag, Clock, FolderOpened } from '@element-plus/icons-vue'
 import type { Package } from '@/api/package'
 import { formatNumber, formatRelativeTime } from '@/utils/format'
 import { getPackageTypeLabel, getPackageTypeHexColor, getPackageTypeHexColorRGB } from '@/constants/package'
@@ -140,5 +149,40 @@ const typeBadgeStyle = computed(() => {
 .meta-item .el-icon {
   font-size: 14px;
   color: var(--lunar-accent-soft);
+}
+
+.card-tags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.tag-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.tag-repo {
+  background: rgba(100, 116, 139, 0.1);
+  color: var(--lunar-silver-muted);
+  border: 1px solid rgba(100, 116, 139, 0.2);
+}
+
+.tag-repo .el-icon {
+  font-size: 11px;
+}
+
+.tag-license {
+  background: rgba(34, 197, 94, 0.08);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.2);
 }
 </style>

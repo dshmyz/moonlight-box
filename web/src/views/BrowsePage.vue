@@ -26,12 +26,25 @@
       </button>
 
       <div v-if="activeTab === 'packages'" class="lunar-tab-actions">
+        <el-select
+          v-model="selectedRepo"
+          class="lunar-filter-select"
+          placeholder="全部仓库"
+          clearable
+          @change="handleRepoChange"
+        >
+          <el-option
+            v-for="repo in repoOptions"
+            :key="repo.name"
+            :label="repo.display_name || repo.name"
+            :value="repo.name"
+          />
+        </el-select>
         <el-select v-model="sortBy" class="lunar-sort-select" @change="handleSortChange">
           <el-option label="按名称" value="name" />
           <el-option label="按更新时间" value="updated_at" />
           <el-option label="按下载量" value="downloads" />
         </el-select>
-        <span class="lunar-stats-count">{{ total }} 个包</span>
       </div>
     </div>
 
@@ -115,6 +128,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { Box, FolderOpened, Clock } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { packageApi, type Package } from '@/api/package'
+import { publicRepoApi, type PublicRepoListItem } from '@/api/public'
 import { formatNumber } from '@/utils/format'
 import PackageCard from '@/components/browse/PackageCard.vue'
 import RepositoryShowcase from '@/components/browse/RepositoryShowcase.vue'
@@ -136,8 +150,12 @@ const pageSize = ref(24)
 const total = ref(0)
 const packages = ref<Package[]>([])
 const searchTime = ref(0)
+const selectedRepo = ref('')
+const repoOptions = ref<PublicRepoListItem[]>([])
 const hintFaded = ref(false)
 let hintTimer: ReturnType<typeof setTimeout> | null = null
+let debounceTimer: ReturnType<typeof setTimeout> | null = null
+let isInitialLoad = true
 
 // URL 参数同步 - 读取初始值
 function initFromUrl() {
@@ -145,6 +163,7 @@ function initFromUrl() {
   if (query.q) searchQuery.value = query.q as string
   if (query.type) selectedType.value = query.type as string
   if (query.sort) sortBy.value = query.sort as string
+  if (query.repo) selectedRepo.value = query.repo as string
   if (query.page) currentPage.value = parseInt(query.page as string) || 1
   if (query.page_size) pageSize.value = parseInt(query.page_size as string) || 24
 }
@@ -154,6 +173,7 @@ function updateUrl() {
   const query: Record<string, string> = {}
   if (searchQuery.value) query.q = searchQuery.value
   if (selectedType.value !== 'all') query.type = selectedType.value
+  if (selectedRepo.value) query.repo = selectedRepo.value
   if (sortBy.value !== 'name') query.sort = sortBy.value
   if (currentPage.value !== 1) query.page = String(currentPage.value)
   if (pageSize.value !== 24) query.page_size = String(pageSize.value)
@@ -166,6 +186,11 @@ function handleHeroSearch(query: string, type: string) {
   searchQuery.value = query
   selectedType.value = type
   currentPage.value = 1
+  // 取消防抖定时器，避免重复搜索
+  if (debounceTimer) {
+    clearTimeout(debounceTimer)
+    debounceTimer = null
+  }
   handleSearch()
 }
 
@@ -176,10 +201,13 @@ const handleSearch = async () => {
       q: searchQuery.value,
       page: currentPage.value,
       page_size: pageSize.value,
-      sort: sortBy.value === 'downloads' ? 'updated_at' : sortBy.value,
+      sort: sortBy.value === 'downloads' ? 'download_count' : sortBy.value,
     }
     if (selectedType.value !== 'all') {
       params.type = selectedType.value
+    }
+    if (selectedRepo.value) {
+      params.repository = selectedRepo.value
     }
 
     const res = await packageApi.search(params as { q?: string; type?: string; sort?: string; page?: number; page_size?: number })
@@ -202,6 +230,11 @@ const handleSearch = async () => {
 }
 
 function handleSortChange() {
+  currentPage.value = 1
+  handleSearch()
+}
+
+function handleRepoChange() {
   currentPage.value = 1
   handleSearch()
 }
@@ -242,9 +275,10 @@ function handleKeydown(event: KeyboardEvent) {
       }
       break
     case 'Escape':
-      if (searchQuery.value) {
+      if (searchQuery.value || selectedRepo.value) {
         searchQuery.value = ''
         selectedType.value = 'all'
+        selectedRepo.value = ''
         currentPage.value = 1
         handleSearch()
       }
@@ -258,29 +292,50 @@ watch(() => route.query, () => {
   const newSearch = (query.q as string) || ''
   const newType = (query.type as string) || 'all'
   const newSort = (query.sort as string) || 'name'
+  const newRepo = (query.repo as string) || ''
   const newPage = parseInt((query.page as string) || '1')
 
   // 只有当值确实发生变化时才更新并搜索
   if (newSearch !== searchQuery.value || newType !== selectedType.value ||
-      newSort !== sortBy.value || newPage !== currentPage.value) {
+      newSort !== sortBy.value || newRepo !== selectedRepo.value || newPage !== currentPage.value) {
     searchQuery.value = newSearch
     selectedType.value = newType
     sortBy.value = newSort
+    selectedRepo.value = newRepo
     currentPage.value = newPage
     handleSearch()
   }
 }, { immediate: false })
 
-onMounted(() => {
+// 防抖自动搜索：输入变化后 300ms 自动触发搜索
+watch(searchQuery, () => {
+  if (isInitialLoad) return
+  if (debounceTimer) clearTimeout(debounceTimer)
+  debounceTimer = setTimeout(() => {
+    currentPage.value = 1
+    handleSearch()
+  }, 300)
+})
+
+onMounted(async () => {
   initFromUrl()
   handleSearch()
+  isInitialLoad = false
   hintTimer = setTimeout(() => {
     hintFaded.value = true
   }, 5000)
+  // 加载仓库列表用于过滤
+  try {
+    const repos = await publicRepoApi.list()
+    repoOptions.value = Array.isArray(repos) ? repos : []
+  } catch {
+    // 静默失败，仓库过滤不可用但不影响主功能
+  }
 })
 
 onUnmounted(() => {
   if (hintTimer) clearTimeout(hintTimer)
+  if (debounceTimer) clearTimeout(debounceTimer)
 })
 </script>
 
@@ -359,11 +414,31 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-.lunar-stats-count {
-  color: var(--lunar-accent);
+.lunar-filter-select {
+  min-width: 120px;
+}
+
+.lunar-filter-select :deep(.el-input__wrapper) {
+  background: var(--lunar-bg-glass);
+  border: 1px solid var(--lunar-border);
+  border-radius: 8px;
+  box-shadow: none;
+  height: 32px;
+}
+
+.lunar-filter-select :deep(.el-input__wrapper:hover) {
+  border-color: var(--lunar-border-hover);
+}
+
+.lunar-filter-select :deep(.el-input__wrapper.is-focus) {
+  border-color: var(--lunar-accent);
+  box-shadow: var(--lunar-shadow-glow);
+}
+
+.lunar-filter-select :deep(.el-input__inner) {
+  color: var(--lunar-silver);
   font-size: 13px;
-  font-weight: 700;
-  white-space: nowrap;
+  font-weight: 600;
 }
 
 /* 统计概览 */
@@ -450,6 +525,10 @@ onUnmounted(() => {
 
   .lunar-sort-select {
     min-width: 100px;
+  }
+
+  .lunar-filter-select {
+    min-width: 90px;
   }
 }
 

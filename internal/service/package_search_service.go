@@ -341,6 +341,11 @@ func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *Sea
 		sort.Slice(allEntries, func(i, j int) bool {
 			return groups[allEntries[i]].latestTime.After(groups[allEntries[j]].latestTime)
 		})
+	case "download_count":
+		// artifacts 表无 download_count 字段，回退到按更新时间排序
+		sort.Slice(allEntries, func(i, j int) bool {
+			return groups[allEntries[i]].latestTime.After(groups[allEntries[j]].latestTime)
+		})
 	default:
 		sort.Slice(allEntries, func(i, j int) bool {
 			return groups[allEntries[i]].latestTime.After(groups[allEntries[j]].latestTime)

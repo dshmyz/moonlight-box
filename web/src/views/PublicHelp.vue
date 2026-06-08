@@ -432,7 +432,7 @@ const faqs = [
         </div>
         <div class="command-item">
           <span class="command-label">PyPI:</span>
-          <code>twine upload --repository-url http://your-registry/pypi/upload/ dist/*</code>
+          <code>curl -X PUT http://your-registry/repository/pypi-local/packages/example-1.0.0-py3-none-any.whl --data-binary @dist/example-1.0.0-py3-none-any.whl</code>
         </div>
       </div>
     `

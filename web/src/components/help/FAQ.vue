@@ -154,8 +154,8 @@ const categories = [
       {
         question: '使用 twine 上传包失败？',
         answer: `
-          <p>当前上传端点为 <code>/pypi/upload/</code>，请使用：</p>
-          <pre><code>twine upload --repository-url http://your-registry/pypi/upload/ dist/*</code></pre>
+          <p>当前 PyPI hosted 上传使用仓库文件路径：</p>
+          <pre><code>curl -X PUT http://your-registry/repository/pypi-local/packages/example-1.0.0-py3-none-any.whl --data-binary @dist/example-1.0.0-py3-none-any.whl</code></pre>
         `
       }
     ]

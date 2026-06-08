@@ -305,6 +305,17 @@ func (p *PyPIPlugin) handlePackageList(ctx *runtime.RequestContext, repoRuntime 
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}
+	if len(artifacts) == 0 {
+		artifacts, err = repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+			RepositoryID: ctx.Repository.ID,
+			Format:       "pypi",
+			Name:         packageName,
+		})
+		if err != nil {
+			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			return nil
+		}
+	}
 
 	accept := ctx.Request.Header.Get("Accept")
 	if strings.Contains(accept, "application/vnd.pypi.simple") || strings.Contains(accept, "application/json") {
@@ -630,7 +641,7 @@ func (p *PyPIPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runti
 	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
-		Kind:         runtime.KindPackage,
+		Kind:         "package-file",
 		Name:         packageName,
 		Version:      version,
 		Filename:     key.Filename,

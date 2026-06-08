@@ -21,10 +21,12 @@ NC='\033[0m'
 
 PASS=0
 FAIL=0
+WARN=0
 TOTAL=0
 
 log_pass() { echo -e "  ${GREEN}✓ PASS${NC} $1"; PASS=$((PASS + 1)); TOTAL=$((TOTAL + 1)); }
 log_fail() { echo -e "  ${RED}✗ FAIL${NC} $1"; FAIL=$((FAIL + 1)); TOTAL=$((TOTAL + 1)); }
+log_warn() { echo -e "  ${YELLOW}⚠ WARN${NC} $1"; WARN=$((WARN + 1)); TOTAL=$((TOTAL + 1)); }
 log_info() { echo -e "  ${BLUE}ℹ INFO${NC} $1"; }
 log_section() { echo -e "\n${YELLOW}════════════════════════════════════════${NC}"; echo -e "  ${YELLOW}$1${NC}"; echo -e "${YELLOW}════════════════════════════════════════${NC}"; }
 
@@ -114,7 +116,17 @@ log_section "测试 1: NPM 代理回源"
 
 # 测试 npm 元数据请求
 HTTP_CODE=$(curl -s -o /tmp/test_proxy_npm_meta.json -w "%{http_code}" "$BASE_URL/repository/npm-proxy-cn/lodash")
-assert_status "NPM 元数据请求 (lodash)" "200" "$HTTP_CODE"
+if [ "$HTTP_CODE" = "200" ]; then
+    log_pass "NPM 元数据请求 (lodash) (HTTP 200)"
+else
+    UPSTREAM_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 8 --max-time 15 "https://registry.npmmirror.com/lodash" 2>/dev/null)
+    [ -n "$UPSTREAM_CODE" ] || UPSTREAM_CODE="000"
+    if [ "$UPSTREAM_CODE" = "200" ]; then
+        log_fail "NPM 元数据请求 (lodash) (expected HTTP 200, got HTTP $HTTP_CODE; upstream HTTP 200)"
+    else
+        log_warn "NPM 元数据请求 (lodash) 上游不可用或网络受限 (proxy HTTP $HTTP_CODE, upstream HTTP $UPSTREAM_CODE)"
+    fi
+fi
 if [ "$HTTP_CODE" = "200" ]; then
     assert_body_contains "返回 JSON 包含 name" '"name"' "$(cat /tmp/test_proxy_npm_meta.json)"
 fi
@@ -524,6 +536,7 @@ echo "============================================"
 echo " 测试汇总"
 echo "============================================"
 echo -e "  ${GREEN}通过: $PASS${NC}"
+echo -e "  ${YELLOW}警告: $WARN${NC}"
 echo -e "  ${RED}失败: $FAIL${NC}"
 echo -e "  总计: $TOTAL"
 echo ""

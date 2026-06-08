@@ -53,12 +53,7 @@ func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 	err := s.db.Where("algorithm = ? AND digest = ?", "sha256", digest).First(&existingBlob).Error
 	if err == nil {
 		s.backend.Delete(context.Background(), tempPath)
-		return runtime.BlobRef{
-			BlobID:    existingBlob.ID,
-			Algorithm: "sha256",
-			Digest:    digest,
-			Size:      existingBlob.Size,
-		}, nil
+		return blobRefFromModel(existingBlob), nil
 	}
 
 	casPath := s.buildCASPath("sha256", digest)
@@ -81,15 +76,24 @@ func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 		StoragePath: casPath,
 	}
 	if err := s.db.Create(blob).Error; err != nil {
+		var existing model.Blob
+		if findErr := s.db.Where("algorithm = ? AND digest = ?", "sha256", digest).First(&existing).Error; findErr == nil {
+			return blobRefFromModel(existing), nil
+		}
+		_ = s.backend.Delete(context.Background(), casPath)
 		return runtime.BlobRef{}, err
 	}
 
+	return blobRefFromModel(*blob), nil
+}
+
+func blobRefFromModel(blob model.Blob) runtime.BlobRef {
 	return runtime.BlobRef{
 		BlobID:    blob.ID,
-		Algorithm: "sha256",
-		Digest:    digest,
-		Size:      size,
-	}, nil
+		Algorithm: blob.Algorithm,
+		Digest:    blob.Digest,
+		Size:      blob.Size,
+	}
 }
 
 func (s *CASBlobStore) Open(ref runtime.BlobRef) (io.ReadCloser, error) {

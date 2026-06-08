@@ -11,7 +11,12 @@ import (
 	"testing"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/plugins/testhelper"
+	"github.com/dshmyz/moonlight-box/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/storage"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *httptest.ResponseRecorder) {
@@ -243,6 +248,79 @@ func TestFetchRemote_ParsesVersions(t *testing.T) {
 	}
 	if versions != 2 || tarballs != 2 {
 		t.Fatalf("expected 2 version and 2 tarball artifacts, got versions=%d tarballs=%d", versions, tarballs)
+	}
+}
+
+func TestParseNpmMetadataUsesCanonicalTarballPathWhenUpstreamURLIsShared(t *testing.T) {
+	p := NewNpmPlugin()
+	body := strings.NewReader(`{
+		"name": "lodash",
+		"versions": {
+			"4.17.15": {
+				"dist": {"tarball": "https://registry.npmmirror.com/lodash/-/lodash-4.17.15.tgz"}
+			},
+			"4.17.16": {
+				"dist": {"tarball": "https://registry.npmmirror.com/lodash/-/lodash-4.17.15.tgz"}
+			}
+		}
+	}`)
+
+	arts, err := p.parseNpmMetadata("lodash", body)
+	if err != nil {
+		t.Fatalf("parse metadata: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, art := range arts {
+		if art.Kind != "tarball" {
+			continue
+		}
+		if seen[art.RemotePath] {
+			t.Fatalf("duplicate tarball remote path: %s", art.RemotePath)
+		}
+		seen[art.RemotePath] = true
+		if art.Version == "4.17.16" {
+			if art.RemotePath != "lodash/-/lodash-4.17.16.tgz" {
+				t.Fatalf("remote path = %q", art.RemotePath)
+			}
+			if art.DownloadURL != "https://registry.npmmirror.com/lodash/-/lodash-4.17.15.tgz" {
+				t.Fatalf("download url = %q", art.DownloadURL)
+			}
+		}
+	}
+}
+
+func TestParseNpmMetadataSharedTarballURLCanBeSavedBatch(t *testing.T) {
+	p := NewNpmPlugin()
+	arts, err := p.parseNpmMetadata("lodash", strings.NewReader(`{
+		"name": "lodash",
+		"versions": {
+			"4.17.15": {
+				"dist": {"tarball": "https://registry.npmmirror.com/lodash/-/lodash-4.17.15.tgz"}
+			},
+			"4.17.16": {
+				"dist": {"tarball": "https://registry.npmmirror.com/lodash/-/lodash-4.17.15.tgz"}
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parse metadata: %v", err)
+	}
+	for _, art := range arts {
+		art.RepositoryID = "1"
+	}
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}, &model.ArtifactBlob{}, &model.Blob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	store := storage.NewMetadataStoreWithArtifactService(db, service.NewArtifactService(db))
+	if err := store.BatchPut(context.Background(), arts); err != nil {
+		t.Fatalf("batch put: %v", err)
 	}
 }
 

@@ -10,8 +10,13 @@ import (
 	"testing"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/plugins/testhelper"
+	"github.com/dshmyz/moonlight-box/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/storage"
 	"github.com/dshmyz/moonlight-box/internal/util"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 func init() {
@@ -27,6 +32,29 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 		Repository:     &runtime.Repository{ID: "1", Name: "pypi-test", Format: "pypi", Type: "local"},
 		RepositoryPath: "/" + path,
 	}, w
+}
+
+func newHostedPyPIRuntime(t *testing.T) runtime.RepositoryRuntime {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatal(err)
+	}
+	artifactSvc := service.NewArtifactService(db)
+	metadataStore := storage.NewMetadataStoreWithArtifactService(db, artifactSvc)
+	backend, err := storage.NewLocalStorage(t.TempDir(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobStore := storage.NewCASBlobStore(backend, db)
+	return &runtime.HostedRuntime{
+		MetadataStore: metadataStore,
+		BlobStore:     blobStore,
+		RepositoryID:  "1",
+	}
 }
 
 func TestHandle_SimpleIndex(t *testing.T) {
@@ -106,6 +134,30 @@ func TestHandle_PackageDownload(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestHandle_UploadedWheelAppearsInSimplePackageList(t *testing.T) {
+	p := NewPyPIPlugin()
+	rt := newHostedPyPIRuntime(t)
+
+	ctx, w := newCtx("PUT", "packages/test_pypi_package-1.0.0-py3-none-any.whl", strings.NewReader("wheel-content"))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("upload handle: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d body=%q", w.Code, w.Body.String())
+	}
+
+	ctx, w = newCtx("GET", "simple/test-pypi-package/", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("list handle: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%q", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "test_pypi_package-1.0.0-py3-none-any.whl") {
+		t.Fatalf("simple package list missing wheel link: %s", w.Body.String())
 	}
 }
 
@@ -289,8 +341,8 @@ func TestHandle_QueryRemotePath(t *testing.T) {
 	ctx, _ := newCtx("GET", "simple/requests/", nil)
 	p.Handle(ctx, rt)
 
-	if len(rt.QueryCalls) != 1 {
-		t.Fatalf("expected 1 query call, got %d", len(rt.QueryCalls))
+	if len(rt.QueryCalls) == 0 {
+		t.Fatal("expected at least one query call")
 	}
 	if rt.QueryCalls[0].RemotePath != "simple/requests/" {
 		t.Errorf("unexpected RemotePath: %q", rt.QueryCalls[0].RemotePath)

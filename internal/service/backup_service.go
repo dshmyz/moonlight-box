@@ -2,7 +2,9 @@ package service
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -14,36 +16,46 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type BackupService struct {
-	backupRepo  *repository.BackupRepository
-	storagePath string
-	backupPath  string
+// BackupTarget 定义一个需要备份的文件
+type BackupTarget struct {
+	// ArchivePath 在 tar 包中的相对路径（如 "db/registry.db"）
+	ArchivePath string
+	// LocalPath 在磁盘上的绝对路径
+	LocalPath string
 }
 
-func NewBackupService(backupRepo *repository.BackupRepository, storagePath, backupPath string) *BackupService {
+type BackupService struct {
+	backupRepo   *repository.BackupRepository
+	storageSvc   *StorageService
+	backupPrefix string // 备份文件在存储中的 key 前缀，如 "backups"
+	targets      []BackupTarget
+}
+
+// NewBackupService 创建备份服务
+// storageSvc 用于读写备份文件（支持 Local/S3 等任意存储后端）
+// backupPrefix 是备份文件在存储中的 key 前缀（如 "backups"）
+// targets 指定需要备份的文件列表
+func NewBackupService(backupRepo *repository.BackupRepository, storageSvc *StorageService, backupPrefix string, targets []BackupTarget) *BackupService {
 	return &BackupService{
-		backupRepo:  backupRepo,
-		storagePath: storagePath,
-		backupPath:  backupPath,
+		backupRepo:   backupRepo,
+		storageSvc:   storageSvc,
+		backupPrefix: backupPrefix,
+		targets:      targets,
 	}
+}
+
+func (s *BackupService) backupKey(name string) string {
+	return filepath.Join(s.backupPrefix, name+".tar.gz")
 }
 
 func (s *BackupService) CreateBackup(name string, backupType model.BackupType, description string, createdBy uint) (*model.Backup, error) {
-	if err := os.MkdirAll(s.backupPath, 0755); err != nil {
-		logrus.WithFields(logrus.Fields{
-			"module": "backup",
-			"error":  err,
-		}).Error("Failed to create backup directory")
-		return nil, fmt.Errorf("failed to create backup directory: %w", err)
-	}
-
 	backup := &model.Backup{
 		Name:        name,
 		Type:        backupType,
 		Status:      model.BackupStatusPending,
 		Description: description,
 		CreatedBy:   createdBy,
-		FilePath:    filepath.Join(s.backupPath, name+".tar.gz"),
+		FilePath:    s.backupKey(name),
 	}
 
 	if err := s.backupRepo.Create(backup); err != nil {
@@ -78,62 +90,68 @@ func (s *BackupService) executeBackup(backup *model.Backup) {
 	backup.StartedAt = &startTime
 	s.backupRepo.Update(backup)
 
-	file, err := os.Create(backup.FilePath)
-	if err != nil {
-		s.markBackupFailed(backup, fmt.Sprintf("failed to create backup file: %v", err))
-		return
-	}
-	defer file.Close()
-
-	gzw := gzip.NewWriter(file)
-	defer gzw.Close()
-
+	// 在内存中构建 tar.gz
+	var buf bytes.Buffer
+	gzw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gzw)
-	defer tw.Close()
 
 	var totalSize int64
 
-	err = filepath.Walk(s.storagePath, func(path string, info os.FileInfo, err error) error {
+	for _, target := range s.targets {
+		info, err := os.Stat(target.LocalPath)
 		if err != nil {
-			return err
+			s.markBackupFailed(backup, fmt.Sprintf("failed to stat %s: %v", target.LocalPath, err))
+			return
 		}
 
-		if info.IsDir() {
-			return nil
-		}
-
-		relPath, err := filepath.Rel(s.storagePath, path)
+		header, err := tar.FileInfoHeader(info, target.ArchivePath)
 		if err != nil {
-			return err
+			s.markBackupFailed(backup, fmt.Sprintf("failed to create tar header for %s: %v", target.LocalPath, err))
+			return
 		}
-
-		header, err := tar.FileInfoHeader(info, relPath)
-		if err != nil {
-			return err
-		}
-		header.Name = relPath
+		header.Name = target.ArchivePath
 
 		if err := tw.WriteHeader(header); err != nil {
-			return err
+			s.markBackupFailed(backup, fmt.Sprintf("failed to write tar header for %s: %v", target.LocalPath, err))
+			return
 		}
 
-		file, err := os.Open(path)
+		srcFile, err := os.Open(target.LocalPath)
 		if err != nil {
-			return err
+			s.markBackupFailed(backup, fmt.Sprintf("failed to open %s: %v", target.LocalPath, err))
+			return
 		}
-		defer file.Close()
 
-		written, err := io.Copy(tw, file)
+		written, err := io.Copy(tw, srcFile)
+		srcFile.Close()
 		if err != nil {
-			return err
+			s.markBackupFailed(backup, fmt.Sprintf("failed to copy %s: %v", target.LocalPath, err))
+			return
 		}
 
 		totalSize += written
-		return nil
-	})
+		logrus.WithFields(logrus.Fields{
+			"module":       "backup",
+			"archive_path": target.ArchivePath,
+			"size_bytes":   written,
+		}).Debug("Backed up file")
+	}
 
-	if err != nil {
-		s.markBackupFailed(backup, fmt.Sprintf("failed to create backup: %v", err))
+	// 关闭 tar 和 gzip writer 以 flush 数据
+	if err := tw.Close(); err != nil {
+		s.markBackupFailed(backup, fmt.Sprintf("failed to close tar writer: %v", err))
+		return
+	}
+	if err := gzw.Close(); err != nil {
+		s.markBackupFailed(backup, fmt.Sprintf("failed to close gzip writer: %v", err))
+		return
+	}
+
+	// 通过存储后端写入备份文件（支持 Local/S3 等）
+	backend := s.storageSvc.GetDefaultBackend()
+	archiveSize := int64(buf.Len())
+	if err := backend.Put(context.Background(), backup.FilePath, &buf, archiveSize); err != nil {
+		s.markBackupFailed(backup, fmt.Sprintf("failed to store backup: %v", err))
 		return
 	}
 
@@ -145,10 +163,12 @@ func (s *BackupService) executeBackup(backup *model.Backup) {
 
 	duration := time.Since(startTime)
 	logrus.WithFields(logrus.Fields{
-		"module":      "backup",
-		"backup_id":   backup.ID,
-		"size_bytes":  totalSize,
-		"duration_ms": duration.Milliseconds(),
+		"module":       "backup",
+		"backup_id":    backup.ID,
+		"size_bytes":   totalSize,
+		"archive_size": archiveSize,
+		"duration_ms":  duration.Milliseconds(),
+		"storage_type": backend.Name(),
 	}).Info("Backup completed successfully")
 }
 
@@ -192,18 +212,26 @@ func (s *BackupService) RestoreBackup(backupID uint) error {
 		"backup_name": backup.Name,
 	}).Info("Backup restoration started")
 
-	file, err := os.Open(backup.FilePath)
+	// 构建 archivePath → localPath 的映射
+	restoreMap := make(map[string]string)
+	for _, t := range s.targets {
+		restoreMap[t.ArchivePath] = t.LocalPath
+	}
+
+	// 从存储后端读取备份文件
+	backend := s.storageSvc.GetDefaultBackend()
+	reader, err := backend.Get(context.Background(), backup.FilePath)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"module":    "backup",
 			"backup_id": backupID,
 			"error":     err,
-		}).Error("Restore backup failed: cannot open backup file")
-		return fmt.Errorf("failed to open backup file: %w", err)
+		}).Error("Restore backup failed: cannot read backup file from storage")
+		return fmt.Errorf("failed to read backup file from storage: %w", err)
 	}
-	defer file.Close()
+	defer reader.Close()
 
-	gzr, err := gzip.NewReader(file)
+	gzr, err := gzip.NewReader(reader)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"module":    "backup",
@@ -230,7 +258,14 @@ func (s *BackupService) RestoreBackup(backupID uint) error {
 			return fmt.Errorf("failed to read tar header: %w", err)
 		}
 
-		targetPath := filepath.Join(s.storagePath, header.Name)
+		targetPath, ok := restoreMap[header.Name]
+		if !ok {
+			logrus.WithFields(logrus.Fields{
+				"module":       "backup",
+				"archive_path": header.Name,
+			}).Warn("Skipping unknown file in backup archive")
+			continue
+		}
 
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 			logrus.WithFields(logrus.Fields{
@@ -242,7 +277,7 @@ func (s *BackupService) RestoreBackup(backupID uint) error {
 			return fmt.Errorf("failed to create directory: %w", err)
 		}
 
-		file, err := os.OpenFile(targetPath, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode))
+		outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, os.FileMode(header.Mode))
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
 				"module":    "backup",
@@ -253,8 +288,8 @@ func (s *BackupService) RestoreBackup(backupID uint) error {
 			return fmt.Errorf("failed to create file: %w", err)
 		}
 
-		if _, err := io.Copy(file, tr); err != nil {
-			file.Close()
+		if _, err := io.Copy(outFile, tr); err != nil {
+			outFile.Close()
 			logrus.WithFields(logrus.Fields{
 				"module":    "backup",
 				"backup_id": backupID,
@@ -263,7 +298,7 @@ func (s *BackupService) RestoreBackup(backupID uint) error {
 			}).Error("Restore backup failed: cannot write file")
 			return fmt.Errorf("failed to write file: %w", err)
 		}
-		file.Close()
+		outFile.Close()
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -289,8 +324,13 @@ func (s *BackupService) DeleteBackup(id uint) error {
 		return err
 	}
 
-	if err := os.Remove(backup.FilePath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to delete backup file: %w", err)
+	backend := s.storageSvc.GetDefaultBackend()
+	if err := backend.Delete(context.Background(), backup.FilePath); err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":    "backup",
+			"backup_id": id,
+			"error":     err,
+		}).Warn("Failed to delete backup file from storage")
 	}
 
 	return s.backupRepo.Delete(id)

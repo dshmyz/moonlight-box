@@ -11,6 +11,7 @@ func setDefaults(v interface {
 	v.SetDefault("server.mode", "debug")
 	v.SetDefault("server.read_timeout", 30*time.Second)
 	v.SetDefault("server.write_timeout", 30*time.Second)
+	v.SetDefault("server.idle_timeout", 60*time.Second) // 空闲连接超时，减少服务器关闭时等待时间
 	v.SetDefault("server.static_dir", "./cmd/registry/dist")
 	v.SetDefault("server.max_upload_size", 200*1024*1024) // 200MB
 

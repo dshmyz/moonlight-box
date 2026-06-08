@@ -346,7 +346,11 @@ func main() {
 
 	// 初始化备份服务
 	backupRepo := repository.NewBackupRepository(db)
-	backupSvc := service.NewBackupService(backupRepo, cfg.Storage.Local.BasePath, cfg.Storage.Local.BasePath+"/backups")
+	backupTargets := []service.BackupTarget{
+		{ArchivePath: "db/registry.db", LocalPath: cfg.Database.DSN},
+		{ArchivePath: "config/config.yaml", LocalPath: *configPath},
+	}
+	backupSvc := service.NewBackupService(backupRepo, storageSvc, "backups", backupTargets)
 
 	// 初始化 Webhook 服务
 	webhookRepo := repository.NewWebhookRepository(db)
@@ -538,6 +542,7 @@ func main() {
 		Handler:      router,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  cfg.Server.IdleTimeout,
 	}
 
 	// 优雅关闭

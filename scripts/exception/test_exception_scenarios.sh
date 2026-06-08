@@ -7,6 +7,9 @@ export PATH="/usr/bin:/usr/local/bin:$PATH"
 BASE_URL="${1:-http://localhost:9081}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASS="${ADMIN_PASS:-admin123}"
+CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-5}"
+CURL_MAX_TIME="${CURL_MAX_TIME:-30}"
+CURL_OPTS=(--connect-timeout "$CURL_CONNECT_TIMEOUT" --max-time "$CURL_MAX_TIME")
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -38,7 +41,7 @@ warn() {
 }
 
 get_auth_token() {
-    curl -s -X POST "$BASE_URL/api/v1/auth/login" \
+    curl -s "${CURL_OPTS[@]}" -X POST "$BASE_URL/api/v1/auth/login" \
         -H "Content-Type: application/json" \
         -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" | \
         grep -o '"access_token":"[^"]*"' | \
@@ -68,7 +71,7 @@ echo "════════════════════════�
 EMPTY_FILE="$TEST_DIR/empty-file.txt"
 touch "$EMPTY_FILE"
 
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+HTTP_CODE=$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w "%{http_code}" -X PUT \
     "$BASE_URL/repository/maven-local/com/test/empty-test/1.0.0/empty-test-1.0.0.txt" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: text/plain" \
@@ -91,7 +94,7 @@ dd if=/dev/zero of="$LARGE_FILE" bs=1M count=500 2>/dev/null
 
 if [ -f "$LARGE_FILE" ]; then
     info "上传超大文件（可能触发限制）..."
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+    HTTP_CODE=$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w "%{http_code}" -X PUT \
         "$BASE_URL/repository/maven-local/com/test/large-test/1.0.0/large-test-1.0.0.bin" \
         -H "Authorization: Bearer $TOKEN" \
         -H "Content-Type: application/octet-stream" \
@@ -123,16 +126,18 @@ for i in $(seq 1 $CONCURRENT_COUNT); do
         CONCURRENT_FILE="$TEST_DIR/snapshot-concurrent-$i.jar"
         echo "Snapshot content from client $i - $(date)" > "$CONCURRENT_FILE"
         
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+        HTTP_CODE=$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w "%{http_code}" -X PUT \
             "$BASE_URL/repository/maven-snapshots/com/test/concurrent-snapshot/1.0-SNAPSHOT/concurrent-snapshot-1.0-$(date +%Y%m%d.%H%M%S)-$i.jar" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/octet-stream" \
-            --data-binary @"$CONCURRENT_FILE")
+            --data-binary @"$CONCURRENT_FILE" 2>/dev/null || true)
+        [ -n "$HTTP_CODE" ] || HTTP_CODE="000"
         
         echo "$HTTP_CODE" > "$TEST_DIR/snapshot-result-$i.txt"
     ) &
 done
 
+info "等待并发 SNAPSHOT 上传完成（单请求最多 ${CURL_MAX_TIME}s）..."
 wait
 
 SUCCESS_COUNT=0
@@ -146,6 +151,8 @@ for i in $(seq 1 $CONCURRENT_COUNT); do
         else
             FAIL_COUNT_SNAPSHOT=$((FAIL_COUNT_SNAPSHOT + 1))
         fi
+    else
+        FAIL_COUNT_SNAPSHOT=$((FAIL_COUNT_SNAPSHOT + 1))
     fi
 done
 
@@ -155,13 +162,13 @@ else
     fail "并发 SNAPSHOT 上传 - 全部失败"
 fi
 
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+HTTP_CODE=$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w "%{http_code}" \
     "$BASE_URL/repository/maven-snapshots/com/test/concurrent-snapshot/1.0-SNAPSHOT/maven-metadata.xml")
 
 if [ "$HTTP_CODE" = "200" ]; then
     pass "并发上传后 maven-metadata.xml 仍可访问"
     
-    METADATA=$(curl -s "$BASE_URL/repository/maven-snapshots/com/test/concurrent-snapshot/1.0-SNAPSHOT/maven-metadata.xml")
+    METADATA=$(curl -s "${CURL_OPTS[@]}" "$BASE_URL/repository/maven-snapshots/com/test/concurrent-snapshot/1.0-SNAPSHOT/maven-metadata.xml")
     if echo "$METADATA" | grep -q "<buildNumber>"; then
         pass "maven-metadata.xml 包含 buildNumber（元数据更新正常）"
     else
@@ -183,7 +190,7 @@ INVALID_PATHS=(
 )
 
 for TEST_PATH in "${INVALID_PATHS[@]}"; do
-    HTTP_CODE=$(curl --path-as-is -s -o /dev/null -w "%{http_code}" "$TEST_PATH")
+    HTTP_CODE=$(curl --path-as-is -s "${CURL_OPTS[@]}" -o /dev/null -w "%{http_code}" "$TEST_PATH")
     
     if [ "$HTTP_CODE" = "400" ] || [ "$HTTP_CODE" = "403" ] || [ "$HTTP_CODE" = "404" ]; then
         pass "路径遍历攻击被阻止 (HTTP $HTTP_CODE)"
@@ -208,7 +215,7 @@ for FILENAME in "${SPECIAL_FILES[@]}"; do
     echo "Special character test content" > "$TEST_FILE"
 
     URL_FILENAME="${FILENAME// /%20}"
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+    HTTP_CODE=$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w "%{http_code}" -X PUT \
         "$BASE_URL/repository/maven-local/com/test/special-test/1.0.0/$URL_FILENAME" \
         -H "Authorization: Bearer $TOKEN" \
         -H "Content-Type: text/plain" \
@@ -231,13 +238,13 @@ echo "════════════════════════�
 TEST_FILE="$TEST_DIR/duplicate-test-1.0.0.txt"
 echo "Duplicate test content - $(date)" > "$TEST_FILE"
 
-HTTP_CODE_1=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+HTTP_CODE_1=$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w "%{http_code}" -X PUT \
     "$BASE_URL/repository/maven-local/com/test/duplicate-test/1.0.0/duplicate-test-1.0.0.txt" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: text/plain" \
     --data-binary @"$TEST_FILE")
 
-HTTP_CODE_2=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+HTTP_CODE_2=$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w "%{http_code}" -X PUT \
     "$BASE_URL/repository/maven-local/com/test/duplicate-test/1.0.0/duplicate-test-1.0.0.txt" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: text/plain" \
@@ -265,20 +272,20 @@ echo "════════════════════════�
 TEST_FILE="$TEST_DIR/delete-test-1.0.0.txt"
 echo "Delete test content" > "$TEST_FILE"
 
-curl -s -X PUT \
+curl -s "${CURL_OPTS[@]}" -X PUT \
     "$BASE_URL/repository/maven-local/com/test/delete-test/1.0.0/delete-test-1.0.0.txt" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: text/plain" \
     --data-binary @"$TEST_FILE" > /dev/null 2>&1
 
-HTTP_CODE_DELETE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+HTTP_CODE_DELETE=$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w "%{http_code}" -X DELETE \
     "$BASE_URL/repository/maven-local/com/test/delete-test/1.0.0/delete-test-1.0.0.txt" \
     -H "Authorization: Bearer $TOKEN")
 
 if [ "$HTTP_CODE_DELETE" = "200" ] || [ "$HTTP_CODE_DELETE" = "204" ]; then
     pass "制品删除成功 (HTTP $HTTP_CODE_DELETE)"
     
-    HTTP_CODE_AFTER=$(curl -s -o /dev/null -w "%{http_code}" \
+    HTTP_CODE_AFTER=$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w "%{http_code}" \
         "$BASE_URL/repository/maven-local/com/test/delete-test/1.0.0/delete-test-1.0.0.txt")
     
     if [ "$HTTP_CODE_AFTER" = "404" ]; then
@@ -287,7 +294,7 @@ if [ "$HTTP_CODE_DELETE" = "200" ] || [ "$HTTP_CODE_DELETE" = "204" ]; then
         fail "删除后仍可访问 (HTTP $HTTP_CODE_AFTER)"
     fi
     
-    HTTP_CODE_DELETE_AGAIN=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+    HTTP_CODE_DELETE_AGAIN=$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w "%{http_code}" -X DELETE \
         "$BASE_URL/repository/maven-local/com/test/delete-test/1.0.0/delete-test-1.0.0.txt" \
         -H "Authorization: Bearer $TOKEN")
     
@@ -309,7 +316,7 @@ echo "════════════════════════�
 
 info "请求代理仓库中不存在的制品..."
 
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+HTTP_CODE=$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w "%{http_code}" \
     "$BASE_URL/repository/maven-proxy-aliyun/com/nonexistent/nonexistent-lib/999.999.999/nonexistent-lib-999.999.999.jar")
 
 if [ "$HTTP_CODE" = "404" ] || [ "$HTTP_CODE" = "502" ]; then
@@ -323,7 +330,7 @@ echo "════════════════════════�
 echo "  测试 9: 请求头注入测试"
 echo "════════════════════════════════════════"
 
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+HTTP_CODE=$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w "%{http_code}" -X PUT \
     "$BASE_URL/repository/maven-local/com/test/header-test/1.0.0/header-test-1.0.0.txt" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: text/plain" \
@@ -345,7 +352,7 @@ TEST_FILE="$TEST_DIR/slow-client-test.txt"
 echo "Slow client test content" > "$TEST_FILE"
 
 info "模拟慢速上传..."
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --limit-rate 1K -X PUT \
+HTTP_CODE=$(curl -s "${CURL_OPTS[@]}" -o /dev/null -w "%{http_code}" --limit-rate 1K -X PUT \
     "$BASE_URL/repository/maven-local/com/test/slow-test/1.0.0/slow-test-1.0.0.txt" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: text/plain" \

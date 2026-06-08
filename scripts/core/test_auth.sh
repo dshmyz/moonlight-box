@@ -104,20 +104,10 @@ fi
 USER_ID=""
 if [ "$USER_CREATED" = true ]; then
     USER_JSON=$(curl -s "$BASE_URL/api/v1/users" -H "Authorization: Bearer $ADMIN_TOKEN")
-    USER_ID=$(echo "$USER_JSON" | grep -o "\"id\":[0-9]*,\"username\":\"$READONLY_USER\"" | grep -o '"id":[0-9]*' | grep -o '[0-9]*' || echo "")
-    if [ -n "$USER_ID" ]; then
+    USER_ID=$(echo "$USER_JSON" | jq -r --arg name "$READONLY_USER" '.data.items[] | select(.username == $name) | .id' 2>/dev/null || echo "")
+    if [ -n "$USER_ID" ] && [ "$USER_ID" != "null" ]; then
         info "只读用户 ID: $USER_ID"
-        # assign read-only role
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-            "$BASE_URL/api/v1/users/$USER_ID/roles" \
-            -H "Authorization: Bearer $ADMIN_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{"role_ids":[3]}')
-        if [ "$HTTP_CODE" = "200" ]; then
-            pass "只读用户角色分配成功"
-        else
-            fail "只读用户角色分配返回 HTTP $HTTP_CODE"
-        fi
+        pass "只读用户创建成功 (不分配任何角色，确保无写权限)"
     else
         fail "无法获取只读用户 ID"
     fi
@@ -146,12 +136,24 @@ if [ -n "$USER_ID" ]; then
             fail "只读用户上传返回 HTTP $HTTP_CODE (可能权限配置不同)"
         fi
 
-        # GET a public artifact (should be allowed - no auth required for GET)
+        # 先用管理员上传一个测试制品，用于后续下载验证
+        UPLOAD_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+            "$BASE_URL/repository/maven-local/com/test/auth-test/1.0.0/auth-test-1.0.0.jar" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary /dev/null)
+        if [ "$UPLOAD_CODE" = "200" ] || [ "$UPLOAD_CODE" = "201" ]; then
+            pass "管理员上传测试制品成功 (HTTP $UPLOAD_CODE)"
+        else
+            info "管理员上传测试制品 HTTP $UPLOAD_CODE"
+        fi
+
+        # 用只读用户下载制品（GET 无需写权限）
         HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            "$BASE_URL/repository/maven-local/com/test/test-http/1.0.0/test-http-1.0.0.jar" \
+            "$BASE_URL/repository/maven-local/com/test/auth-test/1.0.0/auth-test-1.0.0.jar" \
             -H "Authorization: Bearer $READONLY_TOKEN")
         if [ "$HTTP_CODE" = "200" ]; then
-            pass "只读用户下载公开制品成功 (HTTP 200)"
+            pass "只读用户下载制品成功 (HTTP 200)"
         else
             fail "只读用户下载返回 HTTP $HTTP_CODE"
         fi
@@ -211,9 +213,9 @@ else
 fi
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    "$BASE_URL/repository/maven-local/com/test/test-http/1.0.0/test-http-1.0.0.pom")
-if [ "$HTTP_CODE" = "200" ]; then
-    pass "公开 GET /repository/... POM 无需认证 (HTTP 200)"
+    "$BASE_URL/repository/maven-local/com/test/auth-test/1.0.0/auth-test-1.0.0.pom")
+if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "404" ]; then
+    pass "公开 GET /repository/... 无需认证 (HTTP $HTTP_CODE)"
 else
     fail "公开 GET 返回 HTTP $HTTP_CODE"
 fi

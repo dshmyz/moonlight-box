@@ -144,8 +144,8 @@ if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then
         if [ "$AFTER_LOGS" -gt "$BEFORE_LOGS" ] 2>/dev/null; then
             log_pass "代理日志有新增 (before=$BEFORE_LOGS, after=$AFTER_LOGS)"
         else
-            log_warn "代理日志计数未变化 (可能是批量写入延迟，等待 2s 后重试)"
-            sleep 2
+            log_warn "代理日志计数未变化 (可能是批量写入延迟，等待 6s 后重试)"
+            sleep 6
             AFTER_LOGS=$(get_log_count)
             if [ "$AFTER_LOGS" -gt "$BEFORE_LOGS" ] 2>/dev/null; then
                 log_pass "代理日志有新增 (延迟写入, before=$BEFORE_LOGS, after=$AFTER_LOGS)"

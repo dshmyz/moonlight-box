@@ -78,12 +78,14 @@ run_test() {
 
     chmod +x "$test_script"
 
-    # 带超时执行（macOS 需要 gtimeout），超时算 FAIL
-    USE_TIMEOUT=""
+    # 带超时执行。macOS 默认没有 GNU timeout/gtimeout，fallback 到 perl alarm。
+    USE_TIMEOUT=()
     if command -v timeout &>/dev/null; then
-        USE_TIMEOUT="timeout"
+        USE_TIMEOUT=(timeout "$TEST_TIMEOUT")
     elif command -v gtimeout &>/dev/null; then
-        USE_TIMEOUT="gtimeout"
+        USE_TIMEOUT=(gtimeout "$TEST_TIMEOUT")
+    elif command -v perl &>/dev/null; then
+        USE_TIMEOUT=(perl -e 'alarm shift; exec @ARGV' "$TEST_TIMEOUT")
     fi
     
     # 捕获输出以解析统计信息
@@ -91,13 +93,14 @@ run_test() {
     CLEANUP_FILES+=("$OUTPUT_FILE")
     local test_rc=0
     
-    if [ -n "$USE_TIMEOUT" ]; then
-        "$USE_TIMEOUT" "$TEST_TIMEOUT" bash "$test_script" "$BASE_URL" 2>&1 | tee "$OUTPUT_FILE"
+    if [ ${#USE_TIMEOUT[@]} -gt 0 ]; then
+        "${USE_TIMEOUT[@]}" bash "$test_script" "$BASE_URL" 2>&1 | tee "$OUTPUT_FILE"
         test_rc=${PIPESTATUS[0]}
-        if [ $test_rc -eq 124 ]; then
+        if [ $test_rc -eq 124 ] || [ $test_rc -eq 142 ]; then
             echo -e "  ${RED}✗ 超时: $test_name 超过 ${TEST_TIMEOUT}s${NC}"
         fi
     else
+        echo -e "  ${YELLOW}⚠ 未找到 timeout/gtimeout/perl，$test_name 不受 TEST_TIMEOUT 限制${NC}"
         bash "$test_script" "$BASE_URL" 2>&1 | tee "$OUTPUT_FILE"
         test_rc=${PIPESTATUS[0]}
     fi
