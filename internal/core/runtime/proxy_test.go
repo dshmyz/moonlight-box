@@ -200,6 +200,39 @@ func (s *fakeMetadataStore) Query(ctx context.Context, query ArtifactQuery) ([]*
 	return []*Artifact{s.artifact}, nil
 }
 
+func TestProxyRuntimeQueryArtifactsReturnsCachedArtifactsWhenFetchRemoteFails(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeMetadataStore()
+	store.artifact = &Artifact{
+		ID:           "cached",
+		RepositoryID: "repo",
+		Format:       "npm",
+		Kind:         KindArtifact,
+		Name:         "left-pad",
+		RemotePath:   "left-pad",
+		UpdatedAt:    time.Now().Add(-2 * time.Hour),
+	}
+	fetchErr := errors.New("upstream unavailable")
+	fetcher := &fakeFetcher{fn: func() ([]*Artifact, error) { return nil, fetchErr }}
+	runtime := &ProxyRuntime{
+		MetadataStore: store,
+		RemoteBaseURL: "https://example.test",
+		Fetcher:       fetcher,
+		Format:        "npm",
+	}
+
+	artifacts, err := runtime.QueryArtifacts(ctx, ArtifactQuery{
+		Format:     "npm",
+		RemotePath: "left-pad",
+	})
+	if err != nil {
+		t.Fatalf("expected cached artifacts when upstream fails, got error: %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].ID != "cached" {
+		t.Fatalf("expected cached artifact, got %#v", artifacts)
+	}
+}
+
 func TestProxyRuntimeQueryArtifactsReturnsBatchPutError(t *testing.T) {
 	ctx := context.Background()
 	storeErr := errors.New("store failed")

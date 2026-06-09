@@ -82,10 +82,10 @@ func TestSplitModulePath(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// selectLatestStableVersion
+// selectLatestVersion
 // ---------------------------------------------------------------------------
 
-func TestSelectLatestStableVersion(t *testing.T) {
+func TestSelectLatestVersion(t *testing.T) {
 	p := NewGoPlugin()
 
 	tests := []struct {
@@ -104,14 +104,14 @@ func TestSelectLatestStableVersion(t *testing.T) {
 			want:     "v1.2.0",
 		},
 		{
-			name:     "pre-release filtered out",
+			name:     "pre-release filtered out when stable exists",
 			versions: []string{"v1.0.0", "v2.0.0-rc1", "v2.0.0-alpha.1"},
 			want:     "v1.0.0",
 		},
 		{
-			name:     "all pre-release returns nil",
+			name:     "all pre-release falls back to latest pre-release",
 			versions: []string{"v2.0.0-rc1", "v2.0.0-alpha.1"},
-			want:     "",
+			want:     "v2.0.0-rc1",
 		},
 		{
 			name:     "incompatible version (v2 without /v2 in path)",
@@ -159,7 +159,7 @@ func TestSelectLatestStableVersion(t *testing.T) {
 					},
 				}))
 			}
-			result := p.selectLatestStableVersion(arts)
+			result := p.selectLatestVersion(arts)
 			if tt.want == "" {
 				if result != nil {
 					t.Fatalf("expected nil, got %v", result.Version)
@@ -274,8 +274,12 @@ func TestHandle_Latest_OnlyPrerelease(t *testing.T) {
 	if err := p.Handle(ctx, rt); err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
-	if w.Code != http.StatusNotFound {
-		t.Errorf("expected 404 when only pre-release exists, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 when only pre-release exists (fallback), got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "v2.0.0-rc1") {
+		t.Errorf("expected body to contain v2.0.0-rc1, got %q", body)
 	}
 }
 

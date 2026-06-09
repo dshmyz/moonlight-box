@@ -109,7 +109,7 @@ func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 			return []*runtime.Artifact{
 				runtime.NewArtifact(runtime.ArtifactSpec{
 					Format:     "apt",
-					Kind:       "package-index",
+					Kind:       runtime.KindMetadata,
 					Name:       filename,
 					Path:       dir,
 					Filename:   filename,
@@ -251,7 +251,7 @@ func (p *AptPlugin) parsePackagesIndex(content string) []*runtime.Artifact {
 				Filename:   filepath.Base(filename),
 				RemotePath: filename,
 				Qualifiers: map[string]string{
-					"package":  pkgName,
+					"package": pkgName,
 				},
 				Properties: map[string]string{
 					"filename":    filepath.Base(filename),
@@ -328,6 +328,21 @@ func aptArtifactDir(remotePath string) string {
 		return ""
 	}
 	return dir
+}
+
+func contentTypeForFile(filename string) string {
+	switch {
+	case strings.HasSuffix(filename, ".gz"):
+		return "application/gzip"
+	case strings.HasSuffix(filename, ".xz"):
+		return "application/x-xz"
+	case strings.HasSuffix(filename, ".bz2"):
+		return "application/x-bzip2"
+	case filename == "Packages" || strings.HasSuffix(filename, "/Packages"):
+		return "text/plain; charset=utf-8"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func (p *AptPlugin) handleInRelease(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
@@ -413,7 +428,7 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
 		ctx.SizeBytes = artifact.SizeBytes
-		ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
+		ctx.Writer.Header().Set("Content-Type", contentTypeForFile(filename))
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
@@ -443,7 +458,7 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
 		ctx.SizeBytes = artifact.SizeBytes
-		ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
+		ctx.Writer.Header().Set("Content-Type", contentTypeForFile(filename))
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {

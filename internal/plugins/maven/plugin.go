@@ -330,7 +330,6 @@ func (p *MavenPlugin) NormalizeAsset(ctx context.Context, input runtime.Normaliz
 		Path:         key.Path,
 		Filename:     key.Filename,
 		RemotePath:   key.RemotePath,
-		DownloadPath: firstNonEmptyMaven(input.DownloadPath, key.RemotePath),
 		Extension:    key.Extension,
 		ContentType:  input.ContentType,
 		SizeBytes:    input.SizeBytes,
@@ -375,7 +374,7 @@ func (p *MavenPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Re
 	ctx.Filename = key.Filename
 
 	switch ctx.Request.Method {
-	case http.MethodGet:
+	case http.MethodGet, http.MethodHead:
 		// 拦截 checksum 文件请求（.sha1/.md5/.sha256），动态计算并返回
 		if originalFile, algo, ok := parseChecksumRequest(key.Filename); ok {
 			return p.handleChecksumDownload(ctx, repoRuntime, key, originalFile, algo)
@@ -462,6 +461,32 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 	group := strings.Join(groupParts, ".")
 
 	ctx.PackageName = group + ":" + artifact
+
+	metaKey := runtime.ArtifactKey{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "maven",
+		Kind:         runtime.KindMetadata,
+		Namespace:    group,
+		Name:         group + ":" + artifact,
+		Version:      version,
+		Path:         strings.TrimSuffix(strings.Trim(path, "/"), "/maven-metadata.xml"),
+		Filename:     "maven-metadata.xml",
+		RemotePath:   strings.Trim(path, "/"),
+		Qualifiers: map[string]string{
+			"group":    group,
+			"artifact": artifact,
+		},
+	}
+	if metaArtifact, metaErr := repoRuntime.GetArtifact(ctx.Request.Context(), metaKey); metaErr == nil && metaArtifact.Content != nil {
+		defer metaArtifact.Content.Close()
+		ctx.FromCache = metaArtifact.FromCache
+		ctx.RemoteURL = metaArtifact.RemoteURL
+		ctx.SizeBytes = metaArtifact.SizeBytes
+		if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, metaArtifact, metaKey.Filename, "application/xml", "inline"); err != nil {
+			logrus.WithError(err).Warn("failed to write maven metadata content to client")
+		}
+		return nil
+	}
 
 	query := runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
@@ -967,10 +992,7 @@ func (p *MavenPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime ru
 	ctx.RemoteURL = artifact.RemoteURL
 	ctx.SizeBytes = artifact.SizeBytes
 
-	ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
-	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
-	ctx.Writer.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+	if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, "application/octet-stream", "inline"); err != nil {
 		logrus.WithError(err).Warn("failed to write artifact content to client")
 		return nil
 	}

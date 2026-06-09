@@ -74,9 +74,8 @@ type NormalizeInput struct {
 	RepositoryID string
 	Format       string
 
-	RemotePath   string
-	DownloadPath string
-	Filename     string
+	RemotePath string
+	Filename   string
 
 	ContentType string
 	SizeBytes   int64

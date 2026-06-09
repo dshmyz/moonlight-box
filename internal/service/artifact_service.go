@@ -335,6 +335,7 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 		FROM artifacts a
 		WHERE name IS NOT NULL
 		  AND name != ''
+		  AND (kind IS NULL OR kind NOT IN ('metadata', 'checksum'))
 		GROUP BY repository_id, format, name
 	`
 
@@ -355,6 +356,10 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 func (s *ArtifactService) syncPackageAfterSave(tx *gorm.DB, artifact *model.Artifact, isNew bool) error {
 	name := artifact.Name
 	if name == "" {
+		return nil
+	}
+	// 元数据类型不写入 packages 聚合表
+	if runtime.IsMetadataKind(artifact.Kind) {
 		return nil
 	}
 
@@ -444,8 +449,12 @@ func (s *ArtifactService) syncPackageAfterDelete(tx *gorm.DB, artifact *model.Ar
 	return tx.Delete(pkg).Error
 }
 
-// syncBlobRefs 同步 artifact 与 blob 的关联关系
+// syncBlobRefs 同步 artifact 与 blob 的关联关系。
+// 如果 blobRefs 为空，说明此次更新不涉及 blob（如元数据刷新），保留已有关联不变。
 func (s *ArtifactService) syncBlobRefs(tx *gorm.DB, artifactID uint, blobRefs []runtime.BlobRef) error {
+	if len(blobRefs) == 0 {
+		return nil
+	}
 	if err := tx.Where("artifact_id = ?", artifactID).Delete(&model.ArtifactBlob{}).Error; err != nil {
 		return err
 	}
@@ -488,7 +497,6 @@ func (s *ArtifactService) toModelArtifact(t *runtime.Artifact) *model.Artifact {
 		Path:         t.Path,
 		Filename:     t.Filename,
 		RemotePath:   t.RemotePath,
-		DownloadPath: t.DownloadPath,
 		DownloadURL:  t.DownloadURL,
 		Extension:    t.Extension,
 		ContentType:  t.ContentType,

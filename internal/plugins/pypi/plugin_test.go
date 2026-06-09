@@ -32,8 +32,8 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 func TestHandle_SimpleIndex(t *testing.T) {
 	p := NewPyPIPlugin()
 	arts := []*runtime.Artifact{
-		testhelper.NewArtifact("pypi", "package-index", map[string]string{"name": "requests", "package": "requests"}, ""),
-		testhelper.NewArtifact("pypi", "package-index", map[string]string{"name": "flask", "package": "flask"}, ""),
+		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "requests", "package": "requests"}, ""),
+		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "flask", "package": "flask"}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 
@@ -52,7 +52,7 @@ func TestHandle_SimpleIndex(t *testing.T) {
 func TestHandle_SimpleIndexJSON(t *testing.T) {
 	p := NewPyPIPlugin()
 	arts := []*runtime.Artifact{
-		testhelper.NewArtifact("pypi", "package-index", map[string]string{"name": "requests", "package": "requests"}, ""),
+		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "requests", "package": "requests"}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 
@@ -282,6 +282,22 @@ func TestHandle_JsonAPI(t *testing.T) {
 	}
 }
 
+func TestHandle_JsonAPIQueriesSupportedSimpleRemotePath(t *testing.T) {
+	p := NewPyPIPlugin()
+	rt := &testhelper.MockRuntime{}
+
+	ctx, _ := newCtx("GET", "pypi/requests/json", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if len(rt.QueryCalls) != 1 {
+		t.Fatalf("expected 1 query call, got %d", len(rt.QueryCalls))
+	}
+	if got := rt.QueryCalls[0].RemotePath; got != "simple/requests/" {
+		t.Fatalf("expected RemotePath simple/requests/, got %q", got)
+	}
+}
+
 func TestHandle_QueryRemotePath(t *testing.T) {
 	p := NewPyPIPlugin()
 	rt := &testhelper.MockRuntime{}
@@ -322,7 +338,7 @@ func TestFetchRemote_SimpleIndex(t *testing.T) {
 func TestHandle_HtmlEscaping(t *testing.T) {
 	p := NewPyPIPlugin()
 	arts := []*runtime.Artifact{
-		testhelper.NewArtifact("pypi", "package-index", map[string]string{"name": "<script>alert(1)</script>", "package": "<script>alert(1)</script>"}, ""),
+		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "<script>alert(1)</script>", "package": "<script>alert(1)</script>"}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 
@@ -341,9 +357,9 @@ func TestHandle_HtmlEscaping(t *testing.T) {
 func TestHandle_SimpleIndex_NormalizedNames(t *testing.T) {
 	p := NewPyPIPlugin()
 	arts := []*runtime.Artifact{
-		testhelper.NewArtifact("pypi", "package-index", map[string]string{"name": "my-package", "package": "my-package"}, ""),
-		testhelper.NewArtifact("pypi", "package-index", map[string]string{"name": "my-package", "package": "my-package"}, ""),
-		testhelper.NewArtifact("pypi", "package-index", map[string]string{"name": "my-package", "package": "my-package"}, ""),
+		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "my-package", "package": "my-package"}, ""),
+		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "my-package", "package": "my-package"}, ""),
+		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "my-package", "package": "my-package"}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 

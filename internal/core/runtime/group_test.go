@@ -10,13 +10,13 @@ func TestGroupQueryArtifactsAggregatesRemotePathWithStructuredFields(t *testing.
 		Members: []RepositoryNode{
 			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
 				Format:     "pypi",
-				Kind:       "package-index",
+				Kind:       KindMetadata,
 				Name:       "requests",
 				Qualifiers: map[string]string{"package": "requests"},
 			})}},
 			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
 				Format:     "pypi",
-				Kind:       "package-index",
+				Kind:       KindMetadata,
 				Name:       "flask",
 				Qualifiers: map[string]string{"package": "flask"},
 			})}},

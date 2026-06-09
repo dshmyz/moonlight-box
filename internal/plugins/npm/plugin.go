@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/sirupsen/logrus"
@@ -137,28 +138,25 @@ func (p *NpmPlugin) parseNpmMetadata(packageName string, body io.Reader) ([]*run
 	topHomepage, _ := raw["homepage"].(string)
 
 	var artifacts []*runtime.Artifact
+	// npm 包可能存在多个版本共享同一个 tarball 的情况
+	// （如 lodash 4.17.15-4.17.18 共享 lodash-4.17.15.tgz），
+	// 需要去重以避免唯一约束冲突。
+	tarballSeen := make(map[string]bool)
 	for ver, verRaw := range versions {
-		props := map[string]string{}
 		verObj, _ := verRaw.(map[string]interface{})
+		props := map[string]string{}
 		if verObj != nil {
-			if lic := extractLicense(verObj); lic != "" {
-				props["license"] = lic
+			props = extractNpmVersionAttributes(verObj)
+			// 顶层字段 fallback：版本级字段缺失时使用顶层值
+			if props["license"] == "" && topLicense != "" {
+				props["license"] = topLicense
 			}
-			if desc, _ := verObj["description"].(string); desc != "" {
-				props["description"] = desc
+			if props["description"] == "" && topDesc != "" {
+				props["description"] = topDesc
 			}
-			if hp, _ := verObj["homepage"].(string); hp != "" {
-				props["homepage"] = hp
+			if props["homepage"] == "" && topHomepage != "" {
+				props["homepage"] = topHomepage
 			}
-		}
-		if props["license"] == "" && topLicense != "" {
-			props["license"] = topLicense
-		}
-		if props["description"] == "" && topDesc != "" {
-			props["description"] = topDesc
-		}
-		if props["homepage"] == "" && topHomepage != "" {
-			props["homepage"] = topHomepage
 		}
 		if timeMap != nil {
 			if ts, ok := timeMap[ver].(string); ok {
@@ -170,6 +168,7 @@ func (p *NpmPlugin) parseNpmMetadata(packageName string, body io.Reader) ([]*run
 			Kind:       runtime.KindVersion,
 			Name:       packageName,
 			Version:    ver,
+			RemotePath: packageName,
 			Attributes: props,
 		}))
 		tarballName := npmTarballName(packageName, ver)
@@ -184,6 +183,12 @@ func (p *NpmPlugin) parseNpmMetadata(packageName string, body io.Reader) ([]*run
 				}
 			}
 		}
+		// 跳过已存在的 tarball，避免唯一约束冲突
+		tarballKey := packageName + "/-/" + tarballName
+		if tarballSeen[tarballKey] {
+			continue
+		}
+		tarballSeen[tarballKey] = true
 		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
 			Format:      "npm",
 			Kind:        "tarball",
@@ -191,7 +196,7 @@ func (p *NpmPlugin) parseNpmMetadata(packageName string, body io.Reader) ([]*run
 			Version:     ver,
 			Path:        packageName + "/-",
 			Filename:    tarballName,
-			RemotePath:  packageName + "/-/" + tarballName,
+			RemotePath:  tarballKey,
 			DownloadURL: tarballProps["download_url"],
 			Properties:  tarballProps,
 		}))
@@ -221,15 +226,52 @@ func extractLicense(obj map[string]interface{}) string {
 	if !ok || lic == nil {
 		return ""
 	}
+	var raw string
 	switch v := lic.(type) {
 	case string:
-		return v
+		raw = v
 	case map[string]interface{}:
 		t, _ := v["type"].(string)
-		return t
+		raw = t
 	default:
 		return ""
 	}
+	if !isValidSPDXLicense(raw) {
+		return ""
+	}
+	return raw
+}
+
+// isValidSPDXLicense 检查 license 字符串是否为合法的 SPDX 标识符或 SPDX 表达式。
+// SPDX 标识符由字母、数字、-、.、+ 组成，不允许空格。
+// SPDX 表达式可包含 AND/OR/WITH 关键字和括号。
+// 过滤掉 "SEE LICENSE IN README.md"、文件路径、URL 等非 SPDX 值。
+func isValidSPDXLicense(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	// 过滤常见的非 SPDX 模式
+	lower := strings.ToLower(s)
+	switch lower {
+	case "unlicensed", "none", "n/a", "na", "unknown", "not specified":
+		return false
+	}
+	// 过滤包含 "SEE LICENSE" 的提示性文字
+	if strings.Contains(lower, "see license") {
+		return false
+	}
+	// 过滤文件路径和 URL
+	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, "./") || strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return false
+	}
+	// SPDX 标识符或表达式：允许字母、数字、-、.、+、空格（AND/OR/WITH）、括号
+	for _, ch := range s {
+		if !unicode.IsLetter(ch) && !unicode.IsDigit(ch) && ch != '-' && ch != '.' && ch != '+' && ch != ' ' && ch != '(' && ch != ')' {
+			return false
+		}
+	}
+	return true
 }
 
 // extractNpmVersionFromTarball 从 tarball 文件名中提取版本号。
@@ -501,6 +543,13 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 
 	versions := make(map[string]interface{})
 	var versionList []string
+	// 优先处理带有 Attributes 的 artifact（KindVersion 或 KindMetadata），
+	// 确保版本元数据完整；tarball 类型的 artifact 没有 Attributes，应后处理。
+	sort.SliceStable(artifacts, func(i, j int) bool {
+		iHasAttrs := len(artifacts[i].Attributes) > 0
+		jHasAttrs := len(artifacts[j].Attributes) > 0
+		return iHasAttrs && !jHasAttrs
+	})
 	for _, artifact := range artifacts {
 		version := artifact.Version
 		if version == "" {
@@ -516,13 +565,40 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 			shortName = packageName[idx+1:]
 		}
 		tarballName := shortName + "-" + version + ".tgz"
-		versions[version] = map[string]interface{}{
+
+		// 从 artifact Attributes 还原完整版本元数据
+		verObj := map[string]interface{}{
 			"name":    packageName,
 			"version": version,
-			"dist": map[string]interface{}{
-				"tarball": repoBase + "/" + packageName + "/-/" + tarballName,
-			},
 		}
+		dist := map[string]interface{}{
+			"tarball": repoBase + "/" + packageName + "/-/" + tarballName,
+		}
+
+		// 从 Attributes 还原各字段
+		npmStringFields := []string{"description", "main", "module", "type", "license", "homepage"}
+		for _, f := range npmStringFields {
+			restoreStringField(artifact.Attributes, f, verObj)
+		}
+		npmJSONFields := []string{
+			"bin", "scripts", "dependencies", "devDependencies",
+			"peerDependencies", "optionalDependencies", "engines",
+			"os", "cpu", "directories", "man", "repository",
+			"keywords", "author", "contributors", "bundledDependencies",
+			"peerDependenciesMeta", "config",
+		}
+		for _, f := range npmJSONFields {
+			restoreJSONField(artifact.Attributes, f, verObj)
+		}
+
+		// dist 子字段
+		restoreStringField(artifact.Attributes, "shasum", dist)
+		restoreStringField(artifact.Attributes, "integrity", dist)
+		restoreJSONField(artifact.Attributes, "unpackedSize", dist)
+		restoreJSONField(artifact.Attributes, "dist_signatures", dist, "signatures")
+
+		verObj["dist"] = dist
+		versions[version] = verObj
 		versionList = append(versionList, version)
 	}
 
@@ -537,10 +613,17 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 		}
 	}
 	if _, hasLatest := distTags["latest"]; !hasLatest && len(versionList) > 0 {
-		sort.Slice(versionList, func(i, j int) bool {
-			return semver.Compare(versionList[i], versionList[j]) > 0
-		})
-		distTags["latest"] = versionList[0]
+		distTags["latest"] = selectNpmLatestVersion(versionList)
+	}
+
+	// 构建 time 字段：从 artifact Attributes 中的 published_at 还原
+	timeMap := map[string]string{}
+	for _, artifact := range artifacts {
+		if artifact.Version != "" {
+			if ts, ok := artifact.Attributes["published_at"]; ok && ts != "" {
+				timeMap[artifact.Version] = ts
+			}
+		}
 	}
 
 	data := map[string]interface{}{
@@ -548,11 +631,57 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 		"dist-tags": distTags,
 		"versions":  versions,
 	}
+	if len(timeMap) > 0 {
+		data["time"] = timeMap
+	}
 
 	ctx.Writer.Header().Set("Content-Type", "application/json")
 	ctx.Writer.WriteHeader(http.StatusOK)
 	json.NewEncoder(ctx.Writer).Encode(data)
 	return nil
+}
+
+func selectNpmLatestVersion(versions []string) string {
+	if len(versions) == 0 {
+		return ""
+	}
+	sorted := append([]string(nil), versions...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return compareNpmVersions(sorted[i], sorted[j]) > 0
+	})
+	return sorted[0]
+}
+
+func compareNpmVersions(a, b string) int {
+	normA := normalizeNpmSemver(a)
+	normB := normalizeNpmSemver(b)
+	validA := semver.IsValid(normA)
+	validB := semver.IsValid(normB)
+	switch {
+	case validA && validB:
+		preA := semver.Prerelease(normA) != ""
+		preB := semver.Prerelease(normB) != ""
+		if preA != preB {
+			if preA {
+				return -1
+			}
+			return 1
+		}
+		return semver.Compare(normA, normB)
+	case validA:
+		return 1
+	case validB:
+		return -1
+	default:
+		return strings.Compare(a, b)
+	}
+}
+
+func normalizeNpmSemver(version string) string {
+	if strings.HasPrefix(version, "v") || strings.HasPrefix(version, "V") {
+		return "v" + strings.TrimPrefix(strings.TrimPrefix(version, "v"), "V")
+	}
+	return "v" + version
 }
 
 func firstNonEmptyNpm(values ...string) string {
@@ -562,6 +691,37 @@ func firstNonEmptyNpm(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// restoreStringField 从 Attributes 中读取字符串字段，写入目标 map。
+func restoreStringField(attrs map[string]string, key string, target map[string]interface{}) {
+	if v, ok := attrs[key]; ok && v != "" {
+		target[key] = v
+	}
+}
+
+// restoreJSONField 从 Attributes 中读取 JSON 序列化的字段，反序列化后写入目标 map。
+// 可选 targetKey 参数指定写入目标 map 时的键名（与存储键名不同时使用）。
+func restoreJSONField(attrs map[string]string, key string, target map[string]interface{}, targetKey ...string) {
+	v, ok := attrs[key]
+	if !ok || v == "" {
+		return
+	}
+	var decoded interface{}
+	if err := json.Unmarshal([]byte(v), &decoded); err != nil {
+		// 如果不是合法 JSON，作为原始字符串写入
+		dstKey := key
+		if len(targetKey) > 0 {
+			dstKey = targetKey[0]
+		}
+		target[dstKey] = v
+		return
+	}
+	dstKey := key
+	if len(targetKey) > 0 {
+		dstKey = targetKey[0]
+	}
+	target[dstKey] = decoded
 }
 
 // repoBaseURL 构造仓库的基础 URL，支持反向代理 (X-Forwarded-* 头)
@@ -641,6 +801,65 @@ func deleteArtifact(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryR
 	}
 	ctx.Writer.WriteHeader(http.StatusNoContent)
 	return nil
+}
+
+// extractNpmVersionAttributes 从 npm 上传元数据中提取关键字段到 Attributes map。
+// 复用与 parseNpmMetadata 相同的字段提取逻辑，确保 Hosted 和 Proxy 场景一致。
+func extractNpmVersionAttributes(npmMeta map[string]interface{}) map[string]string {
+	props := map[string]string{}
+	if lic := extractLicense(npmMeta); lic != "" {
+		props["license"] = lic
+	}
+	if desc, ok := npmMeta["description"].(string); ok && desc != "" {
+		props["description"] = desc
+	}
+	if hp, ok := npmMeta["homepage"].(string); ok && hp != "" {
+		props["homepage"] = hp
+	}
+	if main, ok := npmMeta["main"].(string); ok && main != "" {
+		props["main"] = main
+	}
+	if module, ok := npmMeta["module"].(string); ok && module != "" {
+		props["module"] = module
+	}
+	if typ, ok := npmMeta["type"].(string); ok && typ != "" {
+		props["type"] = typ
+	}
+	// 复合字段 JSON 序列化
+	npmComplexFields := []string{
+		"bin", "scripts", "dependencies", "devDependencies",
+		"peerDependencies", "optionalDependencies", "engines",
+		"os", "cpu", "directories", "man", "repository",
+		"keywords", "author", "contributors", "bundledDependencies",
+		"peerDependenciesMeta", "config",
+	}
+	for _, field := range npmComplexFields {
+		if v, ok := npmMeta[field]; ok && v != nil {
+			if b, err := json.Marshal(v); err == nil {
+				props[field] = string(b)
+			}
+		}
+	}
+	// dist 子字段
+	if dist, ok := npmMeta["dist"].(map[string]interface{}); ok && dist != nil {
+		if shasum, ok := dist["shasum"].(string); ok && shasum != "" {
+			props["shasum"] = shasum
+		}
+		if integrity, ok := dist["integrity"].(string); ok && integrity != "" {
+			props["integrity"] = integrity
+		}
+		if unpackedSize, ok := dist["unpackedSize"]; ok && unpackedSize != nil {
+			if b, err := json.Marshal(unpackedSize); err == nil {
+				props["unpackedSize"] = string(b)
+			}
+		}
+		if signatures, ok := dist["signatures"].([]interface{}); ok && len(signatures) > 0 {
+			if b, err := json.Marshal(signatures); err == nil {
+				props["dist_signatures"] = string(b)
+			}
+		}
+	}
+	return props
 }
 
 func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, packageName string) error {
@@ -763,6 +982,10 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		return nil
 	}
 
+	// 从上传的 npm 元数据中提取关键字段到 version artifact 的 Attributes
+	// 这样 handlePackageGet 可以统一从 Attributes 还原完整版本元数据
+	versionAttrs := extractNpmVersionAttributes(npmMeta)
+
 	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
@@ -772,6 +995,7 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		Path:         packageName + "/" + version,
 		RemotePath:   packageName,
 		BlobRefs:     []runtime.BlobRef{blob},
+		Attributes:   versionAttrs,
 		Properties: map[string]string{
 			"package": packageName,
 			"version": version,

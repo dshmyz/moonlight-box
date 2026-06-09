@@ -26,8 +26,8 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 func TestHandle_Repomd(t *testing.T) {
 	p := NewYumPlugin()
 	arts := []*runtime.Artifact{
-		testhelper.NewArtifact("yum", "metadata", map[string]string{"file": "repomd.xml"}, ""),
-		testhelper.NewArtifact("yum", "metadata-ref", map[string]string{"file": "abc123-primary.xml.gz", "type": "primary", "href": "repodata/abc123-primary.xml.gz"}, ""),
+		testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{"file": "repomd.xml"}, ""),
+		testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{"file": "abc123-primary.xml.gz", "type": "primary", "href": "repodata/abc123-primary.xml.gz"}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 
@@ -49,7 +49,7 @@ func TestHandle_Repomd(t *testing.T) {
 func TestHandle_Primary(t *testing.T) {
 	p := NewYumPlugin()
 	arts := []*runtime.Artifact{
-		testhelper.NewArtifact("yum", "metadata", map[string]string{
+		testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{
 			"name":    "nginx",
 			"version": "1.20.1",
 			"file":    "abc123-primary.xml.gz",
@@ -69,6 +69,30 @@ func TestHandle_Primary(t *testing.T) {
 	}
 	if !strings.Contains(body, "1.20.1") {
 		t.Errorf("expected '1.20.1' in primary XML")
+	}
+}
+
+func TestHandle_PrimaryCompressed_PrefersOriginalContentWithGzipType(t *testing.T) {
+	p := NewYumPlugin()
+	original := "gzipped-primary-bytes"
+	art := testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{
+		"file":     "abc123-primary.xml.gz",
+		"filename": "abc123-primary.xml.gz",
+		"path":     "repodata",
+	}, original)
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "repodata/abc123-primary.xml.gz", nil)
+	p.Handle(ctx, rt)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != original {
+		t.Fatalf("expected original primary metadata content, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/gzip" {
+		t.Fatalf("expected application/gzip, got %q", ct)
 	}
 }
 
@@ -201,8 +225,8 @@ func TestFetchRemote_Repomd(t *testing.T) {
 		t.Errorf("first artifact should be repomd.xml, got %q", arts[0].Filename)
 	}
 	ref := arts[1]
-	if ref.Kind != "metadata-ref" {
-		t.Fatalf("expected metadata-ref, got %q", ref.Kind)
+	if ref.Kind != runtime.KindMetadata {
+		t.Fatalf("expected %s, got %q", runtime.KindMetadata, ref.Kind)
 	}
 	if got := ref.Filename; got != "abc123-primary.xml.gz" {
 		t.Fatalf("metadata-ref filename = %q", got)

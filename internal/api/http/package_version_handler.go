@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -106,6 +107,37 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		}
 	}
 
+	// 批量获取版本级下载计数（从 download_logs 聚合）
+	downloadCountMap := make(map[string]int64) // key: "repoID|version"
+	if len(artifacts) > 0 {
+		repoIDsForCount := make([]uint, 0)
+		repoIDSet := make(map[uint]bool)
+		for _, a := range artifacts {
+			if !repoIDSet[a.RepositoryID] {
+				repoIDSet[a.RepositoryID] = true
+				repoIDsForCount = append(repoIDsForCount, a.RepositoryID)
+			}
+		}
+		var countRows []struct {
+			RepositoryID uint
+			Version      string
+			Count        int64
+		}
+		err := h.db.Table("download_logs").
+			Select("repository_id, version, COUNT(*) as count").
+			Where("repository_id IN ? AND package_type = ? AND package_name = ? AND status IN ?",
+				repoIDsForCount, pkgType, pkgName, []string{"success", "cached"}).
+			Where("version != ''").
+			Group("repository_id, version").
+			Scan(&countRows).Error
+		if err == nil {
+			for _, cr := range countRows {
+				key := fmt.Sprintf("%d|%s", cr.RepositoryID, cr.Version)
+				downloadCountMap[key] += cr.Count
+			}
+		}
+	}
+
 	// 按版本号分组，聚合文件列表
 	type versionGroup struct {
 		latestAt    time.Time
@@ -120,6 +152,8 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		metadata    model.JSONB
 		files       []gin.H
 		blobs       []blobInfo
+		repoIDs     map[uint]bool // 该版本涉及的仓库 ID 集合
+		sizeBytes   int64         // 从 artifact 元数据记录的大小（回源时即有，无需下载 blob）
 	}
 	verGroups := make(map[string]*versionGroup)
 	var verOrder []string
@@ -132,12 +166,16 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 
 		vp, ok := verGroups[version]
 		if !ok {
-			vp = &versionGroup{}
+			vp = &versionGroup{repoIDs: make(map[uint]bool)}
 			verGroups[version] = vp
 			verOrder = append(verOrder, version)
 		}
+		vp.repoIDs[a.RepositoryID] = true
 		if a.CreatedAt.After(vp.latestAt) {
 			vp.latestAt = a.CreatedAt
+		}
+		if vp.sizeBytes == 0 && a.SizeBytes > 0 {
+			vp.sizeBytes = a.SizeBytes
 		}
 		if vp.name == "" {
 			vp.name = a.Name
@@ -196,19 +234,18 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 
 		if isDownloadableArtifact(a, filename, downloadURL, blobs) {
 			vp.files = append(vp.files, gin.H{
-				"id":            a.ID,
-				"version_id":    a.ID,
-				"filename":      filename,
-				"file_type":     fileType,
-				"storage_path":  firstNonEmptyString(a.DownloadPath, a.RemotePath, a.Path),
-				"path":          a.Path,
-				"remote_path":   a.RemotePath,
-				"download_path": a.DownloadPath,
-				"size_bytes":    sumBlobSizes(blobs),
-				"download_url":  downloadURL,
-				"qualifiers":    a.Qualifiers,
-				"attributes":    a.Attributes,
-				"metadata":      a.Metadata,
+				"id":           a.ID,
+				"version_id":   a.ID,
+				"filename":     filename,
+				"file_type":    fileType,
+				"storage_path": firstNonEmptyString(a.RemotePath, a.Path),
+				"path":         a.Path,
+				"remote_path":  a.RemotePath,
+				"size_bytes":   firstNonZeroInt64(sumBlobSizes(blobs), a.SizeBytes),
+				"download_url": downloadURL,
+				"qualifiers":   a.Qualifiers,
+				"attributes":   a.Attributes,
+				"metadata":     a.Metadata,
 			})
 		}
 	}
@@ -220,6 +257,8 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		for _, b := range vp.blobs {
 			totalSize += b.Size
 		}
+		// blob 不存在时（未回源下载）回退到 artifact 元数据记录的大小
+		totalSize = firstNonZeroInt64(totalSize, vp.sizeBytes)
 		sha256 := ""
 		if len(vp.blobs) > 0 && vp.blobs[0].Digest != "" {
 			sha256 = vp.blobs[0].Digest
@@ -230,6 +269,13 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 			if t, err := time.Parse(time.RFC3339, vp.publishedAt); err == nil {
 				publishedAt = t
 			}
+		}
+
+		// 聚合该版本在所有仓库中的下载计数
+		var downloadCount int64
+		for repoID := range vp.repoIDs {
+			key := fmt.Sprintf("%d|%s", repoID, ver)
+			downloadCount += downloadCountMap[key]
 		}
 
 		entry := gin.H{
@@ -243,7 +289,7 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 			"checksum_sha256":  sha256,
 			"files":            vp.files,
 			"files_downloaded": len(vp.blobs) > 0,
-			"download_count":   0,
+			"download_count":   downloadCount,
 			"attributes":       vp.attributes,
 			"qualifiers":       vp.qualifiers,
 			"metadata":         vp.metadata,
@@ -295,14 +341,13 @@ func sumBlobSizes(blobs []blobInfo) int64 {
 }
 
 func buildDownloadURL(repoName string, artifact model.Artifact) string {
-	if artifact.DownloadURL != "" {
-		return artifact.DownloadURL
-	}
-	downloadPath := firstNonEmptyString(artifact.DownloadPath, artifact.RemotePath)
-	if downloadPath == "" {
+	// 始终构造本地仓库路径，让下载请求经过代理层
+	// artifact.DownloadURL 是外部 URL（如 files.pythonhosted.org），
+	// 仅给后端 ProxyRuntime 做服务端回源使用，不应暴露给前端（CORS 问题）
+	if artifact.RemotePath == "" {
 		return ""
 	}
-	return "/repository/" + repoName + "/" + downloadPath
+	return "/repository/" + repoName + "/" + artifact.RemotePath
 }
 
 func isDownloadableArtifact(a model.Artifact, filename, downloadURL string, blobs []blobInfo) bool {
@@ -310,7 +355,7 @@ func isDownloadableArtifact(a model.Artifact, filename, downloadURL string, blob
 		return false
 	}
 	switch a.Kind {
-	case "version", "metadata", "package-index", "metadata-ref", "release":
+	case "version", "metadata", "checksum":
 		return false
 	}
 	if filename != "" || downloadURL != "" || len(blobs) > 0 {
@@ -326,6 +371,15 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstNonZeroInt64(values ...int64) int64 {
+	for _, v := range values {
+		if v != 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 func cloneJSONB(src model.JSONB) model.JSONB {

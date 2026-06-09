@@ -25,7 +25,7 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 
 func TestHandle_InRelease(t *testing.T) {
 	p := NewAptPlugin()
-	art := testhelper.NewArtifact("apt", "release", map[string]string{
+	art := testhelper.NewArtifact("apt", runtime.KindMetadata, map[string]string{
 		"file":     "InRelease",
 		"filename": "InRelease",
 		"path":     "dists/jammy",
@@ -68,6 +68,30 @@ func TestHandle_Packages(t *testing.T) {
 	}
 	if !strings.Contains(body, "Version: 1.18.0-6.1") {
 		t.Errorf("expected version in output")
+	}
+}
+
+func TestHandle_PackagesCompressed_PrefersOriginalContentWithGzipType(t *testing.T) {
+	p := NewAptPlugin()
+	original := "gzipped-packages-bytes"
+	art := testhelper.NewArtifact("apt", runtime.KindMetadata, map[string]string{
+		"file":     "Packages.gz",
+		"filename": "Packages.gz",
+		"path":     "dists/jammy/main/binary-amd64",
+	}, original)
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "dists/jammy/main/binary-amd64/Packages.gz", nil)
+	p.Handle(ctx, rt)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != original {
+		t.Fatalf("expected original Packages.gz content, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/gzip" {
+		t.Fatalf("expected application/gzip, got %q", ct)
 	}
 }
 

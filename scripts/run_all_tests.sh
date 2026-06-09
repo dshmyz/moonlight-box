@@ -230,6 +230,7 @@ case "$TEST_SUITE" in
         
         print_section "第四阶段: npm 完整生命周期"
         run_test "npm 生命周期" "$SCRIPT_DIR/lifecycle/test_npm_lifecycle.sh" "true"
+        run_test "npm 元数据完整性" "$SCRIPT_DIR/clients/test_npm_metadata_integrity.sh" "true"
         
         print_section "第五阶段: Go 模块完整生命周期"
         run_test "Go 模块生命周期" "$SCRIPT_DIR/lifecycle/test_go_lifecycle.sh" "true"
@@ -275,6 +276,7 @@ case "$TEST_SUITE" in
     npm)
         print_section "npm 测试套件"
         run_test "npm 生命周期" "$SCRIPT_DIR/lifecycle/test_npm_lifecycle.sh" "true"
+        run_test "npm 元数据完整性" "$SCRIPT_DIR/clients/test_npm_metadata_integrity.sh" "true"
         ;;
     
     go)

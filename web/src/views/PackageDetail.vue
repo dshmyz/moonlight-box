@@ -300,44 +300,27 @@ async function handleDownload(version: PackageVersion & { selectedFile?: any }) 
   }
 
   let file = version.selectedFile || version.files[0]
-  
+
   if (!version.selectedFile && (pkg.value.type === 'maven' || pkg.value.type === 'maven2')) {
     const primaryFile = version.files.find(f => f.file_type === 'primary')
     if (primaryFile) {
       file = primaryFile
     }
   }
-  
+
   const downloadUrl = file.download_url
   if (!downloadUrl) {
     ElMessage.error('无法获取下载地址')
     return
   }
-  const downloadFilename = file.filename
-  
-  try {
-    ElMessage.info(`开始下载 ${pkg.value.name}@${version.version} - ${file.filename}`)
-    
-    const response = await fetch(downloadUrl)
-    if (!response.ok) {
-      throw new Error(`下载失败: ${response.status} ${response.statusText}`)
-    }
-    
-    const blob = await response.blob()
-    const url = window.URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = downloadFilename
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    window.URL.revokeObjectURL(url)
-    
-    ElMessage.success(`下载完成 ${file.filename}`)
-  } catch (error) {
-    console.error('Download failed:', error)
-    ElMessage.error(`下载失败: ${error}`)
-  }
+
+  // 使用浏览器原生下载，支持进度显示且不占用内存
+  const link = document.createElement('a')
+  link.href = downloadUrl
+  link.download = file.filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
 }
 
 async function handleDeprecate(data: { id: number; version: string; reason: string }) {

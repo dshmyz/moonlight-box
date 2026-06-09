@@ -55,6 +55,8 @@
 package yum
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/xml"
 	"errors"
@@ -69,6 +71,39 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/sirupsen/logrus"
 )
+
+type repomdData struct {
+	Type     string `xml:"type,attr"`
+	Location struct {
+		Href string `xml:"href,attr"`
+	} `xml:"location"`
+}
+type repomdXML struct {
+	XMLName xml.Name     `xml:"repomd"`
+	Data    []repomdData `xml:"data"`
+}
+
+type primaryPackage struct {
+	Name    string `xml:"name"`
+	Arch    string `xml:"arch"`
+	Version struct {
+		Epoch string `xml:"epoch,attr"`
+		Ver   string `xml:"ver,attr"`
+		Rel   string `xml:"rel,attr"`
+	} `xml:"version"`
+	Location struct {
+		Href string `xml:"href,attr"`
+	} `xml:"location"`
+	Summary     string `xml:"summary"`
+	Description string `xml:"description"`
+	URL         string `xml:"url"`
+	Packager    string `xml:"packager"`
+	License     string `xml:"license"`
+}
+type primaryXML struct {
+	XMLName  xml.Name         `xml:"metadata"`
+	Packages []primaryPackage `xml:"package"`
+}
 
 type YumPlugin struct {
 	cache      *cache.MemoryCache
@@ -176,17 +211,6 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 		return nil, fmt.Errorf("yum: read repomd body: %w", err)
 	}
 
-	type repomdData struct {
-		Type     string `xml:"type,attr"`
-		Location struct {
-			Href string `xml:"href,attr"`
-		} `xml:"location"`
-	}
-	type repomdXML struct {
-		XMLName xml.Name     `xml:"repomd"`
-		Data    []repomdData `xml:"data"`
-	}
-
 	var repomd repomdXML
 	if err := xml.Unmarshal(body, &repomd); err != nil {
 		logrus.WithFields(logrus.Fields{
@@ -219,7 +243,7 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 		}
 		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
 			Format:     "yum",
-			Kind:       "metadata-ref",
+			Kind:       runtime.KindMetadata,
 			Name:       filepath.Base(href),
 			Path:       yumArtifactDir(href),
 			Filename:   filepath.Base(href),
@@ -235,11 +259,108 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 		}))
 	}
 
+	primaryArtifacts, err := p.fetchPrimaryIndexPackages(ctx, remoteURL, repomd.Data)
+	if err != nil {
+		logrus.WithError(err).Warn("yum: fetch primary.xml.gz packages failed, fallback to repomd refs only")
+	} else {
+		artifacts = append(artifacts, primaryArtifacts...)
+	}
+
 	logrus.WithFields(logrus.Fields{
 		"fullURL":       fullURL,
 		"artifactCount": len(artifacts),
 		"duration":      time.Since(start).Seconds(),
 	}).Debug("yum: fetchRepomd success")
+	return artifacts, nil
+}
+
+// fetchPrimaryIndexPackages 解析 primary.xml.gz，把 RPM 包提取为独立 artifact。
+// 这样 packages 聚合表可以使用真正的包名（如 nginx），而不是文件名（nginx-1.20.1-1.el8.x86_64.rpm）。
+func (p *YumPlugin) fetchPrimaryIndexPackages(ctx context.Context, remoteURL string, data []repomdData) ([]*runtime.Artifact, error) {
+	var primaryHref string
+	for _, d := range data {
+		if d.Type == "primary" {
+			primaryHref = d.Location.Href
+			break
+		}
+	}
+	if primaryHref == "" {
+		return nil, nil
+	}
+
+	fullURL := strings.TrimRight(remoteURL, "/") + "/" + primaryHref
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("yum: create primary request: %w", err)
+	}
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("yum: fetch primary from %s: %w", fullURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("yum: fetch primary from %s: status %d", fullURL, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("yum: read primary body: %w", err)
+	}
+
+	// primary.xml.gz is gzip-compressed
+	if strings.HasSuffix(primaryHref, ".gz") {
+		zr, zErr := gzip.NewReader(bytes.NewReader(body))
+		if zErr != nil {
+			return nil, fmt.Errorf("yum: open primary gzip: %w", zErr)
+		}
+		defer zr.Close()
+		body, err = io.ReadAll(zr)
+		if err != nil {
+			return nil, fmt.Errorf("yum: read primary gzip: %w", err)
+		}
+	}
+
+	var primary primaryXML
+	if err := xml.Unmarshal(body, &primary); err != nil {
+		return nil, fmt.Errorf("yum: unmarshal primary xml: %w", err)
+	}
+
+	var artifacts []*runtime.Artifact
+	for _, pkg := range primary.Packages {
+		if pkg.Name == "" || pkg.Location.Href == "" {
+			continue
+		}
+
+		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "yum",
+			Kind:       runtime.KindFile,
+			Name:       pkg.Name,
+			Namespace:  pkg.Arch,
+			Version:    pkg.Version.Ver,
+			Path:       yumArtifactDir(pkg.Location.Href),
+			Filename:   filepath.Base(pkg.Location.Href),
+			RemotePath: pkg.Location.Href,
+			Properties: map[string]string{
+				"filename":    filepath.Base(pkg.Location.Href),
+				"remote_path": pkg.Location.Href,
+			},
+			Attributes: map[string]string{
+				"arch":        pkg.Arch,
+				"release":     pkg.Version.Rel,
+				"epoch":       pkg.Version.Epoch,
+				"summary":     pkg.Summary,
+				"description": pkg.Description,
+				"url":         pkg.URL,
+				"packager":    pkg.Packager,
+				"license":     pkg.License,
+			},
+		}))
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"fullURL":      fullURL,
+		"packageCount": len(artifacts),
+	}).Debug("yum: parsed primary.xml.gz packages")
 	return artifacts, nil
 }
 
@@ -427,7 +548,7 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
 		ctx.SizeBytes = artifact.SizeBytes
-		ctx.Writer.Header().Set("Content-Type", "application/xml")
+		ctx.Writer.Header().Set("Content-Type", contentTypeForFile(filename))
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {

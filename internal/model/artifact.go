@@ -75,11 +75,17 @@ type Artifact struct {
 	Name         string    `gorm:"size:512;index:idx_artifact_name" json:"name,omitempty"`
 	Namespace    string    `gorm:"size:512;index:idx_artifact_namespace" json:"namespace,omitempty"`
 	Version      string    `gorm:"size:255;index:idx_artifact_version" json:"version,omitempty"`
-	Path         string    `gorm:"type:text" json:"path,omitempty"`
-	Filename     string    `gorm:"size:1024;index:idx_artifact_filename" json:"filename,omitempty"`
-	RemotePath   string    `gorm:"type:text" json:"remote_path,omitempty"`
-	DownloadPath string    `gorm:"type:text" json:"download_path,omitempty"`
-	DownloadURL  string    `gorm:"type:text" json:"download_url,omitempty"`
+	// Path 逻辑分组路径，不含文件名，如 "left-pad/-"、"com/google/guava/guava"
+	Path string `gorm:"type:text" json:"path,omitempty"`
+	Filename string `gorm:"size:1024;index:idx_artifact_filename" json:"filename,omitempty"`
+	// RemotePath 仓库内的相对路径（含文件名），用于回源定位、存储寻址和构造下载 URL。
+	// 格式：协议相关的相对路径，如 "left-pad/-/left-pad-1.0.0.tgz"、"packages/ab/cd/requests-2.28.0.tar.gz"
+	// 用途：ProxyRuntime 回源时拼接完整远端 URL；存储层寻址（file/{RemotePath}）；前端下载链接构造（/repository/{repoName}/{RemotePath}）
+	RemotePath string `gorm:"type:text" json:"remote_path,omitempty"`
+	// DownloadURL 远端文件的绝对 URL，仅用于后端 ProxyRuntime 服务端回源拉取。
+	// 格式：完整的 HTTP(S) URL，如 "https://files.pythonhosted.org/packages/ab/cd/requests-2.28.0.tar.gz"
+	// 注意：此字段绝不暴露给前端作为下载链接（会导致 CORS 跨域问题），前端下载统一走 RemotePath 构造的本地路径
+	DownloadURL string `gorm:"type:text" json:"download_url,omitempty"`
 	Extension    string    `gorm:"size:64" json:"extension,omitempty"`
 	ContentType  string    `gorm:"size:255" json:"content_type,omitempty"`
 	SizeBytes    int64     `gorm:"not null;default:0" json:"size_bytes"`
@@ -101,7 +107,6 @@ func (a *Artifact) BeforeSave(tx *gorm.DB) error {
 	}
 	a.Path = cleanSlashPath(a.Path)
 	a.RemotePath = cleanSlashPath(a.RemotePath)
-	a.DownloadPath = cleanSlashPath(a.DownloadPath)
 	if a.RemotePath != "" {
 		if a.Filename == "" {
 			a.Filename = path.Base(a.RemotePath)
@@ -116,20 +121,11 @@ func (a *Artifact) BeforeSave(tx *gorm.DB) error {
 	if a.RemotePath == "" && a.Path != "" && a.Filename != "" {
 		a.RemotePath = joinSlashPath(a.Path, a.Filename)
 	}
-	if a.DownloadPath == "" {
-		a.DownloadPath = a.RemotePath
-	}
-	if a.DownloadPath == "" && a.Path != "" && a.Filename != "" {
-		a.DownloadPath = joinSlashPath(a.Path, a.Filename)
-	}
 	if a.Extension == "" && a.Filename != "" {
 		a.Extension = path.Ext(a.Filename)
 	}
 	if a.RemotePath != "" {
 		a.Metadata["remote_path"] = a.RemotePath
-	}
-	if a.DownloadPath != "" {
-		a.Metadata["download_path"] = a.DownloadPath
 	}
 	if a.DownloadURL != "" {
 		a.Metadata["download_url"] = a.DownloadURL

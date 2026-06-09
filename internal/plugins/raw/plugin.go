@@ -33,6 +33,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -211,6 +212,9 @@ func (p *GenericPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.
 	if path == "" {
 		return errors.New("empty path")
 	}
+	if strings.HasSuffix(path, "/") && ctx.Request.Method == http.MethodGet {
+		return p.handleDirectoryListing(ctx, repoRuntime, path)
+	}
 
 	filename := filepath.Base(path)
 	dir := filepath.Dir(path)
@@ -228,11 +232,11 @@ func (p *GenericPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.
 		Path:         dir,
 		Filename:     filename,
 		RemotePath:   path,
-		Extension: filepath.Ext(filename),
+		Extension:    filepath.Ext(filename),
 	}
 
 	switch ctx.Request.Method {
-	case http.MethodGet:
+	case http.MethodGet, http.MethodHead:
 		return p.handleDownload(ctx, repoRuntime, key)
 	case http.MethodPut:
 		return p.handleUpload(ctx, repoRuntime, key)
@@ -240,6 +244,48 @@ func (p *GenericPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.
 		return p.handleDelete(ctx, repoRuntime, key)
 	}
 	return errors.New("method not allowed")
+}
+
+func (p *GenericPlugin) handleDirectoryListing(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "generic",
+		RemotePath:   path,
+	})
+	if err != nil || len(artifacts) == 0 {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<!DOCTYPE html>\n<html><head><title>Index of ")
+	sb.WriteString(html.EscapeString(path))
+	sb.WriteString("</title></head><body>\n<h1>Index of ")
+	sb.WriteString(html.EscapeString(path))
+	sb.WriteString("</h1>\n")
+	for _, artifact := range artifacts {
+		name := artifact.Name
+		if name == "" {
+			name = artifact.Filename
+		}
+		if name == "" {
+			continue
+		}
+		href := name
+		if artifact.Kind == "directory" && !strings.HasSuffix(href, "/") {
+			href += "/"
+		}
+		sb.WriteString(`<a href="`)
+		sb.WriteString(html.EscapeString(href))
+		sb.WriteString(`">`)
+		sb.WriteString(html.EscapeString(name))
+		sb.WriteString("</a><br>\n")
+	}
+	sb.WriteString("</body></html>")
+	ctx.Writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	ctx.Writer.WriteHeader(http.StatusOK)
+	_, _ = ctx.Writer.Write([]byte(sb.String()))
+	return nil
 }
 
 func (p *GenericPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
@@ -275,10 +321,7 @@ func (p *GenericPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime 
 		contentType = "application/zip"
 	}
 
-	ctx.Writer.Header().Set("Content-Type", contentType)
-	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
-	ctx.Writer.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+	if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, contentType, "inline"); err != nil {
 		logrus.WithError(err).Warn("failed to write artifact content to client")
 		return nil
 	}

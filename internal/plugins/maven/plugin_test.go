@@ -512,6 +512,61 @@ func TestHandle_ArtifactDownload(t *testing.T) {
 	}
 }
 
+func TestHandle_ArtifactHeadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewMavenPlugin()
+	art := testhelper.NewArtifact("maven", "artifact", map[string]string{
+		"name":     "com.google.guava:guava",
+		"group":    "com.google.guava",
+		"artifact": "guava",
+		"version":  "31.1-jre",
+		"filename": "guava-31.1-jre.jar",
+		"path":     "com/google/guava/guava/31.1-jre",
+	}, "jar-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("HEAD", "com/google/guava/guava/31.1-jre/guava-31.1-jre.jar", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+	if disp := w.Header().Get("Content-Disposition"); disp == "" {
+		t.Fatal("expected Content-Disposition header")
+	}
+}
+
+func TestHandle_ArtifactRangeReturnsPartialContent(t *testing.T) {
+	p := NewMavenPlugin()
+	art := testhelper.NewArtifact("maven", "artifact", map[string]string{
+		"name":     "com.google.guava:guava",
+		"group":    "com.google.guava",
+		"artifact": "guava",
+		"version":  "31.1-jre",
+		"filename": "guava-31.1-jre.jar",
+		"path":     "com/google/guava/guava/31.1-jre",
+	}, "jar-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "com/google/guava/guava/31.1-jre/guava-31.1-jre.jar", nil)
+	ctx.Request.Header.Set("Range", "bytes=4-10")
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("expected 206, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "content" {
+		t.Fatalf("expected partial body %q, got %q", "content", body)
+	}
+	if got := w.Header().Get("Content-Range"); got != "bytes 4-10/11" {
+		t.Fatalf("expected Content-Range bytes 4-10/11, got %q", got)
+	}
+}
+
 func TestHandle_ArtifactNotFound(t *testing.T) {
 	p := NewMavenPlugin()
 	rt := &testhelper.MockRuntime{Artifacts: nil}
@@ -528,6 +583,47 @@ func TestHandle_ArtifactNotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Handle – metadata (local cache query)
 // ---------------------------------------------------------------------------
+
+func TestHandle_Metadata_PrefersOriginalCachedContent(t *testing.T) {
+	p := NewMavenPlugin()
+	original := `<?xml version="1.0"?>
+<metadata>
+  <groupId>com.google.guava</groupId>
+  <artifactId>guava</artifactId>
+  <versioning>
+    <latest>31.1-jre</latest>
+    <versions><version>31.1-jre</version></versions>
+  </versioning>
+  <!-- original-upstream-marker -->
+</metadata>`
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("maven", runtime.KindMetadata, map[string]string{
+			"name":     "com.google.guava:guava",
+			"path":     "com/google/guava/guava",
+			"filename": "maven-metadata.xml",
+			"group":    "com.google.guava",
+			"artifact": "guava",
+		}, original),
+		testhelper.NewArtifact("maven", runtime.KindVersion, map[string]string{
+			"name":     "com.google.guava:guava",
+			"group":    "com.google.guava",
+			"artifact": "guava",
+			"version":  "31.1-jre",
+		}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "com/google/guava/guava/maven-metadata.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != original {
+		t.Fatalf("expected original metadata content, got: %s", body)
+	}
+}
 
 func TestHandle_Metadata_Standard(t *testing.T) {
 	p := NewMavenPlugin()

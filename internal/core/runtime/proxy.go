@@ -255,6 +255,10 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 										"error":         err.Error(),
 									}).Warn("QueryArtifacts: background BatchPut failed")
 								}
+								// 异步刷新后清除负缓存，使后续 GetArtifact 能命中新记录。
+								for _, a := range toUpdate {
+									n.clearNegativeCacheForArtifact(a)
+								}
 							}
 						} else if fetchErr != nil {
 							metrics.RecordProxyFetch(n.Format, "error", fetchDuration)
@@ -304,6 +308,13 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 				"remotePath":    query.RemotePath,
 				"error":         fetchErr.Error(),
 			}).Error("proxy: FetchRemote failed")
+			if len(artifacts) > 0 {
+				logrus.WithFields(logrus.Fields{
+					"cachedCount": len(artifacts),
+					"remotePath":  query.RemotePath,
+				}).Warn("proxy: serving cached artifacts after FetchRemote failure")
+				return artifacts, nil
+			}
 			return nil, fetchErr
 		}
 		metrics.RecordProxyFetch(n.Format, "success", fetchDuration)
@@ -322,6 +333,11 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 				"error":         err.Error(),
 			}).Error("proxy: BatchPut fetched artifacts failed")
 			return nil, err
+		}
+		// FetchRemote 成功后，清除已缓存 artifacts 对应的负缓存，
+		// 使后续 GetArtifact 能命中 store 中的新记录。
+		for _, a := range fetched {
+			n.clearNegativeCacheForArtifact(a)
 		}
 		return fetched, nil
 	}
@@ -588,6 +604,64 @@ func (n *ProxyRuntime) setNegativeCache(key ArtifactKey) {
 	n.metadataCacheMu.Unlock()
 }
 
+// clearNegativeCacheForArtifact 根据 artifact 的各个可能的查询 key 清除负缓存。
+// FetchRemote 回源成功后调用，确保后续 GetArtifact 能命中 store 中的新记录。
+func (n *ProxyRuntime) clearNegativeCacheForArtifact(a *Artifact) {
+	if n.CachePolicy.NegativeTTL <= 0 {
+		return
+	}
+	keys := n.buildNegativeCacheKeys(a)
+	n.metadataCacheMu.Lock()
+	for _, k := range keys {
+		delete(n.negativeCache, k)
+	}
+	n.metadataCacheMu.Unlock()
+}
+
+// buildNegativeCacheKeys 生成 artifact 可能被查询到的所有 key 字符串。
+// 必须覆盖 GetArtifact 调用时 ArtifactKey.String() 生成的所有可能组合，
+// 否则负缓存条目无法被清除，导致后续请求持续返回 404。
+func (n *ProxyRuntime) buildNegativeCacheKeys(a *Artifact) []string {
+	base := ArtifactKey{
+		RepositoryID: n.RepositoryID,
+		Format:       a.Format,
+	}
+	var keys []string
+	// 完整 key：包含所有字段，匹配 GetArtifact 传入的 key.String()
+	// 这是清除负缓存最关键的一条，因为 GetArtifact 的 key 通常携带所有字段
+	if a.Name != "" || a.Version != "" || a.Path != "" || a.Filename != "" || a.RemotePath != "" {
+		k := base
+		k.Name = a.Name
+		k.Version = a.Version
+		k.Path = a.Path
+		k.Filename = a.Filename
+		k.RemotePath = a.RemotePath
+		keys = append(keys, k.String())
+	}
+	// 按 remote_path 查询
+	if a.RemotePath != "" {
+		k := base
+		k.RemotePath = a.RemotePath
+		keys = append(keys, k.String())
+	}
+	// 按 name/version 查询
+	if a.Name != "" {
+		k := base
+		k.Name = a.Name
+		k.Version = a.Version
+		keys = append(keys, k.String())
+	}
+	// 按 name/path/filename 查询
+	if a.Name != "" && a.Path != "" && a.Filename != "" {
+		k := base
+		k.Name = a.Name
+		k.Path = a.Path
+		k.Filename = a.Filename
+		keys = append(keys, k.String())
+	}
+	return keys
+}
+
 func (n *ProxyRuntime) DeleteArtifact(ctx context.Context, key ArtifactKey) error {
 	key.RepositoryID = n.RepositoryID
 	return ErrReadOnly
@@ -636,7 +710,7 @@ func (n *ProxyRuntime) artifactRemoteURL(artifact *Artifact, key ArtifactKey) st
 		if artifact.DownloadURL != "" {
 			return artifact.DownloadURL
 		}
-		remotePath := firstNonEmpty(artifact.RemotePath, artifact.DownloadPath)
+		remotePath := artifact.RemotePath
 		if remotePath != "" && n.RemoteBaseURL != "" {
 			return strings.TrimRight(n.RemoteBaseURL, "/") + "/" + strings.TrimLeft(remotePath, "/")
 		}

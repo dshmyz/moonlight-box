@@ -48,7 +48,6 @@ func TestListVersionsSkipsMetadataOnlyArtifacts(t *testing.T) {
 		Path:         "left-pad/-",
 		Filename:     "left-pad-1.0.0.tgz",
 		RemotePath:   "left-pad/-/left-pad-1.0.0.tgz",
-		DownloadPath: "left-pad/-/left-pad-1.0.0.tgz",
 		Qualifiers:   model.JSONB{"package_type": "tarball"},
 	}
 	if err := db.Create(&versionOnly).Error; err != nil {
@@ -76,11 +75,10 @@ func TestListVersionsSkipsMetadataOnlyArtifacts(t *testing.T) {
 				License    string                 `json:"license"`
 				Attributes map[string]interface{} `json:"attributes"`
 				Files      []struct {
-					Filename     string `json:"filename"`
-					DownloadURL  string `json:"download_url"`
-					Path         string `json:"path"`
-					RemotePath   string `json:"remote_path"`
-					DownloadPath string `json:"download_path"`
+					Filename    string `json:"filename"`
+					DownloadURL string `json:"download_url"`
+					Path        string `json:"path"`
+					RemotePath  string `json:"remote_path"`
 				} `json:"files"`
 			} `json:"versions"`
 		} `json:"data"`
@@ -108,7 +106,7 @@ func TestListVersionsSkipsMetadataOnlyArtifacts(t *testing.T) {
 	if files[0].DownloadURL != "/repository/npm-proxy/left-pad/-/left-pad-1.0.0.tgz" {
 		t.Fatalf("download_url = %q", files[0].DownloadURL)
 	}
-	if files[0].Path != "left-pad/-" || files[0].RemotePath != "left-pad/-/left-pad-1.0.0.tgz" || files[0].DownloadPath != "left-pad/-/left-pad-1.0.0.tgz" {
+	if files[0].Path != "left-pad/-" || files[0].RemotePath != "left-pad/-/left-pad-1.0.0.tgz" {
 		t.Fatalf("unexpected file paths: %+v", files[0])
 	}
 }

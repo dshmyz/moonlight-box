@@ -17,8 +17,8 @@ func TestNewArtifactNormalizesRemotePath(t *testing.T) {
 	if a.Filename != "requests-2.28.0.tar.gz" {
 		t.Fatalf("expected filename from remote_path, got %q", a.Filename)
 	}
-	if a.DownloadPath != "packages/ab/cd/requests-2.28.0.tar.gz" {
-		t.Fatalf("expected download_path from remote_path, got %q", a.DownloadPath)
+	if a.RemotePath != "packages/ab/cd/requests-2.28.0.tar.gz" {
+		t.Fatalf("expected remote_path preserved, got %q", a.RemotePath)
 	}
 	if a.Name != "requests" || a.Version != "2.28.0" {
 		t.Fatalf("expected strong fields preserved, got name=%q version=%q", a.Name, a.Version)

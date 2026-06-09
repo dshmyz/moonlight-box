@@ -88,15 +88,19 @@ func (p *GoPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*
 	// For other paths (e.g. /@v/*.info, *.mod, *.zip), return a basic artifact indicating the resource exists.
 	modulePath, filename := p.splitModulePath(path)
 	fileType := strings.TrimPrefix(filepath.Ext(filename), ".")
+	// DownloadURL 使用编码后的路径，确保 ensureArtifactBlob 向上游下载时 URL 正确
+	// （大写字母模块如 github.com/Azure/... 需要编码为 !azure 才能被上游识别）
+	fullURL := strings.TrimRight(remoteURL, "/") + "/" + encodeGoPath(path)
 	return []*runtime.Artifact{
 		runtime.NewArtifact(runtime.ArtifactSpec{
-			Format:     "go",
-			Kind:       "module-file",
-			Name:       modulePath,
-			Version:    strings.TrimSuffix(filename, filepath.Ext(filename)),
-			Path:       modulePath + "/@v",
-			Filename:   filename,
-			RemotePath: path,
+			Format:      "go",
+			Kind:        "module-file",
+			Name:        modulePath,
+			Version:     strings.TrimSuffix(filename, filepath.Ext(filename)),
+			Path:        modulePath + "/@v",
+			Filename:    filename,
+			RemotePath:  path,
+			DownloadURL: fullURL,
 			Qualifiers: map[string]string{
 				"module": modulePath,
 				"ext":    fileType,
@@ -382,7 +386,7 @@ func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime
 		return nil
 	}
 
-	latest := p.selectLatestStableVersion(artifacts)
+	latest := p.selectLatestVersion(artifacts)
 	if latest == nil {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
@@ -390,16 +394,22 @@ func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime
 
 	ctx.Writer.Header().Set("Content-Type", "application/json")
 	ctx.Writer.WriteHeader(http.StatusOK)
-	fmt.Fprintf(ctx.Writer, `{"Version":"%s"}`, latest.Version)
+	if t := latest.Attributes["published_at"]; t != "" {
+		fmt.Fprintf(ctx.Writer, `{"Version":"%s","Time":"%s"}`, latest.Version, t)
+	} else {
+		fmt.Fprintf(ctx.Writer, `{"Version":"%s"}`, latest.Version)
+	}
 	return nil
 }
 
-// selectLatestStableVersion selects the highest stable semver version from the list,
+// selectLatestVersion selects the highest stable semver version from the list,
 // filtering out pre-release versions (e.g. v2.0.0-rc1). Requires versions with
 // valid semver format (with 'v' prefix) to participate in comparison.
-// Returns nil if no stable version exists.
-func (p *GoPlugin) selectLatestStableVersion(artifacts []*runtime.Artifact) *runtime.Artifact {
-	var best *runtime.Artifact
+// If no stable version exists, falls back to the latest pre-release version.
+// Returns nil if no valid version exists at all.
+func (p *GoPlugin) selectLatestVersion(artifacts []*runtime.Artifact) *runtime.Artifact {
+	var bestStable *runtime.Artifact
+	var bestPreRelease *runtime.Artifact
 	for _, a := range artifacts {
 		v := a.Version
 		if v == "" {
@@ -409,13 +419,19 @@ func (p *GoPlugin) selectLatestStableVersion(artifacts []*runtime.Artifact) *run
 			continue
 		}
 		if semver.Prerelease(v) != "" {
-			continue
-		}
-		if best == nil || semver.Compare(v, best.Version) > 0 {
-			best = a
+			if bestPreRelease == nil || semver.Compare(v, bestPreRelease.Version) > 0 {
+				bestPreRelease = a
+			}
+		} else {
+			if bestStable == nil || semver.Compare(v, bestStable.Version) > 0 {
+				bestStable = a
+			}
 		}
 	}
-	return best
+	if bestStable != nil {
+		return bestStable
+	}
+	return bestPreRelease
 }
 
 func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {

@@ -214,6 +214,9 @@ func (s *MetadataStore) BatchPut(ctx context.Context, artifacts []*runtime.Artif
 }
 
 func (s *MetadataStore) syncBlobRefs(tx *gorm.DB, artifactID uint, blobRefs []runtime.BlobRef) error {
+	if len(blobRefs) == 0 {
+		return nil
+	}
 	if err := tx.Where("artifact_id = ?", artifactID).Delete(&model.ArtifactBlob{}).Error; err != nil {
 		return err
 	}
@@ -381,7 +384,6 @@ func (s *MetadataStore) toTypesArtifact(m *model.Artifact) *runtime.Artifact {
 		Path:         m.Path,
 		Filename:     m.Filename,
 		RemotePath:   m.RemotePath,
-		DownloadPath: m.DownloadPath,
 		DownloadURL:  m.DownloadURL,
 		Extension:    m.Extension,
 		ContentType:  m.ContentType,
@@ -422,7 +424,6 @@ func (s *MetadataStore) toModelArtifact(t *runtime.Artifact) *model.Artifact {
 		Path:         t.Path,
 		Filename:     t.Filename,
 		RemotePath:   t.RemotePath,
-		DownloadPath: t.DownloadPath,
 		DownloadURL:  t.DownloadURL,
 		Extension:    t.Extension,
 		ContentType:  t.ContentType,

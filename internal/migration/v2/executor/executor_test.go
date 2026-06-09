@@ -42,14 +42,11 @@ func TestBuildMigratedArtifactUsesRuntimeFileShape(t *testing.T) {
 	if artifact.Name != "requests" || artifact.Version != "2.28.0" || artifact.Format != "pypi" {
 		t.Fatalf("artifact identity = %s/%s/%s, want pypi/requests/2.28.0", artifact.Format, artifact.Name, artifact.Version)
 	}
-	if artifact.RemotePath != "packages/ab/cd/requests-2.28.0-py3-none-any.whl" {
+	if artifact.RemotePath != "custom/requests-2.28.0-py3-none-any.whl" {
 		t.Fatalf("remote path = %q", artifact.RemotePath)
 	}
-	if artifact.DownloadPath != "custom/requests-2.28.0-py3-none-any.whl" {
-		t.Fatalf("download path = %q", artifact.DownloadPath)
-	}
-	if artifact.Path != "packages/ab/cd" {
-		t.Fatalf("path = %q, want packages/ab/cd", artifact.Path)
+	if artifact.Path != "custom" {
+		t.Fatalf("path = %q, want custom", artifact.Path)
 	}
 	if artifact.Filename != "requests-2.28.0-py3-none-any.whl" {
 		t.Fatalf("filename = %q", artifact.Filename)

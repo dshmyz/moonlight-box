@@ -505,20 +505,21 @@ func (p *PyPIPlugin) handleJsonAPI(ctx *runtime.RequestContext, repoRuntime runt
 		return errors.New("method not allowed")
 	}
 
-	path = strings.TrimPrefix(path, "pypi/")
-	path = strings.TrimSuffix(path, "/json")
-	parts := strings.Split(path, "/")
+	jsonPath := strings.TrimPrefix(path, "pypi/")
+	jsonPath = strings.TrimSuffix(jsonPath, "/json")
+	parts := strings.Split(jsonPath, "/")
 
 	packageName := normalizePackageName(parts[0])
 	var version string
 	if len(parts) > 1 {
 		version = parts[1]
 	}
+	queryRemotePath := "simple/" + packageName + "/"
 
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
-		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
+		RemotePath:   queryRemotePath, // 必须带 RemotePath，供 FetchRemote 回源使用
 	})
 	if err != nil {
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
@@ -1036,7 +1037,7 @@ func (p *PyPIPlugin) parseSimpleIndex(body io.Reader) ([]*runtime.Artifact, erro
 		seen[pkgName] = true
 		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
 			Format: "pypi",
-			Kind:   "package-index",
+			Kind:   runtime.KindMetadata,
 			Name:   pkgName,
 			Qualifiers: map[string]string{
 				"package": pkgName,

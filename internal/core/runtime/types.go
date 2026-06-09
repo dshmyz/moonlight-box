@@ -31,6 +31,11 @@ var mustHaveNameKinds = map[string]bool{
 	KindArtifact: true,
 }
 
+// IsMetadataKind 判断给定 Kind 是否为协议元数据（不应写入 packages 聚合表）。
+func IsMetadataKind(kind string) bool {
+	return kind == KindMetadata || kind == KindChecksum
+}
+
 // ValidateArtifactForStore 对写入存储的 Artifact 做合规检查。
 // MetadataStore 在 Put/BatchPut 时自动调用；Plugin 无需主动调用。
 func ValidateArtifactForStore(a *Artifact) error {
@@ -74,11 +79,10 @@ type ArtifactSpec struct {
 	Namespace string
 	Version   string
 
-	Path         string
-	Filename     string
-	RemotePath   string
-	DownloadPath string
-	DownloadURL  string
+	Path        string
+	Filename    string
+	RemotePath  string
+	DownloadURL string
 
 	Extension   string
 	ContentType string
@@ -103,7 +107,6 @@ func NewArtifact(spec ArtifactSpec) *Artifact {
 		Path:         spec.Path,
 		Filename:     spec.Filename,
 		RemotePath:   spec.RemotePath,
-		DownloadPath: spec.DownloadPath,
 		DownloadURL:  spec.DownloadURL,
 		Extension:    spec.Extension,
 		ContentType:  spec.ContentType,
@@ -139,16 +142,12 @@ func NormalizeArtifactForStore(a *Artifact) {
 	if a.RemotePath == "" {
 		a.RemotePath = a.Properties["remote_path"]
 	}
-	if a.DownloadPath == "" {
-		a.DownloadPath = a.Properties["download_path"]
-	}
 	if a.DownloadURL == "" {
 		a.DownloadURL = a.Properties["download_url"]
 	}
 
 	a.RemotePath = cleanArtifactPath(a.RemotePath)
 	a.Path = cleanArtifactPath(a.Path)
-	a.DownloadPath = cleanArtifactPath(a.DownloadPath)
 
 	if a.RemotePath != "" {
 		if a.Filename == "" {
@@ -164,21 +163,12 @@ func NormalizeArtifactForStore(a *Artifact) {
 	if a.RemotePath == "" && a.Path != "" && a.Filename != "" {
 		a.RemotePath = joinArtifactPath(a.Path, a.Filename)
 	}
-	if a.DownloadPath == "" {
-		a.DownloadPath = a.RemotePath
-	}
-	if a.DownloadPath == "" && a.Path != "" && a.Filename != "" {
-		a.DownloadPath = joinArtifactPath(a.Path, a.Filename)
-	}
 	if a.Extension == "" && a.Filename != "" {
 		a.Extension = pathpkg.Ext(a.Filename)
 	}
 
 	if a.RemotePath != "" {
 		a.Properties["remote_path"] = a.RemotePath
-	}
-	if a.DownloadPath != "" {
-		a.Properties["download_path"] = a.DownloadPath
 	}
 	if a.DownloadURL != "" {
 		a.Properties["download_url"] = a.DownloadURL
@@ -352,7 +342,6 @@ type Artifact struct {
 	Path         string
 	Filename     string
 	RemotePath   string
-	DownloadPath string
 	DownloadURL  string
 	Extension    string
 	ContentType  string

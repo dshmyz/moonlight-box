@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
@@ -41,6 +42,86 @@ func TestHandle_GetDownload(t *testing.T) {
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "text/plain" {
 		t.Errorf("expected text/plain, got %s", ct)
+	}
+}
+
+func TestHandle_DirectoryListingUsesQueryArtifacts(t *testing.T) {
+	p := NewGenericPlugin()
+	rt := &directoryListingRuntime{
+		artifacts: []*runtime.Artifact{
+			runtime.NewArtifact(runtime.ArtifactSpec{Format: "generic", Kind: "file", Name: "readme.txt", Filename: "readme.txt", RemotePath: "files/readme.txt"}),
+			runtime.NewArtifact(runtime.ArtifactSpec{Format: "generic", Kind: "directory", Name: "subdir", Filename: "subdir", RemotePath: "files/subdir"}),
+		},
+	}
+
+	ctx, w := newCtx("GET", "files/", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(rt.queryCalls) != 1 {
+		t.Fatalf("expected 1 QueryArtifacts call, got %d", len(rt.queryCalls))
+	}
+	if got := rt.queryCalls[0].RemotePath; got != "files/" {
+		t.Fatalf("expected RemotePath files/, got %q", got)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `href="readme.txt"`) {
+		t.Fatalf("expected readme link in directory listing, got %s", body)
+	}
+	if !strings.Contains(body, `href="subdir/"`) {
+		t.Fatalf("expected subdir link in directory listing, got %s", body)
+	}
+}
+
+type directoryListingRuntime struct {
+	artifacts  []*runtime.Artifact
+	queryCalls []runtime.ArtifactQuery
+}
+
+func (r *directoryListingRuntime) GetArtifact(ctx context.Context, key runtime.ArtifactKey) (*runtime.Artifact, error) {
+	return nil, runtime.ErrNotFound
+}
+
+func (r *directoryListingRuntime) QueryArtifacts(ctx context.Context, query runtime.ArtifactQuery) ([]*runtime.Artifact, error) {
+	r.queryCalls = append(r.queryCalls, query)
+	return r.artifacts, nil
+}
+
+func (r *directoryListingRuntime) RenderProjection(ctx context.Context, query runtime.ProjectionQuery) (*runtime.ProjectionResult, error) {
+	return nil, runtime.ErrNotFound
+}
+
+func (r *directoryListingRuntime) BeginUpload(ctx context.Context, req runtime.UploadRequest) (runtime.UploadSession, error) {
+	return nil, runtime.ErrReadOnly
+}
+
+func (r *directoryListingRuntime) DeleteArtifact(ctx context.Context, key runtime.ArtifactKey) error {
+	return runtime.ErrReadOnly
+}
+
+func TestHandle_HeadDownloadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewGenericPlugin()
+	art := testhelper.NewArtifact("generic", "file", map[string]string{"name": "readme.txt", "path": "docs", "filename": "readme.txt"}, "hello world")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("HEAD", "docs/readme.txt", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty response body for HEAD, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "text/plain" {
+		t.Errorf("expected text/plain, got %s", ct)
+	}
+	if disp := w.Header().Get("Content-Disposition"); disp == "" {
+		t.Fatal("expected Content-Disposition header")
 	}
 }
 

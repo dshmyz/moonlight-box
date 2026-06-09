@@ -33,7 +33,9 @@ func (r *RepositoryRepository) FindByName(name string) (*model.Repository, error
 func (r *RepositoryRepository) FindByNameContext(ctx context.Context, name string) (*model.Repository, error) {
 	var repo model.Repository
 	err := r.db.WithContext(ctx).Where("name = ?", name).
-		Preload("Members").
+		Preload("Members", func(db *gorm.DB) *gorm.DB {
+			return db.Order("position ASC")
+		}).
 		Preload("Members.MemberRepo").
 		First(&repo).Error
 	if err != nil {
@@ -53,7 +55,10 @@ func (r *RepositoryRepository) FindByID(id uint) (*model.Repository, error) {
 // FindByIDContext 根据ID查找仓库
 func (r *RepositoryRepository) FindByIDContext(ctx context.Context, id uint) (*model.Repository, error) {
 	var repo model.Repository
-	err := r.db.WithContext(ctx).Preload("Members").
+	err := r.db.WithContext(ctx).
+		Preload("Members", func(db *gorm.DB) *gorm.DB {
+			return db.Order("position ASC")
+		}).
 		Preload("Members.MemberRepo").
 		First(&repo, id).Error
 	if err != nil {
