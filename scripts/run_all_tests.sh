@@ -227,6 +227,7 @@ case "$TEST_SUITE" in
         print_section "第三阶段: Maven 完整生命周期"
         run_test "Maven Release 版本" "$SCRIPT_DIR/lifecycle/test_maven_lifecycle.sh" "true"
         run_test "Maven SNAPSHOT 版本" "$SCRIPT_DIR/lifecycle/test_maven_snapshot.sh" "true"
+        run_test "Maven Hosted 高级 SNAPSHOT/classifier" "$SCRIPT_DIR/clients/test_maven_snapshot_advanced.sh" "true"
         
         print_section "第四阶段: npm 完整生命周期"
         run_test "npm 生命周期" "$SCRIPT_DIR/lifecycle/test_npm_lifecycle.sh" "true"
@@ -259,6 +260,9 @@ case "$TEST_SUITE" in
         
         print_section "第十三阶段: 包搜索数据准确性测试"
         run_test "包搜索数据准确性" "$SCRIPT_DIR/core/test_data_accuracy.sh" "true"
+
+        print_section "第十四阶段: Proxy 冒烟测试（HEAD/Range/ETag/metadata pass-through）"
+        run_test "Proxy 冒烟测试" "$SCRIPT_DIR/clients/test_proxy_smoke.sh" "true"
         ;;
     
     basic)
@@ -271,6 +275,7 @@ case "$TEST_SUITE" in
         print_section "Maven 测试套件"
         run_test "Maven Release 版本" "$SCRIPT_DIR/lifecycle/test_maven_lifecycle.sh" "true"
         run_test "Maven SNAPSHOT 版本" "$SCRIPT_DIR/lifecycle/test_maven_snapshot.sh" "true"
+        run_test "Maven Hosted 高级 SNAPSHOT/classifier" "$SCRIPT_DIR/clients/test_maven_snapshot_advanced.sh" "true"
         ;;
     
     npm)
@@ -292,6 +297,11 @@ case "$TEST_SUITE" in
     proxy)
         print_section "代理仓库测试套件"
         run_test "多协议代理" "$SCRIPT_DIR/proxy/test_all_proxy.sh" "true"
+        ;;
+
+    proxy-smoke)
+        print_section "Proxy 冒烟测试套件"
+        run_test "Proxy 冒烟测试" "$SCRIPT_DIR/clients/test_proxy_smoke.sh" "true"
         ;;
     
     group)
@@ -320,6 +330,7 @@ case "$TEST_SUITE" in
         echo "  go          - Go 模块完整生命周期测试"
         echo "  pypi        - PyPI 完整生命周期测试"
         echo "  proxy       - 代理仓库能力测试"
+        echo "  proxy-smoke - Proxy 冒烟测试（HEAD/Range/ETag/条件请求/metadata 透传）"
         echo "  group       - 仓库组能力测试"
         echo "  performance - 性能与压力测试"
         echo "  exception   - 异常场景测试"

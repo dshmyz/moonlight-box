@@ -345,7 +345,7 @@ func (p *MavenPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Re
 	path = strings.TrimPrefix(path, "/")
 
 	if strings.HasSuffix(path, "maven-metadata.xml") {
-		if ctx.Request.Method == http.MethodGet {
+		if ctx.Request.Method == http.MethodGet || ctx.Request.Method == http.MethodHead {
 			return p.handleMetadata(ctx, repoRuntime, path)
 		}
 		if ctx.Request.Method == http.MethodPut {
@@ -360,6 +360,16 @@ func (p *MavenPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Re
 			ctx.Filename = key.Filename
 			return p.handleUpload(ctx, repoRuntime, key)
 		}
+	}
+
+	if metaPath, originalFile, algo, ok := parseMavenMetadataChecksum(path); ok {
+		metaKey, err := p.parseMavenMetadataPath(metaPath)
+		if err != nil {
+			http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
+			return nil
+		}
+		metaKey.RepositoryID = ctx.Repository.ID
+		return p.handleChecksumDownload(ctx, repoRuntime, metaKey, originalFile, algo)
 	}
 
 	key, err := p.parseMavenPath(path)
@@ -629,13 +639,6 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 							Value:      baseVersion + "-" + latestTimestamp + "-" + latestBuildNum,
 							Updated:    lastUpdated,
 						})
-						// 同时添加 SNAPSHOT 版本引用
-						snapshotItems = append(snapshotItems, mavenSnapshotVersionXML{
-							Extension:  info.ext,
-							Classifier: info.classifier,
-							Value:      version,
-							Updated:    lastUpdated,
-						})
 					}
 					if len(snapshotItems) > 0 {
 						sort.Slice(snapshotItems, func(i, j int) bool {
@@ -652,6 +655,59 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 						http.Error(ctx.Writer, fmt.Sprintf("render metadata failed: %v", err), http.StatusInternalServerError)
 						return nil
 					}
+					ctx.Writer.Header().Set("Content-Type", "application/xml")
+					ctx.Writer.WriteHeader(http.StatusOK)
+					_, _ = ctx.Writer.Write([]byte(xml.Header))
+					_, _ = ctx.Writer.Write(body)
+					return nil
+				}
+			}
+		}
+
+		if !hasVersionArtifacts && version == "" {
+			artifactArts, qErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+				RepositoryID: ctx.Repository.ID,
+				Format:       "maven",
+				Namespace:    group,
+				Name:         group + ":" + artifact,
+				Qualifiers: map[string]string{
+					"group":    group,
+					"artifact": artifact,
+				},
+			})
+			if qErr == nil && len(artifactArts) > 0 {
+				versionSet := map[string]struct{}{}
+				var lastTime time.Time
+				for _, a := range artifactArts {
+					v := a.Version
+					if v == "" {
+						continue
+					}
+					versionSet[v] = struct{}{}
+					if a.CreatedAt.After(lastTime) {
+						lastTime = a.CreatedAt
+					}
+				}
+				versions := make([]string, 0, len(versionSet))
+				for v := range versionSet {
+					versions = append(versions, v)
+				}
+				sort.Strings(versions)
+				if len(versions) > 0 {
+					lastUpdated := lastTime.UTC().Format("20060102150405")
+					meta := mavenMetadata{
+						Model:      "1.1.0",
+						GroupID:    group,
+						ArtifactID: artifact,
+						Version:    version,
+						Versioning: mavenVersioningXML{
+							Latest:   versions[len(versions)-1],
+							Release:  versions[len(versions)-1],
+							Versions: mavenVersionsXML{Items: versions},
+							LastU:    lastUpdated,
+						},
+					}
+					body, _ := xml.MarshalIndent(meta, "", "  ")
 					ctx.Writer.Header().Set("Content-Type", "application/xml")
 					ctx.Writer.WriteHeader(http.StatusOK)
 					_, _ = ctx.Writer.Write([]byte(xml.Header))
@@ -827,6 +883,15 @@ func (p *MavenPlugin) handleDelete(ctx *runtime.RequestContext, repoRuntime runt
 	return nil
 }
 
+func parseMavenMetadataChecksum(path string) (metadataPath, originalFile string, algo checksumAlgo, ok bool) {
+	originalFile, algo, ok = parseChecksumRequest(filepath.Base(path))
+	if !ok || originalFile != "maven-metadata.xml" {
+		return "", "", "", false
+	}
+	metadataPath = strings.TrimSuffix(path, "."+string(algo))
+	return metadataPath, originalFile, algo, true
+}
+
 func (p *MavenPlugin) parseMavenPath(path string) (runtime.ArtifactKey, error) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) < 3 {
@@ -937,6 +1002,18 @@ func (p *MavenPlugin) handleChecksumDownload(ctx *runtime.RequestContext, repoRu
 
 	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), originalKey)
 	if err != nil {
+		if errors.Is(err, runtime.ErrNotFound) && originalFile == "maven-metadata.xml" {
+			metaXML := p.buildDynamicMetadata(ctx, repoRuntime, key)
+			if metaXML != nil {
+				digest, err := computeChecksum(strings.NewReader(string(metaXML)), algo)
+				if err == nil {
+					ctx.Writer.Header().Set("Content-Type", "text/plain")
+					ctx.Writer.WriteHeader(http.StatusOK)
+					_, _ = ctx.Writer.Write([]byte(formatMavenChecksum(digest, originalFile)))
+					return nil
+				}
+			}
+		}
 		if errors.Is(err, runtime.ErrNotFound) {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		} else {
@@ -970,6 +1047,63 @@ func (p *MavenPlugin) handleChecksumDownload(ctx *runtime.RequestContext, repoRu
 	ctx.Writer.WriteHeader(http.StatusOK)
 	_, _ = ctx.Writer.Write([]byte(formatMavenChecksum(digest, originalFile)))
 	return nil
+}
+
+func (p *MavenPlugin) buildDynamicMetadata(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) []byte {
+	group := key.Qualifiers["group"]
+	artifact := key.Qualifiers["artifact"]
+	if group == "" || artifact == "" {
+		return nil
+	}
+	arts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "maven",
+		Namespace:    group,
+		Name:         group + ":" + artifact,
+		Qualifiers: map[string]string{
+			"group":    group,
+			"artifact": artifact,
+		},
+	})
+	if err != nil || len(arts) == 0 {
+		return nil
+	}
+	versionSet := map[string]struct{}{}
+	var lastTime time.Time
+	for _, a := range arts {
+		if a.Version == "" {
+			continue
+		}
+		versionSet[a.Version] = struct{}{}
+		if a.CreatedAt.After(lastTime) {
+			lastTime = a.CreatedAt
+		}
+	}
+	versions := make([]string, 0, len(versionSet))
+	for v := range versionSet {
+		versions = append(versions, v)
+	}
+	sort.Strings(versions)
+	if len(versions) == 0 {
+		return nil
+	}
+	lastUpdated := lastTime.UTC().Format("20060102150405")
+	meta := mavenMetadata{
+		Model:      "1.1.0",
+		GroupID:    group,
+		ArtifactID: artifact,
+		Versioning: mavenVersioningXML{
+			Latest:   versions[len(versions)-1],
+			Release:  versions[len(versions)-1],
+			Versions: mavenVersionsXML{Items: versions},
+			LastU:    lastUpdated,
+		},
+	}
+	body, err := xml.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return nil
+	}
+	return append([]byte(xml.Header), body...)
 }
 
 func (p *MavenPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {

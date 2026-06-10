@@ -466,10 +466,7 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 	ctx.RemoteURL = artifact.RemoteURL
 	ctx.SizeBytes = artifact.SizeBytes
 
-	ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
-	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
-	ctx.Writer.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+	if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, "application/octet-stream", "inline"); err != nil {
 		logrus.WithError(err).Warn("failed to write artifact content to client")
 		return nil
 	}
@@ -482,7 +479,7 @@ func (p *NpmPlugin) handlePackage(ctx *runtime.RequestContext, repoRuntime runti
 	ctx.PackageName = packageName
 
 	switch ctx.Request.Method {
-	case http.MethodGet:
+	case http.MethodGet, http.MethodHead:
 		return p.handlePackageGet(ctx, repoRuntime, packageName)
 	case http.MethodPut:
 		return p.handlePackagePut(ctx, repoRuntime, packageName)
@@ -637,6 +634,9 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 
 	ctx.Writer.Header().Set("Content-Type", "application/json")
 	ctx.Writer.WriteHeader(http.StatusOK)
+	if ctx.Request.Method == http.MethodHead {
+		return nil
+	}
 	json.NewEncoder(ctx.Writer).Encode(data)
 	return nil
 }

@@ -339,6 +339,8 @@ func (s *MetadataStore) Query(ctx context.Context, query runtime.ArtifactQuery) 
 	}
 	if query.RemotePath != "" {
 		db = db.Where("remote_path = ?", query.RemotePath)
+	} else if query.RemotePathPrefix != "" {
+		db = db.Where("remote_path LIKE ?", query.RemotePathPrefix+"%")
 	}
 
 	if query.Limit > 0 {

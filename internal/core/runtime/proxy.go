@@ -3,19 +3,23 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"path"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/metrics"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 )
 
-const maxMetadataCacheSize = 10000 // 内存缓存上限，防止无限增长
+const maxMetadataCacheSize = 10000    // 内存缓存上限，防止无限增长
+const maxNegativeCacheSize = 5000     // 负缓存上限，防止 DoS
+const maxBlobSize = 100 * 1024 * 1024 // 单文件 blob 上限 100MB
 
 type ProxyRuntime struct {
 	MetadataStore MetadataStore
@@ -31,7 +35,9 @@ type ProxyRuntime struct {
 	metadataCacheMu sync.RWMutex
 	metadataCache   map[string]cachedArtifact
 	negativeCache   map[string]time.Time
-	refreshing      int32 // 原子标记，防止并发刷新
+	fetchGroup      singleflight.Group
+	refreshingMu    sync.Mutex
+	refreshingPaths map[string]struct{}
 }
 
 type cachedArtifact struct {
@@ -237,9 +243,9 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		}
 		if time.Since(oldest) > n.CachePolicy.MetadataTTL {
 			if n.Fetcher != nil && n.RemoteBaseURL != "" {
-				if atomic.CompareAndSwapInt32(&n.refreshing, 0, 1) {
+				if n.tryRefreshPath(query.RemotePath) {
 					go func() {
-						defer atomic.StoreInt32(&n.refreshing, 0)
+						defer n.doneRefreshPath(query.RemotePath)
 						fetchStart := time.Now()
 						fetched, fetchErr := n.Fetcher.FetchRemote(context.Background(), n.RemoteBaseURL, query.RemotePath)
 						fetchDuration := time.Since(fetchStart).Seconds()
@@ -299,7 +305,11 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		}).Debug("proxy: local cache empty, fetching from remote")
 
 		fetchStart := time.Now()
-		fetched, fetchErr := n.Fetcher.FetchRemote(ctx, n.RemoteBaseURL, query.RemotePath)
+		sgKey := n.RepositoryID + ":" + query.RemotePath
+		sgResult, sgErr, _ := n.fetchGroup.Do(sgKey, func() (interface{}, error) {
+			return n.Fetcher.FetchRemote(ctx, n.RemoteBaseURL, query.RemotePath)
+		})
+		fetched, fetchErr := sgResult.([]*Artifact), sgErr
 		fetchDuration := time.Since(fetchStart).Seconds()
 		if fetchErr != nil {
 			metrics.RecordProxyFetch(n.Format, "error", fetchDuration)
@@ -420,7 +430,26 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 	}
 	defer blobReader.Close()
 
-	blobRef, err := n.BlobStore.Put(blobReader)
+	limitedReader := io.LimitReader(blobReader, int64(maxBlobSize)+1)
+	blobBytes, err := io.ReadAll(limitedReader)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"remoteURL": key.RemoteURL,
+			"duration":  time.Since(start).Seconds(),
+			"error":     err.Error(),
+		}).Error("proxy: ensureArtifactBlob read blob failed")
+		return err
+	}
+	if int64(len(blobBytes)) > int64(maxBlobSize) {
+		logrus.WithFields(logrus.Fields{
+			"remoteURL": key.RemoteURL,
+			"size":      len(blobBytes),
+			"maxSize":   maxBlobSize,
+		}).Warn("proxy: blob too large, rejecting")
+		return fmt.Errorf("blob too large: %d bytes exceeds limit %d", len(blobBytes), maxBlobSize)
+	}
+
+	blobRef, err := n.BlobStore.Put(strings.NewReader(string(blobBytes)))
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"remoteURL": key.RemoteURL,
@@ -592,6 +621,25 @@ func (n *ProxyRuntime) isNegativeCached(key ArtifactKey) bool {
 	return true
 }
 
+func (n *ProxyRuntime) tryRefreshPath(remotePath string) bool {
+	n.refreshingMu.Lock()
+	defer n.refreshingMu.Unlock()
+	if n.refreshingPaths == nil {
+		n.refreshingPaths = map[string]struct{}{}
+	}
+	if _, ok := n.refreshingPaths[remotePath]; ok {
+		return false
+	}
+	n.refreshingPaths[remotePath] = struct{}{}
+	return true
+}
+
+func (n *ProxyRuntime) doneRefreshPath(remotePath string) {
+	n.refreshingMu.Lock()
+	defer n.refreshingMu.Unlock()
+	delete(n.refreshingPaths, remotePath)
+}
+
 func (n *ProxyRuntime) setNegativeCache(key ArtifactKey) {
 	if n.CachePolicy.NegativeTTL <= 0 {
 		return
@@ -600,8 +648,30 @@ func (n *ProxyRuntime) setNegativeCache(key ArtifactKey) {
 	if n.negativeCache == nil {
 		n.negativeCache = map[string]time.Time{}
 	}
+	if len(n.negativeCache) >= maxNegativeCacheSize {
+		n.evictNegativeCache(maxNegativeCacheSize / 4)
+	}
 	n.negativeCache[key.String()] = time.Now().Add(n.CachePolicy.NegativeTTL)
 	n.metadataCacheMu.Unlock()
+}
+
+func (n *ProxyRuntime) evictNegativeCache(count int) {
+	oldest := make([]string, 0, count)
+	for k, v := range n.negativeCache {
+		if len(oldest) < count {
+			oldest = append(oldest, k)
+			continue
+		}
+		for i, o := range oldest {
+			if v.Before(n.negativeCache[o]) {
+				oldest[i] = k
+				break
+			}
+		}
+	}
+	for _, k := range oldest {
+		delete(n.negativeCache, k)
+	}
 }
 
 // clearNegativeCacheForArtifact 根据 artifact 的各个可能的查询 key 清除负缓存。

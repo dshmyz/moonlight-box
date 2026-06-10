@@ -3,6 +3,8 @@ package maven
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -625,6 +627,33 @@ func TestHandle_Metadata_PrefersOriginalCachedContent(t *testing.T) {
 	}
 }
 
+func TestHandle_MetadataHeadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewMavenPlugin()
+	original := `<metadata><groupId>com.google.guava</groupId><artifactId>guava</artifactId></metadata>`
+	art := testhelper.NewArtifact("maven", runtime.KindMetadata, map[string]string{
+		"name":     "com.google.guava:guava",
+		"path":     "com/google/guava/guava",
+		"filename": "maven-metadata.xml",
+		"group":    "com.google.guava",
+		"artifact": "guava",
+	}, original)
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("HEAD", "com/google/guava/guava/maven-metadata.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/xml" {
+		t.Fatalf("expected application/xml, got %q", ct)
+	}
+}
+
 func TestHandle_Metadata_Standard(t *testing.T) {
 	p := NewMavenPlugin()
 	arts := []*runtime.Artifact{
@@ -660,6 +689,250 @@ func TestHandle_Metadata_Standard(t *testing.T) {
 	}
 	if !strings.Contains(body, "<version>31.0-jre</version>") || !strings.Contains(body, "<version>31.1-jre</version>") {
 		t.Errorf("missing versions, body: %s", body)
+	}
+}
+
+func TestHandle_HostedReleaseMetadataGeneratedFromUploadedArtifact(t *testing.T) {
+	p := NewMavenPlugin()
+	rt := newHostedMavenRuntime(t)
+
+	uploadCtx, uploadW := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", bytes.NewReader([]byte("jar-content")))
+	if err := p.Handle(uploadCtx, rt); err != nil {
+		t.Fatalf("upload Handle failed: %v", err)
+	}
+	if uploadW.Code != http.StatusCreated {
+		t.Fatalf("expected upload 201, got %d", uploadW.Code)
+	}
+
+	ctx, w := newCtx("GET", "com/example/app/maven-metadata.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("metadata Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected metadata 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"<groupId>com.example</groupId>",
+		"<artifactId>app</artifactId>",
+		"<version>1.0.0</version>",
+		"<latest>1.0.0</latest>",
+		"<release>1.0.0</release>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metadata missing %s: %s", want, body)
+		}
+	}
+}
+
+func TestHandle_HostedSnapshotMetadataGeneratedFromUploadedArtifact(t *testing.T) {
+	p := NewMavenPlugin()
+	rt := newHostedMavenRuntime(t)
+
+	uploadCtx, uploadW := newCtx("PUT", "com/example/app/1.0-SNAPSHOT/app-1.0-20260609.120000-1.jar", bytes.NewReader([]byte("jar-snapshot-content")))
+	if err := p.Handle(uploadCtx, rt); err != nil {
+		t.Fatalf("snapshot upload Handle failed: %v", err)
+	}
+	if uploadW.Code != http.StatusCreated {
+		t.Fatalf("expected upload 201, got %d", uploadW.Code)
+	}
+
+	ctx, w := newCtx("GET", "com/example/app/1.0-SNAPSHOT/maven-metadata.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("snapshot metadata Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected metadata 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"<groupId>com.example</groupId>",
+		"<artifactId>app</artifactId>",
+		"<version>1.0-SNAPSHOT</version>",
+		"<snapshot>",
+		"<buildNumber>1</buildNumber>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metadata missing %s: %s", want, body)
+		}
+	}
+}
+
+func TestHandle_HostedSnapshotMetadataUsesLatestTimestampedBuild(t *testing.T) {
+	p := NewMavenPlugin()
+	rt := newHostedMavenRuntime(t)
+
+	uploads := []string{
+		"com/example/app/1.0-SNAPSHOT/app-1.0-20260609.100000-1.jar",
+		"com/example/app/1.0-SNAPSHOT/app-1.0-20260609.120000-2.jar",
+	}
+	for _, path := range uploads {
+		uploadCtx, uploadW := newCtx("PUT", path, bytes.NewReader([]byte(path)))
+		if err := p.Handle(uploadCtx, rt); err != nil {
+			t.Fatalf("upload %s failed: %v", path, err)
+		}
+		if uploadW.Code != http.StatusCreated {
+			t.Fatalf("upload %s status = %d", path, uploadW.Code)
+		}
+	}
+
+	ctx, w := newCtx("GET", "com/example/app/1.0-SNAPSHOT/maven-metadata.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("metadata Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected metadata 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"<timestamp>20260609.120000</timestamp>",
+		"<buildNumber>2</buildNumber>",
+		"<value>1.0-20260609.120000-2</value>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metadata missing latest build marker %s: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "1.0-20260609.100000-1</value>") {
+		t.Fatalf("metadata should not select older build: %s", body)
+	}
+}
+
+func TestHandle_HostedSnapshotMetadataIncludesClassifiers(t *testing.T) {
+	p := NewMavenPlugin()
+	rt := newHostedMavenRuntime(t)
+
+	uploads := []string{
+		"com/example/app/1.0-SNAPSHOT/app-1.0-20260609.120000-2.jar",
+		"com/example/app/1.0-SNAPSHOT/app-1.0-20260609.120000-2-sources.jar",
+		"com/example/app/1.0-SNAPSHOT/app-1.0-20260609.120000-2-javadoc.jar",
+	}
+	for _, path := range uploads {
+		uploadCtx, uploadW := newCtx("PUT", path, bytes.NewReader([]byte(path)))
+		if err := p.Handle(uploadCtx, rt); err != nil {
+			t.Fatalf("upload %s failed: %v", path, err)
+		}
+		if uploadW.Code != http.StatusCreated {
+			t.Fatalf("upload %s status = %d", path, uploadW.Code)
+		}
+	}
+
+	ctx, w := newCtx("GET", "com/example/app/1.0-SNAPSHOT/maven-metadata.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("metadata Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected metadata 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"<classifier>sources</classifier>",
+		"<classifier>javadoc</classifier>",
+		"<extension>jar</extension>",
+		"<value>1.0-20260609.120000-2</value>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metadata missing classifier marker %s: %s", want, body)
+		}
+	}
+}
+
+func TestHandle_HostedSnapshotMetadataIncludesJarAndPomExtensions(t *testing.T) {
+	p := NewMavenPlugin()
+	rt := newHostedMavenRuntime(t)
+
+	uploads := []string{
+		"com/example/app/1.0-SNAPSHOT/app-1.0-20260609.120000-2.jar",
+		"com/example/app/1.0-SNAPSHOT/app-1.0-20260609.120000-2.pom",
+	}
+	for _, path := range uploads {
+		uploadCtx, uploadW := newCtx("PUT", path, bytes.NewReader([]byte(path)))
+		if err := p.Handle(uploadCtx, rt); err != nil {
+			t.Fatalf("upload %s failed: %v", path, err)
+		}
+		if uploadW.Code != http.StatusCreated {
+			t.Fatalf("upload %s status = %d", path, uploadW.Code)
+		}
+	}
+
+	ctx, w := newCtx("GET", "com/example/app/1.0-SNAPSHOT/maven-metadata.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("metadata Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected metadata 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Count(body, "<extension>jar</extension>") != 1 {
+		t.Fatalf("expected one jar snapshotVersion, got: %s", body)
+	}
+	if strings.Count(body, "<extension>pom</extension>") != 1 {
+		t.Fatalf("expected one pom snapshotVersion, got: %s", body)
+	}
+}
+
+func TestHandle_MetadataChecksumForDynamicMetadata(t *testing.T) {
+	p := NewMavenPlugin()
+	rt := newHostedMavenRuntime(t)
+
+	uploadCtx, uploadW := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", bytes.NewReader([]byte("jar-content")))
+	if err := p.Handle(uploadCtx, rt); err != nil {
+		t.Fatalf("upload Handle failed: %v", err)
+	}
+	if uploadW.Code != http.StatusCreated {
+		t.Fatalf("expected upload 201, got %d", uploadW.Code)
+	}
+
+	ctx, w := newCtx("GET", "com/example/app/maven-metadata.xml.sha1", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("metadata checksum Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for metadata checksum, got %d body=%q", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "maven-metadata.xml") {
+		t.Errorf("expected checksum body to contain 'maven-metadata.xml', got %q", body)
+	}
+	sha1Hex := strings.TrimSpace(strings.Split(body, " ")[0])
+	if len(sha1Hex) != 40 {
+		t.Errorf("expected 40 hex chars for SHA1, got %d: %q", len(sha1Hex), body)
+	}
+}
+
+func TestHandle_MetadataChecksumMatchesDynamicMetadataBytes(t *testing.T) {
+	p := NewMavenPlugin()
+	rt := newHostedMavenRuntime(t)
+
+	uploadCtx, uploadW := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", bytes.NewReader([]byte("jar-content")))
+	if err := p.Handle(uploadCtx, rt); err != nil {
+		t.Fatalf("upload Handle failed: %v", err)
+	}
+	if uploadW.Code != http.StatusCreated {
+		t.Fatalf("expected upload 201, got %d", uploadW.Code)
+	}
+
+	metaCtx, metaW := newCtx("GET", "com/example/app/maven-metadata.xml", nil)
+	if err := p.Handle(metaCtx, rt); err != nil {
+		t.Fatalf("metadata Handle failed: %v", err)
+	}
+	if metaW.Code != http.StatusOK {
+		t.Fatalf("expected metadata 200, got %d", metaW.Code)
+	}
+
+	checksumCtx, checksumW := newCtx("GET", "com/example/app/maven-metadata.xml.sha1", nil)
+	if err := p.Handle(checksumCtx, rt); err != nil {
+		t.Fatalf("metadata checksum Handle failed: %v", err)
+	}
+	if checksumW.Code != http.StatusOK {
+		t.Fatalf("expected checksum 200, got %d", checksumW.Code)
+	}
+
+	sum := sha1.Sum(metaW.Body.Bytes())
+	want := hex.EncodeToString(sum[:])
+	got := strings.TrimSpace(strings.Split(checksumW.Body.String(), " ")[0])
+	if got != want {
+		t.Fatalf("metadata sha1 = %s, want %s for body %q", got, want, metaW.Body.String())
 	}
 }
 
@@ -799,8 +1072,8 @@ func TestHandle_QueryRemotePath(t *testing.T) {
 	ctx, _ := newCtx("GET", "com/google/guava/guava/maven-metadata.xml", nil)
 	p.Handle(ctx, rt)
 
-	if len(rt.QueryCalls) != 1 {
-		t.Fatalf("expected 1 query call, got %d", len(rt.QueryCalls))
+	if len(rt.QueryCalls) < 1 {
+		t.Fatalf("expected at least 1 query call, got %d", len(rt.QueryCalls))
 	}
 	if rt.QueryCalls[0].RemotePath != "com/google/guava/guava/maven-metadata.xml" {
 		t.Errorf("unexpected RemotePath: %q", rt.QueryCalls[0].RemotePath)

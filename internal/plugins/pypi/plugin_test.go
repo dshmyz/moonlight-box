@@ -49,6 +49,28 @@ func TestHandle_SimpleIndex(t *testing.T) {
 	}
 }
 
+func TestHandle_SimpleIndexHeadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewPyPIPlugin()
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "requests", "package": "requests"}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("HEAD", "simple/", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("expected text/html, got %q", ct)
+	}
+}
+
 func TestHandle_SimpleIndexJSON(t *testing.T) {
 	p := NewPyPIPlugin()
 	arts := []*runtime.Artifact{
@@ -106,6 +128,59 @@ func TestHandle_PackageDownload(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestHandle_PackageDownloadHeadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewPyPIPlugin()
+	art := testhelper.NewArtifact("pypi", "package-file", map[string]string{
+		"name":     "requests",
+		"package":  "requests",
+		"version":  "2.28.0",
+		"filename": "requests-2.28.0.tar.gz",
+		"path":     "packages/ab/cd",
+	}, "package-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("HEAD", "packages/ab/cd/requests-2.28.0.tar.gz", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+	if disp := w.Header().Get("Content-Disposition"); disp == "" {
+		t.Fatal("expected Content-Disposition header")
+	}
+}
+
+func TestHandle_PackageDownloadRangeReturnsPartialContent(t *testing.T) {
+	p := NewPyPIPlugin()
+	art := testhelper.NewArtifact("pypi", "package-file", map[string]string{
+		"name":     "requests",
+		"package":  "requests",
+		"version":  "2.28.0",
+		"filename": "requests-2.28.0.tar.gz",
+		"path":     "packages/ab/cd",
+	}, "package-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "packages/ab/cd/requests-2.28.0.tar.gz", nil)
+	ctx.Request.Header.Set("Range", "bytes=8-14")
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("expected 206, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "content" {
+		t.Fatalf("expected partial body %q, got %q", "content", body)
+	}
+	if got := w.Header().Get("Content-Range"); got != "bytes 8-14/15" {
+		t.Fatalf("expected Content-Range bytes 8-14/15, got %q", got)
 	}
 }
 

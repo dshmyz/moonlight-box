@@ -176,6 +176,80 @@ func TestSelectLatestVersion(t *testing.T) {
 	}
 }
 
+func TestSelectLatestVersion_SkipsRetracted(t *testing.T) {
+	p := NewGoPlugin()
+	arts := []*runtime.Artifact{
+		runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "go",
+			Kind:       runtime.KindVersion,
+			Name:       "github.com/example/mod",
+			Version:    "v1.2.0",
+			Qualifiers: map[string]string{"module": "github.com/example/mod"},
+			Attributes: map[string]string{"retracted": "true"},
+		}),
+		runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "go",
+			Kind:       runtime.KindVersion,
+			Name:       "github.com/example/mod",
+			Version:    "v1.1.0",
+			Qualifiers: map[string]string{"module": "github.com/example/mod"},
+		}),
+	}
+	result := p.selectLatestVersion(arts)
+	if result == nil {
+		t.Fatal("expected result, got nil")
+	}
+	if result.Version != "v1.1.0" {
+		t.Fatalf("expected v1.1.0 (v1.2.0 retracted), got %q", result.Version)
+	}
+}
+
+func TestSelectLatestVersion_ModulePathMajorFiltering(t *testing.T) {
+	p := NewGoPlugin()
+
+	t.Run("v1 module without /vN suffix accepts all versions", func(t *testing.T) {
+		arts := []*runtime.Artifact{
+			runtime.NewArtifact(runtime.ArtifactSpec{Format: "go", Kind: runtime.KindVersion, Name: "github.com/foo/bar", Version: "v1.9.0", Qualifiers: map[string]string{"module": "github.com/foo/bar"}}),
+			runtime.NewArtifact(runtime.ArtifactSpec{Format: "go", Kind: runtime.KindVersion, Name: "github.com/foo/bar", Version: "v2.0.0", Qualifiers: map[string]string{"module": "github.com/foo/bar"}}),
+		}
+		result := p.selectLatestVersion(arts)
+		if result == nil {
+			t.Fatal("expected result")
+		}
+		if result.Version != "v2.0.0" {
+			t.Fatalf("expected v2.0.0 (v1 path accepts all), got %q", result.Version)
+		}
+	})
+
+	t.Run("v1 module accepts +incompatible v2", func(t *testing.T) {
+		arts := []*runtime.Artifact{
+			runtime.NewArtifact(runtime.ArtifactSpec{Format: "go", Kind: runtime.KindVersion, Name: "github.com/foo/bar", Version: "v1.9.0", Qualifiers: map[string]string{"module": "github.com/foo/bar"}}),
+			runtime.NewArtifact(runtime.ArtifactSpec{Format: "go", Kind: runtime.KindVersion, Name: "github.com/foo/bar", Version: "v2.0.0+incompatible", Qualifiers: map[string]string{"module": "github.com/foo/bar"}}),
+		}
+		result := p.selectLatestVersion(arts)
+		if result == nil {
+			t.Fatal("expected result")
+		}
+		if result.Version != "v2.0.0+incompatible" {
+			t.Fatalf("expected v2.0.0+incompatible for v1 module, got %q", result.Version)
+		}
+	})
+
+	t.Run("v2 module selects highest v2", func(t *testing.T) {
+		arts := []*runtime.Artifact{
+			runtime.NewArtifact(runtime.ArtifactSpec{Format: "go", Kind: runtime.KindVersion, Name: "github.com/foo/bar/v2", Version: "v1.9.0", Qualifiers: map[string]string{"module": "github.com/foo/bar/v2"}}),
+			runtime.NewArtifact(runtime.ArtifactSpec{Format: "go", Kind: runtime.KindVersion, Name: "github.com/foo/bar/v2", Version: "v2.0.0", Qualifiers: map[string]string{"module": "github.com/foo/bar/v2"}}),
+		}
+		result := p.selectLatestVersion(arts)
+		if result == nil {
+			t.Fatal("expected result")
+		}
+		if result.Version != "v2.0.0" {
+			t.Fatalf("expected v2.0.0 for v2 module, got %q", result.Version)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Handle - @latest
 // ---------------------------------------------------------------------------
@@ -203,6 +277,30 @@ func TestHandle_Latest(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &result)
 	if result["Version"] != "v1.10.0" {
 		t.Errorf("expected v1.10.0, got %q", result["Version"])
+	}
+}
+
+func TestHandle_LatestHeadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewGoPlugin()
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("go", "version", map[string]string{
+			"module": "github.com/gin-gonic/gin", "version": "v1.10.0",
+		}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("HEAD", "github.com/gin-gonic/gin/@latest", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("expected application/json, got %q", ct)
 	}
 }
 
@@ -459,6 +557,61 @@ func TestHandle_ModuleDownload_Zip(t *testing.T) {
 	}
 	if w.Body.String() != "zip-content" {
 		t.Errorf("expected 'zip-content', got %q", w.Body.String())
+	}
+}
+
+func TestHandle_ModuleDownload_ModHeadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewGoPlugin()
+	art := testhelper.NewArtifact("go", "module-file", map[string]string{
+		"name":     "github.com/gin-gonic/gin",
+		"module":   "github.com/gin-gonic/gin",
+		"version":  "v1.10.0",
+		"path":     "github.com/gin-gonic/gin/@v",
+		"ext":      "mod",
+		"filename": "v1.10.0.mod",
+	}, "module github.com/gin-gonic/gin")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("HEAD", "github.com/gin-gonic/gin/@v/v1.10.0.mod", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "text/plain" {
+		t.Fatalf("expected text/plain, got %q", ct)
+	}
+}
+
+func TestHandle_ModuleDownload_ZipRangeReturnsPartialContent(t *testing.T) {
+	p := NewGoPlugin()
+	art := testhelper.NewArtifact("go", "module-file", map[string]string{
+		"name":     "github.com/gin-gonic/gin",
+		"module":   "github.com/gin-gonic/gin",
+		"version":  "v1.10.0",
+		"path":     "github.com/gin-gonic/gin/@v",
+		"ext":      "zip",
+		"filename": "v1.10.0.zip",
+	}, "zip-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "github.com/gin-gonic/gin/@v/v1.10.0.zip", nil)
+	ctx.Request.Header.Set("Range", "bytes=4-10")
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("expected 206, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "content" {
+		t.Fatalf("expected partial body %q, got %q", "content", body)
+	}
+	if got := w.Header().Get("Content-Range"); got != "bytes 4-10/11" {
+		t.Fatalf("expected Content-Range bytes 4-10/11, got %q", got)
 	}
 }
 

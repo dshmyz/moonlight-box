@@ -346,7 +346,7 @@ func contentTypeForFile(filename string) string {
 }
 
 func (p *AptPlugin) handleInRelease(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
-	if ctx.Request.Method != http.MethodGet {
+	if ctx.Request.Method != http.MethodGet && ctx.Request.Method != http.MethodHead {
 		return errors.New("method not allowed")
 	}
 
@@ -367,10 +367,7 @@ func (p *AptPlugin) handleInRelease(ctx *runtime.RequestContext, repoRuntime run
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
 		ctx.SizeBytes = artifact.SizeBytes
-		ctx.Writer.Header().Set("Content-Type", "text/plain")
-		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
-		ctx.Writer.WriteHeader(http.StatusOK)
-		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+		if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, "text/plain", "inline"); err != nil {
 			logrus.WithError(err).Warn("failed to write artifact content to client")
 		}
 		return nil
@@ -550,17 +547,14 @@ func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime ru
 	}
 
 	switch ctx.Request.Method {
-	case http.MethodGet:
+	case http.MethodGet, http.MethodHead:
 		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 		if err == nil && artifact.Content != nil {
 			defer artifact.Content.Close()
 			ctx.FromCache = artifact.FromCache
 			ctx.RemoteURL = artifact.RemoteURL
 			ctx.SizeBytes = artifact.SizeBytes
-			ctx.Writer.Header().Set("Content-Type", "application/vnd.debian.binary-package")
-			ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
-			ctx.Writer.WriteHeader(http.StatusOK)
-			if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+			if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, "application/vnd.debian.binary-package", "inline"); err != nil {
 				logrus.WithError(err).Warn("failed to write artifact content to client")
 			}
 			return nil

@@ -268,19 +268,20 @@ func (k *ArtifactKey) String() string {
 }
 
 type ArtifactQuery struct {
-	RepositoryID string
-	Format       string
-	Kind         string
-	Name         string
-	Namespace    string
-	Version      string
-	Path         string
-	Filename     string
-	RemotePath   string
-	IdentityKey  string
-	Qualifiers   map[string]string
-	Limit        int
-	Offset       int
+	RepositoryID     string
+	Format           string
+	Kind             string
+	Name             string
+	Namespace        string
+	Version          string
+	Path             string
+	Filename         string
+	RemotePath       string
+	RemotePathPrefix string
+	IdentityKey      string
+	Qualifiers       map[string]string
+	Limit            int
+	Offset           int
 }
 
 type ProjectionQuery struct {

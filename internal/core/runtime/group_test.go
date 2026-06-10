@@ -5,6 +5,138 @@ import (
 	"testing"
 )
 
+func TestGroupQueryArtifactsPriorityShortCircuit(t *testing.T) {
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
+				Format: "npm",
+				Name:   "lodash",
+			})}},
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
+				Format: "npm",
+				Name:   "express",
+			})}},
+		},
+	}
+
+	artifacts, err := group.QueryArtifacts(context.Background(), ArtifactQuery{
+		Format: "npm",
+	})
+	if err != nil {
+		t.Fatalf("QueryArtifacts failed: %v", err)
+	}
+	// 方案 C：只返回第一个有结果的成员
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 artifact from priority member, got %d", len(artifacts))
+	}
+	if artifacts[0].Name != "lodash" {
+		t.Fatalf("expected first member's artifact 'lodash', got %q", artifacts[0].Name)
+	}
+}
+
+func TestGroupQueryArtifactsSkipsEmptyMembers(t *testing.T) {
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupQueryNode{artifacts: []*Artifact{}}, // 空成员
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
+				Format: "npm",
+				Name:   "express",
+			})}},
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
+				Format: "npm",
+				Name:   "axios",
+			})}},
+		},
+	}
+
+	artifacts, err := group.QueryArtifacts(context.Background(), ArtifactQuery{
+		Format: "npm",
+	})
+	if err != nil {
+		t.Fatalf("QueryArtifacts failed: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(artifacts))
+	}
+	if artifacts[0].Name != "express" {
+		t.Fatalf("expected 'express' from second member, got %q", artifacts[0].Name)
+	}
+}
+
+func TestGroupQueryArtifactsSkipsErrorMembers(t *testing.T) {
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupErrorNode{err: ErrBlocked}, // 被阻断的成员
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
+				Format: "npm",
+				Name:   "lodash",
+			})}},
+		},
+	}
+
+	artifacts, err := group.QueryArtifacts(context.Background(), ArtifactQuery{
+		Format: "npm",
+	})
+	if err != nil {
+		t.Fatalf("QueryArtifacts failed: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 artifact from second member, got %d", len(artifacts))
+	}
+	if artifacts[0].Name != "lodash" {
+		t.Fatalf("expected 'lodash' from second member, got %q", artifacts[0].Name)
+	}
+}
+
+func TestGroupQueryArtifactsReturnsNotFoundWhenAllEmpty(t *testing.T) {
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupQueryNode{artifacts: []*Artifact{}},
+			&groupQueryNode{artifacts: []*Artifact{}},
+		},
+	}
+
+	_, err := group.QueryArtifacts(context.Background(), ArtifactQuery{
+		Format: "npm",
+	})
+	if err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestGroupQueryArtifactsRemotePathPriorityShortCircuit(t *testing.T) {
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
+				Format:     "pypi",
+				Name:       "requests",
+				RemotePath: "simple/requests/",
+			})}},
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
+				Format:     "pypi",
+				Name:       "flask",
+				RemotePath: "simple/flask/",
+			})}},
+		},
+	}
+
+	artifacts, err := group.QueryArtifacts(context.Background(), ArtifactQuery{
+		Format:     "pypi",
+		RemotePath: "simple/requests/",
+	})
+	if err != nil {
+		t.Fatalf("QueryArtifacts failed: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 artifact from priority member, got %d", len(artifacts))
+	}
+	if artifacts[0].Name != "requests" {
+		t.Fatalf("expected 'requests', got %q", artifacts[0].Name)
+	}
+}
+
+// 更新现有测试：优先级短路只返回第一个成员的结果
+
 func TestGroupQueryArtifactsAggregatesRemotePathWithStructuredFields(t *testing.T) {
 	group := &GroupRuntime{
 		Members: []RepositoryNode{
@@ -30,12 +162,12 @@ func TestGroupQueryArtifactsAggregatesRemotePathWithStructuredFields(t *testing.
 	if err != nil {
 		t.Fatalf("QueryArtifacts failed: %v", err)
 	}
-	if len(artifacts) != 2 {
-		var got []string
-		for _, a := range artifacts {
-			got = append(got, a.Name+"|"+a.IdentityKey+"|"+artifactDedupeKey(a))
-		}
-		t.Fatalf("expected artifacts from both members, got %d: %#v", len(artifacts), got)
+	// 方案 C：优先级短路，只返回第一个成员的 results
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 artifact from priority member, got %d", len(artifacts))
+	}
+	if artifacts[0].Name != "requests" {
+		t.Fatalf("expected 'requests', got %q", artifacts[0].Name)
 	}
 }
 
@@ -73,8 +205,12 @@ func TestGroupQueryArtifactsAggregatesMavenMetadataAcrossMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueryArtifacts failed: %v", err)
 	}
-	if len(artifacts) != 2 {
-		t.Fatalf("expected metadata versions from both members, got %d", len(artifacts))
+	// 方案 C：优先级短路，只返回第一个成员的版本
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 version from priority member, got %d", len(artifacts))
+	}
+	if artifacts[0].Version != "31.1-jre" {
+		t.Fatalf("expected '31.1-jre', got %q", artifacts[0].Version)
 	}
 }
 
@@ -100,4 +236,29 @@ func (n *groupQueryNode) BeginUpload(ctx context.Context, request UploadRequest)
 
 func (n *groupQueryNode) DeleteArtifact(ctx context.Context, key ArtifactKey) error {
 	return ErrReadOnly
+}
+
+// groupErrorNode 模拟查询失败的成员
+type groupErrorNode struct {
+	err error
+}
+
+func (n *groupErrorNode) GetArtifact(ctx context.Context, key ArtifactKey) (*Artifact, error) {
+	return nil, n.err
+}
+
+func (n *groupErrorNode) QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
+	return nil, n.err
+}
+
+func (n *groupErrorNode) RenderProjection(ctx context.Context, query ProjectionQuery) (*ProjectionResult, error) {
+	return nil, n.err
+}
+
+func (n *groupErrorNode) BeginUpload(ctx context.Context, request UploadRequest) (UploadSession, error) {
+	return nil, n.err
+}
+
+func (n *groupErrorNode) DeleteArtifact(ctx context.Context, key ArtifactKey) error {
+	return n.err
 }

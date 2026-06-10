@@ -57,6 +57,28 @@ func TestHandle_PackageMetadata(t *testing.T) {
 	}
 }
 
+func TestHandle_PackageMetadataHeadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewNpmPlugin()
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "express", "version": "4.18.2"}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("HEAD", "express", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("expected application/json, got %q", ct)
+	}
+}
+
 func TestHandle_ScopedPackage(t *testing.T) {
 	p := NewNpmPlugin()
 	arts := []*runtime.Artifact{
@@ -97,6 +119,57 @@ func TestHandle_TarballDownload(t *testing.T) {
 	}
 	if w.Body.String() != "tarball-content" {
 		t.Errorf("expected 'tarball-content', got %q", w.Body.String())
+	}
+}
+
+func TestHandle_TarballHeadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewNpmPlugin()
+	art := testhelper.NewArtifact("npm", "tarball", map[string]string{
+		"name":     "express",
+		"version":  "4.18.2",
+		"path":     "express/-",
+		"filename": "express-4.18.2.tgz",
+	}, "tarball-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("HEAD", "express/-/express-4.18.2.tgz", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+	if disp := w.Header().Get("Content-Disposition"); disp == "" {
+		t.Fatal("expected Content-Disposition header")
+	}
+}
+
+func TestHandle_TarballRangeReturnsPartialContent(t *testing.T) {
+	p := NewNpmPlugin()
+	art := testhelper.NewArtifact("npm", "tarball", map[string]string{
+		"name":     "express",
+		"version":  "4.18.2",
+		"path":     "express/-",
+		"filename": "express-4.18.2.tgz",
+	}, "tarball-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "express/-/express-4.18.2.tgz", nil)
+	ctx.Request.Header.Set("Range", "bytes=8-14")
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("expected 206, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "content" {
+		t.Fatalf("expected partial body %q, got %q", "content", body)
+	}
+	if got := w.Header().Get("Content-Range"); got != "bytes 8-14/15" {
+		t.Fatalf("expected Content-Range bytes 8-14/15, got %q", got)
 	}
 }
 

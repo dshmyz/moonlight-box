@@ -2,8 +2,6 @@ package runtime
 
 import (
 	"context"
-	"fmt"
-	"strings"
 
 	"github.com/sirupsen/logrus"
 )
@@ -23,26 +21,6 @@ func (g *GroupRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 	return nil, ErrNotFound
 }
 
-// artifactDedupeKey 生成去重用的唯一 key，不依赖 Artifact.ID
-// 因为回源创建的 Artifact.ID 可能为空。
-// 注意：不包含 RepositoryID，因为 GroupRuntime 合并多个成员仓库的结果时，
-// 同一个包在不同成员中应视为同一条目。
-func artifactDedupeKey(a *Artifact) string {
-	if a.ID != "" {
-		return a.ID
-	}
-	if a.IdentityKey != "" {
-		return a.Format + "/" + a.IdentityKey
-	}
-	name := a.Name
-	version := a.Version
-	group := a.Namespace
-	artifact := a.Qualifiers["artifact"]
-	filename := a.Filename
-	remotePath := firstNonEmpty(a.RemotePath, a.Properties["remote_path"])
-	return fmt.Sprintf("%s/%s/%s/%s/%s/%s/%s", a.Format, name, version, group, artifact, filename, remotePath)
-}
-
 func (g *GroupRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
 	logrus.WithFields(logrus.Fields{
 		"format":      query.Format,
@@ -50,37 +28,11 @@ func (g *GroupRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		"memberCount": len(g.Members),
 	}).Debug("group: QueryArtifacts called")
 
-	// metadata/index 请求需要聚合所有成员，否则 group 仓库会只返回第一个成员的版本列表。
-	if isMetadataProjectionQuery(query) {
-		return g.queryWithAggregation(ctx, query)
-	}
-
-	// 对于有具体路径且带身份字段的查询（如单个包文件回源），使用优先级短路策略。
-	// 纯 RemotePath 也可能是仓库级索引（如 PyPI simple/），必须聚合所有成员。
-	if query.RemotePath != "" && QueryHasIdentityFields(query) {
-		return g.queryWithPriority(ctx, query)
-	}
-
-	// 对于没有具体路径的查询（如列出所有包），聚合所有成员的结果
-	return g.queryWithAggregation(ctx, query)
+	// 方案 C：所有查询按成员优先级短路，第一个有结果的成员返回。
+	return g.queryWithPriority(ctx, query)
 }
 
-func isMetadataProjectionQuery(query ArtifactQuery) bool {
-	if query.Kind == KindMetadata {
-		return true
-	}
-	if query.RemotePath == "" {
-		return false
-	}
-	return strings.HasSuffix(query.RemotePath, "maven-metadata.xml") ||
-		strings.HasSuffix(query.RemotePath, "repodata/repomd.xml") ||
-		strings.HasSuffix(query.RemotePath, "Packages") ||
-		strings.HasSuffix(query.RemotePath, "Packages.gz") ||
-		strings.HasSuffix(query.RemotePath, "Release") ||
-		strings.HasSuffix(query.RemotePath, "InRelease")
-}
-
-// queryWithPriority 按优先级短路查询，适用于有具体路径的场景
+// queryWithPriority 按优先级短路查询
 func (g *GroupRuntime) queryWithPriority(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
 	for i, node := range g.Members {
 		artifacts, err := node.QueryArtifacts(ctx, query)
@@ -101,41 +53,6 @@ func (g *GroupRuntime) queryWithPriority(ctx context.Context, query ArtifactQuer
 		}
 	}
 	return nil, ErrNotFound
-}
-
-// queryWithAggregation 聚合查询，适用于列表场景
-func (g *GroupRuntime) queryWithAggregation(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
-	allArtifacts := make([]*Artifact, 0)
-	seen := make(map[string]bool)
-
-	for i, node := range g.Members {
-		artifacts, err := node.QueryArtifacts(ctx, query)
-		if err != nil {
-			logrus.WithFields(logrus.Fields{
-				"memberIndex": i,
-				"remotePath":  query.RemotePath,
-				"error":       err.Error(),
-			}).Warn("group: member QueryArtifacts failed, skipping")
-			continue
-		}
-		logrus.WithFields(logrus.Fields{
-			"memberIndex":   i,
-			"artifactCount": len(artifacts),
-		}).Debug("group: member returned artifacts")
-		for _, a := range artifacts {
-			key := artifactDedupeKey(a)
-			if !seen[key] {
-				seen[key] = true
-				allArtifacts = append(allArtifacts, a)
-			}
-		}
-	}
-
-	logrus.WithFields(logrus.Fields{
-		"totalArtifactCount": len(allArtifacts),
-	}).Debug("group: QueryArtifacts completed")
-
-	return allArtifacts, nil
 }
 
 func (g *GroupRuntime) RenderProjection(ctx context.Context, query ProjectionQuery) (*ProjectionResult, error) {

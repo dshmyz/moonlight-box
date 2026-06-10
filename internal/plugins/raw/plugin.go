@@ -209,10 +209,16 @@ func (p *GenericPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.
 	path := ctx.RepositoryPath
 	path = strings.TrimPrefix(path, "/")
 
-	if path == "" {
-		return errors.New("empty path")
+	if path == "" || path == "/" {
+		return p.handleRootListing(ctx, repoRuntime)
 	}
-	if strings.HasSuffix(path, "/") && ctx.Request.Method == http.MethodGet {
+
+	if strings.Contains(path, "..") || strings.Contains(path, "\\") {
+		http.Error(ctx.Writer, "invalid path: path traversal not allowed", http.StatusBadRequest)
+		return nil
+	}
+
+	if strings.HasSuffix(path, "/") {
 		return p.handleDirectoryListing(ctx, repoRuntime, path)
 	}
 
@@ -246,13 +252,35 @@ func (p *GenericPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.
 	return errors.New("method not allowed")
 }
 
+func (p *GenericPlugin) handleRootListing(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
+	return p.handleDirectoryListing(ctx, repoRuntime, "/")
+}
+
 func (p *GenericPlugin) handleDirectoryListing(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
-	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
-		RepositoryID: ctx.Repository.ID,
-		Format:       "generic",
-		RemotePath:   path,
-	})
-	if err != nil || len(artifacts) == 0 {
+	queryPath := path
+	if queryPath == "/" {
+		queryPath = ""
+	}
+	var artifacts []*runtime.Artifact
+	if queryPath == "" {
+		all, qErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+			RepositoryID: ctx.Repository.ID,
+			Format:       "generic",
+		})
+		if qErr == nil {
+			artifacts = all
+		}
+	} else {
+		all, qErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+			RepositoryID:     ctx.Repository.ID,
+			Format:           "generic",
+			RemotePathPrefix: queryPath,
+		})
+		if qErr == nil {
+			artifacts = all
+		}
+	}
+	if len(artifacts) == 0 {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
@@ -284,6 +312,9 @@ func (p *GenericPlugin) handleDirectoryListing(ctx *runtime.RequestContext, repo
 	sb.WriteString("</body></html>")
 	ctx.Writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	ctx.Writer.WriteHeader(http.StatusOK)
+	if ctx.Request.Method == http.MethodHead {
+		return nil
+	}
 	_, _ = ctx.Writer.Write([]byte(sb.String()))
 	return nil
 }

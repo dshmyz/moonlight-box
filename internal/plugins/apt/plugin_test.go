@@ -43,6 +43,30 @@ func TestHandle_InRelease(t *testing.T) {
 	}
 }
 
+func TestHandle_InReleaseHeadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewAptPlugin()
+	art := testhelper.NewArtifact("apt", runtime.KindMetadata, map[string]string{
+		"file":     "InRelease",
+		"filename": "InRelease",
+		"path":     "dists/jammy",
+	}, "release-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("HEAD", "dists/jammy/InRelease", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "text/plain" {
+		t.Fatalf("expected text/plain, got %q", ct)
+	}
+}
+
 func TestHandle_Packages(t *testing.T) {
 	p := NewAptPlugin()
 	arts := []*runtime.Artifact{
@@ -112,6 +136,52 @@ func TestHandle_DebDownload(t *testing.T) {
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "application/vnd.debian.binary-package" {
 		t.Errorf("expected debian binary package content type, got %s", ct)
+	}
+}
+
+func TestHandle_DebHeadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewAptPlugin()
+	art := testhelper.NewArtifact("apt", "package", map[string]string{
+		"file":     "nginx_1.18.0-6.1_amd64.deb",
+		"filename": "nginx_1.18.0-6.1_amd64.deb",
+		"path":     "pool/main/n/nginx",
+	}, "deb-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("HEAD", "pool/main/n/nginx/nginx_1.18.0-6.1_amd64.deb", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/vnd.debian.binary-package" {
+		t.Fatalf("expected debian binary package content type, got %s", ct)
+	}
+}
+
+func TestHandle_DebRangeReturnsPartialContent(t *testing.T) {
+	p := NewAptPlugin()
+	art := testhelper.NewArtifact("apt", "package", map[string]string{
+		"file":     "nginx_1.18.0-6.1_amd64.deb",
+		"filename": "nginx_1.18.0-6.1_amd64.deb",
+		"path":     "pool/main/n/nginx",
+	}, "deb-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "pool/main/n/nginx/nginx_1.18.0-6.1_amd64.deb", nil)
+	ctx.Request.Header.Set("Range", "bytes=4-10")
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("expected 206, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "content" {
+		t.Fatalf("expected partial body %q, got %q", "content", body)
 	}
 }
 

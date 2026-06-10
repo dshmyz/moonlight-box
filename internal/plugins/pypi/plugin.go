@@ -204,7 +204,7 @@ func (p *PyPIPlugin) isJsonAPIRequest(path string) bool {
 }
 
 func (p *PyPIPlugin) handleSimpleIndex(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
-	if ctx.Request.Method != http.MethodGet {
+	if ctx.Request.Method != http.MethodGet && ctx.Request.Method != http.MethodHead {
 		return errors.New("method not allowed")
 	}
 
@@ -251,6 +251,9 @@ func (p *PyPIPlugin) writeSimpleIndexHTML(ctx *runtime.RequestContext, artifacts
 	output := sb.String()
 	ctx.Writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	ctx.Writer.WriteHeader(http.StatusOK)
+	if ctx.Request.Method == http.MethodHead {
+		return nil
+	}
 	ctx.Writer.Write([]byte(output))
 	return nil
 }
@@ -277,6 +280,9 @@ func (p *PyPIPlugin) writeSimpleIndexJSON(ctx *runtime.RequestContext, artifacts
 
 	ctx.Writer.Header().Set("Content-Type", "application/vnd.pypi.simple.v1+json")
 	ctx.Writer.WriteHeader(http.StatusOK)
+	if ctx.Request.Method == http.MethodHead {
+		return nil
+	}
 	json.NewEncoder(ctx.Writer).Encode(data)
 	return nil
 }
@@ -348,6 +354,9 @@ func (p *PyPIPlugin) writePackageFilesHTML(ctx *runtime.RequestContext, packageN
 	output := sb.String()
 	ctx.Writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	ctx.Writer.WriteHeader(http.StatusOK)
+	if ctx.Request.Method == http.MethodHead {
+		return nil
+	}
 	ctx.Writer.Write([]byte(output))
 	return nil
 }
@@ -389,6 +398,9 @@ func (p *PyPIPlugin) writePackageFilesJSON(ctx *runtime.RequestContext, packageN
 
 	ctx.Writer.Header().Set("Content-Type", "application/vnd.pypi.simple.v1+json")
 	ctx.Writer.WriteHeader(http.StatusOK)
+	if ctx.Request.Method == http.MethodHead {
+		return nil
+	}
 	json.NewEncoder(ctx.Writer).Encode(data)
 	return nil
 }
@@ -423,7 +435,7 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 	}
 
 	switch ctx.Request.Method {
-	case http.MethodGet:
+	case http.MethodGet, http.MethodHead:
 		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 		if err != nil {
 			if errors.Is(err, runtime.ErrNotFound) {
@@ -454,10 +466,7 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
 		ctx.SizeBytes = artifact.SizeBytes
-		ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
-		ctx.Writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, runtime.SanitizeFilename(key.Filename)))
-		ctx.Writer.WriteHeader(http.StatusOK)
-		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+		if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, "application/octet-stream", "attachment"); err != nil {
 			logrus.WithError(err).Warn("failed to write artifact content to client")
 			return nil
 		}

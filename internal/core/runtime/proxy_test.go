@@ -3,8 +3,10 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -200,6 +202,157 @@ func (s *fakeMetadataStore) Query(ctx context.Context, query ArtifactQuery) ([]*
 	return []*Artifact{s.artifact}, nil
 }
 
+func TestDifferentPathsCanRefreshConcurrently(t *testing.T) {
+	ctx := context.Background()
+	fetchCount := 0
+	fetcher := &fakeFetcher{
+		fn: func() ([]*Artifact, error) {
+			fetchCount++
+			time.Sleep(100 * time.Millisecond)
+			return []*Artifact{{
+				RepositoryID: "repo",
+				Format:       "npm",
+				Name:         "concurrent-test",
+			}}, nil
+		},
+	}
+	rt := &ProxyRuntime{
+		MetadataStore: newFakeMetadataStore(),
+		RemoteBaseURL: "https://example.test",
+		Fetcher:       fetcher,
+		Format:        "npm",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Nanosecond}, // 立即过期
+	}
+
+	// 先创建两个过期的 artifact
+	store := rt.MetadataStore.(*fakeMetadataStore)
+	store.artifact = &Artifact{
+		ID:           "a",
+		RepositoryID: "repo",
+		Format:       "npm",
+		Name:         "pkg-a",
+		UpdatedAt:    time.Now().Add(-1 * time.Hour),
+	}
+
+	// 发起两次 QueryArtifacts，不同 RemotePath
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		rt.QueryArtifacts(ctx, ArtifactQuery{Format: "npm", RemotePath: "path-a"})
+	}()
+	go func() {
+		defer wg.Done()
+		rt.QueryArtifacts(ctx, ArtifactQuery{Format: "npm", RemotePath: "path-b"})
+	}()
+	wg.Wait()
+	time.Sleep(200 * time.Millisecond) // 等待异步刷新 goroutine
+
+	// 两个不同路径应该各触发一次 fetch，共 2 次
+	if fetchCount != 2 {
+		t.Fatalf("FetchRemote called %d times, expected 2 (不同 path 应并发刷新)", fetchCount)
+	}
+}
+
+func TestEnsureArtifactBlobRejectsOversizedBlob(t *testing.T) {
+	ctx := context.Background()
+	artifact := &Artifact{
+		ID:           "oversized",
+		RepositoryID: "repo",
+		Format:       "npm",
+		Name:         "big-pkg",
+	}
+	// 创建一个超大的 blob reader
+	bigContent := strings.Repeat("x", maxBlobSize+1)
+	fakeBlob := &fakeBlobStore{}
+	fakeClient := &fakeRemoteClient{blob: io.NopCloser(strings.NewReader(bigContent))}
+	rt := &ProxyRuntime{
+		MetadataStore: newFakeMetadataStore(),
+		BlobStore:     fakeBlob,
+		RemoteClient:  fakeClient,
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
+	}
+	key := ArtifactKey{
+		RepositoryID: "repo",
+		Format:       "npm",
+		Filename:     "big-pkg.tgz",
+		RemotePath:   "big-pkg",
+	}
+	err := rt.ensureArtifactBlob(ctx, artifact, key)
+	if err == nil {
+		t.Fatal("expected error for oversized blob, got nil")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected 'too large' error, got: %v", err)
+	}
+}
+
+func TestConcurrentQueryArtifactsOnlyTriggersOneFetch(t *testing.T) {
+	ctx := context.Background()
+	fetchCount := 0
+	fetcher := &fakeFetcher{
+		fn: func() ([]*Artifact, error) {
+			fetchCount++
+			time.Sleep(50 * time.Millisecond) // 模拟网络延迟
+			return []*Artifact{{
+				RepositoryID: "repo",
+				Format:       "npm",
+				Name:         "dedup-test",
+			}}, nil
+		},
+	}
+	rt := &ProxyRuntime{
+		MetadataStore: newFakeMetadataStore(),
+		RemoteBaseURL: "https://example.test",
+		Fetcher:       fetcher,
+		Format:        "npm",
+	}
+	// 并发请求同一 RemotePath
+	const concurrency = 20
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+			rt.QueryArtifacts(ctx, ArtifactQuery{
+				Format:     "npm",
+				RemotePath: "dedup-test",
+			})
+		}()
+	}
+	wg.Wait()
+	if fetchCount != 1 {
+		t.Fatalf("FetchRemote called %d times, expected 1", fetchCount)
+	}
+}
+
+func TestNegativeCacheDoesNotGrowWithoutBound(t *testing.T) {
+	ctx := context.Background()
+	remote := &fakeRemoteClient{metadata: &RemoteMetadata{Exists: false}}
+	rt := &ProxyRuntime{
+		MetadataStore: newFakeMetadataStore(),
+		RemoteClient:  remote,
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{NegativeTTL: 30 * time.Second},
+	}
+	// 模拟大量不存在的路径请求，验证不会 panic 且仍有正确行为
+	for i := 0; i < maxNegativeCacheSize+200; i++ {
+		key := ArtifactKey{
+			Format:     "npm",
+			RemotePath: "nonexistent-" + fmt.Sprintf("%d", i),
+		}
+		_, err := rt.GetArtifact(ctx, key)
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("expected ErrNotFound for request %d, got %v", i, err)
+		}
+	}
+	// 负缓存应该有上限
+	if len(rt.negativeCache) > maxNegativeCacheSize {
+		t.Fatalf("negativeCache grew to %d, exceeds limit %d", len(rt.negativeCache), maxNegativeCacheSize)
+	}
+}
+
 func TestProxyRuntimeQueryArtifactsReturnsCachedArtifactsWhenFetchRemoteFails(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeMetadataStore()
@@ -267,6 +420,7 @@ type fakeRemoteClient struct {
 	metadata      *RemoteMetadata
 	metadataErr   error
 	metadataCalls int
+	blob          io.ReadCloser
 }
 
 func (c *fakeRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (*RemoteMetadata, error) {
@@ -281,6 +435,9 @@ func (c *fakeRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (
 }
 
 func (c *fakeRemoteClient) FetchBlob(ctx context.Context, key ArtifactKey) (io.ReadCloser, error) {
+	if c.blob != nil {
+		return c.blob, nil
+	}
 	return io.NopCloser(nil), ErrNotFound
 }
 

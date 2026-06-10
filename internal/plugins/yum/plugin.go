@@ -434,7 +434,7 @@ func (p *YumPlugin) isRepodataRequest(path string) bool {
 }
 
 func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
-	if ctx.Request.Method != http.MethodGet {
+	if ctx.Request.Method != http.MethodGet && ctx.Request.Method != http.MethodHead {
 		return errors.New("method not allowed")
 	}
 
@@ -452,10 +452,7 @@ func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtim
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
 		ctx.SizeBytes = artifact.SizeBytes
-		ctx.Writer.Header().Set("Content-Type", "application/xml")
-		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
-		ctx.Writer.WriteHeader(http.StatusOK)
-		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+		if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, "application/xml", "inline"); err != nil {
 			logrus.WithError(err).Warn("failed to write artifact content to client")
 			return nil
 		}
@@ -483,11 +480,20 @@ func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtim
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
+	type checksumXML struct {
+		Type  string `xml:"type,attr"`
+		Value string `xml:",chardata"`
+	}
 	type data struct {
 		Type     string `xml:"type,attr"`
 		Location struct {
 			Href string `xml:"href,attr"`
 		} `xml:"location"`
+		Checksum     checksumXML `xml:"checksum"`
+		OpenChecksum checksumXML `xml:"open-checksum"`
+		Size         string      `xml:"size"`
+		OpenSize     string      `xml:"open-size"`
+		Timestamp    string      `xml:"timestamp"`
 	}
 	type repomd struct {
 		XMLName  xml.Name `xml:"repomd"`
@@ -495,9 +501,10 @@ func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtim
 		Revision string   `xml:"revision"`
 		Data     []data   `xml:"data"`
 	}
+	now := time.Now().Unix()
 	out := repomd{
 		Xmlns:    "http://linux.duke.edu/metadata/repo",
-		Revision: fmt.Sprintf("%d", time.Now().Unix()),
+		Revision: fmt.Sprintf("%d", now),
 	}
 	for _, a := range artifacts {
 		f := a.Filename
@@ -510,6 +517,13 @@ func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtim
 		}
 		d := data{Type: dataType}
 		d.Location.Href = f
+		d.Timestamp = fmt.Sprintf("%d", now)
+		if len(a.BlobRefs) > 0 {
+			d.Checksum = checksumXML{Type: a.BlobRefs[0].Algorithm, Value: a.BlobRefs[0].Digest}
+			d.OpenChecksum = checksumXML{Type: a.BlobRefs[0].Algorithm, Value: a.BlobRefs[0].Digest}
+			d.Size = fmt.Sprintf("%d", a.BlobRefs[0].Size)
+			d.OpenSize = fmt.Sprintf("%d", a.BlobRefs[0].Size)
+		}
 		out.Data = append(out.Data, d)
 	}
 	if len(out.Data) == 0 {
@@ -588,7 +602,24 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 		if name == "" || ver == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "  <package type=\"rpm\"><name>%s</name><version ver=\"%s\"/></package>\n", name, ver)
+		arch := firstNonEmptyYum(a.Attributes["arch"], a.Namespace, "noarch")
+		release := a.Attributes["release"]
+		epoch := a.Attributes["epoch"]
+		href := firstNonEmptyYum(a.RemotePath, a.Filename)
+		fmt.Fprintf(&b, "  <package type=\"rpm\">\n")
+		fmt.Fprintf(&b, "    <name>%s</name>\n", name)
+		fmt.Fprintf(&b, "    <arch>%s</arch>\n", arch)
+		b.WriteString("    <version")
+		if epoch != "" {
+			fmt.Fprintf(&b, ` epoch="%s"`, epoch)
+		}
+		fmt.Fprintf(&b, ` ver="%s"`, ver)
+		if release != "" {
+			fmt.Fprintf(&b, ` rel="%s"`, release)
+		}
+		b.WriteString("/>\n")
+		fmt.Fprintf(&b, `    <location href="%s"/>\n`, href)
+		b.WriteString("  </package>\n")
 	}
 	b.WriteString(`</metadata>`)
 	body := []byte(b.String())
@@ -626,17 +657,14 @@ func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime ru
 	}
 
 	switch ctx.Request.Method {
-	case http.MethodGet:
+	case http.MethodGet, http.MethodHead:
 		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 		if err == nil && artifact.Content != nil {
 			defer artifact.Content.Close()
 			ctx.FromCache = artifact.FromCache
 			ctx.RemoteURL = artifact.RemoteURL
 			ctx.SizeBytes = artifact.SizeBytes
-			ctx.Writer.Header().Set("Content-Type", "application/x-rpm")
-			ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
-			ctx.Writer.WriteHeader(http.StatusOK)
-			if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+			if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, "application/x-rpm", "inline"); err != nil {
 				logrus.WithError(err).Warn("failed to write artifact content to client")
 			}
 			return nil

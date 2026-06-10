@@ -64,8 +64,8 @@ func TestHandle_DirectoryListingUsesQueryArtifacts(t *testing.T) {
 	if len(rt.queryCalls) != 1 {
 		t.Fatalf("expected 1 QueryArtifacts call, got %d", len(rt.queryCalls))
 	}
-	if got := rt.queryCalls[0].RemotePath; got != "files/" {
-		t.Fatalf("expected RemotePath files/, got %q", got)
+	if got := rt.queryCalls[0].RemotePathPrefix; got != "files/" {
+		t.Fatalf("expected RemotePathPrefix files/, got %q", got)
 	}
 	body := w.Body.String()
 	if !strings.Contains(body, `href="readme.txt"`) {
@@ -73,6 +73,29 @@ func TestHandle_DirectoryListingUsesQueryArtifacts(t *testing.T) {
 	}
 	if !strings.Contains(body, `href="subdir/"`) {
 		t.Fatalf("expected subdir link in directory listing, got %s", body)
+	}
+}
+
+func TestHandle_DirectoryHeadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewGenericPlugin()
+	rt := &directoryListingRuntime{
+		artifacts: []*runtime.Artifact{
+			runtime.NewArtifact(runtime.ArtifactSpec{Format: "generic", Kind: "file", Name: "readme.txt", Filename: "readme.txt", RemotePath: "files/readme.txt"}),
+		},
+	}
+
+	ctx, w := newCtx("HEAD", "files/", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("expected text/html, got %q", ct)
 	}
 }
 
@@ -175,15 +198,53 @@ func TestHandle_Delete(t *testing.T) {
 
 func TestHandle_EmptyPath(t *testing.T) {
 	p := NewGenericPlugin()
-	rt := &testhelper.MockRuntime{}
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{
+		runtime.NewArtifact(runtime.ArtifactSpec{Format: "generic", Kind: "file", Name: "readme.txt", Filename: "readme.txt", RemotePath: "readme.txt"}),
+	}}
 
 	ctx, w := newCtx("GET", "", nil)
 	ctx.RepositoryPath = ""
-	err := p.Handle(ctx, rt)
-	if err == nil {
-		t.Fatal("expected error for empty path")
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
 	}
-	_ = w
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for root listing, got %d", w.Code)
+	}
+}
+
+func TestHandle_RootDirectoryListing(t *testing.T) {
+	p := NewGenericPlugin()
+	arts := []*runtime.Artifact{
+		runtime.NewArtifact(runtime.ArtifactSpec{Format: "generic", Kind: "file", Name: "readme.txt", Filename: "readme.txt", RemotePath: "readme.txt"}),
+		runtime.NewArtifact(runtime.ArtifactSpec{Format: "generic", Kind: "directory", Name: "docs", Filename: "docs", RemotePath: "docs"}),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "/", nil)
+	ctx.RepositoryPath = "/"
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `href="readme.txt"`) || !strings.Contains(body, `href="docs/"`) {
+		t.Errorf("expected root listing entries in output, got: %s", body)
+	}
+}
+
+func TestHandle_RejectsPathTraversal(t *testing.T) {
+	p := NewGenericPlugin()
+	rt := &testhelper.MockRuntime{}
+
+	for _, method := range []string{"GET", "PUT", "DELETE"} {
+		ctx, w := newCtx(method, "../etc/passwd", nil)
+		_ = p.Handle(ctx, rt)
+		if w.Code != http.StatusBadRequest && w.Code != http.StatusNotFound {
+			t.Fatalf("expected bad request or not found for path traversal %s, got %d", method, w.Code)
+		}
+	}
 }
 
 func TestFetchRemote_HTMLDirectoryListing(t *testing.T) {

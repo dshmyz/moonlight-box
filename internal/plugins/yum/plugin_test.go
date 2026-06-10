@@ -46,6 +46,93 @@ func TestHandle_Repomd(t *testing.T) {
 	}
 }
 
+func TestHandle_RepomdDynamicHasRequiredFields(t *testing.T) {
+	p := NewYumPlugin()
+	art := testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{
+		"file": "abc123-primary.xml.gz", "type": "primary", "href": "repodata/abc123-primary.xml.gz",
+	}, "")
+	art.SizeBytes = 12345
+	art.BlobRefs = []runtime.BlobRef{{Algorithm: "sha256", Digest: "abc123hash", Size: 12345}}
+
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "repodata/repomd.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`<checksum`,
+		`<open-checksum`,
+		`<timestamp`,
+		`<size`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("repomd missing %s: %s", want, body)
+		}
+	}
+}
+
+func TestHandle_PrimaryDynamicHasRequiredFields(t *testing.T) {
+	p := NewYumPlugin()
+	art := testhelper.NewArtifact("yum", runtime.KindFile, map[string]string{
+		"name":    "nginx",
+		"version": "1.20.1",
+		"file":    "abc123-primary.xml.gz",
+		"path":    "repodata",
+	}, "")
+	art.Attributes = map[string]string{"arch": "x86_64", "release": "1.el8", "epoch": "1", "summary": "A web server", "license": "BSD"}
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "repodata/abc123-primary.xml.gz", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		`<name>nginx</name>`,
+		`<arch>x86_64</arch>`,
+		`<version`,
+		`ver="1.20.1"`,
+		`<location`,
+		`href=`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("primary missing %s: %s", want, body)
+		}
+	}
+}
+
+func TestHandle_RepomdHeadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewYumPlugin()
+	art := testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{
+		"file":     "repomd.xml",
+		"filename": "repomd.xml",
+		"path":     "repodata",
+	}, `<repomd/>`)
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("HEAD", "repodata/repomd.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/xml" {
+		t.Fatalf("expected application/xml, got %q", ct)
+	}
+}
+
 func TestHandle_Primary(t *testing.T) {
 	p := NewYumPlugin()
 	arts := []*runtime.Artifact{
@@ -113,6 +200,52 @@ func TestHandle_RpmDownload(t *testing.T) {
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "application/x-rpm" {
 		t.Errorf("expected application/x-rpm, got %s", ct)
+	}
+}
+
+func TestHandle_RpmHeadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewYumPlugin()
+	art := testhelper.NewArtifact("yum", "file", map[string]string{
+		"file":     "nginx-1.20.1-1.el8.x86_64.rpm",
+		"filename": "nginx-1.20.1-1.el8.x86_64.rpm",
+		"path":     "Packages",
+	}, "rpm-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("HEAD", "Packages/nginx-1.20.1-1.el8.x86_64.rpm", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/x-rpm" {
+		t.Fatalf("expected application/x-rpm, got %s", ct)
+	}
+}
+
+func TestHandle_RpmRangeReturnsPartialContent(t *testing.T) {
+	p := NewYumPlugin()
+	art := testhelper.NewArtifact("yum", "file", map[string]string{
+		"file":     "nginx-1.20.1-1.el8.x86_64.rpm",
+		"filename": "nginx-1.20.1-1.el8.x86_64.rpm",
+		"path":     "Packages",
+	}, "rpm-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "Packages/nginx-1.20.1-1.el8.x86_64.rpm", nil)
+	ctx.Request.Header.Set("Range", "bytes=4-10")
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("expected 206, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "content" {
+		t.Fatalf("expected partial body %q, got %q", "content", body)
 	}
 }
 

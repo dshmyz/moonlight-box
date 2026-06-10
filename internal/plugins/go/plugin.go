@@ -41,9 +41,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -361,7 +361,7 @@ func (p *GoPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Repos
 }
 
 func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
-	if ctx.Request.Method != http.MethodGet {
+	if ctx.Request.Method != http.MethodGet && ctx.Request.Method != http.MethodHead {
 		return errors.New("method not allowed")
 	}
 
@@ -394,6 +394,9 @@ func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime
 
 	ctx.Writer.Header().Set("Content-Type", "application/json")
 	ctx.Writer.WriteHeader(http.StatusOK)
+	if ctx.Request.Method == http.MethodHead {
+		return nil
+	}
 	if t := latest.Attributes["published_at"]; t != "" {
 		fmt.Fprintf(ctx.Writer, `{"Version":"%s","Time":"%s"}`, latest.Version, t)
 	} else {
@@ -418,6 +421,20 @@ func (p *GoPlugin) selectLatestVersion(artifacts []*runtime.Artifact) *runtime.A
 		if !semver.IsValid(v) {
 			continue
 		}
+		if a.Attributes != nil && a.Attributes["retracted"] == "true" {
+			continue
+		}
+		modulePath := a.Name
+		if qMod := a.Qualifiers["module"]; qMod != "" {
+			modulePath = qMod
+		}
+		pathMajor := parseModulePathMajor(modulePath)
+		if pathMajor >= 2 {
+			major := parseVersionMajor(v)
+			if major != pathMajor {
+				continue
+			}
+		}
 		if semver.Prerelease(v) != "" {
 			if bestPreRelease == nil || semver.Compare(v, bestPreRelease.Version) > 0 {
 				bestPreRelease = a
@@ -432,6 +449,27 @@ func (p *GoPlugin) selectLatestVersion(artifacts []*runtime.Artifact) *runtime.A
 		return bestStable
 	}
 	return bestPreRelease
+}
+
+func parseVersionMajor(version string) int {
+	v := strings.TrimPrefix(version, "v")
+	if idx := strings.Index(v, "."); idx > 0 {
+		if n, err := strconv.Atoi(v[:idx]); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+func parseModulePathMajor(modulePath string) int {
+	parts := strings.Split(modulePath, "/")
+	last := parts[len(parts)-1]
+	if strings.HasPrefix(last, "v") {
+		if n, err := strconv.Atoi(last[1:]); err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
@@ -578,16 +616,16 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 	ctx.RemoteURL = artifact.RemoteURL
 	ctx.SizeBytes = artifact.SizeBytes
 
+	contentType := "application/octet-stream"
 	switch fileType {
 	case "info":
-		ctx.Writer.Header().Set("Content-Type", "application/json")
+		contentType = "application/json"
 	case "mod":
-		ctx.Writer.Header().Set("Content-Type", "text/plain")
+		contentType = "text/plain"
 	case "zip":
-		ctx.Writer.Header().Set("Content-Type", "application/zip")
+		contentType = "application/zip"
 	}
-	ctx.Writer.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+	if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, contentType, "inline"); err != nil {
 		logrus.WithError(err).Warn("failed to write artifact content to client")
 		return nil
 	}
