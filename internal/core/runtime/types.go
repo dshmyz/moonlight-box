@@ -123,9 +123,10 @@ func NewArtifact(spec ArtifactSpec) *Artifact {
 }
 
 func NormalizeArtifactForStore(a *Artifact) {
-	if a == nil {
+	if a == nil || a.normalized {
 		return
 	}
+	a.normalized = true
 	if a.Properties == nil {
 		a.Properties = map[string]string{}
 	}
@@ -167,10 +168,10 @@ func NormalizeArtifactForStore(a *Artifact) {
 		a.Extension = pathpkg.Ext(a.Filename)
 	}
 
-	if a.RemotePath != "" {
+	if a.RemotePath != "" && a.Properties["remote_path"] != a.RemotePath {
 		a.Properties["remote_path"] = a.RemotePath
 	}
-	if a.DownloadURL != "" {
+	if a.DownloadURL != "" && a.Properties["download_url"] != a.DownloadURL {
 		a.Properties["download_url"] = a.DownloadURL
 	}
 	if a.IdentityKey == "" {
@@ -355,6 +356,7 @@ type Artifact struct {
 	Content      io.ReadCloser
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	normalized   bool
 	// 请求统计字段（由 ProxyRuntime 设置）
 	FromCache bool   // 是否命中缓存
 	RemoteURL string // 回源 URL（未命中缓存时）
