@@ -17,9 +17,8 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-const maxMetadataCacheSize = 10000    // 内存缓存上限，防止无限增长
-const maxNegativeCacheSize = 5000     // 负缓存上限，防止 DoS
-const maxBlobSize = 100 * 1024 * 1024 // 单文件 blob 上限 100MB
+const maxMetadataCacheSize = 10000 // 内存缓存上限，防止无限增长
+const maxNegativeCacheSize = 5000  // 负缓存上限，防止 DoS
 
 type ProxyRuntime struct {
 	MetadataStore MetadataStore
@@ -76,6 +75,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 	}).Debug("proxy: GetArtifact called")
 
 	if n.isNegativeCached(key) {
+		metrics.RecordProxyNegativeCacheHit(n.Format)
 		logrus.WithFields(logrus.Fields{
 			"key": key.String(),
 		}).Debug("proxy: GetArtifact negative cache hit")
@@ -272,6 +272,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 						}
 					}()
 				}
+				metrics.RecordProxyStaleServed(n.Format)
 				return artifacts, nil
 			}
 		}
@@ -430,26 +431,30 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 	}
 	defer blobReader.Close()
 
-	limitedReader := io.LimitReader(blobReader, int64(maxBlobSize)+1)
-	blobBytes, err := io.ReadAll(limitedReader)
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"remoteURL": key.RemoteURL,
-			"duration":  time.Since(start).Seconds(),
-			"error":     err.Error(),
-		}).Error("proxy: ensureArtifactBlob read blob failed")
-		return err
-	}
-	if int64(len(blobBytes)) > int64(maxBlobSize) {
-		logrus.WithFields(logrus.Fields{
-			"remoteURL": key.RemoteURL,
-			"size":      len(blobBytes),
-			"maxSize":   maxBlobSize,
-		}).Warn("proxy: blob too large, rejecting")
-		return fmt.Errorf("blob too large: %d bytes exceeds limit %d", len(blobBytes), maxBlobSize)
+	blobReaderForStore := io.Reader(blobReader)
+	if n.CachePolicy.MaxBlobSize > 0 {
+		limitedReader := io.LimitReader(blobReader, n.CachePolicy.MaxBlobSize+1)
+		blobBytes, err := io.ReadAll(limitedReader)
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"remoteURL": key.RemoteURL,
+				"duration":  time.Since(start).Seconds(),
+				"error":     err.Error(),
+			}).Error("proxy: ensureArtifactBlob read blob failed")
+			return err
+		}
+		if int64(len(blobBytes)) > n.CachePolicy.MaxBlobSize {
+			logrus.WithFields(logrus.Fields{
+				"remoteURL": key.RemoteURL,
+				"size":      len(blobBytes),
+				"maxSize":   n.CachePolicy.MaxBlobSize,
+			}).Warn("proxy: blob too large, rejecting")
+			return fmt.Errorf("blob too large: %d bytes exceeds limit %d", len(blobBytes), n.CachePolicy.MaxBlobSize)
+		}
+		blobReaderForStore = strings.NewReader(string(blobBytes))
 	}
 
-	blobRef, err := n.BlobStore.Put(strings.NewReader(string(blobBytes)))
+	blobRef, err := n.BlobStore.Put(blobReaderForStore)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"remoteURL": key.RemoteURL,
@@ -461,6 +466,9 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 	artifact.BlobRefs = []BlobRef{blobRef}
 	artifact.RemoteURL = key.RemoteURL
 	artifact.SizeBytes = blobRef.Size
+	if blobRef.Size > 0 {
+		metrics.RecordProxyBlobStored(n.Format, blobRef.Size)
+	}
 	if err := n.MetadataStore.Put(ctx, artifact); err != nil {
 		logrus.WithFields(logrus.Fields{
 			"remoteURL": key.RemoteURL,

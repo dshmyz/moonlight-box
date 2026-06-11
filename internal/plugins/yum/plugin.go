@@ -110,10 +110,13 @@ type YumPlugin struct {
 	httpClient *http.Client
 }
 
-func NewYumPlugin() *YumPlugin {
+func NewYumPlugin(httpClient *http.Client) *YumPlugin {
+	if httpClient == nil {
+		panic("yum: httpClient is required")
+	}
 	return &YumPlugin{
 		cache:      cache.NewMemoryCache(),
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: httpClient,
 	}
 }
 

@@ -2,8 +2,67 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
+
+func TestGroupQueryArtifactsPropagatesBlocked(t *testing.T) {
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupErrorNode{err: ErrBlocked},
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{Format: "npm", Name: "lodash"})}},
+		},
+	}
+
+	_, err := group.QueryArtifacts(context.Background(), ArtifactQuery{Format: "npm"})
+	if err != ErrBlocked {
+		t.Fatalf("expected ErrBlocked, got %v", err)
+	}
+}
+
+func TestGroupQueryArtifactsReturnsFirstNonNotFoundError(t *testing.T) {
+	errUpstream := errors.New("upstream 502")
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupErrorNode{err: errUpstream},
+			&groupErrorNode{err: ErrNotFound},
+		},
+	}
+
+	_, err := group.QueryArtifacts(context.Background(), ArtifactQuery{Format: "npm"})
+	if err != errUpstream {
+		t.Fatalf("expected upstream error, got %v", err)
+	}
+}
+
+func TestGroupGetArtifactPropagatesBlocked(t *testing.T) {
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupErrorNode{err: ErrBlocked},
+			&groupArtifactNode{artifact: NewArtifact(ArtifactSpec{Format: "npm", Name: "lodash"})},
+		},
+	}
+
+	_, err := group.GetArtifact(context.Background(), ArtifactKey{Format: "npm", Name: "lodash"})
+	if err != ErrBlocked {
+		t.Fatalf("expected ErrBlocked, got %v", err)
+	}
+}
+
+func TestGroupGetArtifactReturnsFirstNonNotFoundError(t *testing.T) {
+	errUpstream := errors.New("upstream 502")
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupErrorNode{err: errUpstream},
+			&groupErrorNode{err: ErrNotFound},
+		},
+	}
+
+	_, err := group.GetArtifact(context.Background(), ArtifactKey{Format: "npm", Name: "lodash"})
+	if err != errUpstream {
+		t.Fatalf("expected upstream error, got %v", err)
+	}
+}
 
 func TestGroupQueryArtifactsPriorityShortCircuit(t *testing.T) {
 	group := &GroupRuntime{
@@ -63,10 +122,10 @@ func TestGroupQueryArtifactsSkipsEmptyMembers(t *testing.T) {
 	}
 }
 
-func TestGroupQueryArtifactsSkipsErrorMembers(t *testing.T) {
+func TestGroupQueryArtifactsSkipsNotFoundMembers(t *testing.T) {
 	group := &GroupRuntime{
 		Members: []RepositoryNode{
-			&groupErrorNode{err: ErrBlocked}, // 被阻断的成员
+			&groupErrorNode{err: ErrNotFound},
 			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
 				Format: "npm",
 				Name:   "lodash",
@@ -261,4 +320,28 @@ func (n *groupErrorNode) BeginUpload(ctx context.Context, request UploadRequest)
 
 func (n *groupErrorNode) DeleteArtifact(ctx context.Context, key ArtifactKey) error {
 	return n.err
+}
+
+type groupArtifactNode struct {
+	artifact *Artifact
+}
+
+func (n *groupArtifactNode) GetArtifact(ctx context.Context, key ArtifactKey) (*Artifact, error) {
+	return n.artifact, nil
+}
+
+func (n *groupArtifactNode) QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
+	return []*Artifact{n.artifact}, nil
+}
+
+func (n *groupArtifactNode) RenderProjection(ctx context.Context, query ProjectionQuery) (*ProjectionResult, error) {
+	return nil, ErrNotFound
+}
+
+func (n *groupArtifactNode) BeginUpload(ctx context.Context, request UploadRequest) (UploadSession, error) {
+	return nil, ErrReadOnly
+}
+
+func (n *groupArtifactNode) DeleteArtifact(ctx context.Context, key ArtifactKey) error {
+	return ErrReadOnly
 }

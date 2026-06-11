@@ -72,10 +72,13 @@ type AptPlugin struct {
 	httpClient *http.Client
 }
 
-func NewAptPlugin() *AptPlugin {
+func NewAptPlugin(httpClient *http.Client) *AptPlugin {
+	if httpClient == nil {
+		panic("apt: httpClient is required")
+	}
 	return &AptPlugin{
 		cache:      cache.NewMemoryCache(),
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: httpClient,
 	}
 }
 

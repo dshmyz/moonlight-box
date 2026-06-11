@@ -73,7 +73,7 @@ func newHostedMavenRuntime(t *testing.T) runtime.RepositoryRuntime {
 // ---------------------------------------------------------------------------
 
 func TestParseMavenPath(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	tests := []struct {
 		name     string
 		path     string
@@ -210,7 +210,7 @@ func TestFetchRemote_Metadata_Standard(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "com/google/guava/guava/maven-metadata.xml")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -251,7 +251,7 @@ func TestFetchRemote_Metadata_ValidationApi(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "javax/validation/validation-api/maven-metadata.xml")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -343,7 +343,7 @@ func TestFetchRemote_Metadata_ArtifactIdLooksLikeVersion(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			p := NewMavenPlugin()
+			p := NewMavenPlugin(http.DefaultClient)
 			arts, err := p.FetchRemote(context.Background(), srv.URL, tt.path)
 			if err != nil {
 				t.Fatalf("FetchRemote failed: %v", err)
@@ -391,7 +391,7 @@ func TestFetchRemote_Metadata_SNAPSHOT_VersionPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "com/example/lib/1.0-SNAPSHOT/maven-metadata.xml")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -424,7 +424,7 @@ func TestFetchRemote_Metadata_MissingGroupId(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	_, err := p.FetchRemote(context.Background(), srv.URL, "com/google/guava/guava/maven-metadata.xml")
 	if err == nil {
 		t.Fatal("expected error for missing groupId, got nil")
@@ -447,7 +447,7 @@ func TestFetchRemote_Metadata_MissingArtifactId(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	_, err := p.FetchRemote(context.Background(), srv.URL, "com/google/guava/guava/maven-metadata.xml")
 	if err == nil {
 		t.Fatal("expected error for missing artifactId, got nil")
@@ -463,7 +463,7 @@ func TestFetchRemote_ArtifactDownload(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "com/google/guava/guava/31.1-jre/guava-31.1-jre.jar")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -491,7 +491,7 @@ func TestFetchRemote_ArtifactDownload(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandle_ArtifactDownload(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("maven", "artifact", map[string]string{
 		"name":     "com.google.guava:guava",
 		"group":    "com.google.guava",
@@ -515,7 +515,7 @@ func TestHandle_ArtifactDownload(t *testing.T) {
 }
 
 func TestHandle_ArtifactHeadReturnsHeadersWithoutBody(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("maven", "artifact", map[string]string{
 		"name":     "com.google.guava:guava",
 		"group":    "com.google.guava",
@@ -542,7 +542,7 @@ func TestHandle_ArtifactHeadReturnsHeadersWithoutBody(t *testing.T) {
 }
 
 func TestHandle_ArtifactRangeReturnsPartialContent(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("maven", "artifact", map[string]string{
 		"name":     "com.google.guava:guava",
 		"group":    "com.google.guava",
@@ -570,7 +570,7 @@ func TestHandle_ArtifactRangeReturnsPartialContent(t *testing.T) {
 }
 
 func TestHandle_ArtifactNotFound(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{Artifacts: nil}
 
 	ctx, w := newCtx("GET", "com/google/guava/guava/99.9/guava-99.9.jar", nil)
@@ -587,7 +587,7 @@ func TestHandle_ArtifactNotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandle_Metadata_PrefersOriginalCachedContent(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	original := `<?xml version="1.0"?>
 <metadata>
   <groupId>com.google.guava</groupId>
@@ -628,7 +628,7 @@ func TestHandle_Metadata_PrefersOriginalCachedContent(t *testing.T) {
 }
 
 func TestHandle_MetadataHeadReturnsHeadersWithoutBody(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	original := `<metadata><groupId>com.google.guava</groupId><artifactId>guava</artifactId></metadata>`
 	art := testhelper.NewArtifact("maven", runtime.KindMetadata, map[string]string{
 		"name":     "com.google.guava:guava",
@@ -655,7 +655,7 @@ func TestHandle_MetadataHeadReturnsHeadersWithoutBody(t *testing.T) {
 }
 
 func TestHandle_Metadata_Standard(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("maven", "version", map[string]string{
 			"group":    "com.google.guava",
@@ -693,7 +693,7 @@ func TestHandle_Metadata_Standard(t *testing.T) {
 }
 
 func TestHandle_HostedReleaseMetadataGeneratedFromUploadedArtifact(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := newHostedMavenRuntime(t)
 
 	uploadCtx, uploadW := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", bytes.NewReader([]byte("jar-content")))
@@ -726,7 +726,7 @@ func TestHandle_HostedReleaseMetadataGeneratedFromUploadedArtifact(t *testing.T)
 }
 
 func TestHandle_HostedSnapshotMetadataGeneratedFromUploadedArtifact(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := newHostedMavenRuntime(t)
 
 	uploadCtx, uploadW := newCtx("PUT", "com/example/app/1.0-SNAPSHOT/app-1.0-20260609.120000-1.jar", bytes.NewReader([]byte("jar-snapshot-content")))
@@ -759,7 +759,7 @@ func TestHandle_HostedSnapshotMetadataGeneratedFromUploadedArtifact(t *testing.T
 }
 
 func TestHandle_HostedSnapshotMetadataUsesLatestTimestampedBuild(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := newHostedMavenRuntime(t)
 
 	uploads := []string{
@@ -799,7 +799,7 @@ func TestHandle_HostedSnapshotMetadataUsesLatestTimestampedBuild(t *testing.T) {
 }
 
 func TestHandle_HostedSnapshotMetadataIncludesClassifiers(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := newHostedMavenRuntime(t)
 
 	uploads := []string{
@@ -838,7 +838,7 @@ func TestHandle_HostedSnapshotMetadataIncludesClassifiers(t *testing.T) {
 }
 
 func TestHandle_HostedSnapshotMetadataIncludesJarAndPomExtensions(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := newHostedMavenRuntime(t)
 
 	uploads := []string{
@@ -872,7 +872,7 @@ func TestHandle_HostedSnapshotMetadataIncludesJarAndPomExtensions(t *testing.T) 
 }
 
 func TestHandle_MetadataChecksumForDynamicMetadata(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := newHostedMavenRuntime(t)
 
 	uploadCtx, uploadW := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", bytes.NewReader([]byte("jar-content")))
@@ -901,7 +901,7 @@ func TestHandle_MetadataChecksumForDynamicMetadata(t *testing.T) {
 }
 
 func TestHandle_MetadataChecksumMatchesDynamicMetadataBytes(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := newHostedMavenRuntime(t)
 
 	uploadCtx, uploadW := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", bytes.NewReader([]byte("jar-content")))
@@ -937,7 +937,7 @@ func TestHandle_MetadataChecksumMatchesDynamicMetadataBytes(t *testing.T) {
 }
 
 func TestHandle_Metadata_ValidationApi(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("maven", "version", map[string]string{
 			"group":    "javax.validation",
@@ -972,7 +972,7 @@ func TestHandle_Metadata_ValidationApi(t *testing.T) {
 }
 
 func TestHandle_Metadata_ArtifactIdContainsSnapshot(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("maven", "version", map[string]string{
 			"group":    "com.example",
@@ -1002,7 +1002,7 @@ func TestHandle_Metadata_ArtifactIdContainsSnapshot(t *testing.T) {
 }
 
 func TestHandle_Metadata_SNAPSHOT(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("maven", "version", map[string]string{
 			"group":    "com.example",
@@ -1027,7 +1027,7 @@ func TestHandle_Metadata_SNAPSHOT(t *testing.T) {
 }
 
 func TestHandle_Metadata_NotFound(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{Artifacts: nil}
 
 	ctx, w := newCtx("GET", "com/google/nonexistent/nonexistent/maven-metadata.xml", nil)
@@ -1040,7 +1040,7 @@ func TestHandle_Metadata_NotFound(t *testing.T) {
 }
 
 func TestHandle_Metadata_InvalidPath(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	tests := []struct {
@@ -1066,7 +1066,7 @@ func TestHandle_Metadata_InvalidPath(t *testing.T) {
 }
 
 func TestHandle_QueryRemotePath(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, _ := newCtx("GET", "com/google/guava/guava/maven-metadata.xml", nil)
@@ -1085,7 +1085,7 @@ func TestHandle_QueryRemotePath(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandle_Upload(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", bytes.NewReader([]byte("jar-data")))
@@ -1111,7 +1111,7 @@ func TestHandle_Upload(t *testing.T) {
 }
 
 func TestHandle_UploadJarAndPomWithHostedRuntime(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := newHostedMavenRuntime(t)
 
 	jarCtx, jarW := newCtx("PUT", "com/test/test-http/1.0.0/test-http-1.0.0.jar", strings.NewReader("jar-data"))
@@ -1143,7 +1143,7 @@ func TestHandle_UploadJarAndPomWithHostedRuntime(t *testing.T) {
 }
 
 func TestHandle_ReuploadJarWithHostedRuntimeUpdatesExistingArtifact(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := newHostedMavenRuntime(t)
 
 	firstCtx, firstW := newCtx("PUT", "com/test/test-http/1.0.0/test-http-1.0.0.jar", strings.NewReader("old"))
@@ -1172,7 +1172,7 @@ func TestHandle_ReuploadJarWithHostedRuntimeUpdatesExistingArtifact(t *testing.T
 }
 
 func TestHandle_UploadArtifactLevelMetadataUsesStructuredFields(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("PUT", "com/example/app/maven-metadata.xml", strings.NewReader("<metadata/>"))
@@ -1204,7 +1204,7 @@ func TestHandle_UploadArtifactLevelMetadataUsesStructuredFields(t *testing.T) {
 }
 
 func TestHandle_UploadSnapshotMetadataUsesStructuredFields(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("PUT", "com/example/app/1.0-SNAPSHOT/maven-metadata.xml", strings.NewReader("<metadata/>"))
@@ -1230,7 +1230,7 @@ func TestHandle_UploadSnapshotMetadataUsesStructuredFields(t *testing.T) {
 }
 
 func TestHandle_ChecksumDownloadLooksUpOriginalArtifactFields(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("maven", "artifact", map[string]string{
 		"name":       "com.example:app",
 		"group":      "com.example",
@@ -1258,7 +1258,7 @@ func TestHandle_ChecksumDownloadLooksUpOriginalArtifactFields(t *testing.T) {
 }
 
 func TestHandle_UploadClosesExistingArtifactContent(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	content := &closeTrackingReadCloser{Reader: strings.NewReader("old")}
 	existing := testhelper.NewArtifact("maven", "artifact", map[string]string{
 		"name":       "com.example:app",
@@ -1289,7 +1289,7 @@ func TestHandle_UploadClosesExistingArtifactContent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandle_Delete(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("DELETE", "com/example/app/1.0.0/app-1.0.0.jar", nil)
@@ -1306,7 +1306,7 @@ func TestHandle_Delete(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandle_InvalidPath(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("GET", "too/short", nil)
@@ -1319,7 +1319,7 @@ func TestHandle_InvalidPath(t *testing.T) {
 }
 
 func TestHandle_MethodNotAllowed(t *testing.T) {
-	p := NewMavenPlugin()
+	p := NewMavenPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, _ := newCtx("PATCH", "com/example/app/1.0.0/app-1.0.0.jar", nil)

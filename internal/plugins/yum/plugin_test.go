@@ -24,7 +24,7 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 }
 
 func TestHandle_Repomd(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{"file": "repomd.xml"}, ""),
 		testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{"file": "abc123-primary.xml.gz", "type": "primary", "href": "repodata/abc123-primary.xml.gz"}, ""),
@@ -47,7 +47,7 @@ func TestHandle_Repomd(t *testing.T) {
 }
 
 func TestHandle_RepomdDynamicHasRequiredFields(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{
 		"file": "abc123-primary.xml.gz", "type": "primary", "href": "repodata/abc123-primary.xml.gz",
 	}, "")
@@ -77,7 +77,7 @@ func TestHandle_RepomdDynamicHasRequiredFields(t *testing.T) {
 }
 
 func TestHandle_PrimaryDynamicHasRequiredFields(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("yum", runtime.KindFile, map[string]string{
 		"name":    "nginx",
 		"version": "1.20.1",
@@ -110,7 +110,7 @@ func TestHandle_PrimaryDynamicHasRequiredFields(t *testing.T) {
 }
 
 func TestHandle_RepomdHeadReturnsHeadersWithoutBody(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{
 		"file":     "repomd.xml",
 		"filename": "repomd.xml",
@@ -134,7 +134,7 @@ func TestHandle_RepomdHeadReturnsHeadersWithoutBody(t *testing.T) {
 }
 
 func TestHandle_Primary(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{
 			"name":    "nginx",
@@ -160,7 +160,7 @@ func TestHandle_Primary(t *testing.T) {
 }
 
 func TestHandle_PrimaryCompressed_PrefersOriginalContentWithGzipType(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	original := "gzipped-primary-bytes"
 	art := testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{
 		"file":     "abc123-primary.xml.gz",
@@ -184,7 +184,7 @@ func TestHandle_PrimaryCompressed_PrefersOriginalContentWithGzipType(t *testing.
 }
 
 func TestHandle_RpmDownload(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("yum", "file", map[string]string{
 		"file":     "nginx-1.20.1-1.el8.x86_64.rpm",
 		"filename": "nginx-1.20.1-1.el8.x86_64.rpm",
@@ -204,7 +204,7 @@ func TestHandle_RpmDownload(t *testing.T) {
 }
 
 func TestHandle_RpmHeadReturnsHeadersWithoutBody(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("yum", "file", map[string]string{
 		"file":     "nginx-1.20.1-1.el8.x86_64.rpm",
 		"filename": "nginx-1.20.1-1.el8.x86_64.rpm",
@@ -228,7 +228,7 @@ func TestHandle_RpmHeadReturnsHeadersWithoutBody(t *testing.T) {
 }
 
 func TestHandle_RpmRangeReturnsPartialContent(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("yum", "file", map[string]string{
 		"file":     "nginx-1.20.1-1.el8.x86_64.rpm",
 		"filename": "nginx-1.20.1-1.el8.x86_64.rpm",
@@ -250,7 +250,7 @@ func TestHandle_RpmRangeReturnsPartialContent(t *testing.T) {
 }
 
 func TestFetchRemote_RpmUsesDirectoryPathAndRemotePath(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), "http://example.test", "Packages/nginx-1.20.1-1.el8.x86_64.rpm")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -271,7 +271,7 @@ func TestFetchRemote_RpmUsesDirectoryPathAndRemotePath(t *testing.T) {
 }
 
 func TestHandle_NotFound(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("GET", "repodata/repomd.xml", nil)
@@ -283,7 +283,7 @@ func TestHandle_NotFound(t *testing.T) {
 }
 
 func TestHandle_UnsupportedPath(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("GET", "unknown/path", nil)
@@ -295,7 +295,7 @@ func TestHandle_UnsupportedPath(t *testing.T) {
 }
 
 func TestIsRepomdRequest(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	tests := []struct {
 		path string
 		want bool
@@ -314,7 +314,7 @@ func TestIsRepomdRequest(t *testing.T) {
 }
 
 func TestIsRpmPackageRequest(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	tests := []struct {
 		path string
 		want bool
@@ -345,7 +345,7 @@ func TestFetchRemote_Repomd(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "repodata/repomd.xml")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -373,7 +373,7 @@ func TestFetchRemote_Repomd(t *testing.T) {
 }
 
 func TestFetchRemote_RpmFile(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), "http://example.com", "Packages/nginx-1.20.1-1.el8.x86_64.rpm")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -387,7 +387,7 @@ func TestFetchRemote_RpmFile(t *testing.T) {
 }
 
 func TestHandle_QueryRemotePath_Repomd(t *testing.T) {
-	p := NewYumPlugin()
+	p := NewYumPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, _ := newCtx("GET", "repodata/repomd.xml", nil)

@@ -143,6 +143,30 @@ var (
 		},
 		[]string{"format"},
 	)
+
+	ProxyNegativeCacheHitsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "moonlight_proxy_negative_cache_hits_total",
+			Help: "Total proxy negative cache hits by format",
+		},
+		[]string{"format"},
+	)
+
+	ProxyStaleServedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "moonlight_proxy_stale_served_total",
+			Help: "Total stale proxy artifacts served by format",
+		},
+		[]string{"format"},
+	)
+
+	ProxyBlobBytesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "moonlight_proxy_blob_bytes_total",
+			Help: "Total bytes stored through proxy blob cache by format",
+		},
+		[]string{"format"},
+	)
 )
 
 func RecordDownload(packageType, packageName, version string) {
@@ -201,4 +225,18 @@ func UpdateActiveConnections(count float64) {
 func RecordProxyFetch(format, result string, durationSeconds float64) {
 	ProxyFetchTotal.WithLabelValues(format, result).Inc()
 	ProxyFetchDuration.WithLabelValues(format).Observe(durationSeconds)
+}
+
+func RecordProxyNegativeCacheHit(format string) {
+	ProxyNegativeCacheHitsTotal.WithLabelValues(format).Inc()
+}
+
+func RecordProxyStaleServed(format string) {
+	ProxyStaleServedTotal.WithLabelValues(format).Inc()
+}
+
+func RecordProxyBlobStored(format string, sizeBytes int64) {
+	if sizeBytes > 0 {
+		ProxyBlobBytesTotal.WithLabelValues(format).Add(float64(sizeBytes))
+	}
 }

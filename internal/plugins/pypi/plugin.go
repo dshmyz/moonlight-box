@@ -54,6 +54,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -69,10 +70,11 @@ type PyPIPlugin struct {
 	httpClient *http.Client // 统一 HTTP 客户端
 }
 
-func NewPyPIPlugin() *PyPIPlugin {
-	return &PyPIPlugin{
-		httpClient: &http.Client{Timeout: 120 * time.Second},
+func NewPyPIPlugin(httpClient *http.Client) *PyPIPlugin {
+	if httpClient == nil {
+		panic("pypi: httpClient is required")
 	}
+	return &PyPIPlugin{httpClient: httpClient}
 }
 
 // SetHTTPClient 允许注入统一的 HTTP 客户端
@@ -213,12 +215,35 @@ func (p *PyPIPlugin) handleSimpleIndex(ctx *runtime.RequestContext, repoRuntime 
 		Format:       "pypi",
 		RemotePath:   path,
 	})
-	if err != nil {
-		if errors.Is(err, runtime.ErrNotFound) {
-			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-			return nil
-		}
+	if err != nil && !errors.Is(err, runtime.ErrNotFound) {
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		return nil
+	}
+
+	// 对 hosted 仓库：RemotePath 查询可能无结果（本地上传的包没有 RemotePath="simple/"），
+	// 尝试聚合所有已存储包的 Name。
+	if len(artifacts) == 0 {
+		allArts, qErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+			RepositoryID: ctx.Repository.ID,
+			Format:       "pypi",
+		})
+		if qErr == nil && len(allArts) > 0 {
+			seen := make(map[string]bool)
+			for _, a := range allArts {
+				name := a.Name
+				if name == "" {
+					continue
+				}
+				if !seen[name] {
+					seen[name] = true
+					artifacts = append(artifacts, a)
+				}
+			}
+		}
+	}
+
+	if len(artifacts) == 0 {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
 
@@ -320,6 +345,7 @@ func (p *PyPIPlugin) handlePackageList(ctx *runtime.RequestContext, repoRuntime 
 }
 
 func (p *PyPIPlugin) writePackageFilesHTML(ctx *runtime.RequestContext, packageName string, artifacts []*runtime.Artifact) error {
+	artifacts = sortPyPIArtifactsByVersion(artifacts)
 	var sb strings.Builder
 	escapedPkg := html.EscapeString(packageName)
 	sb.WriteString(fmt.Sprintf("<!DOCTYPE html>\n<html><head><title>Links for %s</title></head><body>\n<h1>Links for %s</h1>\n", escapedPkg, escapedPkg))
@@ -362,6 +388,7 @@ func (p *PyPIPlugin) writePackageFilesHTML(ctx *runtime.RequestContext, packageN
 }
 
 func (p *PyPIPlugin) writePackageFilesJSON(ctx *runtime.RequestContext, packageName string, artifacts []*runtime.Artifact) error {
+	artifacts = sortPyPIArtifactsByVersion(artifacts)
 	files := make([]map[string]interface{}, 0)
 	for _, artifact := range artifacts {
 		if artifact.Name != packageName {
@@ -536,6 +563,7 @@ func (p *PyPIPlugin) handleJsonAPI(ctx *runtime.RequestContext, repoRuntime runt
 	}
 
 	releases := make(map[string][]map[string]interface{})
+	artifacts = sortPyPIArtifactsByVersion(artifacts)
 	for _, artifact := range artifacts {
 		if artifact.Name != packageName {
 			continue
@@ -680,12 +708,11 @@ func extractRelativePackagePath(rawURL string) string {
 
 func (p *PyPIPlugin) extractPackageNameFromFilename(filename string) string {
 	if strings.HasSuffix(filename, ".whl") {
-		parts := strings.Split(filename, "-")
-		if len(parts) >= 1 {
-			return normalizePackageName(parts[0])
-		}
+		name, _ := splitPEP427Wheel(strings.TrimSuffix(filename, ".whl"))
+		return normalizePackageName(name)
 	}
 
+	// sdist: {name}-{version}.tar.gz  or  {name}-{version}.tar.bz2  or  {name}-{version}.zip
 	base := filename
 	for _, ext := range []string{".tar.gz", ".tar.bz2", ".zip"} {
 		if strings.HasSuffix(base, ext) {
@@ -693,20 +720,14 @@ func (p *PyPIPlugin) extractPackageNameFromFilename(filename string) string {
 			break
 		}
 	}
-
-	parts := strings.Split(base, "-")
-	if len(parts) >= 1 {
-		return normalizePackageName(parts[0])
-	}
-	return ""
+	name, _ := splitSdistNameVersion(base)
+	return normalizePackageName(name)
 }
 
 func (p *PyPIPlugin) extractVersionFromFilename(filename string) string {
 	if strings.HasSuffix(filename, ".whl") {
-		parts := strings.Split(filename, "-")
-		if len(parts) >= 2 {
-			return parts[1]
-		}
+		_, version := splitPEP427Wheel(strings.TrimSuffix(filename, ".whl"))
+		return version
 	}
 
 	base := filename
@@ -716,12 +737,57 @@ func (p *PyPIPlugin) extractVersionFromFilename(filename string) string {
 			break
 		}
 	}
+	_, version := splitSdistNameVersion(base)
+	return version
+}
 
-	parts := strings.Split(base, "-")
-	if len(parts) >= 2 {
-		return parts[len(parts)-1]
+// splitPEP427Wheel 从 wheel 文件名中提取 name 和 version。
+// PEP 427 格式: {name}-{version}(-{build})?-{python}-{abi}-{platform}
+func splitPEP427Wheel(namever string) (name, version string) {
+	parts := strings.Split(namever, "-")
+	if len(parts) < 5 {
+		// 至少 5 段: name version python abi platform
+		if len(parts) >= 2 {
+			return parts[0], parts[1]
+		}
+		return namever, ""
 	}
-	return ""
+	// python=parts[len-3], abi=parts[len-2], platform=parts[len-1]
+	// 可选 build=parts[len-4]，build tag 必须以数字开头。
+	versionIdx := len(parts) - 4
+	if len(parts) >= 6 && looksLikeWheelBuildTag(parts[len(parts)-4]) && strings.Contains(parts[len(parts)-5], ".") {
+		versionIdx = len(parts) - 5
+	}
+	version = parts[versionIdx]
+	name = strings.Join(parts[:versionIdx], "-")
+	return name, version
+}
+
+func looksLikeWheelBuildTag(value string) bool {
+	if !startsWithDigit(value) || strings.Contains(value, ".") {
+		return false
+	}
+	for _, r := range value {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func startsWithDigit(value string) bool {
+	return value != "" && value[0] >= '0' && value[0] <= '9'
+}
+
+// splitSdistNameVersion 从 sdist 文件名中提取 name 和 version。
+// 格式: {name}-{version}  (version 不含连字符)
+func splitSdistNameVersion(namever string) (name, version string) {
+	idx := strings.LastIndex(namever, "-")
+	if idx < 0 {
+		return namever, ""
+	}
+	return namever[:idx], namever[idx+1:]
 }
 
 func validatePyPIPath(path string) error {
@@ -740,9 +806,164 @@ func validatePyPIPath(path string) error {
 	return nil
 }
 
+func sortPyPIArtifactsByVersion(artifacts []*runtime.Artifact) []*runtime.Artifact {
+	out := append([]*runtime.Artifact(nil), artifacts...)
+	sort.SliceStable(out, func(i, j int) bool {
+		cmp := comparePEP440Versions(out[i].Version, out[j].Version)
+		if cmp == 0 {
+			return out[i].Filename < out[j].Filename
+		}
+		return cmp < 0
+	})
+	return out
+}
+
 func normalizePackageName(name string) string {
 	// PEP 503: 将 [-_.]+ 归一化为单个 "-"，然后转小写
 	return pypiNormalizeRe.ReplaceAllString(strings.ToLower(name), "-")
+}
+
+type pep440Version struct {
+	epoch   int
+	release []int
+	preTag  string
+	preNum  int
+	devNum  int
+	postNum int
+	hasPre  bool
+	hasDev  bool
+	hasPost bool
+}
+
+func comparePEP440Versions(a, b string) int {
+	va := parsePEP440Version(a)
+	vb := parsePEP440Version(b)
+	if va.epoch != vb.epoch {
+		if va.epoch < vb.epoch {
+			return -1
+		}
+		return 1
+	}
+	maxLen := len(va.release)
+	if len(vb.release) > maxLen {
+		maxLen = len(vb.release)
+	}
+	for i := 0; i < maxLen; i++ {
+		ai, bi := 0, 0
+		if i < len(va.release) {
+			ai = va.release[i]
+		}
+		if i < len(vb.release) {
+			bi = vb.release[i]
+		}
+		if ai < bi {
+			return -1
+		}
+		if ai > bi {
+			return 1
+		}
+	}
+	return comparePEP440Suffix(va, vb)
+}
+
+func parsePEP440Version(version string) pep440Version {
+	v := strings.ToLower(strings.TrimSpace(version))
+	v = strings.TrimPrefix(v, "v")
+	parsed := pep440Version{}
+	if bang := strings.Index(v, "!"); bang >= 0 {
+		parsed.epoch = parseLeadingInt(v[:bang])
+		v = v[bang+1:]
+	}
+
+	for _, marker := range []string{".dev", "dev"} {
+		if idx := strings.Index(v, marker); idx >= 0 {
+			parsed.hasDev = true
+			parsed.devNum = parseLeadingInt(v[idx+len(marker):])
+			v = v[:idx]
+			break
+		}
+	}
+	for _, marker := range []string{".post", "post"} {
+		if idx := strings.Index(v, marker); idx >= 0 {
+			parsed.hasPost = true
+			parsed.postNum = parseLeadingInt(v[idx+len(marker):])
+			v = v[:idx]
+			break
+		}
+	}
+	for _, marker := range []string{"a", "b", "rc"} {
+		if idx := strings.Index(v, marker); idx > 0 {
+			parsed.hasPre = true
+			parsed.preTag = marker
+			parsed.preNum = parseLeadingInt(v[idx+len(marker):])
+			v = v[:idx]
+			break
+		}
+	}
+	for _, part := range strings.Split(v, ".") {
+		parsed.release = append(parsed.release, parseLeadingInt(part))
+	}
+	return parsed
+}
+
+func comparePEP440Suffix(a, b pep440Version) int {
+	if a.hasDev != b.hasDev {
+		if a.hasDev {
+			return -1
+		}
+		return 1
+	}
+	if a.hasDev && b.hasDev && a.devNum != b.devNum {
+		if a.devNum < b.devNum {
+			return -1
+		}
+		return 1
+	}
+	if a.hasPre != b.hasPre {
+		if a.hasPre {
+			return -1
+		}
+		return 1
+	}
+	if a.hasPre && b.hasPre {
+		order := map[string]int{"a": 0, "b": 1, "rc": 2}
+		if order[a.preTag] != order[b.preTag] {
+			if order[a.preTag] < order[b.preTag] {
+				return -1
+			}
+			return 1
+		}
+		if a.preNum != b.preNum {
+			if a.preNum < b.preNum {
+				return -1
+			}
+			return 1
+		}
+	}
+	if a.hasPost != b.hasPost {
+		if a.hasPost {
+			return 1
+		}
+		return -1
+	}
+	if a.hasPost && b.hasPost && a.postNum != b.postNum {
+		if a.postNum < b.postNum {
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
+func parseLeadingInt(value string) int {
+	result := 0
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			break
+		}
+		result = result*10 + int(r-'0')
+	}
+	return result
 }
 
 func isValidWheelFilename(filename string) bool {

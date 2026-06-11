@@ -53,7 +53,7 @@ func TestEncodeGoPath(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSplitModulePath(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	tests := []struct {
 		name       string
 		path       string
@@ -86,7 +86,7 @@ func TestSplitModulePath(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSelectLatestVersion(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 
 	tests := []struct {
 		name     string
@@ -177,7 +177,7 @@ func TestSelectLatestVersion(t *testing.T) {
 }
 
 func TestSelectLatestVersion_SkipsRetracted(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		runtime.NewArtifact(runtime.ArtifactSpec{
 			Format:     "go",
@@ -205,7 +205,7 @@ func TestSelectLatestVersion_SkipsRetracted(t *testing.T) {
 }
 
 func TestSelectLatestVersion_ModulePathMajorFiltering(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 
 	t.Run("v1 module without /vN suffix accepts all versions", func(t *testing.T) {
 		arts := []*runtime.Artifact{
@@ -255,7 +255,7 @@ func TestSelectLatestVersion_ModulePathMajorFiltering(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandle_Latest(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("go", "version", map[string]string{
 			"module": "github.com/gin-gonic/gin", "version": "v1.10.0",
@@ -281,7 +281,7 @@ func TestHandle_Latest(t *testing.T) {
 }
 
 func TestHandle_LatestHeadReturnsHeadersWithoutBody(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("go", "version", map[string]string{
 			"module": "github.com/gin-gonic/gin", "version": "v1.10.0",
@@ -305,7 +305,7 @@ func TestHandle_LatestHeadReturnsHeadersWithoutBody(t *testing.T) {
 }
 
 func TestHandle_Latest_SemanticImportVersion(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("go", "version", map[string]string{
 			"module": "github.com/labstack/echo/v4", "version": "v4.13.0",
@@ -331,7 +331,7 @@ func TestHandle_Latest_SemanticImportVersion(t *testing.T) {
 }
 
 func TestHandle_Latest_FiltersPrerelease(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("go", "version", map[string]string{
 			"module": "github.com/example/mod", "version": "v2.0.0-rc1",
@@ -360,7 +360,7 @@ func TestHandle_Latest_FiltersPrerelease(t *testing.T) {
 }
 
 func TestHandle_Latest_OnlyPrerelease(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("go", "version", map[string]string{
 			"module": "github.com/example/mod", "version": "v2.0.0-rc1",
@@ -382,7 +382,7 @@ func TestHandle_Latest_OnlyPrerelease(t *testing.T) {
 }
 
 func TestHandle_Latest_NotFound(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{Artifacts: nil}
 
 	ctx, w := newCtx("GET", "github.com/nonexist/pkg/@latest", nil)
@@ -395,7 +395,7 @@ func TestHandle_Latest_NotFound(t *testing.T) {
 }
 
 func TestHandle_Latest_MethodNotAllowed(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, _ := newCtx("POST", "github.com/example/mod/@latest", nil)
@@ -413,7 +413,7 @@ func TestHandle_Latest_MethodNotAllowed(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandle_VersionList(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("go", "version", map[string]string{
 			"module": "github.com/gin-gonic/gin", "version": "v1.10.0",
@@ -441,7 +441,7 @@ func TestHandle_VersionList(t *testing.T) {
 }
 
 func TestHandle_VersionList_Dedup(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("go", "version", map[string]string{
 			"module": "github.com/example/mod", "version": "v1.0.0",
@@ -463,7 +463,7 @@ func TestHandle_VersionList_Dedup(t *testing.T) {
 }
 
 func TestHandle_VersionList_MethodNotAllowed(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, _ := newCtx("POST", "github.com/example/mod/@v/list", nil)
@@ -481,7 +481,7 @@ func TestHandle_VersionList_MethodNotAllowed(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandle_ModuleDownload_Info(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("go", "info-file", map[string]string{
 		"name":     "github.com/gin-gonic/gin",
 		"module":   "github.com/gin-gonic/gin",
@@ -510,7 +510,7 @@ func TestHandle_ModuleDownload_Info(t *testing.T) {
 }
 
 func TestHandle_ModuleDownload_Mod(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("go", "module-file", map[string]string{
 		"name":     "github.com/gin-gonic/gin",
 		"module":   "github.com/gin-gonic/gin",
@@ -534,7 +534,7 @@ func TestHandle_ModuleDownload_Mod(t *testing.T) {
 }
 
 func TestHandle_ModuleDownload_Zip(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("go", "module-file", map[string]string{
 		"name":     "github.com/gin-gonic/gin",
 		"module":   "github.com/gin-gonic/gin",
@@ -561,7 +561,7 @@ func TestHandle_ModuleDownload_Zip(t *testing.T) {
 }
 
 func TestHandle_ModuleDownload_ModHeadReturnsHeadersWithoutBody(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("go", "module-file", map[string]string{
 		"name":     "github.com/gin-gonic/gin",
 		"module":   "github.com/gin-gonic/gin",
@@ -588,7 +588,7 @@ func TestHandle_ModuleDownload_ModHeadReturnsHeadersWithoutBody(t *testing.T) {
 }
 
 func TestHandle_ModuleDownload_ZipRangeReturnsPartialContent(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("go", "module-file", map[string]string{
 		"name":     "github.com/gin-gonic/gin",
 		"module":   "github.com/gin-gonic/gin",
@@ -616,7 +616,7 @@ func TestHandle_ModuleDownload_ZipRangeReturnsPartialContent(t *testing.T) {
 }
 
 func TestHandle_ModuleDownload_NotFound(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{Artifacts: nil}
 
 	ctx, w := newCtx("GET", "github.com/nonexist/pkg/@v/v1.0.0.zip", nil)
@@ -629,7 +629,7 @@ func TestHandle_ModuleDownload_NotFound(t *testing.T) {
 }
 
 func TestHandle_ModuleDownloadMissQueriesRemotePathBeforeRetry(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	rt := &goQueryThenGetRuntime{
 		artifact: testhelper.NewArtifact("go", "module-file", map[string]string{
 			"name":     "github.com/Azure/azure-sdk-for-go",
@@ -693,7 +693,7 @@ func (r *goQueryThenGetRuntime) DeleteArtifact(ctx context.Context, key runtime.
 }
 
 func TestHandle_ModuleDownload_InvalidPath(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("GET", "invalid-path-no-atv", nil)
@@ -704,7 +704,7 @@ func TestHandle_ModuleDownload_InvalidPath(t *testing.T) {
 }
 
 func TestHandle_QueryRemotePath(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, _ := newCtx("GET", "github.com/gin-gonic/gin/@v/list", nil)
@@ -728,7 +728,7 @@ func TestFetchRemote_VersionList(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "github.com/example/mod/@v/list")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -749,7 +749,7 @@ func TestFetchRemote_VersionList_Empty(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "github.com/example/mod/@v/list")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -770,7 +770,7 @@ func TestFetchRemote_Latest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "github.com/example/mod/@latest")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -790,7 +790,7 @@ func TestFetchRemote_Latest_EmptyVersion(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "github.com/example/mod/@latest")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -806,7 +806,7 @@ func TestFetchRemote_Latest_ErrorStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	_, err := p.FetchRemote(context.Background(), srv.URL, "github.com/example/mod/@latest")
 	if err == nil {
 		t.Fatal("expected error for 404 response")
@@ -823,7 +823,7 @@ func TestFetchRemote_ModuleFile(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "github.com/example/mod/@v/v1.0.0.zip")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -837,7 +837,7 @@ func TestFetchRemote_ModuleFile(t *testing.T) {
 }
 
 func TestFetchRemote_ModuleFileFieldsMatchDownloadKey(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), "http://example.test", "github.com/example/mod/@v/v1.2.3.zip")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -856,7 +856,7 @@ func TestFetchRemote_ModuleFileFieldsMatchDownloadKey(t *testing.T) {
 }
 
 func TestFetchRemote_EmptyPath(t *testing.T) {
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	_, err := p.FetchRemote(context.Background(), "http://example.com", "")
 	if err == nil {
 		t.Fatal("expected error for empty path")
@@ -873,7 +873,7 @@ func TestFetchRemote_SemanticImportVersion(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewGoPlugin()
+	p := NewGoPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "github.com/labstack/echo/v4/@v/list")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)

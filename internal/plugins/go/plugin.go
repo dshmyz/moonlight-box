@@ -46,7 +46,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/sirupsen/logrus"
@@ -57,10 +56,11 @@ type GoPlugin struct {
 	httpClient *http.Client
 }
 
-func NewGoPlugin() *GoPlugin {
-	return &GoPlugin{
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+func NewGoPlugin(httpClient *http.Client) *GoPlugin {
+	if httpClient == nil {
+		panic("go: httpClient is required")
 	}
+	return &GoPlugin{httpClient: httpClient}
 }
 
 // SetHTTPClient allows injecting a shared HTTP client (with DNS mapping, TLS config, etc.)

@@ -24,7 +24,7 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 }
 
 func TestHandle_InRelease(t *testing.T) {
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("apt", runtime.KindMetadata, map[string]string{
 		"file":     "InRelease",
 		"filename": "InRelease",
@@ -44,7 +44,7 @@ func TestHandle_InRelease(t *testing.T) {
 }
 
 func TestHandle_InReleaseHeadReturnsHeadersWithoutBody(t *testing.T) {
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("apt", runtime.KindMetadata, map[string]string{
 		"file":     "InRelease",
 		"filename": "InRelease",
@@ -68,7 +68,7 @@ func TestHandle_InReleaseHeadReturnsHeadersWithoutBody(t *testing.T) {
 }
 
 func TestHandle_Packages(t *testing.T) {
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("apt", "package", map[string]string{
 			"package":  "nginx",
@@ -96,7 +96,7 @@ func TestHandle_Packages(t *testing.T) {
 }
 
 func TestHandle_PackagesCompressed_PrefersOriginalContentWithGzipType(t *testing.T) {
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	original := "gzipped-packages-bytes"
 	art := testhelper.NewArtifact("apt", runtime.KindMetadata, map[string]string{
 		"file":     "Packages.gz",
@@ -120,7 +120,7 @@ func TestHandle_PackagesCompressed_PrefersOriginalContentWithGzipType(t *testing
 }
 
 func TestHandle_DebDownload(t *testing.T) {
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("apt", "package", map[string]string{
 		"file":     "nginx_1.18.0-6.1_amd64.deb",
 		"filename": "nginx_1.18.0-6.1_amd64.deb",
@@ -140,7 +140,7 @@ func TestHandle_DebDownload(t *testing.T) {
 }
 
 func TestHandle_DebHeadReturnsHeadersWithoutBody(t *testing.T) {
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("apt", "package", map[string]string{
 		"file":     "nginx_1.18.0-6.1_amd64.deb",
 		"filename": "nginx_1.18.0-6.1_amd64.deb",
@@ -164,7 +164,7 @@ func TestHandle_DebHeadReturnsHeadersWithoutBody(t *testing.T) {
 }
 
 func TestHandle_DebRangeReturnsPartialContent(t *testing.T) {
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("apt", "package", map[string]string{
 		"file":     "nginx_1.18.0-6.1_amd64.deb",
 		"filename": "nginx_1.18.0-6.1_amd64.deb",
@@ -186,7 +186,7 @@ func TestHandle_DebRangeReturnsPartialContent(t *testing.T) {
 }
 
 func TestFetchRemote_DebUsesDirectoryPathAndRemotePath(t *testing.T) {
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), "http://example.test", "pool/main/n/nginx/nginx_1.18.0-6.1_amd64.deb")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -207,7 +207,7 @@ func TestFetchRemote_DebUsesDirectoryPathAndRemotePath(t *testing.T) {
 }
 
 func TestHandle_NotFound(t *testing.T) {
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("GET", "dists/jammy/InRelease", nil)
@@ -219,7 +219,7 @@ func TestHandle_NotFound(t *testing.T) {
 }
 
 func TestHandle_UnsupportedPath(t *testing.T) {
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("GET", "unsupported/path", nil)
@@ -231,7 +231,7 @@ func TestHandle_UnsupportedPath(t *testing.T) {
 }
 
 func TestParsePackagesIndex(t *testing.T) {
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	content := `Package: nginx
 Version: 1.18.0-6.1
 Architecture: amd64
@@ -260,7 +260,7 @@ Size: 194000
 }
 
 func TestIsInReleaseRequest(t *testing.T) {
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	tests := []struct {
 		path string
 		want bool
@@ -279,7 +279,7 @@ func TestIsInReleaseRequest(t *testing.T) {
 }
 
 func TestIsPackagesRequest(t *testing.T) {
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	tests := []struct {
 		path string
 		want bool
@@ -309,7 +309,7 @@ Filename: pool/main/c/curl/curl_7.81.0_amd64.deb
 	}))
 	defer srv.Close()
 
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "dists/jammy/main/binary-amd64/Packages")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -320,7 +320,7 @@ Filename: pool/main/c/curl/curl_7.81.0_amd64.deb
 }
 
 func TestHandle_QueryRemotePath(t *testing.T) {
-	p := NewAptPlugin()
+	p := NewAptPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, _ := newCtx("GET", "dists/jammy/main/binary-amd64/Packages", nil)

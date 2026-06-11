@@ -26,7 +26,7 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 }
 
 func TestHandle_PackageMetadata(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("npm", "version", map[string]string{"name": "express", "version": "4.18.2"}, ""),
 		testhelper.NewArtifact("npm", "version", map[string]string{"name": "express", "version": "4.17.3"}, ""),
@@ -58,7 +58,7 @@ func TestHandle_PackageMetadata(t *testing.T) {
 }
 
 func TestHandle_PackageMetadataHeadReturnsHeadersWithoutBody(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("npm", "version", map[string]string{"name": "express", "version": "4.18.2"}, ""),
 	}
@@ -80,7 +80,7 @@ func TestHandle_PackageMetadataHeadReturnsHeadersWithoutBody(t *testing.T) {
 }
 
 func TestHandle_ScopedPackage(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("npm", "version", map[string]string{"name": "@scope/pkg", "version": "1.0.0"}, ""),
 	}
@@ -101,7 +101,7 @@ func TestHandle_ScopedPackage(t *testing.T) {
 }
 
 func TestHandle_TarballDownload(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("npm", "tarball", map[string]string{
 		"name":     "express",
 		"version":  "4.18.2",
@@ -123,7 +123,7 @@ func TestHandle_TarballDownload(t *testing.T) {
 }
 
 func TestHandle_TarballHeadReturnsHeadersWithoutBody(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("npm", "tarball", map[string]string{
 		"name":     "express",
 		"version":  "4.18.2",
@@ -148,7 +148,7 @@ func TestHandle_TarballHeadReturnsHeadersWithoutBody(t *testing.T) {
 }
 
 func TestHandle_TarballRangeReturnsPartialContent(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("npm", "tarball", map[string]string{
 		"name":     "express",
 		"version":  "4.18.2",
@@ -174,7 +174,7 @@ func TestHandle_TarballRangeReturnsPartialContent(t *testing.T) {
 }
 
 func TestHandle_Ping(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("GET", "-/npm/ping", nil)
@@ -192,7 +192,7 @@ func TestHandle_Ping(t *testing.T) {
 }
 
 func TestHandle_SecurityAudit(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("POST", "-/npm/v1/security/advisories/bulk", strings.NewReader(`{}`))
@@ -208,7 +208,7 @@ func TestHandle_SecurityAudit(t *testing.T) {
 }
 
 func TestHandle_AllPackages(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("npm", "version", map[string]string{"name": "lodash", "version": "4.17.21"}, ""),
 		testhelper.NewArtifact("npm", "version", map[string]string{"name": "express", "version": "4.18.2"}, ""),
@@ -225,7 +225,7 @@ func TestHandle_AllPackages(t *testing.T) {
 }
 
 func TestHandle_Upload(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	body, _ := json.Marshal(map[string]interface{}{
@@ -242,7 +242,7 @@ func TestHandle_Upload(t *testing.T) {
 }
 
 func TestHandle_UploadWithTarball(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	// npm publish body with _attachments
@@ -270,7 +270,7 @@ func TestHandle_UploadWithTarball(t *testing.T) {
 }
 
 func TestHandle_QueryRemotePath(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, _ := newCtx("GET", "express", nil)
@@ -297,7 +297,7 @@ func TestFetchRemote_ParsesVersions(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "lodash")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -334,7 +334,7 @@ func TestFetchRemote_ScopedPackageEncoding(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	p.FetchRemote(context.Background(), srv.URL, "@scope/pkg")
 
 	if !strings.Contains(capturedPath, "%40scope%2Fpkg") {
@@ -382,7 +382,7 @@ func TestRepoBaseURLSupportsRootMountedRepository(t *testing.T) {
 }
 
 func TestDistTags_SemverSorting(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "v1.0.0"}, ""),
 		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "v2.0.0"}, ""),
@@ -402,7 +402,7 @@ func TestDistTags_SemverSorting(t *testing.T) {
 }
 
 func TestDistTags_NpmVersionsWithoutVPrefix(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "1.9.0"}, ""),
 		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "1.10.0"}, ""),
@@ -424,7 +424,7 @@ func TestDistTags_NpmVersionsWithoutVPrefix(t *testing.T) {
 }
 
 func TestHandle_TarballDownload_ScopedPackage(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	packageName := "@scope/pkg"
 	// npm 规范：scoped 包的 tarball 文件名不含 scope 前缀
 	art := testhelper.NewArtifact("npm", "tarball", map[string]string{
@@ -455,7 +455,7 @@ func TestHandle_TarballDownload_ScopedPackage(t *testing.T) {
 }
 
 func TestHandle_TarballDownload_InvalidPath(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("GET", "foo/-/bar/-/baz.tgz", nil)
@@ -468,7 +468,7 @@ func TestHandle_TarballDownload_InvalidPath(t *testing.T) {
 }
 
 func TestHandle_TarballDownloadMissQueriesPackageMetadataBeforeRetry(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	rt := &npmQueryThenGetRuntime{
 		artifact: testhelper.NewArtifact("npm", "tarball", map[string]string{
 			"name":     "@scope/pkg",
@@ -530,7 +530,7 @@ func (r *npmQueryThenGetRuntime) DeleteArtifact(ctx context.Context, key runtime
 }
 
 func TestHandle_PackageNotFound(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{}}
 
 	ctx, w := newCtx("GET", "nonexistent-pkg", nil)
@@ -543,7 +543,7 @@ func TestHandle_PackageNotFound(t *testing.T) {
 }
 
 func TestHandle_EmptyVersions(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("npm", "metadata", map[string]string{
 		"name": "pkg-no-versions",
 	}, "")
@@ -559,7 +559,7 @@ func TestHandle_EmptyVersions(t *testing.T) {
 }
 
 func TestHandle_NpmInternal_NotFound(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("GET", "-/npm/unknown/endpoint", nil)
@@ -575,7 +575,7 @@ func TestHandle_NpmInternal_NotFound(t *testing.T) {
 }
 
 func TestHandle_MethodNotAllowed(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, _ := newCtx("POST", "express", nil)
@@ -595,7 +595,7 @@ func TestFetchRemote_EmptyPackage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "empty-pkg")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -611,7 +611,7 @@ func TestFetchRemote_ErrorStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "missing-pkg")
 	if err == nil {
 		t.Fatalf("expected error for non-200 response, got nil")
@@ -653,7 +653,7 @@ func TestParseNpmMetadata(t *testing.T) {
 		}
 	}`
 
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts, err := p.parseNpmMetadata("test-pkg", strings.NewReader(registryJSON))
 	if err != nil {
 		t.Fatalf("parseNpmMetadata failed: %v", err)
@@ -807,7 +807,7 @@ func TestExtractLicenseFiltersNonSPDX(t *testing.T) {
 }
 
 func TestDistTags_Prerelease(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v1.0.0-alpha.1"}, ""),
 		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v1.0.0-beta.1"}, ""),
@@ -903,7 +903,7 @@ func TestParseNpmMetadata_ExtractsBinAndComplexFields(t *testing.T) {
 		}
 	}`
 
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts, err := p.parseNpmMetadata("cli-tool", strings.NewReader(registryJSON))
 	if err != nil {
 		t.Fatalf("parseNpmMetadata failed: %v", err)
@@ -982,7 +982,7 @@ func TestParseNpmMetadata_BinAsString(t *testing.T) {
 		}
 	}`
 
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts, err := p.parseNpmMetadata("simple-cli", strings.NewReader(registryJSON))
 	if err != nil {
 		t.Fatalf("parseNpmMetadata failed: %v", err)
@@ -1016,7 +1016,7 @@ func TestParseNpmMetadata_BinAsString(t *testing.T) {
 // TestHandlePackageGet_RestoresBinField 验证 handlePackageGet
 // 从 artifact Attributes 还原 bin 等字段到版本元数据响应中。
 func TestHandlePackageGet_RestoresBinField(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		runtime.NewArtifact(runtime.ArtifactSpec{
 			Format:     "npm",
@@ -1114,7 +1114,7 @@ func TestHandlePackageGet_RestoresBinField(t *testing.T) {
 // TestHandlePackageGet_BinStringFallback 验证 bin 为字符串时
 // 在响应中正确还原为字符串（而非对象）。
 func TestHandlePackageGet_BinStringFallback(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		runtime.NewArtifact(runtime.ArtifactSpec{
 			Format:     "npm",
@@ -1152,7 +1152,7 @@ func TestHandlePackageGet_BinStringFallback(t *testing.T) {
 // TestHandlePackageGet_TimeField 验证 handlePackageGet
 // 从 Attributes 还原 time 字段到响应中。
 func TestHandlePackageGet_TimeField(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		runtime.NewArtifact(runtime.ArtifactSpec{
 			Format:     "npm",
@@ -1201,7 +1201,7 @@ func TestHandlePackageGet_TimeField(t *testing.T) {
 // handlePackageGet 优先使用带 Attributes 的 artifact 构建版本元数据，
 // 而非使用没有 Attributes 的 tarball artifact。
 func TestHandlePackageGet_PrefersAttributesOverTarball(t *testing.T) {
-	p := NewNpmPlugin()
+	p := NewNpmPlugin(http.DefaultClient)
 	// tarball artifact 没有 Attributes，先出现
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("npm", "tarball", map[string]string{

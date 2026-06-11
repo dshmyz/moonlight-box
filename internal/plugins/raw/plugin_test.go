@@ -26,7 +26,7 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 }
 
 func TestHandle_GetDownload(t *testing.T) {
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("generic", "file", map[string]string{"name": "readme.txt", "path": "docs", "filename": "readme.txt"}, "hello world")
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
@@ -46,7 +46,7 @@ func TestHandle_GetDownload(t *testing.T) {
 }
 
 func TestHandle_DirectoryListingUsesQueryArtifacts(t *testing.T) {
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	rt := &directoryListingRuntime{
 		artifacts: []*runtime.Artifact{
 			runtime.NewArtifact(runtime.ArtifactSpec{Format: "generic", Kind: "file", Name: "readme.txt", Filename: "readme.txt", RemotePath: "files/readme.txt"}),
@@ -77,7 +77,7 @@ func TestHandle_DirectoryListingUsesQueryArtifacts(t *testing.T) {
 }
 
 func TestHandle_DirectoryHeadReturnsHeadersWithoutBody(t *testing.T) {
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	rt := &directoryListingRuntime{
 		artifacts: []*runtime.Artifact{
 			runtime.NewArtifact(runtime.ArtifactSpec{Format: "generic", Kind: "file", Name: "readme.txt", Filename: "readme.txt", RemotePath: "files/readme.txt"}),
@@ -126,7 +126,7 @@ func (r *directoryListingRuntime) DeleteArtifact(ctx context.Context, key runtim
 }
 
 func TestHandle_HeadDownloadReturnsHeadersWithoutBody(t *testing.T) {
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("generic", "file", map[string]string{"name": "readme.txt", "path": "docs", "filename": "readme.txt"}, "hello world")
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
@@ -149,7 +149,7 @@ func TestHandle_HeadDownloadReturnsHeadersWithoutBody(t *testing.T) {
 }
 
 func TestHandle_GetNotFound(t *testing.T) {
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("GET", "missing.txt", nil)
@@ -162,7 +162,7 @@ func TestHandle_GetNotFound(t *testing.T) {
 }
 
 func TestHandle_PutUpload(t *testing.T) {
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("PUT", "docs/new.txt", bytes.NewReader([]byte("file content")))
@@ -181,7 +181,7 @@ func TestHandle_PutUpload(t *testing.T) {
 }
 
 func TestHandle_Delete(t *testing.T) {
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, w := newCtx("DELETE", "old.txt", nil)
@@ -197,7 +197,7 @@ func TestHandle_Delete(t *testing.T) {
 }
 
 func TestHandle_EmptyPath(t *testing.T) {
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{
 		runtime.NewArtifact(runtime.ArtifactSpec{Format: "generic", Kind: "file", Name: "readme.txt", Filename: "readme.txt", RemotePath: "readme.txt"}),
 	}}
@@ -213,7 +213,7 @@ func TestHandle_EmptyPath(t *testing.T) {
 }
 
 func TestHandle_RootDirectoryListing(t *testing.T) {
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		runtime.NewArtifact(runtime.ArtifactSpec{Format: "generic", Kind: "file", Name: "readme.txt", Filename: "readme.txt", RemotePath: "readme.txt"}),
 		runtime.NewArtifact(runtime.ArtifactSpec{Format: "generic", Kind: "directory", Name: "docs", Filename: "docs", RemotePath: "docs"}),
@@ -235,7 +235,7 @@ func TestHandle_RootDirectoryListing(t *testing.T) {
 }
 
 func TestHandle_RejectsPathTraversal(t *testing.T) {
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	for _, method := range []string{"GET", "PUT", "DELETE"} {
@@ -260,7 +260,7 @@ func TestFetchRemote_HTMLDirectoryListing(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "packages")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -283,7 +283,7 @@ func TestFetchRemote_DirectFile(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "files/archive.zip")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -308,7 +308,7 @@ func TestContentTypes(t *testing.T) {
 		{"unknown.xyz", "application/octet-stream"},
 	}
 	for _, tt := range tests {
-		p := NewGenericPlugin()
+		p := NewGenericPlugin(http.DefaultClient)
 		art := testhelper.NewArtifact("generic", "file", map[string]string{"name": tt.filename, "path": "", "filename": tt.filename}, "data")
 		rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
@@ -321,7 +321,7 @@ func TestContentTypes(t *testing.T) {
 }
 
 func TestArtifactKeyFieldMapping(t *testing.T) {
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("generic", "file", map[string]string{"name": "test.txt", "path": "a/b/c"}, "content")
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
@@ -345,7 +345,7 @@ func TestArtifactKeyFieldMapping(t *testing.T) {
 
 // Ensure FetchRemote returns proper error for empty path.
 func TestFetchRemote_EmptyPath(t *testing.T) {
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	_, err := p.FetchRemote(context.Background(), "http://example.com", "")
 	if err == nil {
 		t.Fatal("expected error for empty path")
@@ -354,7 +354,7 @@ func TestFetchRemote_EmptyPath(t *testing.T) {
 
 // Ensure JSON API returns proper structure.
 func TestHandle_JSONContentType(t *testing.T) {
-	p := NewGenericPlugin()
+	p := NewGenericPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("generic", "file", map[string]string{"name": "data.json", "path": "", "filename": "data.json"}, `{"key":"value"}`)
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 

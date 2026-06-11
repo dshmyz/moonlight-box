@@ -48,10 +48,11 @@ type GenericPlugin struct {
 	httpClient *http.Client
 }
 
-func NewGenericPlugin() *GenericPlugin {
-	return &GenericPlugin{
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+func NewGenericPlugin(httpClient *http.Client) *GenericPlugin {
+	if httpClient == nil {
+		panic("generic: httpClient is required")
 	}
+	return &GenericPlugin{httpClient: httpClient}
 }
 
 // SetHTTPClient allows injecting a shared HTTP client (with DNS mapping, TLS config, etc.)

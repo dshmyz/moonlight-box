@@ -256,22 +256,13 @@ func main() {
 	permCacheSvc := service.NewPermissionCacheService(roleRepo, 5*time.Minute)
 
 	// 初始化协议插件（新架构）
-	npmPlugin := npm.NewNpmPlugin()
-	mavenPlugin := maven.NewMavenPlugin()
-	goPlugin := gomod.NewGoPlugin()
-	pypiPlugin := pypi.NewPyPIPlugin()
-	genericPlugin := raw.NewGenericPlugin()
-	yumPlugin := yum.NewYumPlugin()
-	aptPlugin := apt.NewAptPlugin()
-
-	// 注入统一 HTTP 客户端到所有插件（含 DNS 映射、TLS 配置、连接池）
-	npmPlugin.SetHTTPClient(pluginHTTPClient)
-	mavenPlugin.SetHTTPClient(pluginHTTPClient)
-	goPlugin.SetHTTPClient(pluginHTTPClient)
-	pypiPlugin.SetHTTPClient(pluginHTTPClient)
-	genericPlugin.SetHTTPClient(pluginHTTPClient)
-	yumPlugin.SetHTTPClient(pluginHTTPClient)
-	aptPlugin.SetHTTPClient(pluginHTTPClient)
+	npmPlugin := npm.NewNpmPlugin(pluginHTTPClient)
+	mavenPlugin := maven.NewMavenPlugin(pluginHTTPClient)
+	goPlugin := gomod.NewGoPlugin(pluginHTTPClient)
+	pypiPlugin := pypi.NewPyPIPlugin(pluginHTTPClient)
+	genericPlugin := raw.NewGenericPlugin(pluginHTTPClient)
+	yumPlugin := yum.NewYumPlugin(pluginHTTPClient)
+	aptPlugin := apt.NewAptPlugin(pluginHTTPClient)
 
 	// 创建新架构 RepositoryRouter
 	repoManager := runtime.NewDefaultRepositoryManager()

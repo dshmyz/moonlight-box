@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -97,7 +98,7 @@ func TestBuildMigratedArtifactUsesMavenPathParserForSnapshotArtifacts(t *testing
 	}
 
 	artifact := buildMigratedArtifact(42, item, source.AssetStream{}, runtime.BlobRef{BlobID: 7}, nil, map[string]runtime.ArtifactNormalizer{
-		"maven": maven.NewMavenPlugin(),
+		"maven": maven.NewMavenPlugin(http.DefaultClient),
 	})
 
 	if artifact.Kind != runtime.KindArtifact {
@@ -129,7 +130,7 @@ func TestBuildMigratedArtifactUsesMavenPathParserForSnapshotMetadata(t *testing.
 	}
 
 	artifact := buildMigratedArtifact(42, item, source.AssetStream{}, runtime.BlobRef{BlobID: 7}, nil, map[string]runtime.ArtifactNormalizer{
-		"maven": maven.NewMavenPlugin(),
+		"maven": maven.NewMavenPlugin(http.DefaultClient),
 	})
 
 	if artifact.Kind != runtime.KindMetadata {

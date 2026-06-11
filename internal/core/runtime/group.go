@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 
 	"github.com/sirupsen/logrus"
 )
@@ -12,11 +13,33 @@ type GroupRuntime struct {
 }
 
 func (g *GroupRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artifact, error) {
-	for _, node := range g.Members {
+	var firstErr error
+	for i, node := range g.Members {
 		artifact, err := node.GetArtifact(ctx, key)
 		if err == nil {
 			return artifact, nil
 		}
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if errors.Is(err, ErrBlocked) {
+			logrus.WithFields(logrus.Fields{
+				"memberIndex": i,
+				"key":         key.String(),
+			}).Warn("group: member blocked artifact request")
+			return nil, err
+		}
+		logrus.WithFields(logrus.Fields{
+			"memberIndex": i,
+			"key":         key.String(),
+			"error":       err.Error(),
+		}).Warn("group: member GetArtifact failed")
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 	return nil, ErrNotFound
 }
@@ -34,14 +57,28 @@ func (g *GroupRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 
 // queryWithPriority 按优先级短路查询
 func (g *GroupRuntime) queryWithPriority(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
+	var firstErr error
 	for i, node := range g.Members {
 		artifacts, err := node.QueryArtifacts(ctx, query)
 		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			if errors.Is(err, ErrBlocked) {
+				logrus.WithFields(logrus.Fields{
+					"memberIndex": i,
+					"remotePath":  query.RemotePath,
+				}).Warn("group: member blocked artifact query")
+				return nil, err
+			}
 			logrus.WithFields(logrus.Fields{
 				"memberIndex": i,
 				"remotePath":  query.RemotePath,
 				"error":       err.Error(),
-			}).Debug("group: member QueryArtifacts failed, trying next")
+			}).Warn("group: member QueryArtifacts failed")
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		if len(artifacts) > 0 {
@@ -51,6 +88,9 @@ func (g *GroupRuntime) queryWithPriority(ctx context.Context, query ArtifactQuer
 			}).Debug("group: found artifacts from member, returning")
 			return artifacts, nil
 		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 	return nil, ErrNotFound
 }

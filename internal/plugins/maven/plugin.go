@@ -92,10 +92,11 @@ type MavenPlugin struct {
 	httpClient *http.Client
 }
 
-func NewMavenPlugin() *MavenPlugin {
-	return &MavenPlugin{
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+func NewMavenPlugin(httpClient *http.Client) *MavenPlugin {
+	if httpClient == nil {
+		panic("maven: httpClient is required")
 	}
+	return &MavenPlugin{httpClient: httpClient}
 }
 
 // SetHTTPClient allows injecting a shared HTTP client (with DNS mapping, TLS config, etc.)

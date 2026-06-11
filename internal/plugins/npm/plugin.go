@@ -44,10 +44,11 @@ type NpmPlugin struct {
 	httpClient *http.Client // 统一 HTTP 客户端，可注入
 }
 
-func NewNpmPlugin() *NpmPlugin {
-	return &NpmPlugin{
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+func NewNpmPlugin(httpClient *http.Client) *NpmPlugin {
+	if httpClient == nil {
+		panic("npm: httpClient is required")
 	}
+	return &NpmPlugin{httpClient: httpClient}
 }
 
 // SetHTTPClient 允许注入统一的 HTTP 客户端（含 DNS 映射、TLS 配置等）

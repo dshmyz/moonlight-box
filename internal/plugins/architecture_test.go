@@ -54,33 +54,37 @@ func TestPluginHandleMethodsRespectArchitectureBoundaries(t *testing.T) {
 	}
 }
 
-func TestPluginSetHTTPClientNilDoesNotReplaceInjectedClient(t *testing.T) {
-	type setter interface{ SetHTTPClient(*http.Client) }
+func TestPluginConstructorsRequireHTTPClient(t *testing.T) {
 	tests := []struct {
-		name   string
-		plugin setter
+		name    string
+		create  func(*http.Client) any
+		message string
 	}{
-		{"apt", apt.NewAptPlugin()},
-		{"go", gomod.NewGoPlugin()},
-		{"maven", maven.NewMavenPlugin()},
-		{"npm", npm.NewNpmPlugin()},
-		{"pypi", pypi.NewPyPIPlugin()},
-		{"raw", raw.NewGenericPlugin()},
-		{"yum", yum.NewYumPlugin()},
+		{"apt", func(c *http.Client) any { return apt.NewAptPlugin(c) }, "apt: httpClient is required"},
+		{"go", func(c *http.Client) any { return gomod.NewGoPlugin(c) }, "go: httpClient is required"},
+		{"maven", func(c *http.Client) any { return maven.NewMavenPlugin(c) }, "maven: httpClient is required"},
+		{"npm", func(c *http.Client) any { return npm.NewNpmPlugin(c) }, "npm: httpClient is required"},
+		{"pypi", func(c *http.Client) any { return pypi.NewPyPIPlugin(c) }, "pypi: httpClient is required"},
+		{"raw", func(c *http.Client) any { return raw.NewGenericPlugin(c) }, "generic: httpClient is required"},
+		{"yum", func(c *http.Client) any { return yum.NewYumPlugin(c) }, "yum: httpClient is required"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			injected := &http.Client{Timeout: 123 * time.Second}
-			tt.plugin.SetHTTPClient(injected)
-			before := httpClientPointer(tt.plugin)
-			tt.plugin.SetHTTPClient(nil)
-			after := httpClientPointer(tt.plugin)
-			if before == 0 || after == 0 {
-				t.Fatalf("expected non-nil httpClient pointers before=%d after=%d", before, after)
-			}
-			if before != after {
-				t.Fatalf("SetHTTPClient(nil) replaced injected client: before=%d after=%d", before, after)
+		t.Run(tt.name+" nil panics", func(t *testing.T) {
+			defer func() {
+				got := recover()
+				if got != tt.message {
+					t.Fatalf("panic = %#v, want %q", got, tt.message)
+				}
+			}()
+			tt.create(nil)
+		})
+
+		t.Run(tt.name+" injected client used", func(t *testing.T) {
+			client := &http.Client{Timeout: 123 * time.Second}
+			plugin := tt.create(client)
+			if got := httpClientPointer(plugin); got != reflect.ValueOf(client).Pointer() {
+				t.Fatalf("constructor did not store injected client")
 			}
 		})
 	}

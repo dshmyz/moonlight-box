@@ -10,8 +10,13 @@ import (
 	"testing"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/plugins/testhelper"
+	"github.com/dshmyz/moonlight-box/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/storage"
 	"github.com/dshmyz/moonlight-box/internal/util"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 func init() {
@@ -29,8 +34,31 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 	}, w
 }
 
+func newHostedPyPIRuntime(t *testing.T) runtime.RepositoryRuntime {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatal(err)
+	}
+	artifactSvc := service.NewArtifactService(db)
+	metadataStore := storage.NewMetadataStoreWithArtifactService(db, artifactSvc)
+	backend, err := storage.NewLocalStorage(t.TempDir(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobStore := storage.NewCASBlobStore(backend, db)
+	return &runtime.HostedRuntime{
+		MetadataStore: metadataStore,
+		BlobStore:     blobStore,
+		RepositoryID:  "1",
+	}
+}
+
 func TestHandle_SimpleIndex(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "requests", "package": "requests"}, ""),
 		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "flask", "package": "flask"}, ""),
@@ -50,7 +78,7 @@ func TestHandle_SimpleIndex(t *testing.T) {
 }
 
 func TestHandle_SimpleIndexHeadReturnsHeadersWithoutBody(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "requests", "package": "requests"}, ""),
 	}
@@ -71,8 +99,62 @@ func TestHandle_SimpleIndexHeadReturnsHeadersWithoutBody(t *testing.T) {
 	}
 }
 
+func TestHandle_SimpleIndexAggregatesHostedPackageNames(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	// 用真实 HostedRuntime 上传两个不同包
+	rt := newHostedPyPIRuntime(t)
+
+	// 上传 requests
+	req1 := runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: "1",
+		Format:       "pypi",
+		Kind:         "package-file",
+		Name:         "requests",
+		Version:      "2.28.0",
+		BlobRefs:     []runtime.BlobRef{{Algorithm: "sha256", Digest: "aaaa", Size: 100}},
+	})
+	sess1, err := rt.BeginUpload(context.Background(), runtime.UploadRequest{RepositoryID: "1", Format: "pypi", Filename: "requests-2.28.0.tar.gz", Size: 100})
+	if err != nil {
+		t.Fatalf("upload session failed: %v", err)
+	}
+	_ = sess1.PutArtifact(context.Background(), req1)
+	_ = sess1.Commit(context.Background())
+
+	// 上传 flask
+	req2 := runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: "1",
+		Format:       "pypi",
+		Kind:         "package-file",
+		Name:         "flask",
+		Version:      "2.0.0",
+		BlobRefs:     []runtime.BlobRef{{Algorithm: "sha256", Digest: "bbbb", Size: 100}},
+	})
+	sess2, err := rt.BeginUpload(context.Background(), runtime.UploadRequest{RepositoryID: "1", Format: "pypi", Filename: "flask-2.0.0.tar.gz", Size: 100})
+	if err != nil {
+		t.Fatalf("upload session failed: %v", err)
+	}
+	_ = sess2.PutArtifact(context.Background(), req2)
+	_ = sess2.Commit(context.Background())
+
+	// simple index 应该聚合所有包名
+	ctx, w := newCtx("GET", "simple/", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "requests") {
+		t.Errorf("simple index missing 'requests': %s", body)
+	}
+	if !strings.Contains(body, "flask") {
+		t.Errorf("simple index missing 'flask': %s", body)
+	}
+}
+
 func TestHandle_SimpleIndexJSON(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "requests", "package": "requests"}, ""),
 	}
@@ -88,7 +170,7 @@ func TestHandle_SimpleIndexJSON(t *testing.T) {
 }
 
 func TestHandle_PackageList(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("pypi", "package-file", map[string]string{
 			"name":     "requests",
@@ -112,8 +194,33 @@ func TestHandle_PackageList(t *testing.T) {
 	}
 }
 
+func TestHandle_PackageListSortsByPEP440Version(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("pypi", "package-file", map[string]string{"name": "demo", "package": "demo", "version": "1.0.0.post1", "filename": "demo-1.0.0.post1.tar.gz"}, ""),
+		testhelper.NewArtifact("pypi", "package-file", map[string]string{"name": "demo", "package": "demo", "version": "1.0.0a1", "filename": "demo-1.0.0a1.tar.gz"}, ""),
+		testhelper.NewArtifact("pypi", "package-file", map[string]string{"name": "demo", "package": "demo", "version": "1.0.0", "filename": "demo-1.0.0.tar.gz"}, ""),
+	}
+	for _, a := range arts {
+		a.Properties = map[string]string{"remote_path": "packages/" + a.Filename}
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "simple/demo/", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	body := w.Body.String()
+	idxPre := strings.Index(body, "demo-1.0.0a1.tar.gz")
+	idxFinal := strings.Index(body, "demo-1.0.0.tar.gz")
+	idxPost := strings.Index(body, "demo-1.0.0.post1.tar.gz")
+	if !(idxPre >= 0 && idxFinal >= 0 && idxPost >= 0 && idxPre < idxFinal && idxFinal < idxPost) {
+		t.Fatalf("expected PEP 440 order pre < final < post, got body: %s", body)
+	}
+}
+
 func TestHandle_PackageDownload(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("pypi", "package", map[string]string{
 		"name":     "requests",
 		"package":  "requests",
@@ -132,7 +239,7 @@ func TestHandle_PackageDownload(t *testing.T) {
 }
 
 func TestHandle_PackageDownloadHeadReturnsHeadersWithoutBody(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("pypi", "package-file", map[string]string{
 		"name":     "requests",
 		"package":  "requests",
@@ -158,7 +265,7 @@ func TestHandle_PackageDownloadHeadReturnsHeadersWithoutBody(t *testing.T) {
 }
 
 func TestHandle_PackageDownloadRangeReturnsPartialContent(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("pypi", "package-file", map[string]string{
 		"name":     "requests",
 		"package":  "requests",
@@ -185,7 +292,7 @@ func TestHandle_PackageDownloadRangeReturnsPartialContent(t *testing.T) {
 }
 
 func TestHandle_PackageDownloadMissQueriesRemotePathBeforeRetry(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	rt := &queryThenGetRuntime{
 		artifact: testhelper.NewArtifact("pypi", "package-file", map[string]string{
 			"name":     "requests",
@@ -319,8 +426,74 @@ func TestIsValidSdistFilename(t *testing.T) {
 	}
 }
 
+func TestComparePEP440Versions(t *testing.T) {
+	tests := []struct {
+		name string
+		less string
+		more string
+	}{
+		{"release segment", "1.9.0", "1.10.0"},
+		{"pre release before final", "1.0.0a1", "1.0.0"},
+		{"dev release before final", "1.0.0.dev1", "1.0.0"},
+		{"post release after final", "1.0.0", "1.0.0.post1"},
+		{"dev release number", "1.0.0.dev1", "1.0.0.dev2"},
+		{"epoch release", "999.0", "1!1.0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if comparePEP440Versions(tt.less, tt.more) >= 0 {
+				t.Fatalf("expected %q < %q", tt.less, tt.more)
+			}
+			if comparePEP440Versions(tt.more, tt.less) <= 0 {
+				t.Fatalf("expected %q > %q", tt.more, tt.less)
+			}
+		})
+	}
+}
+
+func TestExtractPackageNameFromFilename_HyphenatedName(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	tests := []struct {
+		filename, want string
+	}{
+		{"my-package-1.2.3-py3-none-any.whl", "my-package"},
+		{"requests-2.28.0-py3-none-any.whl", "requests"},
+		{"Django-4.2.0-py3-none-any.whl", "django"},
+		{"my-package-1.2.3-1-py3-none-any.whl", "my-package"},
+		{"my-package-1.2.3.tar.gz", "my-package"},
+		{"requests-2.28.0.tar.bz2", "requests"},
+		{"my_package-1.2.3.zip", "my-package"},
+	}
+	for _, tt := range tests {
+		got := p.extractPackageNameFromFilename(tt.filename)
+		if got != tt.want {
+			t.Errorf("extractPackageNameFromFilename(%q) = %q, want %q", tt.filename, got, tt.want)
+		}
+	}
+}
+
+func TestExtractVersionFromFilename_HyphenatedName(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	tests := []struct {
+		filename, want string
+	}{
+		{"my-package-1.2.3-py3-none-any.whl", "1.2.3"},
+		{"requests-2.28.0-py3-none-any.whl", "2.28.0"},
+		{"my-package-1.2.3-1-py3-none-any.whl", "1.2.3"},
+		{"my-package-1.2.3.tar.gz", "1.2.3"},
+		{"requests-2.28.0.tar.bz2", "2.28.0"},
+		{"my_package-1.2.3.zip", "1.2.3"},
+	}
+	for _, tt := range tests {
+		got := p.extractVersionFromFilename(tt.filename)
+		if got != tt.want {
+			t.Errorf("extractVersionFromFilename(%q) = %q, want %q", tt.filename, got, tt.want)
+		}
+	}
+}
+
 func TestExtractVersionFromFilename(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	tests := []struct {
 		filename, want string
 	}{
@@ -337,7 +510,7 @@ func TestExtractVersionFromFilename(t *testing.T) {
 }
 
 func TestHandle_JsonAPI(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("pypi", "package-file", map[string]string{
 		"package":  "requests",
 		"version":  "2.28.0",
@@ -358,7 +531,7 @@ func TestHandle_JsonAPI(t *testing.T) {
 }
 
 func TestHandle_JsonAPIQueriesSupportedSimpleRemotePath(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, _ := newCtx("GET", "pypi/requests/json", nil)
@@ -374,7 +547,7 @@ func TestHandle_JsonAPIQueriesSupportedSimpleRemotePath(t *testing.T) {
 }
 
 func TestHandle_QueryRemotePath(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
 	ctx, _ := newCtx("GET", "simple/requests/", nil)
@@ -397,7 +570,7 @@ func TestFetchRemote_SimpleIndex(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "simple")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -411,7 +584,7 @@ func TestFetchRemote_SimpleIndex(t *testing.T) {
 }
 
 func TestHandle_HtmlEscaping(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "<script>alert(1)</script>", "package": "<script>alert(1)</script>"}, ""),
 	}
@@ -430,7 +603,7 @@ func TestHandle_HtmlEscaping(t *testing.T) {
 }
 
 func TestHandle_SimpleIndex_NormalizedNames(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "my-package", "package": "my-package"}, ""),
 		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "my-package", "package": "my-package"}, ""),
@@ -455,7 +628,7 @@ func TestHandle_SimpleIndex_NormalizedNames(t *testing.T) {
 }
 
 func TestHandle_PackageList_JSON(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("pypi", "package-file", map[string]string{
 			"name":     "requests",
@@ -485,7 +658,7 @@ func TestHandle_PackageList_JSON(t *testing.T) {
 }
 
 func TestHandle_PackageList_NotFound(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{QueryErr: runtime.ErrNotFound}
 
 	ctx, w := newCtx("GET", "simple/nonexistent-package/", nil)
@@ -497,7 +670,7 @@ func TestHandle_PackageList_NotFound(t *testing.T) {
 }
 
 func TestHandle_PackageDownload_NotFound(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{GetErr: runtime.ErrNotFound}
 
 	ctx, w := newCtx("GET", "packages/ab/cd/nonexistent-1.0.tar.gz", nil)
@@ -509,7 +682,7 @@ func TestHandle_PackageDownload_NotFound(t *testing.T) {
 }
 
 func TestHandle_PackageDownload_MissingContent(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("pypi", "package", map[string]string{
 		"name":     "requests",
 		"package":  "requests",
@@ -530,7 +703,7 @@ func TestHandle_PackageDownload_MissingContent(t *testing.T) {
 }
 
 func TestHandle_JsonAPI_NotFound(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{}}
 
 	ctx, w := newCtx("GET", "pypi/nonexistent-package/json", nil)
@@ -546,7 +719,7 @@ func TestHandle_JsonAPI_NotFound(t *testing.T) {
 }
 
 func TestHandle_JsonAPI_WithVersion(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	art1 := testhelper.NewArtifact("pypi", "package-file", map[string]string{
 		"package":  "requests",
 		"version":  "2.28.0",
@@ -590,7 +763,7 @@ func TestHandle_InvalidPath(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			p := NewPyPIPlugin()
+			p := NewPyPIPlugin(http.DefaultClient)
 			rt := &testhelper.MockRuntime{}
 
 			ctx, w := newCtx("GET", tt.path, nil)
@@ -657,7 +830,7 @@ func TestFetchRemote_PackageInfo(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "simple/requests/")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -694,7 +867,7 @@ func TestFetchRemote_PackageInfo(t *testing.T) {
 }
 
 func TestBuildArtifactsFromJSONAPIPrefersUsableLicense(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	arts := p.buildArtifactsFromJSONAPI("demo", map[string]interface{}{
 		"info": map[string]interface{}{
 			"license":            "UNKNOWN",
@@ -747,7 +920,7 @@ func TestFetchRemote_FallbackToSimpleIndex(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), srv.URL, "simple/mypackage/")
 	if err != nil {
 		t.Fatalf("FetchRemote failed: %v", err)
@@ -775,7 +948,7 @@ func TestFetchRemote_FallbackToSimpleIndex(t *testing.T) {
 }
 
 func TestParsePackageListDoesNotStoreRelativeDownloadURL(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	arts, err := p.parsePackageList("requests", strings.NewReader(`
 <html><body>
 <a href="../../packages/ab/cd/requests-2.28.0.tar.gz">requests-2.28.0.tar.gz</a><br>
@@ -800,7 +973,7 @@ func TestFetchRemote_ErrorStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	_, err := p.FetchRemote(context.Background(), srv.URL, "simple")
 	if err == nil {
 		t.Fatal("expected error for non-200 response")
@@ -808,7 +981,7 @@ func TestFetchRemote_ErrorStatus(t *testing.T) {
 }
 
 func TestExtractPackageFromFilename(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	tests := []struct {
 		filename, want string
 	}{
@@ -828,7 +1001,7 @@ func TestExtractPackageFromFilename(t *testing.T) {
 }
 
 func TestExtractVersionFromFilename_EdgeCases(t *testing.T) {
-	p := NewPyPIPlugin()
+	p := NewPyPIPlugin(http.DefaultClient)
 	tests := []struct {
 		filename, want string
 	}{

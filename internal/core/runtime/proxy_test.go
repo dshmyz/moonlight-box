@@ -254,16 +254,15 @@ func TestDifferentPathsCanRefreshConcurrently(t *testing.T) {
 	}
 }
 
-func TestEnsureArtifactBlobRejectsOversizedBlob(t *testing.T) {
+func TestEnsureArtifactBlobAllowsLargeBlobWhenLimitDisabled(t *testing.T) {
 	ctx := context.Background()
 	artifact := &Artifact{
-		ID:           "oversized",
+		ID:           "large",
 		RepositoryID: "repo",
 		Format:       "npm",
 		Name:         "big-pkg",
 	}
-	// 创建一个超大的 blob reader
-	bigContent := strings.Repeat("x", maxBlobSize+1)
+	bigContent := strings.Repeat("x", 1024)
 	fakeBlob := &fakeBlobStore{}
 	fakeClient := &fakeRemoteClient{blob: io.NopCloser(strings.NewReader(bigContent))}
 	rt := &ProxyRuntime{
@@ -271,7 +270,36 @@ func TestEnsureArtifactBlobRejectsOversizedBlob(t *testing.T) {
 		BlobStore:     fakeBlob,
 		RemoteClient:  fakeClient,
 		RemoteBaseURL: "https://example.test",
-		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute, MaxBlobSize: 0},
+	}
+	key := ArtifactKey{
+		RepositoryID: "repo",
+		Format:       "npm",
+		Filename:     "big-pkg.tgz",
+		RemotePath:   "big-pkg",
+	}
+	if err := rt.ensureArtifactBlob(ctx, artifact, key); err != nil {
+		t.Fatalf("expected large blob to be allowed when MaxBlobSize=0, got %v", err)
+	}
+}
+
+func TestEnsureArtifactBlobRejectsOversizedBlobWhenLimitConfigured(t *testing.T) {
+	ctx := context.Background()
+	artifact := &Artifact{
+		ID:           "oversized",
+		RepositoryID: "repo",
+		Format:       "npm",
+		Name:         "big-pkg",
+	}
+	bigContent := strings.Repeat("x", 11)
+	fakeBlob := &fakeBlobStore{}
+	fakeClient := &fakeRemoteClient{blob: io.NopCloser(strings.NewReader(bigContent))}
+	rt := &ProxyRuntime{
+		MetadataStore: newFakeMetadataStore(),
+		BlobStore:     fakeBlob,
+		RemoteClient:  fakeClient,
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute, MaxBlobSize: 10},
 	}
 	key := ArtifactKey{
 		RepositoryID: "repo",
@@ -287,6 +315,47 @@ func TestEnsureArtifactBlobRejectsOversizedBlob(t *testing.T) {
 		t.Fatalf("expected 'too large' error, got: %v", err)
 	}
 }
+
+func TestEnsureArtifactBlobStreamsUpstreamReaderToBlobStore(t *testing.T) {
+	ctx := context.Background()
+	artifact := &Artifact{ID: "stream", RepositoryID: "repo", Format: "npm", Name: "pkg"}
+	reader := &markerReadCloser{Reader: strings.NewReader("stream-content")}
+	blobStore := &capturingBlobStore{}
+	rt := &ProxyRuntime{
+		MetadataStore: newFakeMetadataStore(),
+		BlobStore:     blobStore,
+		RemoteClient:  &fakeRemoteClient{blob: reader},
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute, MaxBlobSize: 0},
+	}
+	key := ArtifactKey{RepositoryID: "repo", Format: "npm", Filename: "pkg.tgz", RemotePath: "pkg"}
+
+	if err := rt.ensureArtifactBlob(ctx, artifact, key); err != nil {
+		t.Fatalf("ensureArtifactBlob failed: %v", err)
+	}
+	if blobStore.readerType != "*runtime.markerReadCloser" {
+		t.Fatalf("expected original upstream reader to be passed to BlobStore.Put, got %s", blobStore.readerType)
+	}
+}
+
+type markerReadCloser struct {
+	*strings.Reader
+}
+
+func (r *markerReadCloser) Close() error { return nil }
+
+type capturingBlobStore struct {
+	readerType string
+}
+
+func (s *capturingBlobStore) Put(reader io.Reader) (BlobRef, error) {
+	s.readerType = fmt.Sprintf("%T", reader)
+	_, _ = io.Copy(io.Discard, reader)
+	return BlobRef{Algorithm: "sha256", Digest: "streamed", Size: 14}, nil
+}
+func (s *capturingBlobStore) Open(ref BlobRef) (io.ReadCloser, error) { return io.NopCloser(nil), nil }
+func (s *capturingBlobStore) Stat(ref BlobRef) (*BlobMetadata, error) { return nil, nil }
+func (s *capturingBlobStore) Delete(ref BlobRef) error                { return nil }
 
 func TestConcurrentQueryArtifactsOnlyTriggersOneFetch(t *testing.T) {
 	ctx := context.Background()
