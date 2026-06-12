@@ -93,8 +93,8 @@ type rawArtifact struct {
 	UpdatedAt    time.Time `gorm:"column:updated_at"`
 }
 
-// Search 从 artifacts 表搜索包，按 name 聚合。
-// 优化版本：优先使用 packages 表，如果不存在则回退到 artifacts 表聚合。
+// Search 从 packages 聚合表搜索包。
+// packages 表存在时始终使用快速路径，避免列表接口在大 artifacts 表上做全量聚合。
 func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (*SearchResult, error) {
 	// 尝试从缓存获取结果
 	cacheKey := s.generateCacheKey(req)
@@ -104,22 +104,16 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 		}
 	}
 
-	// 尝试从 packages 表查询（快速路径）
 	pkgResult, pkgErr := s.searchFromPackages(ctx, req)
-	if pkgErr == nil && pkgResult != nil && pkgResult.Total > 0 {
+	if pkgErr == nil && pkgResult != nil {
 		s.cache.Set(cacheKey, pkgResult, 5*time.Minute)
 		return pkgResult, nil
 	}
 
-	// 回退到 artifacts 表聚合（慢速路径）。当 packages 表存在但为空/重建失败时，
-	// 这里可以避免包列表被快速路径误判为空。
-	logFields := logrus.Fields{util.LogKeyModule: "package-search"}
-	if pkgErr != nil {
-		logFields["reason"] = pkgErr.Error()
-	} else {
-		logFields["reason"] = "packages table returned no rows"
-	}
-	util.WithFields(logFields).Warn("Falling back to artifacts aggregation")
+	util.WithFields(logrus.Fields{
+		util.LogKeyModule: "package-search",
+		"reason":          pkgErr.Error(),
+	}).Warn("Falling back to artifacts aggregation because packages table is unavailable")
 
 	artifactResult, err := s.searchFromArtifacts(ctx, req)
 	if err != nil {
@@ -146,16 +140,7 @@ func (s *PackageSearchService) searchFromPackages(ctx context.Context, req *Sear
 	}
 
 	query := s.db.WithContext(ctx).Model(&model.Package{})
-	query = query.Where(`
-		EXISTS (
-			SELECT 1 FROM artifacts a
-			WHERE a.repository_id = packages.repository_id
-			  AND a.format = packages.format
-			  AND a.name = packages.name
-			  AND ` + searchableArtifactSQL("a") + `
-			LIMIT 1
-		)
-	`)
+	query = query.Where(searchablePackageSQL("packages"))
 
 	// 构建查询条件
 	if req.Type != "" {
@@ -444,6 +429,34 @@ func searchableArtifactSQL(alias string) string {
 		prefix + "path = 'repodata' OR " +
 		prefix + "path LIKE '%/repodata' OR " +
 		prefix + "filename = 'repomd.xml'))"
+}
+
+func searchablePackageSQL(alias string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	name := prefix + "name"
+	format := prefix + "format"
+	versionCount := prefix + "version_count"
+
+	return "(" + name + " IS NOT NULL AND " + name + " != '' AND " + versionCount + " > 0)" +
+		" AND NOT (" + format + " = 'yum' AND (" +
+		name + " = 'repomd.xml' OR " +
+		name + " LIKE '%.xml' OR " +
+		name + " LIKE '%.xml.gz' OR " +
+		name + " LIKE '%.xml.xz' OR " +
+		name + " LIKE '%.xml.bz2' OR " +
+		name + " LIKE '%.sqlite' OR " +
+		name + " LIKE '%.sqlite.gz' OR " +
+		name + " LIKE '%.sqlite.xz' OR " +
+		name + " LIKE '%.sqlite.bz2'))" +
+		" AND NOT (" + format + " = 'apt' AND (" +
+		name + " IN ('Packages', 'Packages.gz', 'Packages.xz', 'Packages.bz2', 'Release', 'InRelease') OR " +
+		name + " LIKE '%/Packages' OR " +
+		name + " LIKE '%/Packages.gz' OR " +
+		name + " LIKE '%/Packages.xz' OR " +
+		name + " LIKE '%/Packages.bz2'))"
 }
 
 // extractField 从 JSON 字符串中提取单个字段值。
