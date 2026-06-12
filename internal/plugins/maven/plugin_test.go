@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -411,6 +412,114 @@ func TestFetchRemote_Metadata_SNAPSHOT_VersionPath(t *testing.T) {
 	}
 }
 
+func TestFetchRemote_MetadataParsesFourteenDigitLastUpdated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(`<?xml version="1.0"?>
+<metadata modelVersion="1.1.0">
+  <groupId>com.example</groupId>
+  <artifactId>lib</artifactId>
+  <versioning>
+    <latest>1.2.3</latest>
+    <release>1.2.3</release>
+    <versions>
+      <version>1.2.3</version>
+    </versions>
+    <lastUpdated>20230101120000</lastUpdated>
+  </versioning>
+</metadata>`))
+	}))
+	defer srv.Close()
+
+	p := NewMavenPlugin(http.DefaultClient)
+	arts, err := p.FetchRemote(context.Background(), srv.URL, "com/example/lib/maven-metadata.xml")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 version artifact, got %d", len(arts))
+	}
+	if got := arts[0].Attributes["published_at"]; got != "2023-01-01T12:00:00Z" {
+		t.Fatalf("published_at = %q, want 2023-01-01T12:00:00Z", got)
+	}
+}
+
+func TestFetchRemote_Metadata_SNAPSHOT_VersionPathIncludesSnapshotFiles(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(`<?xml version="1.0"?>
+<metadata modelVersion="1.1.0">
+  <groupId>com.example</groupId>
+  <artifactId>lib</artifactId>
+  <version>1.0-SNAPSHOT</version>
+  <versioning>
+    <snapshot>
+      <timestamp>20230101.120000</timestamp>
+      <buildNumber>1</buildNumber>
+    </snapshot>
+    <snapshotVersions>
+      <snapshotVersion>
+        <extension>jar</extension>
+        <value>1.0-20230101.120000-1</value>
+        <updated>20230101120000</updated>
+      </snapshotVersion>
+      <snapshotVersion>
+        <extension>jar</extension>
+        <classifier>sources</classifier>
+        <value>1.0-20230101.120000-1</value>
+        <updated>20230101120000</updated>
+      </snapshotVersion>
+      <snapshotVersion>
+        <extension>pom</extension>
+        <value>1.0-20230101.120000-1</value>
+        <updated>20230101120000</updated>
+      </snapshotVersion>
+    </snapshotVersions>
+    <lastUpdated>20230101120000</lastUpdated>
+  </versioning>
+</metadata>`))
+	}))
+	defer srv.Close()
+
+	p := NewMavenPlugin(http.DefaultClient)
+	arts, err := p.FetchRemote(context.Background(), srv.URL, "com/example/lib/1.0-SNAPSHOT/maven-metadata.xml")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if len(arts) != 4 {
+		t.Fatalf("expected logical snapshot version plus 3 files, got %d", len(arts))
+	}
+
+	files := map[string]*runtime.Artifact{}
+	for _, a := range arts {
+		if a.Kind == runtime.KindArtifact {
+			files[a.Filename] = a
+		}
+	}
+	for _, filename := range []string{
+		"lib-1.0-20230101.120000-1.jar",
+		"lib-1.0-20230101.120000-1-sources.jar",
+		"lib-1.0-20230101.120000-1.pom",
+	} {
+		file := files[filename]
+		if file == nil {
+			t.Fatalf("missing snapshot file artifact %s", filename)
+		}
+		if file.Version != "1.0-SNAPSHOT" {
+			t.Fatalf("%s version = %q, want 1.0-SNAPSHOT", filename, file.Version)
+		}
+		if file.Attributes["default_visible"] != "true" {
+			t.Fatalf("%s default_visible = %q, want true", filename, file.Attributes["default_visible"])
+		}
+		if file.Attributes["display_group"] != "20230101.120000-1" {
+			t.Fatalf("%s display_group = %q, want 20230101.120000-1", filename, file.Attributes["display_group"])
+		}
+	}
+	if files["lib-1.0-20230101.120000-1-sources.jar"].Qualifiers["classifier"] != "sources" {
+		t.Fatalf("sources classifier = %q", files["lib-1.0-20230101.120000-1-sources.jar"].Qualifiers["classifier"])
+	}
+}
+
 func TestFetchRemote_Metadata_MissingGroupId(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
@@ -689,6 +798,62 @@ func TestHandle_Metadata_Standard(t *testing.T) {
 	}
 	if !strings.Contains(body, "<version>31.0-jre</version>") || !strings.Contains(body, "<version>31.1-jre</version>") {
 		t.Errorf("missing versions, body: %s", body)
+	}
+}
+
+func TestHandle_MetadataUsesMavenVersionOrdering(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("maven", "version", map[string]string{
+			"group":    "com.example",
+			"artifact": "app",
+			"version":  "1.9.0",
+		}, ""),
+		testhelper.NewArtifact("maven", "version", map[string]string{
+			"group":    "com.example",
+			"artifact": "app",
+			"version":  "1.10.0",
+		}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "com/example/app/maven-metadata.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "<latest>1.10.0</latest>") {
+		t.Fatalf("expected latest 1.10.0 with Maven ordering, got: %s", body)
+	}
+}
+
+func TestSortMavenVersionsUsesQualifierOrdering(t *testing.T) {
+	versions := []string{
+		"1.0-sp-1",
+		"1.0",
+		"1.0-SNAPSHOT",
+		"1.0-beta-1",
+		"1.0-rc-1",
+		"1.0-alpha-1",
+		"1.0.Final",
+	}
+
+	sortMavenVersions(versions)
+
+	want := []string{
+		"1.0-alpha-1",
+		"1.0-beta-1",
+		"1.0-rc-1",
+		"1.0-SNAPSHOT",
+		"1.0",
+		"1.0.Final",
+		"1.0-sp-1",
+	}
+	if !reflect.DeepEqual(versions, want) {
+		t.Fatalf("versions = %#v, want %#v", versions, want)
 	}
 }
 
@@ -1110,6 +1275,38 @@ func TestHandle_Upload(t *testing.T) {
 	}
 }
 
+func TestHandle_UploadChecksumSidecarStoresChecksumKind(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	ctx, w := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar.sha1", strings.NewReader("abc123"))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.UploadedArts) != 1 {
+		t.Fatalf("expected 1 uploaded artifact, got %d", len(rt.UploadedArts))
+	}
+	art := rt.UploadedArts[0]
+	if art.Kind != runtime.KindChecksum {
+		t.Fatalf("kind = %q, want checksum", art.Kind)
+	}
+	if art.Name != "com.example:app" {
+		t.Fatalf("name = %q, want com.example:app", art.Name)
+	}
+	if art.Filename != "app-1.0.0.jar.sha1" {
+		t.Fatalf("filename = %q", art.Filename)
+	}
+	if art.Properties["checksum_algorithm"] != "sha1" {
+		t.Fatalf("checksum_algorithm = %q, want sha1", art.Properties["checksum_algorithm"])
+	}
+	if art.Properties["checksum_for"] != "app-1.0.0.jar" {
+		t.Fatalf("checksum_for = %q, want app-1.0.0.jar", art.Properties["checksum_for"])
+	}
+}
+
 func TestHandle_UploadJarAndPomWithHostedRuntime(t *testing.T) {
 	p := NewMavenPlugin(http.DefaultClient)
 	rt := newHostedMavenRuntime(t)
@@ -1142,6 +1339,36 @@ func TestHandle_UploadJarAndPomWithHostedRuntime(t *testing.T) {
 	}
 }
 
+func TestHandle_UploadPomExtractsLicenseAttribute(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+	pom := `<project>
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+    </license>
+  </licenses>
+</project>`
+
+	ctx, w := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.pom", strings.NewReader(pom))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.UploadedArts) != 1 {
+		t.Fatalf("expected 1 uploaded artifact, got %d", len(rt.UploadedArts))
+	}
+	art := rt.UploadedArts[0]
+	if got := art.Attributes["license"]; got != "Apache License, Version 2.0" {
+		t.Fatalf("license attribute = %q, want Apache License, Version 2.0", got)
+	}
+	if got := art.Properties["license"]; got != "Apache License, Version 2.0" {
+		t.Fatalf("license property = %q, want Apache License, Version 2.0", got)
+	}
+}
+
 func TestHandle_ReuploadJarWithHostedRuntimeUpdatesExistingArtifact(t *testing.T) {
 	p := NewMavenPlugin(http.DefaultClient)
 	rt := newHostedMavenRuntime(t)
@@ -1168,6 +1395,27 @@ func TestHandle_ReuploadJarWithHostedRuntimeUpdatesExistingArtifact(t *testing.T
 	}
 	if getW.Body.String() != "new" {
 		t.Fatalf("jar body = %q", getW.Body.String())
+	}
+}
+
+func TestHandle_ReuploadReleaseKeepsCurrentCompatibleOverwriteBehavior(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	rt := newHostedMavenRuntime(t)
+
+	firstCtx, firstW := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", strings.NewReader("old"))
+	if err := p.Handle(firstCtx, rt); err != nil {
+		t.Fatalf("first upload Handle failed: %v", err)
+	}
+	if firstW.Code != http.StatusCreated {
+		t.Fatalf("first upload status = %d body=%q", firstW.Code, firstW.Body.String())
+	}
+
+	secondCtx, secondW := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", strings.NewReader("new"))
+	if err := p.Handle(secondCtx, rt); err != nil {
+		t.Fatalf("second upload Handle failed: %v", err)
+	}
+	if secondW.Code != http.StatusOK {
+		t.Fatalf("second upload status = %d body=%q", secondW.Code, secondW.Body.String())
 	}
 }
 
@@ -1200,6 +1448,35 @@ func TestHandle_UploadArtifactLevelMetadataUsesStructuredFields(t *testing.T) {
 	}
 	if art.Filename != "maven-metadata.xml" {
 		t.Fatalf("filename = %q", art.Filename)
+	}
+}
+
+func TestHandle_UploadMetadataChecksumSidecarStoresChecksumKind(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	ctx, w := newCtx("PUT", "com/example/app/maven-metadata.xml.sha1", strings.NewReader("abc123"))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.UploadedArts) != 1 {
+		t.Fatalf("expected 1 uploaded artifact, got %d", len(rt.UploadedArts))
+	}
+	art := rt.UploadedArts[0]
+	if art.Kind != runtime.KindChecksum {
+		t.Fatalf("kind = %q, want checksum", art.Kind)
+	}
+	if art.Name != "com.example:app" {
+		t.Fatalf("name = %q, want com.example:app", art.Name)
+	}
+	if art.Version != "" {
+		t.Fatalf("version = %q, want empty artifact-level metadata checksum version", art.Version)
+	}
+	if art.Properties["checksum_for"] != "maven-metadata.xml" {
+		t.Fatalf("checksum_for = %q, want maven-metadata.xml", art.Properties["checksum_for"])
 	}
 }
 

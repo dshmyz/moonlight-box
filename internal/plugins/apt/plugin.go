@@ -53,6 +53,9 @@
 package apt
 
 import (
+	"bytes"
+	"compress/bzip2"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -65,6 +68,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/core/cache"
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/sirupsen/logrus"
+	"github.com/ulikunitz/xz"
 )
 
 type AptPlugin struct {
@@ -104,25 +108,29 @@ func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 	}).Debug("apt: FetchRemote called")
 
 	// For Packages index requests, fetch and parse the Packages file.
-	// Compressed formats (.gz/.xz/.bz2) are opaque binary files, proxied as-is.
+	// Compressed formats still produce a metadata artifact for transparent
+	// proxying, plus parsed package artifacts for UI/search aggregation.
 	if p.isPackagesRequest(path) {
 		if strings.HasSuffix(path, ".gz") || strings.HasSuffix(path, ".xz") || strings.HasSuffix(path, ".bz2") {
 			filename := filepath.Base(path)
 			dir := aptArtifactDir(path)
-			return []*runtime.Artifact{
-				runtime.NewArtifact(runtime.ArtifactSpec{
-					Format:     "apt",
-					Kind:       runtime.KindMetadata,
-					Name:       filename,
-					Path:       dir,
-					Filename:   filename,
-					RemotePath: path,
-					Properties: map[string]string{
-						"filename":    filename,
-						"remote_path": path,
-					},
-				}),
-			}, nil
+			metadata := runtime.NewArtifact(runtime.ArtifactSpec{
+				Format:     "apt",
+				Kind:       runtime.KindMetadata,
+				Name:       filename,
+				Path:       dir,
+				Filename:   filename,
+				RemotePath: path,
+				Properties: map[string]string{
+					"filename":    filename,
+					"remote_path": path,
+				},
+			})
+			packages, err := p.fetchPackagesIndex(ctx, remoteURL, path)
+			if err != nil {
+				return []*runtime.Artifact{metadata}, nil
+			}
+			return append([]*runtime.Artifact{metadata}, packages...), nil
 		}
 		return p.fetchPackagesIndex(ctx, remoteURL, path)
 	}
@@ -221,6 +229,10 @@ func (p *AptPlugin) fetchPackagesIndex(ctx context.Context, remoteURL, path stri
 		}).Error("apt: read packages index body failed")
 		return nil, fmt.Errorf("apt: read packages index body: %w", err)
 	}
+	body, err = decompressAptPackages(path, body)
+	if err != nil {
+		return nil, err
+	}
 
 	artifacts := p.parsePackagesIndex(string(body))
 
@@ -230,6 +242,40 @@ func (p *AptPlugin) fetchPackagesIndex(ctx context.Context, remoteURL, path stri
 		"duration":     time.Since(start).Seconds(),
 	}).Debug("apt: fetchPackagesIndex success")
 	return artifacts, nil
+}
+
+func decompressAptPackages(path string, body []byte) ([]byte, error) {
+	switch {
+	case strings.HasSuffix(path, ".gz"):
+		zr, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("apt: open Packages gzip: %w", err)
+		}
+		defer zr.Close()
+		out, err := io.ReadAll(zr)
+		if err != nil {
+			return nil, fmt.Errorf("apt: read Packages gzip: %w", err)
+		}
+		return out, nil
+	case strings.HasSuffix(path, ".xz"):
+		xr, err := xz.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("apt: open Packages xz: %w", err)
+		}
+		out, err := io.ReadAll(xr)
+		if err != nil {
+			return nil, fmt.Errorf("apt: read Packages xz: %w", err)
+		}
+		return out, nil
+	case strings.HasSuffix(path, ".bz2"):
+		out, err := io.ReadAll(bzip2.NewReader(bytes.NewReader(body)))
+		if err != nil {
+			return nil, fmt.Errorf("apt: read Packages bzip2: %w", err)
+		}
+		return out, nil
+	default:
+		return body, nil
+	}
 }
 
 // parsePackagesIndex parses a Debian Packages index file and extracts package entries.

@@ -31,22 +31,36 @@ func (c *HTTPRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (
 		return nil, fmt.Errorf("remote URL not configured for artifact key: %s", key.String())
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, remoteURL, nil)
+	meta, status, err := c.fetchMetadataWithMethod(ctx, http.MethodHead, remoteURL)
+	if err == nil && status < 400 {
+		return meta, nil
+	}
+	if status == http.StatusMethodNotAllowed || status == http.StatusForbidden || status == http.StatusUnauthorized || status >= 500 {
+		getMeta, _, getErr := c.fetchMetadataWithMethod(ctx, http.MethodGet, remoteURL)
+		if getErr == nil {
+			return getMeta, nil
+		}
+	}
+	return meta, err
+}
+
+func (c *HTTPRemoteClient) fetchMetadataWithMethod(ctx context.Context, method, remoteURL string) (*RemoteMetadata, int, error) {
+	req, err := http.NewRequestWithContext(ctx, method, remoteURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
+		return nil, 0, fmt.Errorf("creating request: %w", err)
 	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetching metadata: %w", err)
+		return nil, 0, fmt.Errorf("fetching metadata: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return &RemoteMetadata{Exists: false}, nil
+		return &RemoteMetadata{Exists: false}, resp.StatusCode, nil
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("remote returned status %d", resp.StatusCode)
+		return nil, resp.StatusCode, fmt.Errorf("remote returned status %d", resp.StatusCode)
 	}
 
 	meta := &RemoteMetadata{
@@ -61,7 +75,7 @@ func (c *HTTPRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (
 		meta.ModifiedAt = modTime
 	}
 
-	return meta, nil
+	return meta, resp.StatusCode, nil
 }
 
 func (c *HTTPRemoteClient) FetchBlob(ctx context.Context, key ArtifactKey) (io.ReadCloser, error) {

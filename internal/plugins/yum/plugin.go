@@ -70,6 +70,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/core/cache"
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/sirupsen/logrus"
+	"github.com/ulikunitz/xz"
 )
 
 type repomdData struct {
@@ -149,6 +150,10 @@ func (p *YumPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 	// For other paths (RPM packages, primary.xml, etc.), return a basic artifact indicating the remote resource exists.
 	filename := filepath.Base(path)
 	dir := yumArtifactDir(path)
+	kind := runtime.KindFile
+	if p.isRepodataRequest(path) {
+		kind = runtime.KindMetadata
+	}
 	logrus.WithFields(logrus.Fields{
 		"path":     path,
 		"filename": filename,
@@ -156,7 +161,7 @@ func (p *YumPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 	return []*runtime.Artifact{
 		runtime.NewArtifact(runtime.ArtifactSpec{
 			Format:     "yum",
-			Kind:       runtime.KindFile,
+			Kind:       kind,
 			Name:       filename,
 			Path:       dir,
 			Filename:   filename,
@@ -310,17 +315,9 @@ func (p *YumPlugin) fetchPrimaryIndexPackages(ctx context.Context, remoteURL str
 		return nil, fmt.Errorf("yum: read primary body: %w", err)
 	}
 
-	// primary.xml.gz is gzip-compressed
-	if strings.HasSuffix(primaryHref, ".gz") {
-		zr, zErr := gzip.NewReader(bytes.NewReader(body))
-		if zErr != nil {
-			return nil, fmt.Errorf("yum: open primary gzip: %w", zErr)
-		}
-		defer zr.Close()
-		body, err = io.ReadAll(zr)
-		if err != nil {
-			return nil, fmt.Errorf("yum: read primary gzip: %w", err)
-		}
+	body, err = decompressYumPrimary(primaryHref, body)
+	if err != nil {
+		return nil, err
 	}
 
 	var primary primaryXML
@@ -365,6 +362,34 @@ func (p *YumPlugin) fetchPrimaryIndexPackages(ctx context.Context, remoteURL str
 		"packageCount": len(artifacts),
 	}).Debug("yum: parsed primary.xml.gz packages")
 	return artifacts, nil
+}
+
+func decompressYumPrimary(primaryHref string, body []byte) ([]byte, error) {
+	switch {
+	case strings.HasSuffix(primaryHref, ".gz"):
+		zr, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("yum: open primary gzip: %w", err)
+		}
+		defer zr.Close()
+		out, err := io.ReadAll(zr)
+		if err != nil {
+			return nil, fmt.Errorf("yum: read primary gzip: %w", err)
+		}
+		return out, nil
+	case strings.HasSuffix(primaryHref, ".xz"):
+		xr, err := xz.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("yum: open primary xz: %w", err)
+		}
+		out, err := io.ReadAll(xr)
+		if err != nil {
+			return nil, fmt.Errorf("yum: read primary xz: %w", err)
+		}
+		return out, nil
+	default:
+		return body, nil
+	}
 }
 
 func (p *YumPlugin) Name() string {
@@ -596,9 +621,27 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
+	if isCompressedYumMetadata(filename) {
+		if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
+			defer artifact.Content.Close()
+			ctx.FromCache = artifact.FromCache
+			ctx.RemoteURL = artifact.RemoteURL
+			ctx.SizeBytes = artifact.SizeBytes
+			ctx.Writer.Header().Set("Content-Type", contentTypeForFile(filename))
+			ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
+			ctx.Writer.WriteHeader(http.StatusOK)
+			if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+				logrus.WithError(err).Warn("failed to write artifact content to client")
+			}
+			return nil
+		}
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
 	b.WriteString(`<metadata xmlns="http://linux.duke.edu/metadata/common">` + "\n")
+	packageCount := 0
 	for _, a := range artifacts {
 		name := a.Name
 		ver := a.Version
@@ -623,6 +666,11 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 		b.WriteString("/>\n")
 		fmt.Fprintf(&b, `    <location href="%s"/>\n`, href)
 		b.WriteString("  </package>\n")
+		packageCount++
+	}
+	if packageCount == 0 {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
 	}
 	b.WriteString(`</metadata>`)
 	body := []byte(b.String())
@@ -773,6 +821,10 @@ func (p *YumPlugin) handleRepodataGeneric(ctx *runtime.RequestContext, repoRunti
 // contentTypeForFile returns an appropriate Content-Type for repodata files.
 func contentTypeForFile(filename string) string {
 	switch {
+	case strings.HasSuffix(filename, ".xz"):
+		return "application/x-xz"
+	case strings.HasSuffix(filename, ".bz2"):
+		return "application/x-bzip2"
 	case strings.HasSuffix(filename, ".xml.gz"):
 		return "application/gzip"
 	case strings.HasSuffix(filename, ".xml"):
@@ -782,4 +834,10 @@ func contentTypeForFile(filename string) string {
 	default:
 		return "application/octet-stream"
 	}
+}
+
+func isCompressedYumMetadata(filename string) bool {
+	return strings.HasSuffix(filename, ".gz") ||
+		strings.HasSuffix(filename, ".xz") ||
+		strings.HasSuffix(filename, ".bz2")
 }

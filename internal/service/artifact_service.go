@@ -81,6 +81,13 @@ func (s *ArtifactService) Save(ctx context.Context, artifact *runtime.Artifact) 
 		if syncErr := s.syncPackageAfterSave(tx, modelArtifact, isNew); syncErr != nil {
 			return syncErr
 		}
+		if shouldAggregatePackageArtifact(modelArtifact) {
+			if err := s.recalcPackageVersions(tx, map[string]bool{
+				packageKey(modelArtifact.RepositoryID, modelArtifact.Format, modelArtifact.Name): true,
+			}); err != nil {
+				return err
+			}
+		}
 
 		return nil
 	})
@@ -169,7 +176,7 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 				var scanRepoID uint
 				scanUint(artifacts[ia.index].RepositoryID, &scanRepoID)
 				pkgKey := packageKey(scanRepoID, artifacts[ia.index].Format, artifacts[ia.index].Name)
-				if !seenPackages[pkgKey] {
+				if shouldAggregatePackageArtifact(ia.model) && !seenPackages[pkgKey] {
 					seenPackages[pkgKey] = true
 					if syncErr := s.syncPackageAfterSave(tx, ia.model, true); syncErr != nil {
 						return syncErr
@@ -190,7 +197,7 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 			var scanRepoID uint
 			scanUint(artifacts[ia.index].RepositoryID, &scanRepoID)
 			pkgKey := packageKey(scanRepoID, artifacts[ia.index].Format, artifacts[ia.index].Name)
-			if !seenPackages[pkgKey] {
+			if shouldAggregatePackageArtifact(ia.model) && !seenPackages[pkgKey] {
 				seenPackages[pkgKey] = true
 				if syncErr := s.syncPackageAfterSave(tx, ia.model, false); syncErr != nil {
 					return syncErr
@@ -336,6 +343,16 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 		WHERE name IS NOT NULL
 		  AND name != ''
 		  AND (kind IS NULL OR kind NOT IN ('metadata', 'checksum'))
+		  AND NOT (
+		    format = 'yum'
+		    AND (
+		      remote_path LIKE 'repodata/%'
+		      OR remote_path LIKE '%/repodata/%'
+		      OR path = 'repodata'
+		      OR path LIKE '%/repodata'
+		      OR filename = 'repomd.xml'
+		    )
+		  )
 		GROUP BY repository_id, format, name
 	`
 
@@ -358,8 +375,7 @@ func (s *ArtifactService) syncPackageAfterSave(tx *gorm.DB, artifact *model.Arti
 	if name == "" {
 		return nil
 	}
-	// 元数据类型不写入 packages 聚合表
-	if runtime.IsMetadataKind(artifact.Kind) {
+	if !shouldAggregatePackageArtifact(artifact) {
 		return nil
 	}
 
@@ -416,6 +432,9 @@ func (s *ArtifactService) syncPackageAfterDelete(tx *gorm.DB, artifact *model.Ar
 	if name == "" {
 		return nil
 	}
+	if !shouldAggregatePackageArtifact(artifact) {
+		return nil
+	}
 
 	pkg := &model.Package{}
 	result := tx.Where("repository_id = ? AND format = ? AND name = ?",
@@ -427,23 +446,19 @@ func (s *ArtifactService) syncPackageAfterDelete(tx *gorm.DB, artifact *model.Ar
 		return result.Error
 	}
 
-	if pkg.VersionCount > 1 {
-		updates := map[string]interface{}{
-			"version_count": gorm.Expr("version_count - 1"),
-		}
-		deletedVersion := artifact.Version
-		if deletedVersion == pkg.LatestVersion {
-			// 重新计算最新版本
-			var latestArtifact model.Artifact
-			if err := tx.Where("repository_id = ? AND format = ?",
-				artifact.RepositoryID, artifact.Format).
-				Where("name = ?", name).
-				Order("updated_at DESC").
-				First(&latestArtifact).Error; err == nil {
-				updates["latest_version"] = latestArtifact.Version
-			}
-		}
-		return tx.Model(pkg).Updates(updates).Error
+	var remaining int64
+	if err := tx.Model(&model.Artifact{}).
+		Where("repository_id = ? AND format = ?", artifact.RepositoryID, artifact.Format).
+		Where("name = ?", name).
+		Where("version != ''").
+		Where("(kind IS NULL OR kind NOT IN ?)", []string{runtime.KindMetadata, runtime.KindChecksum}).
+		Count(&remaining).Error; err != nil {
+		return err
+	}
+	if remaining > 0 {
+		return s.recalcPackageVersions(tx, map[string]bool{
+			packageKey(artifact.RepositoryID, artifact.Format, name): true,
+		})
 	}
 
 	return tx.Delete(pkg).Error
@@ -529,6 +544,11 @@ func (s *ArtifactService) recalcPackageVersions(tx *gorm.DB, seenPackages map[st
 		if err := tx.Model(&model.Artifact{}).
 			Where("repository_id = ? AND format = ?", repoID, format).
 			Where("name = ?", name).
+			Where("version != ''").
+			Where("(kind IS NULL OR kind NOT IN ?)", []string{runtime.KindMetadata, runtime.KindChecksum}).
+			Where("NOT (format = ? AND (remote_path LIKE ? OR remote_path LIKE ? OR path = ? OR path LIKE ? OR filename = ?))",
+				"yum", "repodata/%", "%/repodata/%", "repodata", "%/repodata", "repomd.xml").
+			Distinct("version").
 			Count(&count).Error; err != nil {
 			return err
 		}
@@ -536,6 +556,10 @@ func (s *ArtifactService) recalcPackageVersions(tx *gorm.DB, seenPackages map[st
 		var latest model.Artifact
 		if err := tx.Where("repository_id = ? AND format = ?", repoID, format).
 			Where("name = ?", name).
+			Where("version != ''").
+			Where("(kind IS NULL OR kind NOT IN ?)", []string{runtime.KindMetadata, runtime.KindChecksum}).
+			Where("NOT (format = ? AND (remote_path LIKE ? OR remote_path LIKE ? OR path = ? OR path LIKE ? OR filename = ?))",
+				"yum", "repodata/%", "%/repodata/%", "repodata", "%/repodata", "repomd.xml").
 			Order("updated_at DESC").First(&latest).Error; err != nil {
 			return err
 		}
@@ -567,6 +591,33 @@ func extractJSONBString(data model.JSONB, key string) string {
 		return ""
 	}
 	return s
+}
+
+func shouldAggregatePackageArtifact(artifact *model.Artifact) bool {
+	if artifact == nil || artifact.Name == "" {
+		return false
+	}
+	if runtime.IsMetadataKind(artifact.Kind) {
+		return false
+	}
+	if isYumRepodataArtifact(artifact.Format, artifact.Path, artifact.Filename, artifact.RemotePath) {
+		return false
+	}
+	return true
+}
+
+func isYumRepodataArtifact(format, artifactPath, filename, remotePath string) bool {
+	if format != "yum" {
+		return false
+	}
+	artifactPath = strings.Trim(strings.ReplaceAll(artifactPath, "\\", "/"), "/")
+	remotePath = strings.Trim(strings.ReplaceAll(remotePath, "\\", "/"), "/")
+	filename = strings.Trim(filename, "/")
+	return strings.HasPrefix(remotePath, "repodata/") ||
+		strings.Contains(remotePath, "/repodata/") ||
+		artifactPath == "repodata" ||
+		strings.HasSuffix(artifactPath, "/repodata") ||
+		filename == "repomd.xml"
 }
 
 func jsonTextExpr(db *gorm.DB, column, key string) string {

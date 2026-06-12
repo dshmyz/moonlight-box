@@ -16,6 +16,11 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	defaultProxyMetadataTTL = 24 * time.Hour
+	defaultProxyNegativeTTL = 5 * time.Minute
+)
+
 // initRepoRuntimes 预热所有仓库的 Runtime。启动时调用可避免首次请求冷启动。
 // 即使不调用，Get() 懒加载也能正常工作。
 func initRepoRuntimes(
@@ -126,11 +131,7 @@ func createRuntimeForRepo(
 		}, nil
 
 	case model.RepoTypeProxy:
-		cachePolicy := runtime.CachePolicy{
-			MetadataTTL: 0,
-			BlobTTL:     0,
-			NegativeTTL: 0,
-		}
+		cachePolicy := cachePolicyForRepo(repo)
 		remoteBaseURL := ""
 		if repo.Config != nil {
 			remoteBaseURL = repo.Config.RemoteURL
@@ -231,6 +232,7 @@ func createGroupRuntime(
 					writable = n
 				}
 			case model.RepoTypeProxy:
+				cachePolicy := cachePolicyForRepo(&memberRepo)
 				remoteBaseURL := ""
 				if memberRepo.Config != nil {
 					remoteBaseURL = memberRepo.Config.RemoteURL
@@ -244,6 +246,7 @@ func createGroupRuntime(
 					RemoteClient:  runtime.NewHTTPRemoteClient(httpClient),
 					RepositoryID:  memberID,
 					RemoteBaseURL: remoteBaseURL,
+					CachePolicy:   cachePolicy,
 					Format:        memberRepo.PackageType,
 				}
 				if f, ok := fetchers[memberRepo.PackageType]; ok {
@@ -289,6 +292,23 @@ func createGroupRuntime(
 		Members:  nodes,
 		Writable: writable,
 	}, nil
+}
+
+func cachePolicyForRepo(repo *model.Repository) runtime.CachePolicy {
+	policy := runtime.CachePolicy{
+		MetadataTTL: defaultProxyMetadataTTL,
+		NegativeTTL: defaultProxyNegativeTTL,
+	}
+	if repo == nil || repo.Config == nil {
+		return policy
+	}
+	if repo.Config.CacheTTLSeconds > 0 {
+		policy.MetadataTTL = time.Duration(repo.Config.CacheTTLSeconds) * time.Second
+	}
+	if repo.Config.CacheNegativeTTL > 0 {
+		policy.NegativeTTL = time.Duration(repo.Config.CacheNegativeTTL) * time.Second
+	}
+	return policy
 }
 
 // === 阻断规则 & 审计日志适配器 ===

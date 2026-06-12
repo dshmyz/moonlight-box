@@ -146,6 +146,16 @@ func (s *PackageSearchService) searchFromPackages(ctx context.Context, req *Sear
 	}
 
 	query := s.db.WithContext(ctx).Model(&model.Package{})
+	query = query.Where(`
+		EXISTS (
+			SELECT 1 FROM artifacts a
+			WHERE a.repository_id = packages.repository_id
+			  AND a.format = packages.format
+			  AND a.name = packages.name
+			  AND ` + searchableArtifactSQL("a") + `
+			LIMIT 1
+		)
+	`)
 
 	// 构建查询条件
 	if req.Type != "" {
@@ -268,6 +278,7 @@ func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *Sea
 		conditions = append(conditions, "name = ?")
 		args = append(args, req.Name)
 	}
+	conditions = append(conditions, searchableArtifactSQL("artifacts"))
 
 	whereClause := ""
 	if len(conditions) > 0 {
@@ -419,6 +430,20 @@ type groupAcc struct {
 	firstID      uint
 	license      string
 	description  string
+}
+
+func searchableArtifactSQL(alias string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	return "(" + prefix + "kind IS NULL OR " + prefix + "kind NOT IN ('metadata', 'checksum'))" +
+		" AND NOT (" + prefix + "format = 'yum' AND (" +
+		prefix + "remote_path LIKE 'repodata/%' OR " +
+		prefix + "remote_path LIKE '%/repodata/%' OR " +
+		prefix + "path = 'repodata' OR " +
+		prefix + "path LIKE '%/repodata' OR " +
+		prefix + "filename = 'repomd.xml'))"
 }
 
 // extractField 从 JSON 字符串中提取单个字段值。

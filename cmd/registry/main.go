@@ -308,11 +308,6 @@ func main() {
 	// 预热所有仓库 Runtime（可选，避免首次请求冷启动）
 	initRepoRuntimes(repoManager, repoRepo)
 
-	// 首次启动时重建 packages 聚合表（存量数据迁移）
-	if err := artifactSvc.RebuildPackages(context.Background()); err != nil {
-		logrus.WithError(err).Warn("Failed to rebuild packages table, will fall back to artifacts aggregation")
-	}
-
 	// 初始化仓库缓存（5分钟TTL）
 	repoCache := proxy.NewRepositoryCache(repoRepo, groupRepo, 5*time.Minute)
 	repoCache.StartCleanup(1 * time.Minute)

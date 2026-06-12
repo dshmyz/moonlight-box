@@ -46,6 +46,33 @@ func ServeArtifactContent(w http.ResponseWriter, r *http.Request, artifact *Arti
 }
 
 func serveArtifactRange(w http.ResponseWriter, r *http.Request, artifact *Artifact, rangeHeader string) error {
+	if seeker, ok := artifact.Content.(io.Seeker); ok {
+		size := artifact.SizeBytes
+		if size <= 0 && len(artifact.BlobRefs) > 0 {
+			size = artifact.BlobRefs[0].Size
+		}
+		if size > 0 {
+			start, end, ok := parseSingleByteRange(rangeHeader, size)
+			if !ok {
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", size))
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+				return nil
+			}
+			if _, err := seeker.Seek(start, io.SeekStart); err != nil {
+				return err
+			}
+			length := end - start + 1
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
+			w.Header().Set("Content-Length", strconv.FormatInt(length, 10))
+			w.WriteHeader(http.StatusPartialContent)
+			if r.Method == http.MethodHead {
+				return nil
+			}
+			_, err := io.CopyN(w, artifact.Content, length)
+			return err
+		}
+	}
+
 	data, err := io.ReadAll(artifact.Content)
 	if err != nil {
 		return err

@@ -39,6 +39,54 @@ func TestServeArtifactContent_RangeReturnsPartialContent(t *testing.T) {
 	}
 }
 
+func TestServeArtifactContent_RangeUsesSeekWhenAvailable(t *testing.T) {
+	content := &trackingReadSeeker{Reader: strings.NewReader("hello world")}
+	artifact := NewArtifact(ArtifactSpec{
+		Format:    "generic",
+		Kind:      KindFile,
+		Name:      "readme.txt",
+		Filename:  "readme.txt",
+		SizeBytes: 11,
+		Content:   content,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/repository/test/readme.txt", nil)
+	req.Header.Set("Range", "bytes=6-10")
+	w := httptest.NewRecorder()
+
+	if err := ServeArtifactContent(w, req, artifact, "readme.txt", "text/plain", "inline"); err != nil {
+		t.Fatalf("ServeArtifactContent failed: %v", err)
+	}
+
+	if content.seekCalls != 1 {
+		t.Fatalf("expected one seek call, got %d", content.seekCalls)
+	}
+	if content.bytesRead != 5 {
+		t.Fatalf("expected to read only 5 bytes, read %d", content.bytesRead)
+	}
+	if got := w.Body.String(); got != "world" {
+		t.Fatalf("expected body %q, got %q", "world", got)
+	}
+}
+
+type trackingReadSeeker struct {
+	*strings.Reader
+	seekCalls int
+	bytesRead int
+}
+
+func (r *trackingReadSeeker) Seek(offset int64, whence int) (int64, error) {
+	r.seekCalls++
+	return r.Reader.Seek(offset, whence)
+}
+
+func (r *trackingReadSeeker) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.bytesRead += n
+	return n, err
+}
+
+func (r *trackingReadSeeker) Close() error { return nil }
+
 func TestServeArtifactContent_SetsETagAndLastModified(t *testing.T) {
 	updatedAt := time.Date(2026, 6, 9, 10, 11, 12, 0, time.UTC)
 	artifact := NewArtifact(ArtifactSpec{

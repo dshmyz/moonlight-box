@@ -1,6 +1,7 @@
 package apt
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/plugins/testhelper"
+	"github.com/ulikunitz/xz"
 )
 
 func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *httptest.ResponseRecorder) {
@@ -316,6 +318,54 @@ Filename: pool/main/c/curl/curl_7.81.0_amd64.deb
 	}
 	if len(arts) != 2 {
 		t.Fatalf("expected 2 artifacts, got %d", len(arts))
+	}
+}
+
+func TestFetchRemote_ParsesPackagesXZ(t *testing.T) {
+	packagesBody := `Package: nginx
+Version: 1.18.0
+Architecture: amd64
+Filename: pool/main/n/nginx/nginx_1.18.0_amd64.deb
+
+Package: curl
+Version: 7.81.0
+Architecture: amd64
+Filename: pool/main/c/curl/curl_7.81.0_amd64.deb
+`
+	var xzBody bytes.Buffer
+	xw, err := xz.NewWriter(&xzBody)
+	if err != nil {
+		t.Fatalf("create xz writer: %v", err)
+	}
+	if _, err := xw.Write([]byte(packagesBody)); err != nil {
+		t.Fatalf("write xz body: %v", err)
+	}
+	if err := xw.Close(); err != nil {
+		t.Fatalf("close xz writer: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-xz")
+		w.Write(xzBody.Bytes())
+	}))
+	defer srv.Close()
+
+	p := NewAptPlugin(http.DefaultClient)
+	arts, err := p.FetchRemote(context.Background(), srv.URL, "dists/jammy/main/binary-amd64/Packages.xz")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if len(arts) != 3 {
+		t.Fatalf("expected metadata plus 2 package artifacts, got %d: %#v", len(arts), arts)
+	}
+	var foundNginx bool
+	for _, a := range arts {
+		if a.Name == "nginx" && a.Version == "1.18.0" && a.RemotePath == "pool/main/n/nginx/nginx_1.18.0_amd64.deb" {
+			foundNginx = true
+		}
+	}
+	if !foundNginx {
+		t.Fatalf("expected parsed nginx package artifact, got %#v", arts)
 	}
 }
 

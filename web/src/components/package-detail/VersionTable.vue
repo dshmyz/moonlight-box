@@ -72,18 +72,24 @@
       <el-table-column label="文件" min-width="200">
         <template #default="{ row }">
           <div v-if="row.files && row.files.length > 0" class="files-list">
-            <div v-for="file in row.files" :key="file.id" class="file-item">
-              <el-button 
-                size="small" 
-                type="primary" 
-                link 
-                @click.stop="handleFileDownload(row, file)"
+            <div v-for="file in visibleFiles(row)" :key="file.id" class="file-item">
+              <a
+                v-if="file.download_url"
+                class="file-download-link"
+                :href="file.download_url"
+                :download="file.filename"
+                @click.stop
               >
-                <el-icon><Download /></el-icon>
                 {{ file.filename }}
-              </el-button>
+              </a>
+              <span v-else class="file-download-link file-download-link--disabled">
+                {{ file.filename }}
+              </span>
               <span class="file-size">({{ formatSize(file.size_bytes) }})</span>
             </div>
+            <button v-if="hiddenFileCount(row) > 0" class="more-files-hint" type="button" @click.stop="toggleFiles(row)">
+              更多文件（{{ hiddenFileCount(row) }}）
+            </button>
           </div>
           <span v-else class="no-files">-</span>
         </template>
@@ -150,7 +156,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import { Download } from '@element-plus/icons-vue'
 import { formatNumber, formatSize, formatDate } from '@/utils/format'
 import { getVersionStatusColor, getVersionStatusLabel } from '@/constants/package'
 import { copyToClipboard } from '@/utils/clipboard'
@@ -163,7 +168,6 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  download: [version: PackageVersion & { selectedFile?: PackageFile }]
   select: [version: string]
   deprecate: [data: { id: number; version: string; reason: string }]
   restore: [data: { id: number; version: string }]
@@ -174,6 +178,7 @@ const emit = defineEmits<{
 const pageSize = 10
 const currentPage = ref(1)
 const cacheFilter = ref<'all' | 'cached' | 'uncached'>('all')
+const expandedFiles = ref<Set<string>>(new Set())
 
 // 筛选变化时重置页码
 watch(cacheFilter, () => {
@@ -212,6 +217,32 @@ const pagedVersions = computed(() => {
   const start = (currentPage.value - 1) * pageSize
   return filteredVersions.value.slice(start, start + pageSize)
 })
+
+function hasDefaultVisibleFiles(files: PackageFile[]) {
+  return files.some(file => file.attributes?.default_visible === true || file.attributes?.default_visible === 'true')
+}
+
+function visibleFiles(row: PackageVersion) {
+  const files = row.files || []
+  if (expandedFiles.value.has(row.version) || !hasDefaultVisibleFiles(files)) return files
+  return files.filter(file => file.attributes?.default_visible === true || file.attributes?.default_visible === 'true')
+}
+
+function hiddenFileCount(row: PackageVersion) {
+  const files = row.files || []
+  if (expandedFiles.value.has(row.version)) return 0
+  return files.length - visibleFiles(row).length
+}
+
+function toggleFiles(row: PackageVersion) {
+  const next = new Set(expandedFiles.value)
+  if (next.has(row.version)) {
+    next.delete(row.version)
+  } else {
+    next.add(row.version)
+  }
+  expandedFiles.value = next
+}
 
 function handleRowClick(row: PackageVersion) {
   emit('select', row.version)
@@ -261,10 +292,6 @@ function handleDelete(row: PackageVersion) {
 function copyChecksum(checksum: string) {
   if (!checksum) return
   copyToClipboard(checksum, '校验和已复制')
-}
-
-function handleFileDownload(row: PackageVersion, file: PackageFile) {
-  emit('download', { ...row, selectedFile: file })
 }
 </script>
 
@@ -385,6 +412,37 @@ function handleFileDownload(row: PackageVersion, file: PackageFile) {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.file-download-link {
+  color: var(--lunar-accent);
+  font-size: 12px;
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.file-download-link:hover {
+  text-decoration: underline;
+}
+
+.file-download-link--disabled {
+  color: var(--lunar-silver-dim);
+  cursor: not-allowed;
+}
+
+.more-files-hint {
+  align-self: flex-start;
+  background: transparent;
+  border: 0;
+  color: var(--lunar-silver-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+
+.more-files-hint:hover {
+  color: var(--lunar-accent);
+  text-decoration: underline;
 }
 
 .file-size {

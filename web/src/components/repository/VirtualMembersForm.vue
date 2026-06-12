@@ -9,6 +9,7 @@
 
   <draggable
     v-model="members"
+    class="members-list"
     item-key="name"
     handle=".drag-handle"
     animation="200"

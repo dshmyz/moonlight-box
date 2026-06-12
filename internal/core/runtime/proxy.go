@@ -45,6 +45,17 @@ type cachedArtifact struct {
 	negative  bool
 }
 
+type proxyCountingReader struct {
+	reader io.Reader
+	n      int64
+}
+
+func (r *proxyCountingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.n += int64(n)
+	return n, err
+}
+
 func (n *ProxyRuntime) checkBlocked(key ArtifactKey) error {
 	if n.Blocker == nil {
 		return nil
@@ -87,6 +98,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 			"key":      key.String(),
 			"duration": time.Since(start).Seconds(),
 		}).Debug("proxy: GetArtifact memory cache hit")
+		artifact = cloneArtifactForResponse(artifact)
 		if err := n.openArtifactContent(artifact); err != nil {
 			return nil, err
 		}
@@ -98,31 +110,64 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 		return artifact, nil
 	}
 
+	sfKey := "get:" + key.String()
+	result, err, _ := n.fetchGroup.Do(sfKey, func() (interface{}, error) {
+		if n.isNegativeCached(key) {
+			metrics.RecordProxyNegativeCacheHit(n.Format)
+			return nil, ErrNotFound
+		}
+		if artifact, ok := n.getCachedArtifact(key); ok {
+			metrics.RecordCacheHit(n.RepositoryID, n.Format)
+			return getArtifactResult{artifact: artifact, fromCache: true}, nil
+		}
+		return n.loadArtifact(ctx, key, start)
+	})
+	if err != nil {
+		return nil, err
+	}
+	res := result.(getArtifactResult)
+	artifact := cloneArtifactForResponse(res.artifact)
+	if err := n.openArtifactContent(artifact); err != nil {
+		return nil, err
+	}
+	artifact.FromCache = res.fromCache
+	if res.fromCache {
+		artifact.RemoteURL = ""
+	} else {
+		artifact.RemoteURL = res.remoteURL
+	}
+	if len(artifact.BlobRefs) > 0 {
+		artifact.SizeBytes = artifact.BlobRefs[0].Size
+	}
+	return artifact, nil
+}
+
+type getArtifactResult struct {
+	artifact  *Artifact
+	fromCache bool
+	remoteURL string
+}
+
+func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start time.Time) (getArtifactResult, error) {
 	artifact, err := n.MetadataStore.Get(ctx, key)
 	if err == nil {
 		if refreshErr := n.refreshStaleMetadata(ctx, artifact, key); refreshErr != nil {
-			return nil, refreshErr
+			return getArtifactResult{}, refreshErr
 		}
+		hadBlob := len(artifact.BlobRefs) > 0
 		if ensureErr := n.ensureArtifactBlob(ctx, artifact, key); ensureErr != nil {
-			return nil, ensureErr
+			return getArtifactResult{}, ensureErr
 		}
 		if len(artifact.BlobRefs) > 0 {
 			artifact.SizeBytes = artifact.BlobRefs[0].Size
-		}
-		if err := n.openArtifactContent(artifact); err != nil {
-			return nil, err
 		}
 		n.setCachedArtifact(key, artifact)
 		logrus.WithFields(logrus.Fields{
 			"key":      key.String(),
 			"duration": time.Since(start).Seconds(),
 		}).Debug("proxy: GetArtifact metadata store hit")
-		if artifact.RemoteURL != "" {
-			artifact.FromCache = false
-		} else {
-			artifact.FromCache = true
-		}
-		return artifact, nil
+		fromCache := hadBlob && artifact.RemoteURL == ""
+		return getArtifactResult{artifact: artifact, fromCache: fromCache, remoteURL: artifact.RemoteURL}, nil
 	}
 
 	// 内存缓存和 MetadataStore 均未命中，需要回源
@@ -142,7 +187,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 			"duration":  time.Since(start).Seconds(),
 			"error":     err.Error(),
 		}).Error("proxy: GetArtifact fetch metadata failed")
-		return nil, err
+		return getArtifactResult{}, err
 	}
 	if !metadata.Exists {
 		n.setNegativeCache(key)
@@ -151,7 +196,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 			"remoteURL": key.RemoteURL,
 			"duration":  time.Since(start).Seconds(),
 		}).Debug("proxy: GetArtifact remote not found, set negative cache")
-		return nil, ErrNotFound
+		return getArtifactResult{}, ErrNotFound
 	}
 
 	now := time.Now()
@@ -182,14 +227,11 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 			"key":   key.String(),
 			"error": err.Error(),
 		}).Error("proxy: GetArtifact store metadata failed")
-		return nil, err
+		return getArtifactResult{}, err
 	}
 
 	if ensureErr := n.ensureArtifactBlob(ctx, artifact, key); ensureErr != nil {
-		return nil, ensureErr
-	}
-	if err := n.openArtifactContent(artifact); err != nil {
-		return nil, err
+		return getArtifactResult{}, ensureErr
 	}
 	n.setCachedArtifact(key, artifact)
 	logrus.WithFields(logrus.Fields{
@@ -197,12 +239,10 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 		"remoteURL": key.RemoteURL,
 		"duration":  time.Since(start).Seconds(),
 	}).Debug("proxy: GetArtifact fetch from remote success")
-	artifact.FromCache = false
-	artifact.RemoteURL = key.RemoteURL
 	if len(artifact.BlobRefs) > 0 {
 		artifact.SizeBytes = artifact.BlobRefs[0].Size
 	}
-	return artifact, nil
+	return getArtifactResult{artifact: artifact, fromCache: false, remoteURL: key.RemoteURL}, nil
 }
 
 func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
@@ -432,26 +472,10 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 	defer blobReader.Close()
 
 	blobReaderForStore := io.Reader(blobReader)
+	var limitedCounter *proxyCountingReader
 	if n.CachePolicy.MaxBlobSize > 0 {
-		limitedReader := io.LimitReader(blobReader, n.CachePolicy.MaxBlobSize+1)
-		blobBytes, err := io.ReadAll(limitedReader)
-		if err != nil {
-			logrus.WithFields(logrus.Fields{
-				"remoteURL": key.RemoteURL,
-				"duration":  time.Since(start).Seconds(),
-				"error":     err.Error(),
-			}).Error("proxy: ensureArtifactBlob read blob failed")
-			return err
-		}
-		if int64(len(blobBytes)) > n.CachePolicy.MaxBlobSize {
-			logrus.WithFields(logrus.Fields{
-				"remoteURL": key.RemoteURL,
-				"size":      len(blobBytes),
-				"maxSize":   n.CachePolicy.MaxBlobSize,
-			}).Warn("proxy: blob too large, rejecting")
-			return fmt.Errorf("blob too large: %d bytes exceeds limit %d", len(blobBytes), n.CachePolicy.MaxBlobSize)
-		}
-		blobReaderForStore = strings.NewReader(string(blobBytes))
+		limitedCounter = &proxyCountingReader{reader: io.LimitReader(blobReader, n.CachePolicy.MaxBlobSize+1)}
+		blobReaderForStore = limitedCounter
 	}
 
 	blobRef, err := n.BlobStore.Put(blobReaderForStore)
@@ -462,6 +486,19 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 			"error":     err.Error(),
 		}).Error("proxy: ensureArtifactBlob store blob failed")
 		return err
+	}
+	readSize := blobRef.Size
+	if limitedCounter != nil {
+		readSize = limitedCounter.n
+	}
+	if n.CachePolicy.MaxBlobSize > 0 && readSize > n.CachePolicy.MaxBlobSize {
+		_ = n.BlobStore.Delete(blobRef)
+		logrus.WithFields(logrus.Fields{
+			"remoteURL": key.RemoteURL,
+			"size":      readSize,
+			"maxSize":   n.CachePolicy.MaxBlobSize,
+		}).Warn("proxy: blob too large, rejecting")
+		return fmt.Errorf("blob too large: %d bytes exceeds limit %d", readSize, n.CachePolicy.MaxBlobSize)
 	}
 	artifact.BlobRefs = []BlobRef{blobRef}
 	artifact.RemoteURL = key.RemoteURL
@@ -575,8 +612,35 @@ func (n *ProxyRuntime) setCachedArtifact(key ArtifactKey, artifact *Artifact) {
 	if len(n.metadataCache) >= maxMetadataCacheSize {
 		n.evictOldestEntries(maxMetadataCacheSize / 4)
 	}
-	n.metadataCache[key.String()] = cachedArtifact{artifact: artifact, expiresAt: time.Now().Add(n.CachePolicy.MetadataTTL)}
+	n.metadataCache[key.String()] = cachedArtifact{artifact: cloneArtifactForCache(artifact), expiresAt: time.Now().Add(n.CachePolicy.MetadataTTL)}
 	n.metadataCacheMu.Unlock()
+}
+
+func cloneArtifactForCache(artifact *Artifact) *Artifact {
+	clone := cloneArtifactForResponse(artifact)
+	clone.Content = nil
+	clone.FromCache = false
+	clone.RemoteURL = ""
+	return clone
+}
+
+func cloneArtifactForResponse(artifact *Artifact) *Artifact {
+	if artifact == nil {
+		return nil
+	}
+	clone := *artifact
+	clone.Properties = cloneStringMap(artifact.Properties)
+	clone.Checksums = cloneStringMap(artifact.Checksums)
+	clone.Qualifiers = cloneStringMap(artifact.Qualifiers)
+	clone.Attributes = cloneStringMap(artifact.Attributes)
+	if len(artifact.Relations) > 0 {
+		clone.Relations = append([]ArtifactRelation(nil), artifact.Relations...)
+	}
+	if len(artifact.BlobRefs) > 0 {
+		clone.BlobRefs = append([]BlobRef(nil), artifact.BlobRefs...)
+	}
+	clone.Content = nil
+	return &clone
 }
 
 func (n *ProxyRuntime) invalidateCachedArtifact(key ArtifactKey) {

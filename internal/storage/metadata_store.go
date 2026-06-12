@@ -342,6 +342,9 @@ func (s *MetadataStore) Query(ctx context.Context, query runtime.ArtifactQuery) 
 	} else if query.RemotePathPrefix != "" {
 		db = db.Where("remote_path LIKE ?", query.RemotePathPrefix+"%")
 	}
+	for k, v := range query.Qualifiers {
+		db = db.Where(jsonTextExpr(s.db, "qualifiers", k)+" = ?", v)
+	}
 
 	if query.Limit > 0 {
 		db = db.Limit(query.Limit)
@@ -440,6 +443,8 @@ func (s *MetadataStore) toModelArtifact(t *runtime.Artifact) *model.Artifact {
 }
 
 func (s *MetadataStore) fillBlobRefs(ctx context.Context, artifacts []*runtime.Artifact) {
+	artifactIDs := make([]uint, 0, len(artifacts))
+	artifactByID := make(map[uint]*runtime.Artifact, len(artifacts))
 	for _, a := range artifacts {
 		if a == nil || a.ID == "" {
 			continue
@@ -448,35 +453,45 @@ func (s *MetadataStore) fillBlobRefs(ctx context.Context, artifacts []*runtime.A
 		if err != nil {
 			continue
 		}
+		id := uint(artifactID)
+		artifactIDs = append(artifactIDs, id)
+		artifactByID[id] = a
+	}
+	if len(artifactIDs) == 0 {
+		return
+	}
 
-		type row struct {
-			BlobID    uint
-			Algorithm string
-			Digest    string
-			Size      int64
-			Position  int
-		}
-		var rows []row
-		err = s.db.WithContext(ctx).
-			Table("artifact_blobs AS ab").
-			Select("ab.blob_id, b.algorithm, b.digest, b.size, ab.position").
-			Joins("JOIN blobs b ON b.id = ab.blob_id").
-			Where("ab.artifact_id = ?", artifactID).
-			Order("ab.position ASC").
-			Scan(&rows).Error
-		if err != nil {
+	type row struct {
+		ArtifactID uint
+		BlobID     uint
+		Algorithm  string
+		Digest     string
+		Size       int64
+		Position   int
+	}
+	var rows []row
+	err := s.db.WithContext(ctx).
+		Table("artifact_blobs AS ab").
+		Select("ab.artifact_id, ab.blob_id, b.algorithm, b.digest, b.size, ab.position").
+		Joins("JOIN blobs b ON b.id = ab.blob_id").
+		Where("ab.artifact_id IN ?", artifactIDs).
+		Order("ab.artifact_id ASC, ab.position ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return
+	}
+
+	for _, r := range rows {
+		a := artifactByID[r.ArtifactID]
+		if a == nil {
 			continue
 		}
-
-		a.BlobRefs = make([]runtime.BlobRef, 0, len(rows))
-		for _, r := range rows {
-			a.BlobRefs = append(a.BlobRefs, runtime.BlobRef{
-				BlobID:    r.BlobID,
-				Algorithm: r.Algorithm,
-				Digest:    r.Digest,
-				Size:      r.Size,
-			})
-		}
+		a.BlobRefs = append(a.BlobRefs, runtime.BlobRef{
+			BlobID:    r.BlobID,
+			Algorithm: r.Algorithm,
+			Digest:    r.Digest,
+			Size:      r.Size,
+		})
 	}
 }
 
@@ -491,6 +506,17 @@ func jsonbToStringMap(src model.JSONB) map[string]string {
 		}
 	}
 	return dst
+}
+
+func jsonTextExpr(db *gorm.DB, column, key string) string {
+	switch db.Dialector.Name() {
+	case "postgres":
+		return column + "->>'" + key + "'"
+	case "mysql":
+		return "JSON_UNQUOTE(JSON_EXTRACT(" + column + ", '$." + key + "'))"
+	default:
+		return "JSON_EXTRACT(" + column + ", '$." + key + "')"
+	}
 }
 
 func stringMapToJSONB(src map[string]string) model.JSONB {

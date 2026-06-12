@@ -657,6 +657,32 @@ func TestHandle_PackageList_JSON(t *testing.T) {
 	}
 }
 
+func TestHandle_PackageListUsesStoredChecksumWithoutBlobRef(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	art := &runtime.Artifact{
+		Format:     "pypi",
+		Kind:       "package-file",
+		Name:       "requests",
+		Version:    "2.28.0",
+		Path:       "packages/ab/cd",
+		Filename:   "requests-2.28.0.tar.gz",
+		Checksums:  map[string]string{"sha256": "abc123"},
+		Properties: map[string]string{"remote_path": "packages/ab/cd/requests-2.28.0.tar.gz"},
+	}
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "simple/requests/", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "#sha256=abc123") {
+		t.Fatalf("expected stored checksum in package link, got: %s", w.Body.String())
+	}
+}
+
 func TestHandle_PackageList_NotFound(t *testing.T) {
 	p := NewPyPIPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{QueryErr: runtime.ErrNotFound}
@@ -678,6 +704,68 @@ func TestHandle_PackageDownload_NotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404 for non-existent file, got %d", w.Code)
+	}
+}
+
+func TestHandle_ChecksumUsesStoredChecksumWithoutBlobRef(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	art := runtime.NewArtifact(runtime.ArtifactSpec{
+		Format:     "pypi",
+		Kind:       "package-file",
+		Name:       "requests",
+		Version:    "2.28.0",
+		Path:       "packages/ab/cd",
+		Filename:   "requests-2.28.0.tar.gz",
+		RemotePath: "packages/ab/cd/requests-2.28.0.tar.gz",
+		Checksums:  map[string]string{"sha256": "abc123"},
+	})
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "packages/ab/cd/requests-2.28.0.tar.gz.sha256", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); got != "abc123\n" {
+		t.Fatalf("checksum body = %q, want abc123 newline", got)
+	}
+}
+
+func TestHandle_ChecksumPrefersExactRemotePath(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	wrongSameFilename := runtime.NewArtifact(runtime.ArtifactSpec{
+		Format:     "pypi",
+		Kind:       "package-file",
+		Name:       "requests",
+		Version:    "2.28.0",
+		Path:       "packages/aa/bb",
+		Filename:   "requests-2.28.0.tar.gz",
+		RemotePath: "packages/aa/bb/requests-2.28.0.tar.gz",
+		Checksums:  map[string]string{"sha256": "wrong"},
+	})
+	exactPath := runtime.NewArtifact(runtime.ArtifactSpec{
+		Format:     "pypi",
+		Kind:       "package-file",
+		Name:       "requests",
+		Version:    "2.28.0",
+		Path:       "packages/ab/cd",
+		Filename:   "requests-2.28.0.tar.gz",
+		RemotePath: "packages/ab/cd/requests-2.28.0.tar.gz",
+		Checksums:  map[string]string{"sha256": "right"},
+	})
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{wrongSameFilename, exactPath}}
+
+	ctx, w := newCtx("GET", "packages/ab/cd/requests-2.28.0.tar.gz.sha256", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); got != "right\n" {
+		t.Fatalf("checksum body = %q, want exact path digest", got)
 	}
 }
 
@@ -898,6 +986,32 @@ func TestBuildArtifactsFromJSONAPIPrefersUsableLicense(t *testing.T) {
 	}
 	if got := arts[0].Properties["remote_path"]; got == "" {
 		t.Fatalf("remote_path should stay in properties")
+	}
+}
+
+func TestBuildArtifactsFromJSONAPIPreservesDigestAndSize(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	arts := p.buildArtifactsFromJSONAPI("demo", map[string]interface{}{
+		"info": map[string]interface{}{"summary": "Demo package"},
+		"releases": map[string]interface{}{
+			"1.0.0": []interface{}{
+				map[string]interface{}{
+					"filename": "demo-1.0.0.tar.gz",
+					"url":      "https://files.pythonhosted.org/packages/ab/cd/demo-1.0.0.tar.gz",
+					"digests":  map[string]interface{}{"sha256": "abc123"},
+					"size":     float64(12345),
+				},
+			},
+		},
+	})
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+	if got := arts[0].Checksums["sha256"]; got != "abc123" {
+		t.Fatalf("sha256 = %q, want abc123", got)
+	}
+	if got := arts[0].SizeBytes; got != 12345 {
+		t.Fatalf("SizeBytes = %d, want 12345", got)
 	}
 }
 

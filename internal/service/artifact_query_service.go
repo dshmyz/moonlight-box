@@ -66,13 +66,11 @@ func (s *ArtifactQueryService) GetVersions(ctx context.Context, repoID uint, for
 		return nil, err
 	}
 
-	versions := make([]ArtifactVersion, 0, len(artifacts))
 	artifactIDs := make([]uint, 0, len(artifacts))
 	for _, a := range artifacts {
 		artifactIDs = append(artifactIDs, a.ID)
 	}
 
-	// 批量查 blob refs
 	blobRefMap := make(map[uint][]ArtifactBlobInfo)
 	if len(artifactIDs) > 0 {
 		type blobRow struct {
@@ -99,9 +97,8 @@ func (s *ArtifactQueryService) GetVersions(ctx context.Context, repoID uint, for
 		}
 	}
 
+	versions := make([]ArtifactVersion, 0, len(artifacts))
 	for _, a := range artifacts {
-		version := a.Version
-
 		var totalSize int64
 		for _, ref := range blobRefMap[a.ID] {
 			totalSize += ref.Size
@@ -109,7 +106,7 @@ func (s *ArtifactQueryService) GetVersions(ctx context.Context, repoID uint, for
 
 		versions = append(versions, ArtifactVersion{
 			ID:        a.ID,
-			Version:   version,
+			Version:   a.Version,
 			Format:    a.Format,
 			Kind:      a.Kind,
 			SizeBytes: totalSize,
@@ -117,8 +114,35 @@ func (s *ArtifactQueryService) GetVersions(ctx context.Context, repoID uint, for
 			BlobRefs:  blobRefMap[a.ID],
 		})
 	}
+	if format == "maven" {
+		versions = aggregateMavenLogicalVersions(versions)
+	}
 
 	return versions, nil
+}
+
+func aggregateMavenLogicalVersions(rows []ArtifactVersion) []ArtifactVersion {
+	versions := make([]ArtifactVersion, 0, len(rows))
+	seen := make(map[string]int, len(rows))
+	for _, row := range rows {
+		if row.Version == "" {
+			versions = append(versions, row)
+			continue
+		}
+		if idx, ok := seen[row.Version]; ok {
+			versions[idx].SizeBytes += row.SizeBytes
+			versions[idx].BlobRefs = append(versions[idx].BlobRefs, row.BlobRefs...)
+			if row.CreatedAt.After(versions[idx].CreatedAt) {
+				versions[idx].ID = row.ID
+				versions[idx].Kind = row.Kind
+				versions[idx].CreatedAt = row.CreatedAt
+			}
+			continue
+		}
+		seen[row.Version] = len(versions)
+		versions = append(versions, row)
+	}
+	return versions
 }
 
 // CountByRepository 按仓库统计制品数量

@@ -18,6 +18,10 @@ type CASBlobStore struct {
 	db      *gorm.DB
 }
 
+type movableBackend interface {
+	Move(ctx context.Context, oldKey, newKey string) error
+}
+
 type countingReader struct {
 	reader io.Reader
 	n      int64
@@ -63,16 +67,22 @@ func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 
 	casPath := s.buildCASPath("sha256", digest)
 
-	rc, err := s.backend.Get(context.Background(), tempPath)
-	if err != nil {
-		return runtime.BlobRef{}, err
-	}
-	defer rc.Close()
+	if mover, ok := s.backend.(movableBackend); ok {
+		if err := mover.Move(context.Background(), tempPath, casPath); err != nil {
+			return runtime.BlobRef{}, err
+		}
+	} else {
+		rc, err := s.backend.Get(context.Background(), tempPath)
+		if err != nil {
+			return runtime.BlobRef{}, err
+		}
+		defer rc.Close()
 
-	if err := s.backend.Put(context.Background(), casPath, rc, -1); err != nil {
-		return runtime.BlobRef{}, err
+		if err := s.backend.Put(context.Background(), casPath, rc, -1); err != nil {
+			return runtime.BlobRef{}, err
+		}
+		s.backend.Delete(context.Background(), tempPath)
 	}
-	s.backend.Delete(context.Background(), tempPath)
 
 	blob := &model.Blob{
 		Algorithm:   "sha256",

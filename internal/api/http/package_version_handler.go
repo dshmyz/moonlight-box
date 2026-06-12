@@ -154,6 +154,7 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		blobs       []blobInfo
 		repoIDs     map[uint]bool // 该版本涉及的仓库 ID 集合
 		sizeBytes   int64         // 从 artifact 元数据记录的大小（回源时即有，无需下载 blob）
+		sha256      string
 	}
 	verGroups := make(map[string]*versionGroup)
 	var verOrder []string
@@ -176,6 +177,9 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		}
 		if vp.sizeBytes == 0 && a.SizeBytes > 0 {
 			vp.sizeBytes = a.SizeBytes
+		}
+		if vp.sha256 == "" {
+			vp.sha256 = jsonbString(a.Checksums, "sha256")
 		}
 		if vp.name == "" {
 			vp.name = a.Name
@@ -242,6 +246,10 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 				"path":         a.Path,
 				"remote_path":  a.RemotePath,
 				"size_bytes":   firstNonZeroInt64(sumBlobSizes(blobs), a.SizeBytes),
+				"checksum_sha256": firstNonEmptyString(
+					firstBlobDigest(blobs),
+					jsonbString(a.Checksums, "sha256"),
+				),
 				"download_url": downloadURL,
 				"qualifiers":   a.Qualifiers,
 				"attributes":   a.Attributes,
@@ -262,6 +270,9 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		sha256 := ""
 		if len(vp.blobs) > 0 && vp.blobs[0].Digest != "" {
 			sha256 = vp.blobs[0].Digest
+		}
+		if sha256 == "" {
+			sha256 = vp.sha256
 		}
 
 		publishedAt := vp.latestAt
@@ -340,6 +351,15 @@ func sumBlobSizes(blobs []blobInfo) int64 {
 	return total
 }
 
+func firstBlobDigest(blobs []blobInfo) string {
+	for _, b := range blobs {
+		if b.Digest != "" {
+			return b.Digest
+		}
+	}
+	return ""
+}
+
 func buildDownloadURL(repoName string, artifact model.Artifact) string {
 	// 始终构造本地仓库路径，让下载请求经过代理层
 	// artifact.DownloadURL 是外部 URL（如 files.pythonhosted.org），
@@ -380,6 +400,21 @@ func firstNonZeroInt64(values ...int64) int64 {
 		}
 	}
 	return 0
+}
+
+func jsonbString(data model.JSONB, key string) string {
+	if data == nil {
+		return ""
+	}
+	value, ok := data[key]
+	if !ok {
+		return ""
+	}
+	s, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return s
 }
 
 func cloneJSONB(src model.JSONB) model.JSONB {
@@ -534,29 +569,29 @@ func (h *PackageVersionHandler) DeletePackage(c *gin.Context) {
 		return
 	}
 
-	var artifact model.Artifact
-	if err := h.db.First(&artifact, uint(packageID)).Error; err != nil {
+	var pkg model.Package
+	if err := h.db.First(&pkg, uint(packageID)).Error; err != nil {
 		response.NotFound(c, "package not found")
 		return
 	}
-
-	name := artifact.Name
 
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
 		var allIDs []uint
 		if err := tx.Model(&model.Artifact{}).
 			Where("repository_id = ? AND format = ? AND name = ?",
-				artifact.RepositoryID, artifact.Format, name).
+				pkg.RepositoryID, pkg.Format, pkg.Name).
 			Pluck("id", &allIDs).Error; err != nil {
 			return err
 		}
-		if len(allIDs) == 0 {
-			allIDs = []uint{uint(packageID)}
+		if len(allIDs) > 0 {
+			if err := tx.Where("artifact_id IN ?", allIDs).Delete(&model.ArtifactBlob{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("id IN ?", allIDs).Delete(&model.Artifact{}).Error; err != nil {
+				return err
+			}
 		}
-		if err := tx.Where("artifact_id IN ?", allIDs).Delete(&model.ArtifactBlob{}).Error; err != nil {
-			return err
-		}
-		return tx.Where("id IN ?", allIDs).Delete(&model.Artifact{}).Error
+		return tx.Delete(&pkg).Error
 	}); err != nil {
 		response.InternalError(c, err.Error())
 		return

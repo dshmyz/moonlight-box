@@ -292,7 +292,7 @@ func TestEnsureArtifactBlobRejectsOversizedBlobWhenLimitConfigured(t *testing.T)
 		Name:         "big-pkg",
 	}
 	bigContent := strings.Repeat("x", 11)
-	fakeBlob := &fakeBlobStore{}
+	fakeBlob := &capturingBlobStore{}
 	fakeClient := &fakeRemoteClient{blob: io.NopCloser(strings.NewReader(bigContent))}
 	rt := &ProxyRuntime{
 		MetadataStore: newFakeMetadataStore(),
@@ -356,6 +356,149 @@ func (s *capturingBlobStore) Put(reader io.Reader) (BlobRef, error) {
 func (s *capturingBlobStore) Open(ref BlobRef) (io.ReadCloser, error) { return io.NopCloser(nil), nil }
 func (s *capturingBlobStore) Stat(ref BlobRef) (*BlobMetadata, error) { return nil, nil }
 func (s *capturingBlobStore) Delete(ref BlobRef) error                { return nil }
+
+func TestConcurrentGetArtifactOnlyFetchesRemoteOnce(t *testing.T) {
+	ctx := context.Background()
+	remote := &threadSafeRemoteClient{
+		metadata: &RemoteMetadata{Exists: true, Size: int64(len("pkg-content"))},
+		blob:     "pkg-content",
+		delay:    50 * time.Millisecond,
+	}
+	blobStore := &threadSafeBlobStore{content: "pkg-content"}
+	rt := &ProxyRuntime{
+		MetadataStore: newFakeMetadataStore(),
+		BlobStore:     blobStore,
+		RemoteClient:  remote,
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
+		RepositoryID:  "repo",
+		Format:        "npm",
+	}
+	key := ArtifactKey{
+		Format:     "npm",
+		Name:       "dedup-test",
+		Filename:   "dedup-test.tgz",
+		RemotePath: "dedup-test/-/dedup-test.tgz",
+	}
+
+	const concurrency = 12
+	var wg sync.WaitGroup
+	errs := make(chan error, concurrency)
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+			artifact, err := rt.GetArtifact(ctx, key)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if artifact.Content == nil {
+				errs <- errors.New("artifact content was not opened")
+				return
+			}
+			defer artifact.Content.Close()
+			body, err := io.ReadAll(artifact.Content)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if string(body) != "pkg-content" {
+				errs <- fmt.Errorf("content = %q, want pkg-content", string(body))
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := remote.metadataCallCount(); got != 1 {
+		t.Fatalf("FetchMetadata called %d times, expected 1", got)
+	}
+	if got := remote.blobCallCount(); got != 1 {
+		t.Fatalf("FetchBlob called %d times, expected 1", got)
+	}
+	if got := blobStore.openCallCount(); got != concurrency {
+		t.Fatalf("BlobStore.Open called %d times, expected %d", got, concurrency)
+	}
+}
+
+type threadSafeRemoteClient struct {
+	mu            sync.Mutex
+	metadata      *RemoteMetadata
+	metadataCalls int
+	blobCalls     int
+	blob          string
+	delay         time.Duration
+}
+
+func (c *threadSafeRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (*RemoteMetadata, error) {
+	if c.delay > 0 {
+		time.Sleep(c.delay)
+	}
+	c.mu.Lock()
+	c.metadataCalls++
+	meta := c.metadata
+	c.mu.Unlock()
+	return meta, nil
+}
+
+func (c *threadSafeRemoteClient) FetchBlob(ctx context.Context, key ArtifactKey) (io.ReadCloser, error) {
+	c.mu.Lock()
+	c.blobCalls++
+	blob := c.blob
+	c.mu.Unlock()
+	return io.NopCloser(strings.NewReader(blob)), nil
+}
+
+func (c *threadSafeRemoteClient) metadataCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.metadataCalls
+}
+
+func (c *threadSafeRemoteClient) blobCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.blobCalls
+}
+
+type threadSafeBlobStore struct {
+	mu        sync.Mutex
+	content   string
+	openCalls int
+}
+
+func (s *threadSafeBlobStore) Put(reader io.Reader) (BlobRef, error) {
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		return BlobRef{}, err
+	}
+	s.mu.Lock()
+	s.content = string(body)
+	s.mu.Unlock()
+	return BlobRef{Algorithm: "sha256", Digest: "dedup", Size: int64(len(body))}, nil
+}
+
+func (s *threadSafeBlobStore) Open(ref BlobRef) (io.ReadCloser, error) {
+	s.mu.Lock()
+	s.openCalls++
+	content := s.content
+	s.mu.Unlock()
+	return io.NopCloser(strings.NewReader(content)), nil
+}
+
+func (s *threadSafeBlobStore) Stat(ref BlobRef) (*BlobMetadata, error) { return nil, nil }
+func (s *threadSafeBlobStore) Delete(ref BlobRef) error                { return nil }
+
+func (s *threadSafeBlobStore) openCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.openCalls
+}
 
 func TestConcurrentQueryArtifactsOnlyTriggersOneFetch(t *testing.T) {
 	ctx := context.Background()

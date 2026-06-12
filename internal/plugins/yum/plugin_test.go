@@ -1,6 +1,7 @@
 package yum
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/plugins/testhelper"
+	"github.com/ulikunitz/xz"
 )
 
 func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *httptest.ResponseRecorder) {
@@ -81,13 +83,13 @@ func TestHandle_PrimaryDynamicHasRequiredFields(t *testing.T) {
 	art := testhelper.NewArtifact("yum", runtime.KindFile, map[string]string{
 		"name":    "nginx",
 		"version": "1.20.1",
-		"file":    "abc123-primary.xml.gz",
+		"file":    "primary.xml",
 		"path":    "repodata",
 	}, "")
 	art.Attributes = map[string]string{"arch": "x86_64", "release": "1.el8", "epoch": "1", "summary": "A web server", "license": "BSD"}
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
-	ctx, w := newCtx("GET", "repodata/abc123-primary.xml.gz", nil)
+	ctx, w := newCtx("GET", "repodata/primary.xml", nil)
 	if err := p.Handle(ctx, rt); err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -106,6 +108,30 @@ func TestHandle_PrimaryDynamicHasRequiredFields(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("primary missing %s: %s", want, body)
 		}
+	}
+}
+
+func TestHandle_PrimaryCompressedXzRequiresOriginalContent(t *testing.T) {
+	p := NewYumPlugin(http.DefaultClient)
+	art := runtime.NewArtifact(runtime.ArtifactSpec{
+		Format:     "yum",
+		Kind:       runtime.KindMetadata,
+		Name:       "abc123-primary.xml.xz",
+		Path:       "repodata",
+		Filename:   "abc123-primary.xml.xz",
+		RemotePath: "repodata/abc123-primary.xml.xz",
+	})
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "repodata/abc123-primary.xml.xz", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected compressed primary without original content to 404, got %d body=%q", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "<metadata") {
+		t.Fatalf("compressed primary must not be dynamically rendered as plain XML: %s", w.Body.String())
 	}
 }
 
@@ -139,12 +165,12 @@ func TestHandle_Primary(t *testing.T) {
 		testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{
 			"name":    "nginx",
 			"version": "1.20.1",
-			"file":    "abc123-primary.xml.gz",
+			"file":    "primary.xml",
 		}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 
-	ctx, w := newCtx("GET", "repodata/abc123-primary.xml.gz", nil)
+	ctx, w := newCtx("GET", "repodata/primary.xml", nil)
 	p.Handle(ctx, rt)
 
 	if w.Code != http.StatusOK {
@@ -180,6 +206,30 @@ func TestHandle_PrimaryCompressed_PrefersOriginalContentWithGzipType(t *testing.
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "application/gzip" {
 		t.Fatalf("expected application/gzip, got %q", ct)
+	}
+}
+
+func TestHandle_PrimaryCompressedXz_PrefersOriginalContentWithXzType(t *testing.T) {
+	p := NewYumPlugin(http.DefaultClient)
+	original := "xz-primary-bytes"
+	art := testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{
+		"file":     "abc123-primary.xml.xz",
+		"filename": "abc123-primary.xml.xz",
+		"path":     "repodata",
+	}, original)
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "repodata/abc123-primary.xml.xz", nil)
+	p.Handle(ctx, rt)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != original {
+		t.Fatalf("expected original primary metadata content, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/x-xz" {
+		t.Fatalf("expected application/x-xz, got %q", ct)
 	}
 }
 
@@ -267,6 +317,23 @@ func TestFetchRemote_RpmUsesDirectoryPathAndRemotePath(t *testing.T) {
 	}
 	if got := a.Properties["remote_path"]; got != "Packages/nginx-1.20.1-1.el8.x86_64.rpm" {
 		t.Fatalf("remote_path = %q, want full remote path", got)
+	}
+}
+
+func TestFetchRemote_RepodataFileUsesMetadataKind(t *testing.T) {
+	p := NewYumPlugin(http.DefaultClient)
+	arts, err := p.FetchRemote(context.Background(), "http://example.test", "repodata/abc123-primary.xml.xz")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+	if arts[0].Kind != runtime.KindMetadata {
+		t.Fatalf("repodata file kind = %q, want %q", arts[0].Kind, runtime.KindMetadata)
+	}
+	if arts[0].Name != "abc123-primary.xml.xz" {
+		t.Fatalf("name = %q", arts[0].Name)
 	}
 }
 
@@ -369,6 +436,75 @@ func TestFetchRemote_Repomd(t *testing.T) {
 	}
 	if got := ref.Properties["remote_path"]; got != "repodata/abc123-primary.xml.gz" {
 		t.Fatalf("metadata-ref remote_path = %q", got)
+	}
+}
+
+func TestFetchRemote_RepomdParsesPrimaryXMLXZPackages(t *testing.T) {
+	primaryBody := `<?xml version="1.0" encoding="UTF-8"?>
+<metadata xmlns="http://linux.duke.edu/metadata/common">
+  <package type="rpm">
+    <name>nginx</name>
+    <arch>x86_64</arch>
+    <version epoch="0" ver="1.20.1" rel="1.el8"/>
+    <summary>A web server</summary>
+    <description>HTTP server</description>
+    <location href="Packages/nginx-1.20.1-1.el8.x86_64.rpm"/>
+  </package>
+</metadata>`
+	var xzBody bytes.Buffer
+	xw, err := xz.NewWriter(&xzBody)
+	if err != nil {
+		t.Fatalf("create xz writer: %v", err)
+	}
+	if _, err := xw.Write([]byte(primaryBody)); err != nil {
+		t.Fatalf("write xz body: %v", err)
+	}
+	if err := xw.Close(); err != nil {
+		t.Fatalf("close xz writer: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repodata/repomd.xml":
+			w.Header().Set("Content-Type", "application/xml")
+			w.Write([]byte(`<?xml version="1.0"?>
+<repomd xmlns="http://linux.duke.edu/metadata/repo">
+  <data type="primary">
+    <location href="repodata/abc123-primary.xml.xz"/>
+  </data>
+</repomd>`))
+		case "/repodata/abc123-primary.xml.xz":
+			w.Header().Set("Content-Type", "application/x-xz")
+			w.Write(xzBody.Bytes())
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := NewYumPlugin(http.DefaultClient)
+	arts, err := p.FetchRemote(context.Background(), srv.URL, "repodata/repomd.xml")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	var rpm *runtime.Artifact
+	for _, a := range arts {
+		if a.Name == "nginx" {
+			rpm = a
+			break
+		}
+	}
+	if rpm == nil {
+		t.Fatalf("expected parsed nginx RPM artifact, got %#v", arts)
+	}
+	if rpm.Kind != runtime.KindFile {
+		t.Fatalf("kind = %q, want %q", rpm.Kind, runtime.KindFile)
+	}
+	if rpm.Version != "1.20.1" {
+		t.Fatalf("version = %q, want 1.20.1", rpm.Version)
+	}
+	if rpm.RemotePath != "Packages/nginx-1.20.1-1.el8.x86_64.rpm" {
+		t.Fatalf("remote path = %q", rpm.RemotePath)
 	}
 }
 

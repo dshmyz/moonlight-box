@@ -19,7 +19,6 @@
         :selected-version="selectedVersion"
         :show-admin-actions="isAdminRoute"
         @select="handleSelectVersion"
-        @download="handleDownload"
         @deprecate="handleDeprecate"
         @restore="handleRestore"
         @yank="handleYank"
@@ -292,36 +291,6 @@ onMounted(() => {
     loadFromCacheOrFetch(pkgType, pkgName)
   }
 })
-
-async function handleDownload(version: PackageVersion & { selectedFile?: any }) {
-  if (!pkg.value || !version.files || version.files.length === 0) {
-    ElMessage.error('没有可下载的文件')
-    return
-  }
-
-  let file = version.selectedFile || version.files[0]
-
-  if (!version.selectedFile && (pkg.value.type === 'maven' || pkg.value.type === 'maven2')) {
-    const primaryFile = version.files.find(f => f.file_type === 'primary')
-    if (primaryFile) {
-      file = primaryFile
-    }
-  }
-
-  const downloadUrl = file.download_url
-  if (!downloadUrl) {
-    ElMessage.error('无法获取下载地址')
-    return
-  }
-
-  // 使用浏览器原生下载，支持进度显示且不占用内存
-  const link = document.createElement('a')
-  link.href = downloadUrl
-  link.download = file.filename
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-}
 
 async function handleDeprecate(data: { id: number; version: string; reason: string }) {
   try {

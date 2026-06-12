@@ -73,6 +73,7 @@
 package maven
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"errors"
@@ -241,7 +242,7 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 
 	var publishedAt string
 	if meta.Versioning.LastU != "" {
-		if t, err := time.Parse("200601021504", meta.Versioning.LastU); err == nil {
+		if t, err := parseMavenLastUpdated(meta.Versioning.LastU); err == nil {
 			publishedAt = t.Format(time.RFC3339)
 		}
 	}
@@ -270,6 +271,45 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 		}))
 	}
 
+	if version != "" && meta.Versioning.SnapshotVersions != nil {
+		basePath := strings.TrimSuffix(path, "/maven-metadata.xml")
+		for _, sv := range meta.Versioning.SnapshotVersions.Items {
+			filename := mavenSnapshotFilename(artifact, sv)
+			if filename == "" {
+				continue
+			}
+			qualifiers := map[string]string{
+				"group":        group,
+				"artifact":     artifact,
+				"base_version": version,
+				"classifier":   sv.Classifier,
+			}
+			props := map[string]string{
+				"filename":  filename,
+				"extension": sv.Extension,
+				"updated":   sv.Updated,
+			}
+			attrs := map[string]string{
+				"default_visible": "true",
+				"display_group":   snapshotDisplayGroup(sv.Value),
+			}
+			artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
+				Format:     "maven",
+				Kind:       runtime.KindArtifact,
+				Namespace:  group,
+				Name:       group + ":" + artifact,
+				Version:    version,
+				Path:       basePath,
+				Filename:   filename,
+				RemotePath: basePath + "/" + filename,
+				Extension:  "." + strings.TrimPrefix(sv.Extension, "."),
+				Qualifiers: qualifiers,
+				Attributes: attrs,
+				Properties: props,
+			}))
+		}
+	}
+
 	logrus.WithFields(logrus.Fields{
 		"fullURL":      fullURL,
 		"group":        group,
@@ -278,6 +318,26 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 		"duration":     time.Since(start).Seconds(),
 	}).Debug("maven: fetchMetadata success")
 	return artifacts, nil
+}
+
+func snapshotDisplayGroup(value string) string {
+	parts := strings.Split(value, "-")
+	if len(parts) < 3 {
+		return value
+	}
+	return parts[len(parts)-2] + "-" + parts[len(parts)-1]
+}
+
+func mavenSnapshotFilename(artifact string, sv mavenSnapshotVersionXML) string {
+	ext := strings.TrimPrefix(sv.Extension, ".")
+	if artifact == "" || sv.Value == "" || ext == "" {
+		return ""
+	}
+	name := artifact + "-" + sv.Value
+	if sv.Classifier != "" {
+		name += "-" + sv.Classifier
+	}
+	return name + "." + ext
 }
 
 func (p *MavenPlugin) fetchLicenseFromPOM(ctx context.Context, remoteURL, group, artifact, version string) string {
@@ -301,6 +361,37 @@ func (p *MavenPlugin) fetchLicenseFromPOM(ctx context.Context, remoteURL, group,
 	}
 	if len(pom.Licenses) > 0 {
 		return pom.Licenses[0].Name
+	}
+	return ""
+}
+
+func parseMavenLastUpdated(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, errors.New("empty lastUpdated")
+	}
+	layouts := []string{"20060102150405", "200601021504"}
+	var lastErr error
+	for _, layout := range layouts {
+		t, err := time.Parse(layout, value)
+		if err == nil {
+			return t, nil
+		}
+		lastErr = err
+	}
+	return time.Time{}, lastErr
+}
+
+func parsePOMLicense(body []byte) string {
+	var pom pomProject
+	if err := xml.NewDecoder(bytes.NewReader(body)).Decode(&pom); err != nil {
+		return ""
+	}
+	for _, license := range pom.Licenses {
+		name := strings.TrimSpace(license.Name)
+		if name != "" {
+			return name
+		}
 	}
 	return ""
 }
@@ -370,6 +461,18 @@ func (p *MavenPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Re
 			return nil
 		}
 		metaKey.RepositoryID = ctx.Repository.ID
+		if ctx.Request.Method == http.MethodPut {
+			checksumKey := metaKey
+			checksumKey.Kind = runtime.KindChecksum
+			checksumKey.Filename = filepath.Base(path)
+			checksumKey.Extension = filepath.Ext(checksumKey.Filename)
+			checksumKey.RemotePath = strings.Trim(path, "/")
+			checksumKey.Path = strings.TrimSuffix(checksumKey.RemotePath, "/"+checksumKey.Filename)
+			ctx.PackageName = checksumKey.Name
+			ctx.Version = checksumKey.Version
+			ctx.Filename = checksumKey.Filename
+			return p.handleChecksumUpload(ctx, repoRuntime, checksumKey, originalFile, algo)
+		}
 		return p.handleChecksumDownload(ctx, repoRuntime, metaKey, originalFile, algo)
 	}
 
@@ -392,6 +495,10 @@ func (p *MavenPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Re
 		}
 		return p.handleDownload(ctx, repoRuntime, key)
 	case http.MethodPut:
+		if originalFile, algo, ok := parseChecksumRequest(key.Filename); ok {
+			key.Kind = runtime.KindChecksum
+			return p.handleChecksumUpload(ctx, repoRuntime, key, originalFile, algo)
+		}
 		return p.handleUpload(ctx, repoRuntime, key)
 	case http.MethodDelete:
 		return p.handleDelete(ctx, repoRuntime, key)
@@ -693,7 +800,7 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 				for v := range versionSet {
 					versions = append(versions, v)
 				}
-				sort.Strings(versions)
+				sortMavenVersions(versions)
 				if len(versions) > 0 {
 					lastUpdated := lastTime.UTC().Format("20060102150405")
 					meta := mavenMetadata{
@@ -767,7 +874,7 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 	for v := range versionSet {
 		versions = append(versions, v)
 	}
-	sort.Strings(versions)
+	sortMavenVersions(versions)
 	if len(versions) == 0 {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
@@ -865,6 +972,162 @@ func firstNonEmptyMaven(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func sortMavenVersions(versions []string) {
+	sort.Slice(versions, func(i, j int) bool {
+		return compareMavenVersion(versions[i], versions[j]) < 0
+	})
+}
+
+func compareMavenVersion(a, b string) int {
+	ta := splitMavenVersionTokens(a)
+	tb := splitMavenVersionTokens(b)
+	max := len(ta)
+	if len(tb) > max {
+		max = len(tb)
+	}
+	for i := 0; i < max; i++ {
+		if i >= len(ta) {
+			if tb[i].num && tb[i].value == "0" {
+				continue
+			}
+			return compareMavenToken(mavenVersionToken{value: "", num: false}, tb[i])
+		}
+		if i >= len(tb) {
+			if ta[i].num && ta[i].value == "0" {
+				continue
+			}
+			return compareMavenToken(ta[i], mavenVersionToken{value: "", num: false})
+		}
+		if cmp := compareMavenToken(ta[i], tb[i]); cmp != 0 {
+			return cmp
+		}
+	}
+	return 0
+}
+
+func compareMavenToken(a, b mavenVersionToken) int {
+	if a.num && b.num {
+		return compareNumericString(a.value, b.value)
+	}
+	if a.num != b.num {
+		if a.num {
+			return 1
+		}
+		return -1
+	}
+	if cmp := compareMavenQualifier(a.value, b.value); cmp != 0 {
+		return cmp
+	}
+	if a.value < b.value {
+		return -1
+	}
+	if a.value > b.value {
+		return 1
+	}
+	return 0
+}
+
+func compareMavenQualifier(a, b string) int {
+	ra, oka := mavenQualifierRank(a)
+	rb, okb := mavenQualifierRank(b)
+	if oka || okb {
+		if !oka {
+			ra = 8
+		}
+		if !okb {
+			rb = 8
+		}
+		if ra < rb {
+			return -1
+		}
+		if ra > rb {
+			return 1
+		}
+		return 0
+	}
+	return 0
+}
+
+func mavenQualifierRank(q string) (int, bool) {
+	switch q {
+	case "alpha", "a":
+		return 1, true
+	case "beta", "b":
+		return 2, true
+	case "milestone", "m":
+		return 3, true
+	case "rc", "cr":
+		return 4, true
+	case "snapshot":
+		return 5, true
+	case "", "ga", "final", "release":
+		return 6, true
+	case "sp":
+		return 7, true
+	default:
+		return 0, false
+	}
+}
+
+type mavenVersionToken struct {
+	value string
+	num   bool
+}
+
+func splitMavenVersionTokens(version string) []mavenVersionToken {
+	var tokens []mavenVersionToken
+	var b strings.Builder
+	inNum := false
+	hasToken := false
+	flush := func() {
+		if !hasToken {
+			return
+		}
+		tokens = append(tokens, mavenVersionToken{value: b.String(), num: inNum})
+		b.Reset()
+		hasToken = false
+	}
+	for _, r := range strings.ToLower(version) {
+		isNum := r >= '0' && r <= '9'
+		if r == '.' || r == '-' || r == '_' {
+			flush()
+			continue
+		}
+		if hasToken && isNum != inNum {
+			flush()
+		}
+		inNum = isNum
+		hasToken = true
+		b.WriteRune(r)
+	}
+	flush()
+	return tokens
+}
+
+func compareNumericString(a, b string) int {
+	a = strings.TrimLeft(a, "0")
+	b = strings.TrimLeft(b, "0")
+	if a == "" {
+		a = "0"
+	}
+	if b == "" {
+		b = "0"
+	}
+	if len(a) < len(b) {
+		return -1
+	}
+	if len(a) > len(b) {
+		return 1
+	}
+	if a < b {
+		return -1
+	}
+	if a > b {
+		return 1
+	}
+	return 0
 }
 
 func (p *MavenPlugin) handleDelete(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
@@ -1084,7 +1347,7 @@ func (p *MavenPlugin) buildDynamicMetadata(ctx *runtime.RequestContext, repoRunt
 	for v := range versionSet {
 		versions = append(versions, v)
 	}
-	sort.Strings(versions)
+	sortMavenVersions(versions)
 	if len(versions) == 0 {
 		return nil
 	}
@@ -1153,17 +1416,49 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		return nil
 	}
 
-	blobRef, err := session.PutBlob(ctx.Request.Context(), ctx.Request.Body)
+	body := ctx.Request.Body
+	attributes := map[string]string{}
+	properties := map[string]string{
+		"filename":  key.Filename,
+		"extension": key.Extension,
+		"group":     key.Qualifiers["group"],
+		"artifact":  key.Qualifiers["artifact"],
+		"version":   key.Version,
+	}
+	for _, qualifierKey := range []string{"checksum_algorithm", "checksum_for"} {
+		if value := key.Qualifiers[qualifierKey]; value != "" {
+			properties[qualifierKey] = value
+		}
+	}
+	if strings.EqualFold(key.Extension, ".pom") || strings.HasSuffix(strings.ToLower(key.Filename), ".pom") {
+		bodyBytes, readErr := io.ReadAll(ctx.Request.Body)
+		if readErr != nil {
+			session.Abort(ctx.Request.Context())
+			http.Error(ctx.Writer, readErr.Error(), http.StatusInternalServerError)
+			return nil
+		}
+		body = io.NopCloser(bytes.NewReader(bodyBytes))
+		if license := parsePOMLicense(bodyBytes); license != "" {
+			attributes["license"] = license
+			properties["license"] = license
+		}
+	}
+
+	blobRef, err := session.PutBlob(ctx.Request.Context(), body)
 	if err != nil {
 		session.Abort(ctx.Request.Context())
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}
 
+	kind := key.Kind
+	if kind == "" {
+		kind = runtime.KindArtifact
+	}
 	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "maven",
-		Kind:         runtime.KindArtifact,
+		Kind:         kind,
 		Namespace:    key.Namespace,
 		Name:         key.Name,
 		Version:      key.Version,
@@ -1173,13 +1468,8 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		Extension:    key.Extension,
 		BlobRefs:     []runtime.BlobRef{blobRef},
 		Qualifiers:   key.Qualifiers,
-		Properties: map[string]string{
-			"filename":  key.Filename,
-			"extension": key.Extension,
-			"group":     key.Qualifiers["group"],
-			"artifact":  key.Qualifiers["artifact"],
-			"version":   key.Version,
-		},
+		Attributes:   attributes,
+		Properties:   properties,
 	})
 
 	if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
@@ -1200,4 +1490,19 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		ctx.Writer.WriteHeader(http.StatusCreated)
 	}
 	return nil
+}
+
+func (p *MavenPlugin) handleChecksumUpload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey, originalFile string, algo checksumAlgo) error {
+	if key.Kind == "" {
+		key.Kind = runtime.KindChecksum
+	}
+	if key.Qualifiers == nil {
+		key.Qualifiers = map[string]string{}
+	}
+	key.Qualifiers["checksum_algorithm"] = string(algo)
+	key.Qualifiers["checksum_for"] = originalFile
+	if key.Extension == "" {
+		key.Extension = filepath.Ext(key.Filename)
+	}
+	return p.handleUpload(ctx, repoRuntime, key)
 }

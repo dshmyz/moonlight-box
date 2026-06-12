@@ -361,11 +361,8 @@ func (p *PyPIPlugin) writePackageFilesHTML(ctx *runtime.RequestContext, packageN
 		}
 		// PEP 503: 包文件链接必须包含 #sha256= hash fragment
 		hashFragment := ""
-		for _, blobRef := range artifact.BlobRefs {
-			if blobRef.Algorithm == "sha256" {
-				hashFragment = "#sha256=" + blobRef.Digest
-				break
-			}
+		if sha256 := artifactSHA256(artifact); sha256 != "" {
+			hashFragment = "#sha256=" + sha256
 		}
 		// remote_path 已经包含 packages/ 前缀（如 packages/cc/15/.../file.whl）
 		sb.WriteString(`<a href="../../`)
@@ -406,10 +403,8 @@ func (p *PyPIPlugin) writePackageFilesJSON(ctx *runtime.RequestContext, packageN
 		}
 
 		hashes := make(map[string]string)
-		for _, blobRef := range artifact.BlobRefs {
-			if blobRef.Algorithm == "sha256" {
-				hashes["sha256"] = blobRef.Digest
-			}
+		if sha256 := artifactSHA256(artifact); sha256 != "" {
+			hashes["sha256"] = sha256
 		}
 		if len(hashes) > 0 {
 			file["hashes"] = hashes
@@ -437,7 +432,7 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 	dir := filepath.Dir(path) // e.g. "packages/62/35/0230421b8c4efad6624518028163329ad0c2df9e58e6b3bee013427bf8f6"
 
 	if strings.HasSuffix(filename, ".sha256") {
-		return p.handleChecksumRequest(ctx, repoRuntime, filename)
+		return p.handleChecksumRequest(ctx, repoRuntime, path)
 	}
 
 	packageName := p.extractPackageNameFromFilename(filename)
@@ -504,19 +499,28 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 	return errors.New("method not allowed")
 }
 
-func (p *PyPIPlugin) handleChecksumRequest(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, filename string) error {
-	actualFilename := strings.TrimSuffix(filename, ".sha256")
+func (p *PyPIPlugin) handleChecksumRequest(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
+	actualPath := strings.TrimSuffix(path, ".sha256")
+	actualFilename := filepath.Base(actualPath)
 
-	// Use QueryArtifacts to find the artifact by filename, since the exact
-	// package/version/path are not available from the URL alone.
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
-		Filename:     actualFilename,
+		RemotePath:   actualPath,
 	})
 	if err != nil || len(artifacts) == 0 {
-		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-		return nil
+		// Backward-compatible fallback for older metadata that did not store
+		// remote_path. Exact path remains preferred to avoid same-filename
+		// collisions across different hash directories.
+		artifacts, err = repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+			RepositoryID: ctx.Repository.ID,
+			Format:       "pypi",
+			Filename:     actualFilename,
+		})
+		if err != nil || len(artifacts) == 0 {
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
 	}
 
 	artifact := artifacts[0]
@@ -524,12 +528,11 @@ func (p *PyPIPlugin) handleChecksumRequest(ctx *runtime.RequestContext, repoRunt
 	ctx.RemoteURL = artifact.RemoteURL
 	ctx.SizeBytes = artifact.SizeBytes
 
-	if len(artifact.BlobRefs) == 0 {
+	sha256Digest := artifactSHA256(artifact)
+	if sha256Digest == "" {
 		http.Error(ctx.Writer, "No blob", http.StatusNotFound)
 		return nil
 	}
-
-	sha256Digest := artifact.BlobRefs[0].Digest
 	ctx.Writer.Header().Set("Content-Type", "text/plain")
 	ctx.Writer.WriteHeader(http.StatusOK)
 	ctx.Writer.Write([]byte(sha256Digest + "\n"))
@@ -584,11 +587,15 @@ func (p *PyPIPlugin) handleJsonAPI(ctx *runtime.RequestContext, repoRuntime runt
 			"url":      "../../" + remotePath,
 		}
 
-		if len(artifact.BlobRefs) > 0 {
+		if sha256 := artifactSHA256(artifact); sha256 != "" {
 			file["digest"] = map[string]string{
-				"sha256": artifact.BlobRefs[0].Digest,
+				"sha256": sha256,
 			}
+		}
+		if len(artifact.BlobRefs) > 0 {
 			file["size"] = artifact.BlobRefs[0].Size
+		} else if artifact.SizeBytes > 0 {
+			file["size"] = artifact.SizeBytes
 		}
 
 		releases[v] = append(releases[v], file)
@@ -1061,6 +1068,13 @@ func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[stri
 			props := map[string]string{
 				"remote_path": remotePath,
 			}
+			checksums := map[string]string{}
+			if digests, ok := file["digests"].(map[string]interface{}); ok {
+				if sha256, ok := digests["sha256"].(string); ok && sha256 != "" {
+					checksums["sha256"] = sha256
+				}
+			}
+			sizeBytes := parsePyPIFileSize(file["size"])
 			attrs := map[string]string{}
 			// 存储 PyPI 原始下载 URL，供 ensureArtifactBlob 回源时使用。
 			// PyPI 文件下载域名(files.pythonhosted.org)与 Simple API 域名(pypi.org/simple/)不同，
@@ -1094,6 +1108,8 @@ func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[stri
 				Filename:    filename,
 				RemotePath:  props["remote_path"],
 				DownloadURL: props["download_url"],
+				SizeBytes:   sizeBytes,
+				Checksums:   checksums,
 				Attributes:  attrs,
 				Qualifiers: map[string]string{
 					"package": packageName,
@@ -1110,6 +1126,37 @@ func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[stri
 		}
 	}
 	return artifacts
+}
+
+func artifactSHA256(artifact *runtime.Artifact) string {
+	if artifact == nil {
+		return ""
+	}
+	if artifact.Checksums != nil && artifact.Checksums["sha256"] != "" {
+		return artifact.Checksums["sha256"]
+	}
+	for _, blobRef := range artifact.BlobRefs {
+		if blobRef.Algorithm == "sha256" && blobRef.Digest != "" {
+			return blobRef.Digest
+		}
+	}
+	return ""
+}
+
+func parsePyPIFileSize(value interface{}) int64 {
+	switch v := value.(type) {
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return n
+	default:
+		return 0
+	}
 }
 
 func (p *PyPIPlugin) extractStringField(info map[string]interface{}, key string) string {

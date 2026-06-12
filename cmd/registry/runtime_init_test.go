@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"io"
+	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/model"
@@ -12,6 +15,16 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestMainDoesNotRebuildPackagesOnStartup(t *testing.T) {
+	content, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	if strings.Contains(string(content), ".RebuildPackages(") {
+		t.Fatalf("startup must not rebuild packages; keep RebuildPackages behind an explicit repair or migration path")
+	}
+}
 
 func TestCreateRuntimeForProxyRepoAllowsNilConfig(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -37,6 +50,12 @@ func TestCreateRuntimeForProxyRepoAllowsNilConfig(t *testing.T) {
 	}
 	if proxyRuntime.RemoteBaseURL != "" {
 		t.Fatalf("expected empty remote base URL, got %q", proxyRuntime.RemoteBaseURL)
+	}
+	if proxyRuntime.CachePolicy.MetadataTTL != 24*time.Hour {
+		t.Fatalf("MetadataTTL = %v, want 24h default", proxyRuntime.CachePolicy.MetadataTTL)
+	}
+	if proxyRuntime.CachePolicy.NegativeTTL != 5*time.Minute {
+		t.Fatalf("NegativeTTL = %v, want 5m default", proxyRuntime.CachePolicy.NegativeTTL)
 	}
 }
 
@@ -72,6 +91,16 @@ func TestCreateGroupRuntimeAllowsProxyMemberWithNilConfig(t *testing.T) {
 	}
 	if len(groupRuntime.Members) != 1 {
 		t.Fatalf("expected one member, got %d", len(groupRuntime.Members))
+	}
+	proxyMember, ok := groupRuntime.Members[0].(*runtime.ProxyRuntime)
+	if !ok {
+		t.Fatalf("expected proxy member runtime, got %T", groupRuntime.Members[0])
+	}
+	if proxyMember.CachePolicy.MetadataTTL != 24*time.Hour {
+		t.Fatalf("group proxy MetadataTTL = %v, want 24h default", proxyMember.CachePolicy.MetadataTTL)
+	}
+	if proxyMember.CachePolicy.NegativeTTL != 5*time.Minute {
+		t.Fatalf("group proxy NegativeTTL = %v, want 5m default", proxyMember.CachePolicy.NegativeTTL)
 	}
 }
 

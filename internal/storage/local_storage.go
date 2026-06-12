@@ -145,6 +145,25 @@ func (s *LocalStorage) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+func (s *LocalStorage) Move(ctx context.Context, oldKey, newKey string) error {
+	oldPath, err := s.resolvePathSafe(oldKey)
+	if err != nil {
+		return err
+	}
+	newPath, err := s.resolvePathSafe(newKey)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(newPath), 0755); err != nil {
+		return err
+	}
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return err
+	}
+	s.removeEmptyDirs(filepath.Dir(oldPath))
+	return nil
+}
+
 func (s *LocalStorage) removeEmptyDirs(dir string) {
 	if dir == s.basePath || !strings.HasPrefix(dir, s.basePath) {
 		return

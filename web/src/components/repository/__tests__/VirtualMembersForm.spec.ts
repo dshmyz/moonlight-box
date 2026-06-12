@@ -43,7 +43,7 @@ describe('VirtualMembersForm', () => {
   it('shows info alert about member priority', () => {
     const wrapper = createWrapper()
     
-    expect(wrapper.html()).toContain('成员仓库将按照从上到下的顺序进行优先级排序')
+    expect(wrapper.html()).toContain('拖拽成员可调整优先级顺序，排在越前面优先级越高')
   })
 
   it('shows add member button', () => {
