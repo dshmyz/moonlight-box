@@ -1,4 +1,4 @@
--- Historical packages/package_versions -> artifacts migration intentionally disabled.
+-- Historical package index -> artifacts migration intentionally disabled.
 -- The current artifact schema uses structured columns (name, version, path,
 -- filename, remote_path, qualifiers, attributes, metadata) and no longer
 -- supports the legacy artifact identity JSON column. Historical data is not migrated.

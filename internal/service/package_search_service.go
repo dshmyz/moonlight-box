@@ -422,7 +422,7 @@ func searchableArtifactSQL(alias string) string {
 	if alias != "" {
 		prefix = alias + "."
 	}
-	return "(" + prefix + "kind IS NULL OR " + prefix + "kind NOT IN ('metadata', 'checksum'))" +
+	return "(" + prefix + "kind IS NULL OR " + prefix + "kind NOT IN ('metadata', 'checksum', 'directory'))" +
 		" AND NOT (" + prefix + "format = 'yum' AND (" +
 		prefix + "remote_path LIKE 'repodata/%' OR " +
 		prefix + "remote_path LIKE '%/repodata/%' OR " +

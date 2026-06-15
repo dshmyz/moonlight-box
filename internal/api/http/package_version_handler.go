@@ -2,25 +2,33 @@ package http
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/response"
+	"github.com/dshmyz/moonlight-box/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 type PackageVersionHandler struct {
-	db *gorm.DB
+	db          *gorm.DB
+	artifactSvc *service.ArtifactService
 }
 
 func NewPackageVersionHandler(db *gorm.DB) *PackageVersionHandler {
-	return &PackageVersionHandler{db: db}
+	return NewPackageVersionHandlerWithArtifactService(db, service.NewArtifactService(db))
+}
+
+func NewPackageVersionHandlerWithArtifactService(db *gorm.DB, artifactSvc *service.ArtifactService) *PackageVersionHandler {
+	return &PackageVersionHandler{db: db, artifactSvc: artifactSvc}
 }
 
 type blobInfo struct {
@@ -374,8 +382,7 @@ func isDownloadableArtifact(a model.Artifact, filename, downloadURL string, blob
 	if filename == "" && downloadURL == "" && len(blobs) == 0 {
 		return false
 	}
-	switch a.Kind {
-	case "version", "metadata", "checksum":
+	if a.Kind == runtime.KindVersion || runtime.IsCatalogExcludedKind(a.Kind) || a.Kind == "release" {
 		return false
 	}
 	if filename != "" || downloadURL != "" || len(blobs) > 0 {
@@ -549,11 +556,22 @@ func (h *PackageVersionHandler) DeleteVersion(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("artifact_id = ?", uint(versionID)).Delete(&model.ArtifactBlob{}).Error; err != nil {
-			return err
-		}
-		return tx.Delete(&model.Artifact{}, uint(versionID)).Error
+	var artifact model.Artifact
+	if err := h.db.First(&artifact, uint(versionID)).Error; err != nil {
+		response.NotFound(c, "version not found")
+		return
+	}
+
+	if err := h.artifactSvc.Delete(c.Request.Context(), runtime.ArtifactKey{
+		RepositoryID: fmt.Sprint(artifact.RepositoryID),
+		Format:       artifact.Format,
+		Kind:         artifact.Kind,
+		IdentityKey:  artifact.IdentityKey,
+		RemotePath:   artifact.RemotePath,
+		Name:         artifact.Name,
+		Version:      artifact.Version,
+		Path:         artifact.Path,
+		Filename:     artifact.Filename,
 	}); err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -569,30 +587,17 @@ func (h *PackageVersionHandler) DeletePackage(c *gin.Context) {
 		return
 	}
 
-	var pkg model.Package
-	if err := h.db.First(&pkg, uint(packageID)).Error; err != nil {
+	repositoryID, format, name, err := h.resolvePackageDeleteTarget(c, uint(packageID))
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		response.NotFound(c, "package not found")
 		return
 	}
+	if err != nil {
+		response.BadRequest(c, "invalid package delete request", err.Error())
+		return
+	}
 
-	if err := h.db.Transaction(func(tx *gorm.DB) error {
-		var allIDs []uint
-		if err := tx.Model(&model.Artifact{}).
-			Where("repository_id = ? AND format = ? AND name = ?",
-				pkg.RepositoryID, pkg.Format, pkg.Name).
-			Pluck("id", &allIDs).Error; err != nil {
-			return err
-		}
-		if len(allIDs) > 0 {
-			if err := tx.Where("artifact_id IN ?", allIDs).Delete(&model.ArtifactBlob{}).Error; err != nil {
-				return err
-			}
-			if err := tx.Where("id IN ?", allIDs).Delete(&model.Artifact{}).Error; err != nil {
-				return err
-			}
-		}
-		return tx.Delete(&pkg).Error
-	}); err != nil {
+	if err := h.artifactSvc.DeletePackageByCoordinates(c.Request.Context(), repositoryID, format, name); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -600,6 +605,42 @@ func (h *PackageVersionHandler) DeletePackage(c *gin.Context) {
 	response.Success(c, gin.H{
 		"message": "package deleted",
 	})
+}
+
+func (h *PackageVersionHandler) resolvePackageDeleteTarget(c *gin.Context, packageID uint) (uint, string, string, error) {
+	if packageID > 0 {
+		var pkg model.Package
+		if err := h.db.First(&pkg, packageID).Error; err == nil {
+			return pkg.RepositoryID, pkg.Format, pkg.Name, nil
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, "", "", err
+		}
+
+		var artifact model.Artifact
+		if err := h.db.First(&artifact, packageID).Error; err == nil {
+			if artifact.Format != "" && artifact.Name != "" {
+				return artifact.RepositoryID, artifact.Format, artifact.Name, nil
+			}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, "", "", err
+		}
+	}
+
+	format := firstNonEmptyString(c.Query("type"), c.Query("format"), c.Query("package_type"))
+	name := c.Query("name")
+	if format == "" || name == "" {
+		return 0, "", "", gorm.ErrRecordNotFound
+	}
+
+	var repositoryID uint
+	if repoIDParam := c.Query("repository_id"); repoIDParam != "" {
+		repoID, err := strconv.ParseUint(repoIDParam, 10, 32)
+		if err != nil {
+			return 0, "", "", fmt.Errorf("repository_id must be a positive integer")
+		}
+		repositoryID = uint(repoID)
+	}
+	return repositoryID, format, name, nil
 }
 
 var _ = context.Background

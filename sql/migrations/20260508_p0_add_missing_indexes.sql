@@ -1,5 +1,5 @@
 -- Historical package index migration intentionally disabled.
 --
--- The old package schema used packages.type, package_versions and package_files.
+-- The legacy package index schema has been retired.
 -- The current architecture uses artifacts as the source of truth and packages
 -- only as a rebuildable package summary read model.

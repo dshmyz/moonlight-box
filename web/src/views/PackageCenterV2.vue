@@ -210,7 +210,7 @@ async function handleDeletePackage(pkg: Package) {
         confirmButtonClass: 'el-button--danger',
       }
     )
-    await packageApi.deletePackage(pkg.id)
+    await packageApi.deletePackage(pkg)
     ElMessage.success('包已删除')
     loadPackages()
   } catch (error) {

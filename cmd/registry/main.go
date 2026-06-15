@@ -419,7 +419,7 @@ func main() {
 	healthCheckHandler := handler.NewHealthCheckHandler(healthCheckSvc)
 
 	// 初始化包版本管理 handler（新架构，读取 artifacts 表）
-	packageVersionHandler := handler.NewPackageVersionHandler(db)
+	packageVersionHandler := handler.NewPackageVersionHandlerWithArtifactService(db, artifactSvc)
 
 	// 初始化AI服务
 	var aiService *ai.AIService

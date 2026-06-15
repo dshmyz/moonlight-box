@@ -445,7 +445,7 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
-		Kind:         "package-file",
+		Kind:         runtime.KindArtifact,
 		Name:         packageName,
 		Version:      version,
 		Path:         dir,
@@ -1075,7 +1075,7 @@ func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[stri
 				}
 			}
 			sizeBytes := parsePyPIFileSize(file["size"])
-			attrs := map[string]string{}
+			attrs := map[string]string{"artifact_type": "package-file"}
 			// 存储 PyPI 原始下载 URL，供 ensureArtifactBlob 回源时使用。
 			// PyPI 文件下载域名(files.pythonhosted.org)与 Simple API 域名(pypi.org/simple/)不同，
 			// buildRemoteURL 拼出的 URL 对 PyPI 不可用，必须使用上游返回的真实 URL。
@@ -1101,7 +1101,7 @@ func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[stri
 			}
 			artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
 				Format:      "pypi",
-				Kind:        "package-file",
+				Kind:        runtime.KindArtifact,
 				Name:        packageName,
 				Version:     version,
 				Path:        dir,
@@ -1355,13 +1355,14 @@ func (p *PyPIPlugin) parsePackageList(packageName string, body io.Reader) ([]*ru
 		}
 		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
 			Format:      "pypi",
-			Kind:        "package-file",
+			Kind:        runtime.KindArtifact,
 			Name:        packageName,
 			Version:     version,
 			Path:        dir,
 			Filename:    filename,
 			RemotePath:  fullPath,
 			DownloadURL: props["download_url"],
+			Attributes:  map[string]string{"artifact_type": "package-file"},
 			Qualifiers: map[string]string{
 				"package": packageName,
 			},

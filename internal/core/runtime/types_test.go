@@ -61,6 +61,40 @@ func TestNewArtifactKeepsQualifiers(t *testing.T) {
 	}
 }
 
+func TestNewArtifactCanonicalizesLegacyKinds(t *testing.T) {
+	tests := []struct {
+		name          string
+		kind          string
+		wantKind      string
+		wantAttrKey   string
+		wantAttrValue string
+	}{
+		{name: "npm tarball", kind: "tarball", wantKind: KindArtifact, wantAttrKey: "artifact_type", wantAttrValue: "tarball"},
+		{name: "pypi package file", kind: "package-file", wantKind: KindArtifact, wantAttrKey: "artifact_type", wantAttrValue: "package-file"},
+		{name: "go module file", kind: "module-file", wantKind: KindFile, wantAttrKey: "artifact_type", wantAttrValue: "module-file"},
+		{name: "apt release", kind: "release", wantKind: KindMetadata, wantAttrKey: "metadata_type", wantAttrValue: "release"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := NewArtifact(ArtifactSpec{
+				Format:     "generic",
+				Kind:       tt.kind,
+				Name:       "demo",
+				Version:    "1.0.0",
+				RemotePath: "demo/1.0.0/demo.bin",
+			})
+
+			if a.Kind != tt.wantKind {
+				t.Fatalf("kind = %q, want %q", a.Kind, tt.wantKind)
+			}
+			if a.Attributes[tt.wantAttrKey] != tt.wantAttrValue {
+				t.Fatalf("attributes[%q] = %q, want %q", tt.wantAttrKey, a.Attributes[tt.wantAttrKey], tt.wantAttrValue)
+			}
+		})
+	}
+}
+
 func TestValidateArtifactForStoreRejectsInvalidPaths(t *testing.T) {
 	tests := []struct {
 		name string

@@ -192,13 +192,14 @@ func (p *NpmPlugin) parseNpmMetadata(packageName string, body io.Reader) ([]*run
 		tarballSeen[tarballKey] = true
 		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
 			Format:      "npm",
-			Kind:        "tarball",
+			Kind:        runtime.KindArtifact,
 			Name:        packageName,
 			Version:     ver,
 			Path:        packageName + "/-",
 			Filename:    tarballName,
 			RemotePath:  tarballKey,
 			DownloadURL: tarballProps["download_url"],
+			Attributes:  map[string]string{"artifact_type": "tarball"},
 			Properties:  tarballProps,
 		}))
 	}
@@ -424,7 +425,7 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
-		Kind:         "tarball",
+		Kind:         runtime.KindArtifact,
 		Name:         packageName,
 		Version:      version,
 		Path:         packageName + "/-",
@@ -500,7 +501,7 @@ func (p *NpmPlugin) handleTarballDelete(ctx *runtime.RequestContext, repoRuntime
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
-		Kind:         "tarball",
+		Kind:         runtime.KindArtifact,
 		Name:         packageName,
 		Version:      version,
 		Path:         packageName + "/-",
@@ -947,13 +948,14 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		tarballArtifact := runtime.NewArtifact(runtime.ArtifactSpec{
 			RepositoryID: ctx.Repository.ID,
 			Format:       "npm",
-			Kind:         "tarball",
+			Kind:         runtime.KindArtifact,
 			Name:         packageName,
 			Version:      tarballVersion,
 			Path:         packageName + "/-",
 			Filename:     tarballName,
 			RemotePath:   packageName + "/-/" + tarballName,
 			BlobRefs:     []runtime.BlobRef{tarballBlob},
+			Attributes:   map[string]string{"artifact_type": "tarball"},
 			Properties: map[string]string{
 				"package": packageName,
 				"version": tarballVersion,

@@ -308,10 +308,12 @@ func TestFetchRemote_ParsesVersions(t *testing.T) {
 	var versions, tarballs int
 	for _, a := range arts {
 		switch a.Kind {
-		case "version":
+		case runtime.KindVersion:
 			versions++
-		case "tarball":
-			tarballs++
+		case runtime.KindArtifact:
+			if a.Attributes["artifact_type"] == "tarball" {
+				tarballs++
+			}
 		}
 	}
 	if versions != 2 || tarballs != 2 {

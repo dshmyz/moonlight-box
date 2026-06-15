@@ -38,7 +38,7 @@ func Initialize(cfg *config.Config) error {
 		if err := ensureDataDirectory(dsn); err != nil {
 			return fmt.Errorf("failed to create data directory: %w", err)
 		}
-		connParams := "_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
+		connParams := "_journal_mode=WAL&_busy_timeout=30000&_txlock=immediate"
 		if strings.Contains(dsn, "?") {
 			dsn = dsn + "&" + connParams
 		} else {
@@ -74,8 +74,8 @@ func Initialize(cfg *config.Config) error {
 	}
 
 	if cfg.Database.Driver == "sqlite" {
-		sqlDB.SetMaxOpenConns(8)
-		sqlDB.SetMaxIdleConns(4)
+		sqlDB.SetMaxOpenConns(1)
+		sqlDB.SetMaxIdleConns(1)
 		sqlDB.SetConnMaxLifetime(time.Hour)
 		sqlDB.SetConnMaxIdleTime(30 * time.Minute)
 
@@ -263,6 +263,10 @@ func GetPoolStats() *PoolStats {
 		newWaits := s.WaitCount - lastWaitCount
 		lastWaitCount = s.WaitCount
 
+		message := "Database connection pool wait detected, consider increasing max_open_conns or migrating to PostgreSQL"
+		if DB != nil && DB.Dialector.Name() == "sqlite" {
+			message = "SQLite connection wait detected; reduce write concurrency or migrate to PostgreSQL for production workloads"
+		}
 		util.WithFields(logrus.Fields{
 			util.LogKeyModule: "database",
 			"wait_count":      newWaits,
@@ -270,7 +274,7 @@ func GetPoolStats() *PoolStats {
 			"open_conns":      s.OpenConnections,
 			"in_use":          s.InUse,
 			"idle":            s.Idle,
-		}).Warn("Database connection pool wait detected, consider increasing max_open_conns or migrating to PostgreSQL")
+		}).Warn(message)
 	}
 
 	return &PoolStats{

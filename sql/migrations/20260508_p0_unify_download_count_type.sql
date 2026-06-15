@@ -1,5 +1,5 @@
 -- Historical package download-count migration intentionally disabled.
 --
--- The old package_versions/package_files tables are no longer part of the
--- storage model. Download counters now live on artifacts/proxy logs and the
+-- The legacy package file/version tables are no longer part of the storage
+-- model. Download counters now live on artifacts/proxy logs and the
 -- rebuildable packages summary table.

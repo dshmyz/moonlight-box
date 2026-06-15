@@ -3,10 +3,12 @@ package database
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/config"
 	"github.com/dshmyz/moonlight-box/internal/util"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -64,6 +66,39 @@ func TestCleanupLegacyArtifactColumnsDropsCoordinates(t *testing.T) {
 
 	if sqliteColumnExists(t, db, "artifacts", "coordinates") {
 		t.Fatalf("coordinates should be removed from artifacts")
+	}
+}
+
+func TestInitializeSQLiteUsesSingleWriterConnection(t *testing.T) {
+	if err := util.InitLogger(&util.LoggerConfig{Level: "error", Format: "console", Output: "stdout"}); err != nil {
+		t.Fatalf("init logger: %v", err)
+	}
+
+	oldDB := DB
+	t.Cleanup(func() {
+		if DB != nil {
+			if sqlDB, err := DB.DB(); err == nil {
+				_ = sqlDB.Close()
+			}
+		}
+		DB = oldDB
+	})
+
+	cfg := &config.Config{}
+	cfg.Database.Driver = "sqlite"
+	cfg.Database.DSN = filepath.Join(t.TempDir(), "registry.db")
+	cfg.Database.LogLevel = "silent"
+
+	if err := Initialize(cfg); err != nil {
+		t.Fatalf("initialize sqlite: %v", err)
+	}
+	sqlDB, err := DB.DB()
+	if err != nil {
+		t.Fatalf("get sql db: %v", err)
+	}
+	stats := sqlDB.Stats()
+	if stats.MaxOpenConnections != 1 {
+		t.Fatalf("sqlite MaxOpenConnections = %d, want 1 to avoid writer lock contention", stats.MaxOpenConnections)
 	}
 }
 

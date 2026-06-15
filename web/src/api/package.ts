@@ -87,6 +87,8 @@ export interface VersionListResponse {
   versions: PackageVersion[]
 }
 
+type PackageDeleteTarget = Pick<Package, 'id' | 'name'> & Partial<Pick<Package, 'type' | 'package_type' | 'format' | 'repository_id'>>
+
 export const packageApi = {
   search(params: { q?: string; type?: string; name?: string; version?: string; repository?: string; sort?: string; page?: number; page_size?: number }) {
     return request.get<SearchResponse>('/packages/search', { params })
@@ -112,7 +114,16 @@ export const packageApi = {
     return request.delete(`/packages/versions/${versionId}`)
   },
 
-  deletePackage(packageId: number) {
-    return request.delete(`/packages/${packageId}`)
+  deletePackage(pkg: number | PackageDeleteTarget) {
+    if (typeof pkg === 'number') {
+      return request.delete(`/packages/${pkg}`)
+    }
+    return request.delete(`/packages/${pkg.id || 0}`, {
+      params: {
+        type: pkg.type || pkg.package_type || pkg.format,
+        name: pkg.name,
+        repository_id: pkg.repository_id,
+      },
+    })
   },
 }

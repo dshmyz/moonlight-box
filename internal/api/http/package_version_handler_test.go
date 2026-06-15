@@ -52,11 +52,23 @@ func TestListVersionsSkipsMetadataOnlyArtifacts(t *testing.T) {
 		Qualifiers:   model.JSONB{"package_type": "tarball"},
 		Attributes:   model.JSONB{"default_visible": "true", "display_group": "current"},
 	}
+	legacyReleaseMetadata := model.Artifact{
+		RepositoryID: repo.ID,
+		Format:       "npm",
+		Kind:         "release",
+		Name:         "left-pad",
+		Version:      "1.0.0",
+		Filename:     "Release",
+		RemotePath:   "left-pad/Release",
+	}
 	if err := db.Create(&versionOnly).Error; err != nil {
 		t.Fatalf("create version artifact: %v", err)
 	}
 	if err := db.Create(&tarball).Error; err != nil {
 		t.Fatalf("create tarball artifact: %v", err)
+	}
+	if err := db.Create(&legacyReleaseMetadata).Error; err != nil {
+		t.Fatalf("create legacy release metadata: %v", err)
 	}
 
 	handler := NewPackageVersionHandler(db)
@@ -256,5 +268,162 @@ func TestDeletePackageUsesPackageAggregateID(t *testing.T) {
 	}
 	if otherCount != 1 {
 		t.Fatalf("expected unrelated artifact preserved, got %d", otherCount)
+	}
+}
+
+func TestDeletePackageFallsBackToArtifactID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Package{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	repo := model.Repository{Name: "npm-proxy", PackageType: "npm", Type: "proxy"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	artifact := model.Artifact{
+		RepositoryID: repo.ID,
+		Format:       "npm",
+		Kind:         "artifact",
+		Name:         "left-pad",
+		Version:      "1.0.0",
+		RemotePath:   "left-pad/-/left-pad-1.0.0.tgz",
+	}
+	if err := db.Create(&artifact).Error; err != nil {
+		t.Fatalf("create artifact: %v", err)
+	}
+
+	handler := NewPackageVersionHandler(db)
+	router := gin.New()
+	router.DELETE("/api/packages/:id", handler.DeletePackage)
+
+	req := httptest.NewRequest(stdhttp.MethodDelete, "/api/packages/"+strconv.Itoa(int(artifact.ID)), nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var remaining int64
+	if err := db.Model(&model.Artifact{}).Where("repository_id = ? AND format = ? AND name = ?", repo.ID, "npm", "left-pad").Count(&remaining).Error; err != nil {
+		t.Fatalf("count artifacts: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("expected artifacts deleted, got %d remaining", remaining)
+	}
+}
+
+func TestDeletePackageSupportsCoordinateFallbackWhenIDIsZero(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Package{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	repo := model.Repository{Name: "pypi-proxy", PackageType: "pypi", Type: "proxy"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	pkg := model.Package{RepositoryID: repo.ID, Format: "pypi", Name: "requests", VersionCount: 1}
+	if err := db.Create(&pkg).Error; err != nil {
+		t.Fatalf("create package: %v", err)
+	}
+	artifact := model.Artifact{
+		RepositoryID: repo.ID,
+		Format:       "pypi",
+		Kind:         "artifact",
+		Name:         "requests",
+		Version:      "2.31.0",
+		RemotePath:   "packages/requests-2.31.0.tar.gz",
+	}
+	if err := db.Create(&artifact).Error; err != nil {
+		t.Fatalf("create artifact: %v", err)
+	}
+
+	handler := NewPackageVersionHandler(db)
+	router := gin.New()
+	router.DELETE("/api/packages/:id", handler.DeletePackage)
+
+	req := httptest.NewRequest(stdhttp.MethodDelete, "/api/packages/0?type=pypi&name=requests&repository_id="+strconv.Itoa(int(repo.ID)), nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var remainingArtifacts int64
+	if err := db.Model(&model.Artifact{}).Where("repository_id = ? AND format = ? AND name = ?", repo.ID, "pypi", "requests").Count(&remainingArtifacts).Error; err != nil {
+		t.Fatalf("count artifacts: %v", err)
+	}
+	if remainingArtifacts != 0 {
+		t.Fatalf("expected artifacts deleted, got %d remaining", remainingArtifacts)
+	}
+	var remainingPackages int64
+	if err := db.Model(&model.Package{}).Where("repository_id = ? AND format = ? AND name = ?", repo.ID, "pypi", "requests").Count(&remainingPackages).Error; err != nil {
+		t.Fatalf("count packages: %v", err)
+	}
+	if remainingPackages != 0 {
+		t.Fatalf("expected package deleted, got %d remaining", remainingPackages)
+	}
+}
+
+func TestDeleteVersionUpdatesPackageAggregate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Package{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	repo := model.Repository{Name: "maven-local", PackageType: "maven", Type: "local"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	pkg := model.Package{RepositoryID: repo.ID, Format: "maven", Name: "com.example:app", VersionCount: 2, LatestVersion: "2.0.0"}
+	if err := db.Create(&pkg).Error; err != nil {
+		t.Fatalf("create package: %v", err)
+	}
+	oldArtifact := model.Artifact{RepositoryID: repo.ID, Format: "maven", Kind: "artifact", Name: "com.example:app", Version: "1.0.0", RemotePath: "com/example/app/1.0.0/app-1.0.0.jar"}
+	newArtifact := model.Artifact{RepositoryID: repo.ID, Format: "maven", Kind: "artifact", Name: "com.example:app", Version: "2.0.0", RemotePath: "com/example/app/2.0.0/app-2.0.0.jar"}
+	if err := db.Create(&oldArtifact).Error; err != nil {
+		t.Fatalf("create old artifact: %v", err)
+	}
+	if err := db.Create(&newArtifact).Error; err != nil {
+		t.Fatalf("create new artifact: %v", err)
+	}
+
+	handler := NewPackageVersionHandler(db)
+	router := gin.New()
+	router.DELETE("/api/packages/versions/:id", handler.DeleteVersion)
+
+	req := httptest.NewRequest(stdhttp.MethodDelete, "/api/packages/versions/"+strconv.Itoa(int(newArtifact.ID)), nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != stdhttp.StatusNoContent {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	var updated model.Package
+	if err := db.First(&updated, pkg.ID).Error; err != nil {
+		t.Fatalf("load package: %v", err)
+	}
+	if updated.VersionCount != 1 {
+		t.Fatalf("VersionCount = %d, want 1", updated.VersionCount)
+	}
+	if updated.LatestVersion != "1.0.0" {
+		t.Fatalf("LatestVersion = %q, want 1.0.0", updated.LatestVersion)
 	}
 }

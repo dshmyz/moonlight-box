@@ -69,7 +69,6 @@ CREATE TABLE `artifacts` (
   `path` TEXT DEFAULT NULL,
   `filename` VARCHAR(1024) DEFAULT NULL,
   `remote_path` TEXT DEFAULT NULL,
-  `download_path` TEXT DEFAULT NULL,
   `download_url` TEXT DEFAULT NULL,
   `extension` VARCHAR(64) DEFAULT NULL,
   `content_type` VARCHAR(255) DEFAULT NULL,
@@ -105,27 +104,6 @@ CREATE TABLE `artifact_blobs` (
   FOREIGN KEY (`artifact_id`) REFERENCES `artifacts` (`id`) ON DELETE CASCADE,
   FOREIGN KEY (`blob_id`) REFERENCES `blobs` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='制品与Blob关联表';
-
--- ArtifactTag 表 - 制品标签
-CREATE TABLE `artifact_tags` (
-  `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  `artifact_id` INT UNSIGNED NOT NULL,
-  `tag` VARCHAR(255) NOT NULL,
-  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  INDEX `idx_artifact_tags` (`artifact_id`, `tag`),
-  FOREIGN KEY (`artifact_id`) REFERENCES `artifacts` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='制品标签表';
-
--- ArtifactVersion 表 - 制品版本
-CREATE TABLE `artifact_versions` (
-  `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  `artifact_id` INT UNSIGNED NOT NULL,
-  `version` VARCHAR(255) NOT NULL,
-  `normalized` VARCHAR(255) DEFAULT '',
-  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  INDEX `idx_artifact_versions` (`artifact_id`, `version`),
-  FOREIGN KEY (`artifact_id`) REFERENCES `artifacts` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='制品版本表';
 
 -- ========================================
 -- 用户权限相关表

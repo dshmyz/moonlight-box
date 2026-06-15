@@ -94,13 +94,14 @@ func (p *GoPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*
 	return []*runtime.Artifact{
 		runtime.NewArtifact(runtime.ArtifactSpec{
 			Format:      "go",
-			Kind:        "module-file",
+			Kind:        runtime.KindFile,
 			Name:        modulePath,
 			Version:     strings.TrimSuffix(filename, filepath.Ext(filename)),
 			Path:        modulePath + "/@v",
 			Filename:    filename,
 			RemotePath:  path,
 			DownloadURL: fullURL,
+			Attributes:  map[string]string{"artifact_type": "module-file"},
 			Qualifiers: map[string]string{
 				"module": modulePath,
 				"ext":    fileType,

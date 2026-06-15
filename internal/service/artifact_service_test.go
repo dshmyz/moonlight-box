@@ -178,6 +178,36 @@ func TestArtifactServiceDoesNotAggregateYumRepodataAsPackage(t *testing.T) {
 	}
 }
 
+func TestArtifactServiceDoesNotAggregateDirectoryAsPackage(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}, &model.Package{}, &model.ArtifactBlob{}, &model.Blob{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	svc := NewArtifactService(db)
+	if err := svc.Save(context.Background(), runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: "1",
+		Format:       "generic",
+		Kind:         runtime.KindDirectory,
+		Name:         "docs",
+		Filename:     "docs",
+		RemotePath:   "docs",
+	})); err != nil {
+		t.Fatalf("save directory: %v", err)
+	}
+
+	var count int64
+	if err := db.Model(&model.Package{}).Count(&count).Error; err != nil {
+		t.Fatalf("count packages: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("directory should not be aggregated into packages, got %d rows", count)
+	}
+}
+
 func TestArtifactServiceDeleteKeepsDistinctMavenVersionCount(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -267,5 +297,101 @@ func TestArtifactServiceRebuildPackagesRestoresLicenseFromAttributes(t *testing.
 	}
 	if pkg.Description != "String left pad" {
 		t.Fatalf("Description = %q, want String left pad", pkg.Description)
+	}
+}
+
+func TestArtifactServiceRebuildPackagesCountsDistinctVersions(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	repo := model.Repository{Name: "maven-local", Type: model.RepoTypeLocal, PackageType: "maven"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	for _, filename := range []string{"app-1.0.0.jar", "app-1.0.0.pom"} {
+		if err := db.Create(&model.Artifact{
+			RepositoryID: repo.ID,
+			Format:       "maven",
+			Kind:         runtime.KindArtifact,
+			IdentityKey:  "file/com/example/app/1.0.0/" + filename,
+			Name:         "com.example:app",
+			Version:      "1.0.0",
+			Path:         "com/example/app/1.0.0",
+			Filename:     filename,
+			RemotePath:   "com/example/app/1.0.0/" + filename,
+		}).Error; err != nil {
+			t.Fatalf("create artifact %s: %v", filename, err)
+		}
+	}
+
+	svc := NewArtifactService(db)
+	if err := svc.RebuildPackages(context.Background()); err != nil {
+		t.Fatalf("rebuild packages: %v", err)
+	}
+
+	var pkg model.Package
+	if err := db.Where("repository_id = ? AND format = ? AND name = ?", repo.ID, "maven", "com.example:app").First(&pkg).Error; err != nil {
+		t.Fatalf("load package: %v", err)
+	}
+	if pkg.VersionCount != 1 {
+		t.Fatalf("VersionCount = %d, want 1 distinct version", pkg.VersionCount)
+	}
+}
+
+func TestArtifactServiceRebuildPackagesRollsBackOnInsertFailure(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	repo := model.Repository{Name: "npm-proxy", Type: model.RepoTypeProxy, PackageType: "npm"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	existing := model.Package{
+		RepositoryID:  repo.ID,
+		Format:        "npm",
+		Name:          "left-pad",
+		LatestVersion: "0.9.0",
+		VersionCount:  1,
+	}
+	if err := db.Create(&existing).Error; err != nil {
+		t.Fatalf("create existing package: %v", err)
+	}
+	if err := db.Create(&model.Artifact{
+		RepositoryID: repo.ID,
+		Format:       "npm",
+		Kind:         runtime.KindArtifact,
+		IdentityKey:  "file/left-pad/-/left-pad-1.0.0.tgz",
+		Name:         "left-pad",
+		Version:      "1.0.0",
+		RemotePath:   "left-pad/-/left-pad-1.0.0.tgz",
+		Filename:     "left-pad-1.0.0.tgz",
+	}).Error; err != nil {
+		t.Fatalf("create artifact: %v", err)
+	}
+	if err := db.Exec(`CREATE TRIGGER fail_package_rebuild BEFORE INSERT ON packages BEGIN SELECT RAISE(ABORT, 'forced rebuild failure'); END;`).Error; err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	svc := NewArtifactService(db)
+	if err := svc.RebuildPackages(context.Background()); err == nil {
+		t.Fatal("RebuildPackages error = nil, want forced failure")
+	}
+
+	var pkg model.Package
+	if err := db.Where("repository_id = ? AND format = ? AND name = ?", repo.ID, "npm", "left-pad").First(&pkg).Error; err != nil {
+		t.Fatalf("load package after failed rebuild: %v", err)
+	}
+	if pkg.LatestVersion != "0.9.0" || pkg.VersionCount != 1 {
+		t.Fatalf("package after failed rebuild = latest %q count %d, want preserved latest 0.9.0 count 1", pkg.LatestVersion, pkg.VersionCount)
 	}
 }

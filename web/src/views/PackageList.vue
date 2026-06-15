@@ -226,7 +226,7 @@ async function handleDeletePackage(pkg: Package) {
       }
     )
 
-    await packageApi.deletePackage(pkg.id)
+    await packageApi.deletePackage(pkg)
     ElMessage.success('包已删除')
     loadPackages()
   } catch (error) {

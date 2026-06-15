@@ -142,16 +142,17 @@ func (p *AptPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 		logrus.WithFields(logrus.Fields{
 			"path":     path,
 			"filename": filename,
-			"kind":     "release",
+			"kind":     runtime.KindMetadata,
 		}).Debug("apt: FetchRemote returning release file reference")
 		return []*runtime.Artifact{
 			runtime.NewArtifact(runtime.ArtifactSpec{
 				Format:     "apt",
-				Kind:       "release",
+				Kind:       runtime.KindMetadata,
 				Name:       filename,
 				Path:       dir,
 				Filename:   filename,
 				RemotePath: path,
+				Attributes: map[string]string{"metadata_type": "release"},
 				Properties: map[string]string{
 					"filename":    filename,
 					"remote_path": path,

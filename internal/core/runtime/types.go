@@ -17,12 +17,13 @@ const clientIPKey ctxKey = "client_ip"
 // Kind* 常量 —— Artifact.Kind 中跨协议通用的值。
 // 协议特有的 Kind 由各 Plugin 各自定义。
 const (
-	KindPackage  = "package"  // 包聚合入口
-	KindVersion  = "version"  // 版本记录（从远程元数据解析的版本列表）
-	KindArtifact = "artifact" // 具体包产物（上传/下载的包文件）
-	KindFile     = "file"     // 可下载文件
-	KindMetadata = "metadata" // metadata/index/release 等协议元数据
-	KindChecksum = "checksum" // checksum 文件或 checksum 投影
+	KindPackage   = "package"   // 包聚合入口
+	KindVersion   = "version"   // 版本记录（从远程元数据解析的版本列表）
+	KindArtifact  = "artifact"  // 具体包产物（上传/下载的包文件）
+	KindFile      = "file"      // 可下载文件
+	KindDirectory = "directory" // 目录占位（Raw/Generic 列表用，不进入包聚合）
+	KindMetadata  = "metadata"  // metadata/index/release 等协议元数据
+	KindChecksum  = "checksum"  // checksum 文件或 checksum 投影
 )
 
 // mustHaveNameKinds 是需要 Artifact.Name 的 Kind 集合。
@@ -34,6 +35,10 @@ var mustHaveNameKinds = map[string]bool{
 // IsMetadataKind 判断给定 Kind 是否为协议元数据（不应写入 packages 聚合表）。
 func IsMetadataKind(kind string) bool {
 	return kind == KindMetadata || kind == KindChecksum
+}
+
+func IsCatalogExcludedKind(kind string) bool {
+	return IsMetadataKind(kind) || kind == KindDirectory
 }
 
 // ValidateArtifactForStore 对写入存储的 Artifact 做合规检查。
@@ -139,6 +144,7 @@ func NormalizeArtifactForStore(a *Artifact) {
 	if a.Checksums == nil {
 		a.Checksums = map[string]string{}
 	}
+	normalizeArtifactKind(a)
 
 	if a.RemotePath == "" {
 		a.RemotePath = a.Properties["remote_path"]
@@ -176,6 +182,29 @@ func NormalizeArtifactForStore(a *Artifact) {
 	}
 	if a.IdentityKey == "" {
 		a.IdentityKey = BuildArtifactIdentityKey(a)
+	}
+}
+
+func normalizeArtifactKind(a *Artifact) {
+	if a == nil {
+		return
+	}
+	switch a.Kind {
+	case "tarball", "package-file":
+		if a.Attributes["artifact_type"] == "" {
+			a.Attributes["artifact_type"] = a.Kind
+		}
+		a.Kind = KindArtifact
+	case "module-file":
+		if a.Attributes["artifact_type"] == "" {
+			a.Attributes["artifact_type"] = a.Kind
+		}
+		a.Kind = KindFile
+	case "release":
+		if a.Attributes["metadata_type"] == "" {
+			a.Attributes["metadata_type"] = a.Kind
+		}
+		a.Kind = KindMetadata
 	}
 }
 

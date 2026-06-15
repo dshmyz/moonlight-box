@@ -272,6 +272,47 @@ func (s *ArtifactService) Delete(ctx context.Context, key runtime.ArtifactKey) e
 	return err
 }
 
+func (s *ArtifactService) DeletePackage(ctx context.Context, repoID uint, format, name string) error {
+	if repoID == 0 || format == "" || name == "" {
+		return runtime.ErrNotFound
+	}
+	return s.deletePackageWhere(ctx, "repository_id = ? AND format = ? AND name = ?", repoID, format, name)
+}
+
+func (s *ArtifactService) DeletePackageByCoordinates(ctx context.Context, repoID uint, format, name string) error {
+	if format == "" || name == "" {
+		return runtime.ErrNotFound
+	}
+	if repoID > 0 {
+		return s.DeletePackage(ctx, repoID, format, name)
+	}
+	return s.deletePackageWhere(ctx, "format = ? AND name = ?", format, name)
+}
+
+func (s *ArtifactService) deletePackageWhere(ctx context.Context, where string, args ...interface{}) error {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var artifactIDs []uint
+		if err := tx.Model(&model.Artifact{}).
+			Where(where, args...).
+			Pluck("id", &artifactIDs).Error; err != nil {
+			return err
+		}
+		if len(artifactIDs) > 0 {
+			if err := tx.Where("artifact_id IN ?", artifactIDs).Delete(&model.ArtifactBlob{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("id IN ?", artifactIDs).Delete(&model.Artifact{}).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Where(where, args...).Delete(&model.Package{}).Error
+	})
+	if err == nil {
+		s.notifyCacheInvalidation()
+	}
+	return err
+}
+
 // RebuildPackages 重建整个 packages 表（从 artifacts 表全量聚合）
 func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 	util.WithFields(logrus.Fields{
@@ -287,11 +328,6 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 		return nil
 	}
 
-	// 清空 packages 表
-	if err := s.db.WithContext(ctx).Exec("DELETE FROM packages").Error; err != nil {
-		return err
-	}
-
 	licenseExpr := jsonTextExpr(s.db, "a3.attributes", "license")
 	descriptionExpr := jsonTextExpr(s.db, "a4.attributes", "description")
 
@@ -302,13 +338,16 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 			repository_id,
 			format,
 			name,
-			COUNT(*) AS version_count,
+			COUNT(DISTINCT version) AS version_count,
 			COALESCE(
 				(SELECT a2.version
 				 FROM artifacts a2
 				 WHERE a2.repository_id = a.repository_id
 				   AND a2.format = a.format
 				   AND a2.name = a.name
+				   AND a2.version IS NOT NULL
+				   AND a2.version != ''
+				   AND (a2.kind IS NULL OR a2.kind NOT IN ('metadata', 'checksum', 'directory'))
 				 ORDER BY a2.updated_at DESC
 				 LIMIT 1),
 				''
@@ -342,7 +381,9 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 		FROM artifacts a
 		WHERE name IS NOT NULL
 		  AND name != ''
-		  AND (kind IS NULL OR kind NOT IN ('metadata', 'checksum'))
+		  AND version IS NOT NULL
+		  AND version != ''
+		  AND (kind IS NULL OR kind NOT IN ('metadata', 'checksum', 'directory'))
 		  AND NOT (
 		    format = 'yum'
 		    AND (
@@ -356,7 +397,13 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 		GROUP BY repository_id, format, name
 	`
 
-	if err := s.db.WithContext(ctx).Exec(query).Error; err != nil {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("DELETE FROM packages").Error; err != nil {
+			return err
+		}
+		return tx.Exec(query).Error
+	})
+	if err != nil {
 		return err
 	}
 
@@ -451,7 +498,7 @@ func (s *ArtifactService) syncPackageAfterDelete(tx *gorm.DB, artifact *model.Ar
 		Where("repository_id = ? AND format = ?", artifact.RepositoryID, artifact.Format).
 		Where("name = ?", name).
 		Where("version != ''").
-		Where("(kind IS NULL OR kind NOT IN ?)", []string{runtime.KindMetadata, runtime.KindChecksum}).
+		Where("(kind IS NULL OR kind NOT IN ?)", catalogExcludedKinds()).
 		Count(&remaining).Error; err != nil {
 		return err
 	}
@@ -545,7 +592,7 @@ func (s *ArtifactService) recalcPackageVersions(tx *gorm.DB, seenPackages map[st
 			Where("repository_id = ? AND format = ?", repoID, format).
 			Where("name = ?", name).
 			Where("version != ''").
-			Where("(kind IS NULL OR kind NOT IN ?)", []string{runtime.KindMetadata, runtime.KindChecksum}).
+			Where("(kind IS NULL OR kind NOT IN ?)", catalogExcludedKinds()).
 			Where("NOT (format = ? AND (remote_path LIKE ? OR remote_path LIKE ? OR path = ? OR path LIKE ? OR filename = ?))",
 				"yum", "repodata/%", "%/repodata/%", "repodata", "%/repodata", "repomd.xml").
 			Distinct("version").
@@ -557,7 +604,7 @@ func (s *ArtifactService) recalcPackageVersions(tx *gorm.DB, seenPackages map[st
 		if err := tx.Where("repository_id = ? AND format = ?", repoID, format).
 			Where("name = ?", name).
 			Where("version != ''").
-			Where("(kind IS NULL OR kind NOT IN ?)", []string{runtime.KindMetadata, runtime.KindChecksum}).
+			Where("(kind IS NULL OR kind NOT IN ?)", catalogExcludedKinds()).
 			Where("NOT (format = ? AND (remote_path LIKE ? OR remote_path LIKE ? OR path = ? OR path LIKE ? OR filename = ?))",
 				"yum", "repodata/%", "%/repodata/%", "repodata", "%/repodata", "repomd.xml").
 			Order("updated_at DESC").First(&latest).Error; err != nil {
@@ -597,13 +644,17 @@ func shouldAggregatePackageArtifact(artifact *model.Artifact) bool {
 	if artifact == nil || artifact.Name == "" {
 		return false
 	}
-	if runtime.IsMetadataKind(artifact.Kind) {
+	if runtime.IsCatalogExcludedKind(artifact.Kind) {
 		return false
 	}
 	if isYumRepodataArtifact(artifact.Format, artifact.Path, artifact.Filename, artifact.RemotePath) {
 		return false
 	}
 	return true
+}
+
+func catalogExcludedKinds() []string {
+	return []string{runtime.KindMetadata, runtime.KindChecksum, runtime.KindDirectory}
 }
 
 func isYumRepodataArtifact(format, artifactPath, filename, remotePath string) bool {

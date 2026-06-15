@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/response"
@@ -169,13 +170,13 @@ func (h *VulnRuleHandler) TestDataSource(c *gin.Context) {
 		return
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), "GET", ds.URL, nil)
+	req, err := http.NewRequestWithContext(c.Request.Context(), "GET", ds.URL, nil)
 	if err != nil {
 		response.BadRequest(c, "invalid URL", err.Error())
 		return
 	}
 
-	client := &http.Client{Timeout: 10 * http.DefaultClient.Timeout}
+	client := newVulnDataSourceHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		response.BadRequest(c, "connection failed", err.Error())
@@ -194,4 +195,8 @@ func (h *VulnRuleHandler) TestDataSource(c *gin.Context) {
 		"reachable":  true,
 		"valid_json": true,
 	})
+}
+
+func newVulnDataSourceHTTPClient() *http.Client {
+	return &http.Client{Timeout: 10 * time.Second}
 }

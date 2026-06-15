@@ -65,6 +65,9 @@ const props = defineProps<{
     latest_version?: string
     download_count?: number
     license?: string
+    repository_id?: number
+    package_type?: string
+    format?: string
   }
 }>()
 
@@ -92,7 +95,7 @@ async function handleDeleteClick() {
       }
     )
 
-    await packageApi.deletePackage(props.pkg.id)
+    await packageApi.deletePackage(props.pkg)
     ElMessage.success('包已删除')
     emit('deleted')
     router.push('/admin/packages')
