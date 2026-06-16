@@ -1,6 +1,9 @@
 package runtime
 
-import "context"
+import (
+	"context"
+	"io"
+)
 
 type HostedRuntime struct {
 	MetadataStore MetadataStore
@@ -15,7 +18,15 @@ func (n *HostedRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Arti
 		return nil, err
 	}
 	if len(artifact.BlobRefs) > 0 {
-		rc, openErr := n.BlobStore.Open(artifact.BlobRefs[0])
+		var (
+			rc      io.ReadCloser
+			openErr error
+		)
+		if store, ok := n.BlobStore.(ContextBlobOpener); ok {
+			rc, openErr = store.OpenContext(ctx, artifact.BlobRefs[0])
+		} else {
+			rc, openErr = n.BlobStore.Open(artifact.BlobRefs[0])
+		}
 		if openErr != nil {
 			return nil, openErr
 		}
@@ -72,7 +83,11 @@ func (n *HostedRuntime) DeleteArtifact(ctx context.Context, key ArtifactKey) err
 		return err
 	}
 	for _, ref := range artifact.BlobRefs {
-		_ = n.BlobStore.Delete(ref)
+		if store, ok := n.BlobStore.(ContextBlobDeleter); ok {
+			_ = store.DeleteContext(ctx, ref)
+		} else {
+			_ = n.BlobStore.Delete(ref)
+		}
 	}
 	return nil
 }

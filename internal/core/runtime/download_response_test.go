@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,40 @@ func TestServeArtifactContent_RangeUsesSeekWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestServeArtifactContent_LargeNonSeekableRangeDoesNotReadWholeBody(t *testing.T) {
+	const largeNonSeekableSize = 8*1024*1024 + 1024
+	content := &countingLargeReader{remaining: largeNonSeekableSize}
+	artifact := NewArtifact(ArtifactSpec{
+		Format:    "generic",
+		Kind:      KindFile,
+		Name:      "large.bin",
+		Filename:  "large.bin",
+		SizeBytes: largeNonSeekableSize,
+		Content:   content,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/repository/test/large.bin", nil)
+	req.Header.Set("Range", "bytes=0-4")
+	w := httptest.NewRecorder()
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	err := ServeArtifactContent(w, req, artifact, "large.bin", "application/octet-stream", "inline")
+	runtime.ReadMemStats(&after)
+
+	if err != nil {
+		t.Fatalf("ServeArtifactContent failed: %v", err)
+	}
+	if w.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("expected 416 for large non-seekable range, got %d", w.Code)
+	}
+	if content.bytesRead != 0 {
+		t.Fatalf("expected no body reads for large non-seekable range, read %d bytes", content.bytesRead)
+	}
+	if growth := after.TotalAlloc - before.TotalAlloc; growth > 1024*1024 {
+		t.Fatalf("expected no large allocation for range fallback, allocated %d bytes", growth)
+	}
+}
+
 type trackingReadSeeker struct {
 	*strings.Reader
 	seekCalls int
@@ -86,6 +121,29 @@ func (r *trackingReadSeeker) Read(p []byte) (int, error) {
 }
 
 func (r *trackingReadSeeker) Close() error { return nil }
+
+type countingLargeReader struct {
+	remaining int64
+	bytesRead int64
+}
+
+func (r *countingLargeReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	for i := range p {
+		p[i] = 'x'
+	}
+	n := len(p)
+	r.remaining -= int64(n)
+	r.bytesRead += int64(n)
+	return n, nil
+}
+
+func (r *countingLargeReader) Close() error { return nil }
 
 func TestServeArtifactContent_SetsETagAndLastModified(t *testing.T) {
 	updatedAt := time.Date(2026, 6, 9, 10, 11, 12, 0, time.UTC)

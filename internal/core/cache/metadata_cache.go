@@ -40,7 +40,9 @@ func (c *MetadataCache) Get(ctx context.Context, key *runtime.ArtifactKey) (*run
 	cached := value.(*cachedMetadata)
 
 	if time.Since(cached.cachedAt) > c.ttl {
-		c.store.Delete(cacheKey)
+		c.mu.Lock()
+		c.deleteKeyLocked(cacheKey)
+		c.mu.Unlock()
 		return nil, false
 	}
 
@@ -52,32 +54,48 @@ func (c *MetadataCache) Get(ctx context.Context, key *runtime.ArtifactKey) (*run
 }
 
 func (c *MetadataCache) Set(ctx context.Context, key *runtime.ArtifactKey, artifact *runtime.Artifact) {
-	c.mu.Lock()
-	if c.size >= c.maxSize {
-		c.evictOldest()
-	}
-	c.size++
-	c.mu.Unlock()
-
 	cacheKey := key.String()
+	c.mu.Lock()
+	if _, exists := c.store.Load(cacheKey); !exists {
+		c.evictIfNeededLocked()
+		c.size++
+	}
 	c.store.Store(cacheKey, &cachedMetadata{
 		artifact: artifact,
 		cachedAt: time.Now(),
 	})
+	c.mu.Unlock()
 }
 
 func (c *MetadataCache) SetNegative(ctx context.Context, key *runtime.ArtifactKey) {
 	cacheKey := key.String() + ":negative"
+	c.mu.Lock()
+	if _, exists := c.store.Load(cacheKey); !exists {
+		c.evictIfNeededLocked()
+		c.size++
+	}
 	c.store.Store(cacheKey, &cachedMetadata{
 		cachedAt:   time.Now(),
 		isNegative: true,
 	})
+	c.mu.Unlock()
 }
 
 func (c *MetadataCache) Invalidate(ctx context.Context, key *runtime.ArtifactKey) {
 	cacheKey := key.String()
-	c.store.Delete(cacheKey)
-	c.store.Delete(cacheKey + ":negative")
+	c.mu.Lock()
+	c.deleteKeyLocked(cacheKey)
+	c.deleteKeyLocked(cacheKey + ":negative")
+	c.mu.Unlock()
+}
+
+func (c *MetadataCache) evictIfNeededLocked() {
+	if c.maxSize <= 0 {
+		return
+	}
+	for c.size >= c.maxSize {
+		c.evictOldest()
+	}
 }
 
 func (c *MetadataCache) evictOldest() {
@@ -94,7 +112,12 @@ func (c *MetadataCache) evictOldest() {
 	})
 
 	if oldestKey != "" {
-		c.store.Delete(oldestKey)
+		c.deleteKeyLocked(oldestKey)
+	}
+}
+
+func (c *MetadataCache) deleteKeyLocked(key string) {
+	if _, loaded := c.store.LoadAndDelete(key); loaded && c.size > 0 {
 		c.size--
 	}
 }

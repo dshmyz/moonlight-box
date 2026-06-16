@@ -26,7 +26,15 @@ func (s *HostedUploadSession) PutBlob(ctx context.Context, blob io.Reader) (Blob
 	if s.aborted {
 		return BlobRef{}, ErrReadOnly
 	}
-	ref, err := s.blobStore.Put(blob)
+	var (
+		ref BlobRef
+		err error
+	)
+	if store, ok := s.blobStore.(ContextBlobPutter); ok {
+		ref, err = store.PutContext(ctx, blob)
+	} else {
+		ref, err = s.blobStore.Put(blob)
+	}
 	if err != nil {
 		return BlobRef{}, err
 	}
@@ -56,7 +64,11 @@ func (s *HostedUploadSession) Abort(ctx context.Context) error {
 	s.aborted = true
 	// 清理本次 session 创建过但尚未提交的 blob。
 	for _, ref := range s.createdBlobs {
-		s.blobStore.Delete(ref)
+		if store, ok := s.blobStore.(ContextBlobDeleter); ok {
+			_ = store.DeleteContext(ctx, ref)
+		} else {
+			_ = s.blobStore.Delete(ref)
+		}
 	}
 	s.createdBlobs = nil
 	s.artifacts = nil

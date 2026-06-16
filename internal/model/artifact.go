@@ -67,16 +67,16 @@ func (Blob) TableName() string {
 
 // Artifact 制品元数据
 type Artifact struct {
-	ID           uint      `gorm:"primaryKey" json:"id"`
-	RepositoryID uint      `gorm:"not null;index:idx_artifacts_repo;uniqueIndex:idx_artifact_identity,priority:1" json:"repository_id"`
-	Format       string    `gorm:"not null;size:64" json:"format"`
-	Kind         string    `gorm:"size:64" json:"kind,omitempty"`
-	IdentityKey  string    `gorm:"not null;size:1024;uniqueIndex:idx_artifact_identity,priority:2" json:"identity_key"`
-	Name         string    `gorm:"size:512;index:idx_artifact_name" json:"name,omitempty"`
-	Namespace    string    `gorm:"size:512;index:idx_artifact_namespace" json:"namespace,omitempty"`
-	Version      string    `gorm:"size:255;index:idx_artifact_version" json:"version,omitempty"`
+	ID           uint   `gorm:"primaryKey" json:"id"`
+	RepositoryID uint   `gorm:"not null;index:idx_artifacts_repo;uniqueIndex:idx_artifact_identity,priority:1" json:"repository_id"`
+	Format       string `gorm:"not null;size:64;index:idx_artifact_format" json:"format"`
+	Kind         string `gorm:"size:64" json:"kind,omitempty"`
+	IdentityKey  string `gorm:"not null;size:1024;uniqueIndex:idx_artifact_identity,priority:2" json:"identity_key"`
+	Name         string `gorm:"size:512;index:idx_artifact_name" json:"name,omitempty"`
+	Namespace    string `gorm:"size:512;index:idx_artifact_namespace" json:"namespace,omitempty"`
+	Version      string `gorm:"size:255;index:idx_artifact_version" json:"version,omitempty"`
 	// Path 逻辑分组路径，不含文件名，如 "left-pad/-"、"com/google/guava/guava"
-	Path string `gorm:"type:text" json:"path,omitempty"`
+	Path     string `gorm:"type:text" json:"path,omitempty"`
 	Filename string `gorm:"size:1024;index:idx_artifact_filename" json:"filename,omitempty"`
 	// RemotePath 仓库内的相对路径（含文件名），用于回源定位、存储寻址和构造下载 URL。
 	// 格式：协议相关的相对路径，如 "left-pad/-/left-pad-1.0.0.tgz"、"packages/ab/cd/requests-2.28.0.tar.gz"
@@ -85,16 +85,16 @@ type Artifact struct {
 	// DownloadURL 远端文件的绝对 URL，仅用于后端 ProxyRuntime 服务端回源拉取。
 	// 格式：完整的 HTTP(S) URL，如 "https://files.pythonhosted.org/packages/ab/cd/requests-2.28.0.tar.gz"
 	// 注意：此字段绝不暴露给前端作为下载链接（会导致 CORS 跨域问题），前端下载统一走 RemotePath 构造的本地路径
-	DownloadURL string `gorm:"type:text" json:"download_url,omitempty"`
-	Extension    string    `gorm:"size:64" json:"extension,omitempty"`
-	ContentType  string    `gorm:"size:255" json:"content_type,omitempty"`
-	SizeBytes    int64     `gorm:"not null;default:0" json:"size_bytes"`
-	Checksums    JSONB     `gorm:"type:jsonb" json:"checksums,omitempty"`
-	Qualifiers   JSONB     `gorm:"type:jsonb" json:"qualifiers,omitempty"`
-	Attributes   JSONB     `gorm:"type:jsonb" json:"attributes,omitempty"`
-	Metadata     JSONB     `gorm:"type:jsonb" json:"metadata,omitempty"`
-	CreatedAt    time.Time `gorm:"autoCreateTime;not null" json:"created_at"`
-	UpdatedAt    time.Time `gorm:"autoUpdateTime;not null" json:"updated_at"`
+	DownloadURL string    `gorm:"type:text" json:"download_url,omitempty"`
+	Extension   string    `gorm:"size:64" json:"extension,omitempty"`
+	ContentType string    `gorm:"size:255" json:"content_type,omitempty"`
+	SizeBytes   int64     `gorm:"not null;default:0" json:"size_bytes"`
+	Checksums   JSONB     `gorm:"type:jsonb" json:"checksums,omitempty"`
+	Qualifiers  JSONB     `gorm:"type:jsonb" json:"qualifiers,omitempty"`
+	Attributes  JSONB     `gorm:"type:jsonb" json:"attributes,omitempty"`
+	Metadata    JSONB     `gorm:"type:jsonb" json:"metadata,omitempty"`
+	CreatedAt   time.Time `gorm:"autoCreateTime;not null" json:"created_at"`
+	UpdatedAt   time.Time `gorm:"autoUpdateTime;not null" json:"updated_at"`
 }
 
 func (Artifact) TableName() string {

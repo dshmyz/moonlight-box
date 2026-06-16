@@ -289,6 +289,10 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 				publishedAt = t
 			}
 		}
+		// 如果 publishedAt 是零值（没有有效的时间信息），使用当前时间作为默认值
+		if publishedAt.IsZero() {
+			publishedAt = time.Now()
+		}
 
 		// 聚合该版本在所有仓库中的下载计数
 		var downloadCount int64

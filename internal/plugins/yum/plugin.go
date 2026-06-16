@@ -111,6 +111,11 @@ type YumPlugin struct {
 	httpClient *http.Client
 }
 
+const (
+	maxYumPrimaryCompressedBytes   = 64 * 1024 * 1024
+	maxYumPrimaryDecompressedBytes = 256 * 1024 * 1024
+)
+
 func NewYumPlugin(httpClient *http.Client) *YumPlugin {
 	if httpClient == nil {
 		panic("yum: httpClient is required")
@@ -310,7 +315,7 @@ func (p *YumPlugin) fetchPrimaryIndexPackages(ctx context.Context, remoteURL str
 		return nil, fmt.Errorf("yum: fetch primary from %s: status %d", fullURL, resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readLimitedYumPrimaryBody(resp)
 	if err != nil {
 		return nil, fmt.Errorf("yum: read primary body: %w", err)
 	}
@@ -372,7 +377,7 @@ func decompressYumPrimary(primaryHref string, body []byte) ([]byte, error) {
 			return nil, fmt.Errorf("yum: open primary gzip: %w", err)
 		}
 		defer zr.Close()
-		out, err := io.ReadAll(zr)
+		out, err := readLimitedYumPrimaryDecompressed(zr)
 		if err != nil {
 			return nil, fmt.Errorf("yum: read primary gzip: %w", err)
 		}
@@ -382,14 +387,40 @@ func decompressYumPrimary(primaryHref string, body []byte) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("yum: open primary xz: %w", err)
 		}
-		out, err := io.ReadAll(xr)
+		out, err := readLimitedYumPrimaryDecompressed(xr)
 		if err != nil {
 			return nil, fmt.Errorf("yum: read primary xz: %w", err)
 		}
 		return out, nil
 	default:
+		if len(body) > maxYumPrimaryDecompressedBytes {
+			return nil, fmt.Errorf("yum: primary body too large: %d > %d", len(body), maxYumPrimaryDecompressedBytes)
+		}
 		return body, nil
 	}
+}
+
+func readLimitedYumPrimaryBody(resp *http.Response) ([]byte, error) {
+	if resp.ContentLength > maxYumPrimaryCompressedBytes {
+		return nil, fmt.Errorf("primary body too large: %d > %d", resp.ContentLength, maxYumPrimaryCompressedBytes)
+	}
+	return readLimitedYumPrimary(resp.Body, maxYumPrimaryCompressedBytes, "primary body")
+}
+
+func readLimitedYumPrimaryDecompressed(reader io.Reader) ([]byte, error) {
+	return readLimitedYumPrimary(reader, maxYumPrimaryDecompressedBytes, "primary decompressed body")
+}
+
+func readLimitedYumPrimary(reader io.Reader, maxBytes int64, label string) ([]byte, error) {
+	limited := io.LimitReader(reader, maxBytes+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("%s too large: exceeds %d bytes", label, maxBytes)
+	}
+	return body, nil
 }
 
 func (p *YumPlugin) Name() string {

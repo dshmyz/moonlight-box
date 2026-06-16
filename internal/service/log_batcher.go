@@ -11,13 +11,13 @@ import (
 )
 
 type LogBatcher struct {
-	mu            sync.Mutex
-	logs          []*model.DownloadLog
 	logRepo       *repository.DownloadLogRepository
 	batchSize     int
 	flushInterval time.Duration
 	stopCh        chan struct{}
-	flushing      bool
+	doneCh        chan struct{}
+	logCh         chan *model.DownloadLog
+	once          sync.Once
 }
 
 func NewLogBatcher(logRepo *repository.DownloadLogRepository, batchSize int, flushInterval time.Duration) *LogBatcher {
@@ -29,11 +29,12 @@ func NewLogBatcher(logRepo *repository.DownloadLogRepository, batchSize int, flu
 	}
 
 	batcher := &LogBatcher{
-		logs:          make([]*model.DownloadLog, 0, batchSize),
 		logRepo:       logRepo,
 		batchSize:     batchSize,
 		flushInterval: flushInterval,
 		stopCh:        make(chan struct{}),
+		doneCh:        make(chan struct{}),
+		logCh:         make(chan *model.DownloadLog, batchSize*4),
 	}
 
 	util.SafeGo("log-batcher.flush-loop", batcher.flushLoop)
@@ -42,40 +43,81 @@ func NewLogBatcher(logRepo *repository.DownloadLogRepository, batchSize int, flu
 }
 
 func (b *LogBatcher) Record(log *model.DownloadLog) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	b.logs = append(b.logs, log)
-
-	if len(b.logs) >= b.batchSize && !b.flushing {
-		b.flushing = true
-		util.SafeGo("log-batcher.flush", b.flush)
+	if log == nil {
+		return
+	}
+	select {
+	case b.logCh <- log:
+	default:
+		util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
+			util.LogKeyModule: "service",
+		}).Warn("download log channel is full, dropping log")
 	}
 }
 
 func (b *LogBatcher) flushLoop() {
 	ticker := time.NewTicker(b.flushInterval)
 	defer ticker.Stop()
+	defer close(b.doneCh)
+	logs := make([]*model.DownloadLog, 0, b.batchSize)
 
 	for {
 		select {
+		case log := <-b.logCh:
+			logs = append(logs, log)
+			if len(logs) >= b.batchSize {
+				b.flushLogs(logs)
+				logs = make([]*model.DownloadLog, 0, b.batchSize)
+			}
 		case <-ticker.C:
-			b.flush()
+			if len(logs) > 0 {
+				b.flushLogs(logs)
+				logs = make([]*model.DownloadLog, 0, b.batchSize)
+			}
 		case <-b.stopCh:
-			b.flush()
-			return
+			for {
+				select {
+				case log := <-b.logCh:
+					logs = append(logs, log)
+					if len(logs) >= b.batchSize {
+						b.flushLogs(logs)
+						logs = make([]*model.DownloadLog, 0, b.batchSize)
+					}
+				default:
+					if len(logs) > 0 {
+						b.flushLogs(logs)
+					}
+					return
+				}
+			}
 		}
 	}
 }
 
 func (b *LogBatcher) flush() {
-	b.mu.Lock()
-	logs := b.logs
-	b.logs = make([]*model.DownloadLog, 0, b.batchSize)
-	b.flushing = false
-	b.mu.Unlock()
+	logs := make([]*model.DownloadLog, 0, b.batchSize)
+	for {
+		select {
+		case log := <-b.logCh:
+			logs = append(logs, log)
+			if len(logs) >= b.batchSize {
+				b.flushLogs(logs)
+				logs = make([]*model.DownloadLog, 0, b.batchSize)
+			}
+		default:
+			if len(logs) > 0 {
+				b.flushLogs(logs)
+			}
+			return
+		}
+	}
+}
 
+func (b *LogBatcher) flushLogs(logs []*model.DownloadLog) {
 	if len(logs) == 0 {
+		return
+	}
+	if b.logRepo == nil {
 		return
 	}
 
@@ -95,5 +137,8 @@ func (b *LogBatcher) flush() {
 }
 
 func (b *LogBatcher) Stop() {
-	close(b.stopCh)
+	b.once.Do(func() {
+		close(b.stopCh)
+		<-b.doneCh
+	})
 }

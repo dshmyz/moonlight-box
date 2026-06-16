@@ -297,24 +297,18 @@ func containsIgnoreCase(s, substr string) bool {
 }
 
 func (s *CacheShard) get(key string) (*CacheItem, error) {
-	s.mu.RLock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	entry, ok := s.store[key]
 	if !ok {
-		s.mu.RUnlock()
-		s.mu.Lock()
 		s.misses++
-		s.mu.Unlock()
 		return nil, fmt.Errorf("cache miss: %s", key)
 	}
 
-	if time.Now().After(entry.expiry) {
-		s.mu.RUnlock()
-		s.mu.Lock()
+	if now := time.Now(); now.After(entry.expiry) {
 		s.misses++
-		if entry, exists := s.store[key]; exists && time.Now().After(entry.expiry) {
-			s.removeEntry(key, entry)
-		}
-		s.mu.Unlock()
+		s.removeEntry(key, entry)
 		return nil, fmt.Errorf("cache expired: %s", key)
 	}
 
@@ -333,14 +327,11 @@ func (s *CacheShard) get(key string) (*CacheItem, error) {
 			IsNegative:  false,
 		}
 	}
-	s.mu.RUnlock()
 
-	s.mu.Lock()
 	s.hits++
 	if elem, ok := s.lruIndex[key]; ok {
 		s.lruList.MoveToFront(elem)
 	}
-	s.mu.Unlock()
 
 	return result, nil
 }

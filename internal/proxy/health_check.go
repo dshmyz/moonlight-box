@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -445,27 +444,8 @@ func (h *HealthCheckService) checkVirtualRepo(repo *model.Repository) (int, erro
 
 // doHealthCheck 执行HTTP健康检查
 func (h *HealthCheckService) doHealthCheck(ctx context.Context, rawURL string) (int, error) {
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil {
+	if _, err := url.Parse(rawURL); err != nil {
 		return 0, fmt.Errorf("invalid URL: %w", err)
-	}
-
-	serverName := parsedURL.Hostname()
-
-	client := &http.Client{
-		Timeout: h.config.Timeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-				ServerName:         serverName,
-			},
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 2 {
-				return http.ErrUseLastResponse
-			}
-			return nil
-		},
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -475,6 +455,11 @@ func (h *HealthCheckService) doHealthCheck(ctx context.Context, rawURL string) (
 
 	req.Header.Set("User-Agent", "Moonlight-HealthCheck/1.0")
 
+	client := h.remoteClient.buildClient(RequestOptions{
+		ReadTimeout:        h.config.Timeout,
+		MaxRedirects:       -1,
+		InsecureSkipVerify: true,
+	})
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("request failed: %w", err)

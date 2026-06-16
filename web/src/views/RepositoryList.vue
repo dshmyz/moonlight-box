@@ -239,6 +239,13 @@ const tabOptions = [
 
 const packageTypeOptions = PACKAGE_TYPE_OPTIONS
 
+const formatTime = (time?: string) => {
+  if (!time || time === '') return '-'
+  const date = new Date(time)
+  if (isNaN(date.getTime())) return '-'
+  return date.toLocaleString('zh-CN')
+}
+
 const getRepoIcon = (type: string) => {
   switch (type) {
     case 'local': return 'fa-solid fa-folder'
@@ -274,7 +281,8 @@ const getHealthTooltip = (row: LocalRepository) => {
     if (health.consecutive_failures > 0) {
       return `警告 | 最近有 ${health.consecutive_failures} 次失败，但当前已恢复 | 响应: ${responseTimeMs}ms`
     }
-    return `健康 | 响应时间: ${responseTimeMs}ms | 最后检查: ${new Date(health.last_check_time).toLocaleString('zh-CN')}`
+    const lastCheckTime = health.last_check_time ? formatTime(health.last_check_time) : '-'
+    return `健康 | 响应时间: ${responseTimeMs}ms | 最后检查: ${lastCheckTime}`
   }
 
   return '健康状态未知，等待首次检查完成'

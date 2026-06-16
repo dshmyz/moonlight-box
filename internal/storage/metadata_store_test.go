@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
@@ -61,5 +63,55 @@ func TestMetadataStoreQueryFiltersQualifiers(t *testing.T) {
 	}
 	if got[0].Qualifiers["classifier"] != "sources" {
 		t.Fatalf("classifier = %q", got[0].Qualifiers["classifier"])
+	}
+}
+
+func TestMetadataStoreListRejectsUnboundedRepositoryScan(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	const repoID = uint(1)
+	artifacts := make([]model.Artifact, 1001)
+	for i := range artifacts {
+		artifacts[i] = model.Artifact{
+			RepositoryID: repoID,
+			Format:       "generic",
+			Kind:         runtime.KindFile,
+			IdentityKey:  fmt.Sprintf("file/readme-%04d", i),
+			Name:         "readme",
+			Version:      "1.0.0",
+			Filename:     "readme.txt",
+		}
+	}
+	if err := db.CreateInBatches(artifacts, 100).Error; err != nil {
+		t.Fatalf("create artifacts: %v", err)
+	}
+
+	store := NewMetadataStore(db)
+	_, err = store.List(context.Background(), "1")
+	if err == nil {
+		t.Fatal("expected List to reject unbounded repository scan")
+	}
+	if !strings.Contains(err.Error(), "too many artifacts") {
+		t.Fatalf("error = %v, want too many artifacts", err)
+	}
+}
+
+func TestArtifactAutoMigrateCreatesFormatIndex(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	if !db.Migrator().HasIndex(&model.Artifact{}, "idx_artifact_format") {
+		t.Fatal("expected artifacts.format index")
 	}
 }

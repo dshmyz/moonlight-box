@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/config"
@@ -17,7 +18,8 @@ type AuthService struct {
 	userRepo       *repository.UserRepository
 	roleRepo       *repository.RoleRepository
 	config         *config.AuthConfig
-	tokenBlacklist map[string]bool // 简单内存黑名单，生产环境可用 Redis
+	tokenBlacklist map[string]time.Time // token -> expiry，生产环境可用 Redis
+	blacklistMu    sync.RWMutex
 	auditSvc       *AuditService
 }
 
@@ -50,7 +52,7 @@ func NewAuthService(
 		userRepo:       userRepo,
 		roleRepo:       roleRepo,
 		config:         cfg,
-		tokenBlacklist: make(map[string]bool),
+		tokenBlacklist: make(map[string]time.Time),
 		auditSvc:       auditSvc,
 	}
 }
@@ -160,6 +162,8 @@ func (s *AuthService) generateToken(userID uint, username string, roles []string
 }
 
 func (s *AuthService) ValidateToken(tokenString string) (*TokenClaims, error) {
+	s.pruneTokenBlacklist(time.Now())
+
 	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errors.New("unexpected signing method")
@@ -173,7 +177,7 @@ func (s *AuthService) ValidateToken(tokenString string) (*TokenClaims, error) {
 
 	if claims, ok := token.Claims.(*TokenClaims); ok && token.Valid {
 		// 检查黑名单
-		if s.tokenBlacklist[tokenString] {
+		if s.isTokenBlacklisted(tokenString, time.Now()) {
 			return nil, errors.New("token has been revoked")
 		}
 		return claims, nil
@@ -183,7 +187,7 @@ func (s *AuthService) ValidateToken(tokenString string) (*TokenClaims, error) {
 }
 
 func (s *AuthService) Logout(tokenString string) error {
-	s.tokenBlacklist[tokenString] = true
+	s.blacklistToken(tokenString)
 	logrus.WithFields(logrus.Fields{
 		"module": "auth",
 	}).Info("User logged out")
@@ -210,7 +214,7 @@ func (s *AuthService) RefreshToken(refreshTokenString string) (*AuthResponse, er
 		return nil, err
 	}
 
-	s.tokenBlacklist[refreshTokenString] = true
+	s.blacklistToken(refreshTokenString)
 
 	accessToken, err := s.generateToken(user.ID, user.Username, claims.Roles, s.config.TokenExpiry)
 	if err != nil {
@@ -244,6 +248,56 @@ func (s *AuthService) RefreshToken(refreshTokenString string) (*AuthResponse, er
 		ExpiresIn:    s.config.TokenExpiry.Seconds(),
 		User:         user.ToDTO(),
 	}, nil
+}
+
+func (s *AuthService) blacklistToken(tokenString string) {
+	if tokenString == "" {
+		return
+	}
+	now := time.Now()
+	expiresAt := now.Add(s.config.RefreshExpiry)
+	var claims TokenClaims
+	_, _, _ = jwt.NewParser().ParseUnverified(tokenString, &claims)
+	if claims.ExpiresAt != nil {
+		expiresAt = claims.ExpiresAt.Time
+	}
+	if !expiresAt.After(now) {
+		s.pruneTokenBlacklist(now)
+		return
+	}
+
+	s.blacklistMu.Lock()
+	s.tokenBlacklist[tokenString] = expiresAt
+	s.blacklistMu.Unlock()
+	s.pruneTokenBlacklist(now)
+}
+
+func (s *AuthService) isTokenBlacklisted(tokenString string, now time.Time) bool {
+	s.blacklistMu.RLock()
+	expiresAt, ok := s.tokenBlacklist[tokenString]
+	s.blacklistMu.RUnlock()
+	if !ok {
+		return false
+	}
+	if now.Before(expiresAt) {
+		return true
+	}
+	s.blacklistMu.Lock()
+	if current, ok := s.tokenBlacklist[tokenString]; ok && !now.Before(current) {
+		delete(s.tokenBlacklist, tokenString)
+	}
+	s.blacklistMu.Unlock()
+	return false
+}
+
+func (s *AuthService) pruneTokenBlacklist(now time.Time) {
+	s.blacklistMu.Lock()
+	for token, expiresAt := range s.tokenBlacklist {
+		if !now.Before(expiresAt) {
+			delete(s.tokenBlacklist, token)
+		}
+	}
+	s.blacklistMu.Unlock()
 }
 
 func (s *AuthService) CreateUser(username, password, email string) (*model.UserDTO, error) {

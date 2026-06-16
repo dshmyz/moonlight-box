@@ -44,6 +44,18 @@ type BlobStore interface {
 	Delete(ref BlobRef) error
 }
 
+type ContextBlobPutter interface {
+	PutContext(ctx context.Context, reader io.Reader) (BlobRef, error)
+}
+
+type ContextBlobOpener interface {
+	OpenContext(ctx context.Context, ref BlobRef) (io.ReadCloser, error)
+}
+
+type ContextBlobDeleter interface {
+	DeleteContext(ctx context.Context, ref BlobRef) error
+}
+
 type RemoteClient interface {
 	FetchMetadata(ctx context.Context, key ArtifactKey) (*RemoteMetadata, error)
 	FetchBlob(ctx context.Context, key ArtifactKey) (io.ReadCloser, error)

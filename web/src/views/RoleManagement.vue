@@ -185,8 +185,10 @@ function handleRowLeave() {
 }
 
 function formatDate(d: string): string {
-  if (!d) return '-'
-  return new Date(d).toLocaleString('zh-CN')
+  if (!d || d === '') return '-'
+  const date = new Date(d)
+  if (isNaN(date.getTime())) return '-'
+  return date.toLocaleString('zh-CN')
 }
 
 function actionLabel(action: string): string {

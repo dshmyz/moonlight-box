@@ -3,6 +3,7 @@ package main
 import (
 	"compress/gzip"
 	"net/http"
+	"strings"
 
 	handler "github.com/dshmyz/moonlight-box/internal/api/http"
 	"github.com/dshmyz/moonlight-box/internal/config"
@@ -12,6 +13,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sirupsen/logrus"
 )
 
 type RouterContext struct {
@@ -467,12 +469,30 @@ func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.Reposi
 	// 使用新架构 RepositoryRouter
 	repoHandler := gin.WrapH(ctx.RepositoryRouter)
 
+	// npmAuthBypass 对 npm 认证端点跳过 Auth+Permission 中间件。
+	// npm login 时用户还没有 token，不能走 Auth 中间件。
+	npmAuthBypass := func(c *gin.Context) {
+		path := c.Param("path")
+		if c.Request.Method == http.MethodPost && (path == "/-/v1/login" || path == "/-/v1/login/") {
+			ctx.handleNpmLogin(c)
+			c.Abort()
+			return
+		}
+		// npm v6 adduser: PUT /-/user/org.couchdb.user:{name}
+		if c.Request.Method == http.MethodPut && strings.HasPrefix(path, "/-/user/org.couchdb.user") {
+			ctx.handleNpmAddUser(c)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+
 	// Nexus 兼容路由: /repository/:repoName/*path
 	repoGroup := r.Group("/repository/:repoName")
 	{
 		repoGroup.GET("/*path", repoHandler)
-		repoGroup.PUT("/*path", authMw, permMw("package", "write"), repoHandler)
-		repoGroup.POST("/*path", authMw, permMw("package", "write"), repoHandler)
+		repoGroup.PUT("/*path", npmAuthBypass, authMw, permMw("package", "write"), repoHandler)
+		repoGroup.POST("/*path", npmAuthBypass, authMw, permMw("package", "write"), repoHandler)
 		repoGroup.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
 	}
 
@@ -480,7 +500,7 @@ func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.Reposi
 	nexus2Group := r.Group("/content/repositories/:repoName")
 	{
 		nexus2Group.GET("/*path", repoHandler)
-		nexus2Group.PUT("/*path", authMw, permMw("package", "write"), repoHandler)
+		nexus2Group.PUT("/*path", npmAuthBypass, authMw, permMw("package", "write"), repoHandler)
 		nexus2Group.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
 	}
 
@@ -488,9 +508,73 @@ func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.Reposi
 	groupGroup := r.Group("/content/groups/:groupName")
 	{
 		groupGroup.GET("/*path", repoHandler)
-		groupGroup.PUT("/*path", authMw, permMw("package", "write"), repoHandler)
+		groupGroup.PUT("/*path", npmAuthBypass, authMw, permMw("package", "write"), repoHandler)
 		groupGroup.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
 	}
+}
+
+// npmLoginRequest npm 认证请求的公共字段。
+type npmLoginRequest struct {
+	Username string `json:"name" binding:"required"`
+	Password string `json:"password" binding:"required"`
+	Email    string `json:"email"`
+}
+
+// npmAuthenticate 公共认证逻辑：解析请求 → 校验凭证 → 返回 AuthResponse。
+func (ctx *RouterContext) npmAuthenticate(c *gin.Context) (*service.AuthResponse, string, bool) {
+	var req npmLoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "username and password required"})
+		return nil, "", false
+	}
+
+	authResp, err := ctx.AuthSvc.Login(&service.LoginRequest{
+		Username: req.Username,
+		Password: req.Password,
+	})
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":   "npm-auth",
+			"username": req.Username,
+		}).Warn("npm login failed")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+		return nil, "", false
+	}
+	return authResp, req.Username, true
+}
+
+// handleNpmLogin 处理 npm v7+ 的 POST /-/v1/login 请求。
+// npm CLI 发送 {name, password, email}，我们复用 AuthService 验证后返回 JWT token。
+func (ctx *RouterContext) handleNpmLogin(c *gin.Context) {
+	authResp, _, ok := ctx.npmAuthenticate(c)
+	if !ok {
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"token": authResp.AccessToken,
+		"ok":    true,
+	})
+}
+
+// handleNpmAddUser 处理 npm v6 及更早版本的 PUT /-/user/org.couchdb.user:{name} 请求。
+// 这是 npm adduser 使用的 CouchDB 兼容端点。
+func (ctx *RouterContext) handleNpmAddUser(c *gin.Context) {
+	authResp, username, ok := ctx.npmAuthenticate(c)
+	if !ok {
+		return
+	}
+
+	rev := "1-unknown"
+	if len(authResp.AccessToken) >= 16 {
+		rev = "1-" + authResp.AccessToken[:16]
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"ok":    true,
+		"id":    "org.couchdb.user:" + username,
+		"rev":   rev,
+		"token": authResp.AccessToken,
+	})
 }
 
 func (ctx *RouterContext) requirePermission(resource, action string) gin.HandlerFunc {

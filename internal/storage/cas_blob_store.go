@@ -41,12 +41,16 @@ func NewCASBlobStore(backend Backend, db *gorm.DB) *CASBlobStore {
 }
 
 func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
+	return s.PutContext(context.Background(), reader)
+}
+
+func (s *CASBlobStore) PutContext(ctx context.Context, reader io.Reader) (runtime.BlobRef, error) {
 	hasher := sha256.New()
 	counter := &countingReader{reader: reader}
 	teeReader := io.TeeReader(counter, hasher)
 
 	tempPath := fmt.Sprintf("temp/%s", uuid.New().String())
-	if err := s.backend.Put(context.Background(), tempPath, teeReader, -1); err != nil {
+	if err := s.backend.Put(ctx, tempPath, teeReader, 0); err != nil {
 		return runtime.BlobRef{}, err
 	}
 
@@ -54,9 +58,9 @@ func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 	size := counter.n
 
 	var existingBlob model.Blob
-	err := s.db.Where("algorithm = ? AND digest = ?", "sha256", digest).First(&existingBlob).Error
+	err := s.db.WithContext(ctx).Where("algorithm = ? AND digest = ?", "sha256", digest).First(&existingBlob).Error
 	if err == nil {
-		s.backend.Delete(context.Background(), tempPath)
+		_ = s.backend.Delete(ctx, tempPath)
 		return runtime.BlobRef{
 			BlobID:    existingBlob.ID,
 			Algorithm: "sha256",
@@ -68,20 +72,20 @@ func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 	casPath := s.buildCASPath("sha256", digest)
 
 	if mover, ok := s.backend.(movableBackend); ok {
-		if err := mover.Move(context.Background(), tempPath, casPath); err != nil {
+		if err := mover.Move(ctx, tempPath, casPath); err != nil {
 			return runtime.BlobRef{}, err
 		}
 	} else {
-		rc, err := s.backend.Get(context.Background(), tempPath)
+		rc, err := s.backend.Get(ctx, tempPath)
 		if err != nil {
 			return runtime.BlobRef{}, err
 		}
 		defer rc.Close()
 
-		if err := s.backend.Put(context.Background(), casPath, rc, -1); err != nil {
+		if err := s.backend.Put(ctx, casPath, rc, size); err != nil {
 			return runtime.BlobRef{}, err
 		}
-		s.backend.Delete(context.Background(), tempPath)
+		_ = s.backend.Delete(ctx, tempPath)
 	}
 
 	blob := &model.Blob{
@@ -90,7 +94,7 @@ func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 		Size:        size,
 		StoragePath: casPath,
 	}
-	if err := s.db.Create(blob).Error; err != nil {
+	if err := s.db.WithContext(ctx).Create(blob).Error; err != nil {
 		return runtime.BlobRef{}, err
 	}
 
@@ -103,11 +107,15 @@ func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 }
 
 func (s *CASBlobStore) Open(ref runtime.BlobRef) (io.ReadCloser, error) {
+	return s.OpenContext(context.Background(), ref)
+}
+
+func (s *CASBlobStore) OpenContext(ctx context.Context, ref runtime.BlobRef) (io.ReadCloser, error) {
 	var blob model.Blob
-	if err := s.db.First(&blob, ref.BlobID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&blob, ref.BlobID).Error; err != nil {
 		return nil, err
 	}
-	return s.backend.Get(context.Background(), blob.StoragePath)
+	return s.backend.Get(ctx, blob.StoragePath)
 }
 
 func (s *CASBlobStore) Stat(ref runtime.BlobRef) (*runtime.BlobMetadata, error) {
@@ -125,23 +133,27 @@ func (s *CASBlobStore) Stat(ref runtime.BlobRef) (*runtime.BlobMetadata, error) 
 }
 
 func (s *CASBlobStore) Delete(ref runtime.BlobRef) error {
+	return s.DeleteContext(context.Background(), ref)
+}
+
+func (s *CASBlobStore) DeleteContext(ctx context.Context, ref runtime.BlobRef) error {
 	var blob model.Blob
-	if err := s.db.First(&blob, ref.BlobID).Error; err != nil {
+	if err := s.db.WithContext(ctx).First(&blob, ref.BlobID).Error; err != nil {
 		return err
 	}
 
 	var refCount int64
-	if err := s.db.Table("artifact_blobs").Where("blob_id = ?", blob.ID).Count(&refCount).Error; err != nil {
+	if err := s.db.WithContext(ctx).Table("artifact_blobs").Where("blob_id = ?", blob.ID).Count(&refCount).Error; err != nil {
 		return err
 	}
 	if refCount > 0 {
 		return nil
 	}
 
-	if err := s.backend.Delete(context.Background(), blob.StoragePath); err != nil {
+	if err := s.backend.Delete(ctx, blob.StoragePath); err != nil {
 		return err
 	}
-	return s.db.Delete(&blob).Error
+	return s.db.WithContext(ctx).Delete(&blob).Error
 }
 
 func (s *CASBlobStore) buildCASPath(algorithm, digest string) string {

@@ -53,14 +53,16 @@ func NewTransportManager(connectTimeout time.Duration, dnsResolver *DNSResolver)
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		DisableCompression:    true,
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-		},
+	}
+	secureTransport := baseTransport.Clone()
+	insecureTransport := baseTransport.Clone()
+	insecureTransport.TLSClientConfig = &tls.Config{
+		InsecureSkipVerify: true,
 	}
 
 	return &TransportManager{
-		secureTransport:   baseTransport,
-		insecureTransport: baseTransport,
+		secureTransport:   secureTransport,
+		insecureTransport: insecureTransport,
 		connectTimeout:    connectTimeout,
 		dnsResolver:       dnsResolver,
 	}
@@ -90,6 +92,8 @@ type RemoteClient struct {
 
 	clientCache sync.Map // 缓存 http.Client，key 为配置参数
 }
+
+const maxGetBytesResponseBytes = 64 * 1024 * 1024
 
 func NewRemoteClient(tm *TransportManager, defaultMaxRedirects int) *RemoteClient {
 	return &RemoteClient{
@@ -249,7 +253,7 @@ func (c *RemoteClient) GetBytes(ctx context.Context, url string, opts RequestOpt
 		}
 
 		contentType := resp.Header.Get("Content-Type")
-		body, err := io.ReadAll(resp.Body)
+		body, err := readLimitedResponseBody(resp)
 		resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("读取响应体失败: %w", err)
@@ -292,6 +296,23 @@ func (c *RemoteClient) GetBytes(ctx context.Context, url string, opts RequestOpt
 		"error":    lastErr.Error(),
 	}).Error("proxy: GetBytes request failed after all attempts")
 	return nil, "", lastErr
+}
+
+func readLimitedResponseBody(resp *http.Response) ([]byte, error) {
+	if resp.ContentLength > maxGetBytesResponseBytes {
+		return nil, fmt.Errorf("response body too large: %d > %d", resp.ContentLength, maxGetBytesResponseBytes)
+	}
+	var buf []byte
+	limited := io.LimitReader(resp.Body, maxGetBytesResponseBytes+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxGetBytesResponseBytes {
+		return nil, fmt.Errorf("response body too large: exceeds %d bytes", maxGetBytesResponseBytes)
+	}
+	buf = body
+	return buf, nil
 }
 
 func (c *RemoteClient) GetStream(ctx context.Context, url string, opts RequestOptions, auth *ProxyAuthConfig) (*http.Response, error) {

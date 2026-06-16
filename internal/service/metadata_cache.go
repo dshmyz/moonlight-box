@@ -53,6 +53,7 @@ func (mc *MetadataCache) Get(ctx context.Context, repoName, pkgType, name string
 		if time.Now().Before(ce.expiry) {
 			return io.NopCloser(bytes.NewReader(body)), actualSize, nil
 		}
+		mc.entries.Delete(key)
 		return nil, 0, fmt.Errorf("metadata expired: %s", key)
 	}
 

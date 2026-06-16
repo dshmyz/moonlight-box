@@ -4,17 +4,18 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 type S3Storage struct {
 	client   *s3.Client
+	uploader *transfermanager.Client
 	bucket   string
 	basePath string
 	maxSize  int64
@@ -45,6 +46,7 @@ func NewS3Storage(endpoint, region, accessKeyID, secretAccessKey, bucket, basePa
 
 	return &S3Storage{
 		client:   client,
+		uploader: transfermanager.New(client),
 		bucket:   bucket,
 		basePath: strings.TrimPrefix(basePath, "/"),
 		maxSize:  maxSizeGB * 1024 * 1024 * 1024,
@@ -70,28 +72,34 @@ func (s *S3Storage) resolveKey(key string) string {
 func (s *S3Storage) Put(ctx context.Context, key string, reader io.Reader, size int64) error {
 	fullKey := s.resolveKey(key)
 
-	if _, ok := reader.(io.ReadSeeker); !ok {
-		tmpFile, err := os.CreateTemp("", "moonlight-s3-*")
-		if err != nil {
-			return err
-		}
-		defer tmpFile.Close()
-		defer os.Remove(tmpFile.Name())
+	input := &transfermanager.UploadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(fullKey),
+		Body:   reader,
+	}
+	if size > 0 {
+		input.ContentLength = aws.Int64(size)
+	}
+	_, err := s.uploader.UploadObject(ctx, input)
+	return err
+}
 
-		if _, err := io.Copy(tmpFile, reader); err != nil {
-			return err
-		}
-		if _, err := tmpFile.Seek(0, 0); err != nil {
-			return err
-		}
-		reader = tmpFile
+func (s *S3Storage) Move(ctx context.Context, oldKey, newKey string) error {
+	fullOldKey := s.resolveKey(oldKey)
+	fullNewKey := s.resolveKey(newKey)
+
+	_, err := s.client.CopyObject(ctx, &s3.CopyObjectInput{
+		Bucket:     aws.String(s.bucket),
+		Key:        aws.String(fullNewKey),
+		CopySource: aws.String(s.bucket + "/" + fullOldKey),
+	})
+	if err != nil {
+		return err
 	}
 
-	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:        aws.String(s.bucket),
-		Key:           aws.String(fullKey),
-		Body:          reader,
-		ContentLength: aws.Int64(size),
+	_, err = s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(fullOldKey),
 	})
 	return err
 }

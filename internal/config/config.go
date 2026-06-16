@@ -33,7 +33,8 @@ type ServerConfig struct {
 	Mode          string        `mapstructure:"mode"` // debug, release, test
 	ReadTimeout   time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout  time.Duration `mapstructure:"write_timeout"`
-	StaticDir     string        `mapstructure:"static_dir"` // 前端静态文件目录
+	IdleTimeout   time.Duration `mapstructure:"idle_timeout"`   // 空闲连接超时时间
+	StaticDir     string        `mapstructure:"static_dir"`     // 前端静态文件目录
 	MaxUploadSize int64         `mapstructure:"max_upload_size"`
 }
 

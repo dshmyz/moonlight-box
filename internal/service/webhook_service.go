@@ -19,7 +19,10 @@ import (
 type WebhookService struct {
 	webhookRepo *repository.WebhookRepository
 	httpClient  *http.Client
+	deliverySem chan struct{}
 }
+
+const defaultMaxConcurrentWebhookDeliveries = 16
 
 func NewWebhookService(webhookRepo *repository.WebhookRepository) *WebhookService {
 	return &WebhookService{
@@ -27,6 +30,7 @@ func NewWebhookService(webhookRepo *repository.WebhookRepository) *WebhookServic
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		deliverySem: make(chan struct{}, defaultMaxConcurrentWebhookDeliveries),
 	}
 }
 
@@ -65,10 +69,31 @@ func (s *WebhookService) TriggerEvent(event model.WebhookEvent, payload *Webhook
 	}).Info("Triggering webhooks for event")
 
 	for i := range webhooks {
-		go s.sendWebhook(&webhooks[i], payload)
+		s.enqueueWebhook(&webhooks[i], payload)
 	}
 
 	return nil
+}
+
+func (s *WebhookService) enqueueWebhook(webhook *model.Webhook, payload *WebhookPayload) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logrus.WithFields(logrus.Fields{
+					"module":     "webhook",
+					"webhook_id": webhook.ID,
+					"panic":      r,
+				}).Error("Webhook delivery panic recovered")
+			}
+		}()
+
+		if s.deliverySem != nil {
+			s.deliverySem <- struct{}{}
+			defer func() { <-s.deliverySem }()
+		}
+
+		s.sendWebhook(webhook, payload)
+	}()
 }
 
 func (s *WebhookService) sendWebhook(webhook *model.Webhook, payload *WebhookPayload) {

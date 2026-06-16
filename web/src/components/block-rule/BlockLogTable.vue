@@ -48,8 +48,10 @@ const currentPage = ref(1)
 const pageSize = 20
 
 const formatTime = (t: string) => {
-  if (!t) return ''
-  return new Date(t).toLocaleString('zh-CN')
+  if (!t || t === '') return ''
+  const date = new Date(t)
+  if (isNaN(date.getTime())) return ''
+  return date.toLocaleString('zh-CN')
 }
 
 const parseReason = (details: string) => {

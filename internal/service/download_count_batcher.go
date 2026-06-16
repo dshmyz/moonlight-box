@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,19 +24,28 @@ type DownloadCountKey struct {
 }
 
 type DownloadCountBatcher struct {
-	mu            sync.Mutex
-	counts        map[DownloadCountKey]int64
 	db            *gorm.DB
 	flushInterval time.Duration
 	stopCh        chan struct{}
+	shards        []downloadCountShard
+}
+
+const defaultDownloadCountShardCount = 32
+
+type downloadCountShard struct {
+	mu     sync.Mutex
+	counts map[DownloadCountKey]int64
 }
 
 func NewDownloadCountBatcher(db *gorm.DB, flushInterval time.Duration) *DownloadCountBatcher {
 	batcher := &DownloadCountBatcher{
-		counts:        make(map[DownloadCountKey]int64),
 		db:            db,
 		flushInterval: flushInterval,
 		stopCh:        make(chan struct{}),
+		shards:        make([]downloadCountShard, defaultDownloadCountShardCount),
+	}
+	for i := range batcher.shards {
+		batcher.shards[i].counts = make(map[DownloadCountKey]int64)
 	}
 	util.SafeGo("download-count-batcher.flush-loop", batcher.flushLoop)
 	return batcher
@@ -44,10 +55,11 @@ func NewDownloadCountBatcher(db *gorm.DB, flushInterval time.Duration) *Download
 // repoID: 仓库 ID；format: 包格式（npm/maven/pypi 等）；
 // name: 包名；version: 版本号。
 func (b *DownloadCountBatcher) Increment(repoID uint, format, name, version string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	key := DownloadCountKey{RepoID: repoID, Format: format, PackageName: name, Version: version}
-	b.counts[key]++
+	shard := b.shardFor(key)
+	shard.mu.Lock()
+	shard.counts[key]++
+	shard.mu.Unlock()
 }
 
 func (b *DownloadCountBatcher) flushLoop() {
@@ -65,14 +77,46 @@ func (b *DownloadCountBatcher) flushLoop() {
 }
 
 func (b *DownloadCountBatcher) flush() {
-	b.mu.Lock()
-	counts := b.counts
-	b.counts = make(map[DownloadCountKey]int64)
-	b.mu.Unlock()
+	counts := b.drainCounts()
 	if len(counts) == 0 {
 		return
 	}
 	b.batchUpdateCounts(context.Background(), counts)
+}
+
+func (b *DownloadCountBatcher) drainCounts() map[DownloadCountKey]int64 {
+	counts := make(map[DownloadCountKey]int64)
+	for i := range b.shards {
+		shard := &b.shards[i]
+		shard.mu.Lock()
+		for key, count := range shard.counts {
+			counts[key] += count
+		}
+		shard.counts = make(map[DownloadCountKey]int64)
+		shard.mu.Unlock()
+	}
+	return counts
+}
+
+func (b *DownloadCountBatcher) shardFor(key DownloadCountKey) *downloadCountShard {
+	if len(b.shards) == 0 {
+		return nil
+	}
+	return &b.shards[int(hashDownloadCountKey(key)%uint32(len(b.shards)))]
+}
+
+func hashDownloadCountKey(key DownloadCountKey) uint32 {
+	h := fnv.New32a()
+	var buf []byte
+	buf = strconv.AppendUint(buf, uint64(key.RepoID), 10)
+	_, _ = h.Write(buf)
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(key.Format))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(key.PackageName))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(key.Version))
+	return h.Sum32()
 }
 
 func (b *DownloadCountBatcher) batchUpdateCounts(ctx context.Context, counts map[DownloadCountKey]int64) {

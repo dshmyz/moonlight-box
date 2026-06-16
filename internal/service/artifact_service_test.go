@@ -208,6 +208,89 @@ func TestArtifactServiceDoesNotAggregateDirectoryAsPackage(t *testing.T) {
 	}
 }
 
+func TestArtifactServiceAggregatesGoVersionMetadataEvenForRootModule(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}, &model.Package{}, &model.ArtifactBlob{}, &model.Blob{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	svc := NewArtifactService(db)
+	if err := svc.Save(context.Background(), runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: "1",
+		Format:       "go",
+		Kind:         runtime.KindVersion,
+		Name:         "example.com",
+		Version:      "v1.0.0",
+	})); err != nil {
+		t.Fatalf("save root module version: %v", err)
+	}
+
+	var names []string
+	if err := db.Model(&model.Package{}).Where("format = ?", "go").Order("name").Pluck("name", &names).Error; err != nil {
+		t.Fatalf("query package names: %v", err)
+	}
+	if len(names) != 1 || names[0] != "example.com" {
+		t.Fatalf("go package names = %#v, want only example.com", names)
+	}
+}
+
+func TestArtifactServiceDoesNotAggregateUncachedGoModuleFileAsPackage(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}, &model.Package{}, &model.ArtifactBlob{}, &model.Blob{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	svc := NewArtifactService(db)
+	if err := svc.Save(context.Background(), runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: "1",
+		Format:       "go",
+		Kind:         runtime.KindFile,
+		Name:         "github.com/gin-gonic/gin",
+		Version:      "v1.10.0",
+		Path:         "github.com/gin-gonic/gin/@v",
+		Filename:     "v1.10.0.mod",
+		RemotePath:   "github.com/gin-gonic/gin/@v/v1.10.0.mod",
+	})); err != nil {
+		t.Fatalf("save uncached module file: %v", err)
+	}
+
+	var count int64
+	if err := db.Model(&model.Package{}).Where("format = ?", "go").Count(&count).Error; err != nil {
+		t.Fatalf("count packages: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("uncached go module file should not be aggregated, got %d rows", count)
+	}
+
+	if err := svc.Save(context.Background(), runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: "1",
+		Format:       "go",
+		Kind:         runtime.KindFile,
+		Name:         "github.com/gin-gonic/gin",
+		Version:      "v1.10.0",
+		Path:         "github.com/gin-gonic/gin/@v",
+		Filename:     "v1.10.0.mod",
+		RemotePath:   "github.com/gin-gonic/gin/@v/v1.10.0.mod",
+		BlobRefs:     []runtime.BlobRef{{BlobID: 1, Size: 123}},
+	})); err != nil {
+		t.Fatalf("save cached module file: %v", err)
+	}
+
+	var names []string
+	if err := db.Model(&model.Package{}).Where("format = ?", "go").Order("name").Pluck("name", &names).Error; err != nil {
+		t.Fatalf("query package names: %v", err)
+	}
+	if len(names) != 1 || names[0] != "github.com/gin-gonic/gin" {
+		t.Fatalf("go package names = %#v, want only github.com/gin-gonic/gin", names)
+	}
+}
+
 func TestArtifactServiceDeleteKeepsDistinctMavenVersionCount(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -340,6 +423,46 @@ func TestArtifactServiceRebuildPackagesCountsDistinctVersions(t *testing.T) {
 	}
 	if pkg.VersionCount != 1 {
 		t.Fatalf("VersionCount = %d, want 1 distinct version", pkg.VersionCount)
+	}
+}
+
+func TestArtifactServiceRebuildPackagesUsesGoVersionOrCachedFileOnly(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	repo := model.Repository{Name: "go-proxy", Type: model.RepoTypeProxy, PackageType: "go"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	rows := []model.Artifact{
+		{RepositoryID: repo.ID, Format: "go", Kind: runtime.KindVersion, IdentityKey: "version/example.com/v1.0.0", Name: "example.com", Version: "v1.0.0"},
+		{RepositoryID: repo.ID, Format: "go", Kind: runtime.KindFile, IdentityKey: "file/github.com/probe/@v/v1.0.0.mod", Name: "github.com/probe", Version: "v1.0.0", RemotePath: "github.com/probe/@v/v1.0.0.mod"},
+		{RepositoryID: repo.ID, Format: "go", Kind: runtime.KindFile, IdentityKey: "file/github.com/gin-gonic/gin/@v/v1.10.0.mod", Name: "github.com/gin-gonic/gin", Version: "v1.10.0", RemotePath: "github.com/gin-gonic/gin/@v/v1.10.0.mod"},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatalf("create artifacts: %v", err)
+	}
+	if err := db.Create(&model.ArtifactBlob{ArtifactID: rows[2].ID, BlobID: 1, Position: 0}).Error; err != nil {
+		t.Fatalf("create artifact blob: %v", err)
+	}
+
+	svc := NewArtifactService(db)
+	if err := svc.RebuildPackages(context.Background()); err != nil {
+		t.Fatalf("rebuild packages: %v", err)
+	}
+
+	var names []string
+	if err := db.Model(&model.Package{}).Where("format = ?", "go").Order("name").Pluck("name", &names).Error; err != nil {
+		t.Fatalf("query package names: %v", err)
+	}
+	want := []string{"example.com", "github.com/gin-gonic/gin"}
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("go package names = %#v, want %#v", names, want)
 	}
 }
 

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"time"
 )
+
+const maxInMemoryRangeFallbackBytes = 8 * 1024 * 1024
 
 // ServeArtifactContent writes a downloadable artifact response.
 // It centralizes HTTP download semantics that are shared by protocol plugins.
@@ -73,11 +76,18 @@ func serveArtifactRange(w http.ResponseWriter, r *http.Request, artifact *Artifa
 		}
 	}
 
-	data, err := io.ReadAll(artifact.Content)
+	size := artifactKnownSize(artifact)
+	if size > maxInMemoryRangeFallbackBytes {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", size))
+		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		return nil
+	}
+
+	data, err := readRangeFallbackData(artifact.Content)
 	if err != nil {
 		return err
 	}
-	size := int64(len(data))
+	size = int64(len(data))
 	start, end, ok := parseSingleByteRange(rangeHeader, size)
 	if !ok {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", size))
@@ -94,6 +104,33 @@ func serveArtifactRange(w http.ResponseWriter, r *http.Request, artifact *Artifa
 	}
 	_, err = w.Write(part)
 	return err
+}
+
+func artifactKnownSize(artifact *Artifact) int64 {
+	if artifact == nil {
+		return 0
+	}
+	if artifact.SizeBytes > 0 {
+		return artifact.SizeBytes
+	}
+	for _, ref := range artifact.BlobRefs {
+		if ref.Size > 0 {
+			return ref.Size
+		}
+	}
+	return 0
+}
+
+func readRangeFallbackData(content io.Reader) ([]byte, error) {
+	var buf bytes.Buffer
+	limited := io.LimitReader(content, maxInMemoryRangeFallbackBytes+1)
+	if _, err := buf.ReadFrom(limited); err != nil {
+		return nil, err
+	}
+	if buf.Len() > maxInMemoryRangeFallbackBytes {
+		return nil, fmt.Errorf("range fallback content exceeds in-memory limit %d", maxInMemoryRangeFallbackBytes)
+	}
+	return buf.Bytes(), nil
 }
 
 func setArtifactCacheHeaders(w http.ResponseWriter, artifact *Artifact) {

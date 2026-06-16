@@ -77,11 +77,13 @@ func (s *ArtifactService) Save(ctx context.Context, artifact *runtime.Artifact) 
 			return err
 		}
 
+		hasBlobRefs := hasUsableBlobRefs(artifact.BlobRefs)
+
 		// 同步 packages 聚合表
-		if syncErr := s.syncPackageAfterSave(tx, modelArtifact, isNew); syncErr != nil {
+		if syncErr := s.syncPackageAfterSave(tx, modelArtifact, isNew, hasBlobRefs); syncErr != nil {
 			return syncErr
 		}
-		if shouldAggregatePackageArtifact(modelArtifact) {
+		if shouldAggregatePackageArtifact(modelArtifact, hasBlobRefs) {
 			if err := s.recalcPackageVersions(tx, map[string]bool{
 				packageKey(modelArtifact.RepositoryID, modelArtifact.Format, modelArtifact.Name): true,
 			}); err != nil {
@@ -176,9 +178,10 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 				var scanRepoID uint
 				scanUint(artifacts[ia.index].RepositoryID, &scanRepoID)
 				pkgKey := packageKey(scanRepoID, artifacts[ia.index].Format, artifacts[ia.index].Name)
-				if shouldAggregatePackageArtifact(ia.model) && !seenPackages[pkgKey] {
+				hasBlobRefs := hasUsableBlobRefs(artifacts[ia.index].BlobRefs)
+				if shouldAggregatePackageArtifact(ia.model, hasBlobRefs) && !seenPackages[pkgKey] {
 					seenPackages[pkgKey] = true
-					if syncErr := s.syncPackageAfterSave(tx, ia.model, true); syncErr != nil {
+					if syncErr := s.syncPackageAfterSave(tx, ia.model, true, hasBlobRefs); syncErr != nil {
 						return syncErr
 					}
 				}
@@ -197,9 +200,10 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 			var scanRepoID uint
 			scanUint(artifacts[ia.index].RepositoryID, &scanRepoID)
 			pkgKey := packageKey(scanRepoID, artifacts[ia.index].Format, artifacts[ia.index].Name)
-			if shouldAggregatePackageArtifact(ia.model) && !seenPackages[pkgKey] {
+			hasBlobRefs := hasUsableBlobRefs(artifacts[ia.index].BlobRefs)
+			if shouldAggregatePackageArtifact(ia.model, hasBlobRefs) && !seenPackages[pkgKey] {
 				seenPackages[pkgKey] = true
-				if syncErr := s.syncPackageAfterSave(tx, ia.model, false); syncErr != nil {
+				if syncErr := s.syncPackageAfterSave(tx, ia.model, false, hasBlobRefs); syncErr != nil {
 					return syncErr
 				}
 			}
@@ -348,6 +352,11 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 				   AND a2.version IS NOT NULL
 				   AND a2.version != ''
 				   AND (a2.kind IS NULL OR a2.kind NOT IN ('metadata', 'checksum', 'directory'))
+				   AND (
+				     a2.format != 'go'
+				     OR a2.kind = 'version'
+				     OR EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = a2.id)
+				   )
 				 ORDER BY a2.updated_at DESC
 				 LIMIT 1),
 				''
@@ -380,12 +389,17 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 			MAX(updated_at) AS updated_at
 		FROM artifacts a
 		WHERE name IS NOT NULL
-		  AND name != ''
-		  AND version IS NOT NULL
-		  AND version != ''
-		  AND (kind IS NULL OR kind NOT IN ('metadata', 'checksum', 'directory'))
-		  AND NOT (
-		    format = 'yum'
+			  AND name != ''
+			  AND version IS NOT NULL
+			  AND version != ''
+			  AND (kind IS NULL OR kind NOT IN ('metadata', 'checksum', 'directory'))
+			  AND (
+			    format != 'go'
+			    OR kind = 'version'
+			    OR EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = a.id)
+			  )
+			  AND NOT (
+			    format = 'yum'
 		    AND (
 		      remote_path LIKE 'repodata/%'
 		      OR remote_path LIKE '%/repodata/%'
@@ -417,12 +431,12 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 // ========== 内部辅助方法 ==========
 
 // syncPackageAfterSave 在 artifact 创建/更新后同步 packages 表
-func (s *ArtifactService) syncPackageAfterSave(tx *gorm.DB, artifact *model.Artifact, isNew bool) error {
+func (s *ArtifactService) syncPackageAfterSave(tx *gorm.DB, artifact *model.Artifact, isNew bool, hasBlobRefs bool) error {
 	name := artifact.Name
 	if name == "" {
 		return nil
 	}
-	if !shouldAggregatePackageArtifact(artifact) {
+	if !shouldAggregatePackageArtifact(artifact, hasBlobRefs) {
 		return nil
 	}
 
@@ -479,7 +493,7 @@ func (s *ArtifactService) syncPackageAfterDelete(tx *gorm.DB, artifact *model.Ar
 	if name == "" {
 		return nil
 	}
-	if !shouldAggregatePackageArtifact(artifact) {
+	if !shouldAggregatePackageArtifactForDelete(artifact) {
 		return nil
 	}
 
@@ -499,6 +513,7 @@ func (s *ArtifactService) syncPackageAfterDelete(tx *gorm.DB, artifact *model.Ar
 		Where("name = ?", name).
 		Where("version != ''").
 		Where("(kind IS NULL OR kind NOT IN ?)", catalogExcludedKinds()).
+		Where("(format != ? OR kind = ? OR EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = artifacts.id))", "go", runtime.KindVersion).
 		Count(&remaining).Error; err != nil {
 		return err
 	}
@@ -593,6 +608,7 @@ func (s *ArtifactService) recalcPackageVersions(tx *gorm.DB, seenPackages map[st
 			Where("name = ?", name).
 			Where("version != ''").
 			Where("(kind IS NULL OR kind NOT IN ?)", catalogExcludedKinds()).
+			Where("(format != ? OR kind = ? OR EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = artifacts.id))", "go", runtime.KindVersion).
 			Where("NOT (format = ? AND (remote_path LIKE ? OR remote_path LIKE ? OR path = ? OR path LIKE ? OR filename = ?))",
 				"yum", "repodata/%", "%/repodata/%", "repodata", "%/repodata", "repomd.xml").
 			Distinct("version").
@@ -605,6 +621,7 @@ func (s *ArtifactService) recalcPackageVersions(tx *gorm.DB, seenPackages map[st
 			Where("name = ?", name).
 			Where("version != ''").
 			Where("(kind IS NULL OR kind NOT IN ?)", catalogExcludedKinds()).
+			Where("(format != ? OR kind = ? OR EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = artifacts.id))", "go", runtime.KindVersion).
 			Where("NOT (format = ? AND (remote_path LIKE ? OR remote_path LIKE ? OR path = ? OR path LIKE ? OR filename = ?))",
 				"yum", "repodata/%", "%/repodata/%", "repodata", "%/repodata", "repomd.xml").
 			Order("updated_at DESC").First(&latest).Error; err != nil {
@@ -640,7 +657,23 @@ func extractJSONBString(data model.JSONB, key string) string {
 	return s
 }
 
-func shouldAggregatePackageArtifact(artifact *model.Artifact) bool {
+func shouldAggregatePackageArtifact(artifact *model.Artifact, hasBlobRefs bool) bool {
+	if artifact == nil || artifact.Name == "" {
+		return false
+	}
+	if runtime.IsCatalogExcludedKind(artifact.Kind) {
+		return false
+	}
+	if isYumRepodataArtifact(artifact.Format, artifact.Path, artifact.Filename, artifact.RemotePath) {
+		return false
+	}
+	if artifact.Format == "go" && artifact.Kind != runtime.KindVersion && !hasBlobRefs {
+		return false
+	}
+	return true
+}
+
+func shouldAggregatePackageArtifactForDelete(artifact *model.Artifact) bool {
 	if artifact == nil || artifact.Name == "" {
 		return false
 	}
@@ -655,6 +688,15 @@ func shouldAggregatePackageArtifact(artifact *model.Artifact) bool {
 
 func catalogExcludedKinds() []string {
 	return []string{runtime.KindMetadata, runtime.KindChecksum, runtime.KindDirectory}
+}
+
+func hasUsableBlobRefs(refs []runtime.BlobRef) bool {
+	for _, ref := range refs {
+		if ref.BlobID > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func isYumRepodataArtifact(format, artifactPath, filename, remotePath string) bool {

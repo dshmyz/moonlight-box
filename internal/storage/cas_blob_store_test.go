@@ -42,11 +42,35 @@ func TestCASBlobStoreUsesBackendMoveWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestCASBlobStorePutContextPassesContextToBackend(t *testing.T) {
+	type contextKey string
+	ctx := context.WithValue(context.Background(), contextKey("request"), "cas-ctx")
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Blob{}); err != nil {
+		t.Fatalf("migrate blobs: %v", err)
+	}
+	backend := newMovingMemoryBackend()
+	backend.contextKey = contextKey("request")
+	store := NewCASBlobStore(backend, db)
+
+	if _, err := store.PutContext(ctx, bytes.NewBufferString("cas-content")); err != nil {
+		t.Fatalf("PutContext failed: %v", err)
+	}
+	if got := backend.contextValue; got != "cas-ctx" {
+		t.Fatalf("backend context value = %v, want cas-ctx", got)
+	}
+}
+
 type movingMemoryBackend struct {
-	files     map[string][]byte
-	putCalls  int
-	getCalls  int
-	moveCalls int
+	files        map[string][]byte
+	putCalls     int
+	getCalls     int
+	moveCalls    int
+	contextKey   any
+	contextValue any
 }
 
 func newMovingMemoryBackend() *movingMemoryBackend {
@@ -58,6 +82,9 @@ func (b *movingMemoryBackend) Init(basePath string) error { return nil }
 
 func (b *movingMemoryBackend) Put(ctx context.Context, key string, reader io.Reader, size int64) error {
 	b.putCalls++
+	if b.contextKey != nil && b.contextValue == nil {
+		b.contextValue = ctx.Value(b.contextKey)
+	}
 	body, err := io.ReadAll(reader)
 	if err != nil {
 		return err

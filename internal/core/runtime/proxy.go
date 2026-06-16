@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"path"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -99,7 +98,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 			"duration": time.Since(start).Seconds(),
 		}).Debug("proxy: GetArtifact memory cache hit")
 		artifact = cloneArtifactForResponse(artifact)
-		if err := n.openArtifactContent(artifact); err != nil {
+		if err := n.openArtifactContent(ctx, artifact); err != nil {
 			return nil, err
 		}
 		artifact.FromCache = true
@@ -127,7 +126,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 	}
 	res := result.(getArtifactResult)
 	artifact := cloneArtifactForResponse(res.artifact)
-	if err := n.openArtifactContent(artifact); err != nil {
+	if err := n.openArtifactContent(ctx, artifact); err != nil {
 		return nil, err
 	}
 	artifact.FromCache = res.fromCache
@@ -478,7 +477,12 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 		blobReaderForStore = limitedCounter
 	}
 
-	blobRef, err := n.BlobStore.Put(blobReaderForStore)
+	var blobRef BlobRef
+	if store, ok := n.BlobStore.(ContextBlobPutter); ok {
+		blobRef, err = store.PutContext(ctx, blobReaderForStore)
+	} else {
+		blobRef, err = n.BlobStore.Put(blobReaderForStore)
+	}
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"remoteURL": key.RemoteURL,
@@ -492,7 +496,11 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 		readSize = limitedCounter.n
 	}
 	if n.CachePolicy.MaxBlobSize > 0 && readSize > n.CachePolicy.MaxBlobSize {
-		_ = n.BlobStore.Delete(blobRef)
+		if store, ok := n.BlobStore.(ContextBlobDeleter); ok {
+			_ = store.DeleteContext(ctx, blobRef)
+		} else {
+			_ = n.BlobStore.Delete(blobRef)
+		}
 		logrus.WithFields(logrus.Fields{
 			"remoteURL": key.RemoteURL,
 			"size":      readSize,
@@ -522,11 +530,19 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 	return nil
 }
 
-func (n *ProxyRuntime) openArtifactContent(artifact *Artifact) error {
+func (n *ProxyRuntime) openArtifactContent(ctx context.Context, artifact *Artifact) error {
 	if len(artifact.BlobRefs) == 0 {
 		return nil
 	}
-	rc, err := n.BlobStore.Open(artifact.BlobRefs[0])
+	var (
+		rc  io.ReadCloser
+		err error
+	)
+	if store, ok := n.BlobStore.(ContextBlobOpener); ok {
+		rc, err = store.OpenContext(ctx, artifact.BlobRefs[0])
+	} else {
+		rc, err = n.BlobStore.Open(artifact.BlobRefs[0])
+	}
 	if err != nil {
 		return err
 	}
@@ -649,28 +665,30 @@ func (n *ProxyRuntime) invalidateCachedArtifact(key ArtifactKey) {
 	n.metadataCacheMu.Unlock()
 }
 
-// evictOldestEntries 淘汰 expiresAt 最早的 count 个条目。
+// evictOldestEntries 淘汰 count 个条目，优先删除已过期条目。
 // 调用方必须持有 metadataCacheMu 写锁。
 func (n *ProxyRuntime) evictOldestEntries(count int) {
 	if count <= 0 || len(n.metadataCache) == 0 {
 		return
 	}
-	type kv struct {
-		key       string
-		expiresAt time.Time
+
+	now := time.Now()
+	deleted := 0
+	for key, entry := range n.metadataCache {
+		if deleted >= count {
+			return
+		}
+		if now.After(entry.expiresAt) {
+			delete(n.metadataCache, key)
+			deleted++
+		}
 	}
-	entries := make([]kv, 0, len(n.metadataCache))
-	for k, v := range n.metadataCache {
-		entries = append(entries, kv{key: k, expiresAt: v.expiresAt})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].expiresAt.Before(entries[j].expiresAt)
-	})
-	if count > len(entries) {
-		count = len(entries)
-	}
-	for i := 0; i < count; i++ {
-		delete(n.metadataCache, entries[i].key)
+	for key := range n.metadataCache {
+		if deleted >= count {
+			return
+		}
+		delete(n.metadataCache, key)
+		deleted++
 	}
 }
 

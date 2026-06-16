@@ -10,7 +10,8 @@ func setDefaults(v interface {
 	v.SetDefault("server.port", 9081)
 	v.SetDefault("server.mode", "debug")
 	v.SetDefault("server.read_timeout", 30*time.Second)
-	v.SetDefault("server.write_timeout", 30*time.Second)
+	v.SetDefault("server.write_timeout", 0*time.Second)
+	v.SetDefault("server.idle_timeout", 60*time.Second) // 空闲连接超时，减少服务器关闭时等待时间
 	v.SetDefault("server.static_dir", "./cmd/registry/dist")
 	v.SetDefault("server.max_upload_size", 200*1024*1024) // 200MB
 
@@ -60,7 +61,7 @@ func setDefaults(v interface {
 	v.SetDefault("proxy.connect_timeout", 10*time.Second)
 	v.SetDefault("proxy.large_file_threshold", 50*1024*1024)
 	v.SetDefault("proxy.max_redirects", 10)
-	v.SetDefault("proxy.insecure_skip_verify", false)
+	v.SetDefault("proxy.insecure_skip_verify", true)
 
 	// Proxy Health Check
 	v.SetDefault("proxy.health_check.enabled", true)

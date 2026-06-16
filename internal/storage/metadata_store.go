@@ -15,6 +15,8 @@ type MetadataStore struct {
 	artifactSvc ArtifactServiceAdapter
 }
 
+const maxMetadataStoreListItems = 1000
+
 // ArtifactServiceAdapter 适配 service.ArtifactService，使 MetadataStore 能调用它。
 // 使用接口避免循环依赖。
 type ArtifactServiceAdapter interface {
@@ -290,10 +292,14 @@ func (s *MetadataStore) List(ctx context.Context, repoID string) ([]*runtime.Art
 
 	err := s.db.WithContext(ctx).
 		Where("repository_id = ?", repoID).
+		Limit(maxMetadataStoreListItems + 1).
 		Find(&artifacts).Error
 
 	if err != nil {
 		return nil, err
+	}
+	if len(artifacts) > maxMetadataStoreListItems {
+		return nil, fmt.Errorf("too many artifacts for repository %s: List is capped at %d items; use Query with filters instead", repoID, maxMetadataStoreListItems)
 	}
 
 	result := make([]*runtime.Artifact, len(artifacts))

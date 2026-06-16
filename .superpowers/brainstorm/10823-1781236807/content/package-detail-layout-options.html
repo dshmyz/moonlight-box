@@ -1,0 +1,83 @@
+<h2>包详情页统一结构：3 种布局方案</h2>
+<p class="subtitle">目标：默认降低历史版本和多文件噪声，同时保留快速下载、复制依赖配置、查看全部版本的效率。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">A. 推荐：概览 + 当前版本主卡 + 抽屉</div>
+        <div class="mockup-body">
+          <div class="mock-nav">Breadcrumb / Package type / Delete</div>
+          <div class="placeholder" style="height:70px">包概览：名称、描述、latest、下载量、仓库</div>
+          <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+            <div class="placeholder" style="height:150px">当前版本卡：版本号、状态、主文件、安装命令、复制按钮</div>
+            <div class="placeholder" style="height:150px">包信息侧栏：GAV / registry / license / protocol fields</div>
+          </div>
+          <div class="placeholder" style="height:48px">文件摘要：主文件 + “展开全部文件”</div>
+          <button class="mock-button">查看全部版本（抽屉）</button>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. 当前版本优先</h3>
+      <p>主界面聚焦 latest/selected version；历史版本进入抽屉。最适合 Maven/SNAPSHOT，也适合所有协议统一。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">B. 中间方案：保留小型版本列表</div>
+        <div class="mockup-body">
+          <div class="placeholder" style="height:70px">包概览</div>
+          <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:12px">
+            <div class="placeholder" style="height:130px">当前版本 + 安装说明</div>
+            <div class="placeholder" style="height:130px">最近 5 个版本列表</div>
+          </div>
+          <div class="placeholder" style="height:80px">文件列表折叠区</div>
+          <button class="mock-button">打开完整版本抽屉</button>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. 最近版本可见</h3>
+      <p>仍能一眼看到几个历史版本，但页面比现在清爽。缺点是 Maven 文件噪声仍可能占空间。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">C. Tab 方案：分区明确</div>
+        <div class="mockup-body">
+          <div class="placeholder" style="height:70px">包概览</div>
+          <div class="mock-nav">Tab: 使用方式 | 文件 | 版本历史 | 安全</div>
+          <div class="placeholder" style="height:210px">当前 Tab 内容</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. Tabs 分区</h3>
+      <p>结构清楚、扩展性好；缺点是主要信息被隐藏到 Tab 后，首次使用路径更长。</p>
+    </div>
+  </div>
+</div>
+
+<div class="pros-cons">
+  <div class="pros">
+    <h4>我的推荐：A</h4>
+    <ul>
+      <li>最能解决“展示太多”的问题</li>
+      <li>不破坏已有 VersionTable，可改成抽屉复用</li>
+      <li>符合所有协议：版本是主对象，文件和历史是次级细节</li>
+    </ul>
+  </div>
+  <div class="cons">
+    <h4>需要注意</h4>
+    <ul>
+      <li>管理员操作入口要保留在版本抽屉中</li>
+      <li>当前版本卡要清楚展示“已缓存/未缓存”</li>
+      <li>Maven SNAPSHOT 需要显示逻辑版本，不平铺 timestamp build</li>
+    </ul>
+  </div>
+</div>

@@ -255,6 +255,9 @@ func (s *RepositoryService) Get(name string) (*model.Repository, error) {
 
 // GetContext 根据名称获取仓库详情
 func (s *RepositoryService) GetContext(ctx context.Context, name string) (*model.Repository, error) {
+	if s.repoCache != nil {
+		return s.repoCache.GetByNameContext(ctx, name)
+	}
 	return s.repoRepo.FindByNameContext(ctx, name)
 }
 
@@ -265,6 +268,9 @@ func (s *RepositoryService) GetByID(id uint) (*model.Repository, error) {
 
 // GetByIDContext 根据ID获取仓库详情
 func (s *RepositoryService) GetByIDContext(ctx context.Context, id uint) (*model.Repository, error) {
+	if s.repoCache != nil {
+		return s.repoCache.GetByIDContext(ctx, id)
+	}
 	return s.repoRepo.FindByIDContext(ctx, id)
 }
 

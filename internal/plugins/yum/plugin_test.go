@@ -508,6 +508,29 @@ func TestFetchRemote_RepomdParsesPrimaryXMLXZPackages(t *testing.T) {
 	}
 }
 
+func TestFetchPrimaryIndexPackagesRejectsOversizedContentLength(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Header().Set("Content-Length", "67108865")
+		w.Write([]byte("not-a-real-gzip"))
+	}))
+	defer srv.Close()
+
+	p := NewYumPlugin(http.DefaultClient)
+	_, err := p.fetchPrimaryIndexPackages(context.Background(), srv.URL, []repomdData{{
+		Type: "primary",
+		Location: struct {
+			Href string `xml:"href,attr"`
+		}{Href: "repodata/primary.xml.gz"},
+	}})
+	if err == nil {
+		t.Fatal("expected oversized primary error")
+	}
+	if !strings.Contains(err.Error(), "primary body too large") {
+		t.Fatalf("error = %v, want primary body too large", err)
+	}
+}
+
 func TestFetchRemote_RpmFile(t *testing.T) {
 	p := NewYumPlugin(http.DefaultClient)
 	arts, err := p.FetchRemote(context.Background(), "http://example.com", "Packages/nginx-1.20.1-1.el8.x86_64.rpm")

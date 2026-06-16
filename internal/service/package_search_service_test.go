@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ func TestSearchDoesNotFallBackWhenPackagesTableIsEmptyButArtifactsExist(t *testi
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Package{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 	repo := model.Repository{Name: "npm-proxy", Type: model.RepoTypeProxy, PackageType: "npm"}
@@ -57,7 +58,7 @@ func TestSearchUsesPackagesTableAndIgnoresMetadataArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Package{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 	repo := model.Repository{Name: "yum-proxy", Type: model.RepoTypeProxy, PackageType: "yum"}
@@ -120,7 +121,7 @@ func TestSearchFromPackagesExcludesRowsWithOnlyMetadataArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Package{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 	repo := model.Repository{Name: "yum-proxy", Type: model.RepoTypeProxy, PackageType: "yum"}
@@ -169,7 +170,7 @@ func TestSearchFromPackagesExcludesLegacyYumRepodataRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Package{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 	repo := model.Repository{Name: "yum-proxy", Type: model.RepoTypeProxy, PackageType: "yum"}
@@ -218,7 +219,7 @@ func TestSearchDoesNotFallBackToArtifactsWhenPackagesTableHasRows(t *testing.T) 
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Package{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 	repo := model.Repository{Name: "npm-proxy", Type: model.RepoTypeProxy, PackageType: "npm"}
@@ -267,7 +268,7 @@ func TestSearchFromPackagesExcludesAptCompressedIndexRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Package{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 	repo := model.Repository{Name: "apt-proxy", Type: model.RepoTypeProxy, PackageType: "apt"}
@@ -297,5 +298,56 @@ func TestSearchFromPackagesExcludesAptCompressedIndexRows(t *testing.T) {
 	}
 	if got.List[0].Name != "nginx" {
 		t.Fatalf("Name = %q, want nginx", got.List[0].Name)
+	}
+}
+
+func TestSearchFromPackagesIncludesOnlyGoRowsWithValidVersionOrCachedFile(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	repo := model.Repository{Name: "go-proxy", Type: model.RepoTypeProxy, PackageType: "go"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	now := time.Now()
+	rows := []model.Package{
+		{RepositoryID: repo.ID, Format: "go", Name: "example.com", VersionCount: 1, LatestVersion: "v1.0.0", UpdatedAt: now},
+		{RepositoryID: repo.ID, Format: "go", Name: "github.com/probe", VersionCount: 1, LatestVersion: "v1.0.0", UpdatedAt: now},
+		{RepositoryID: repo.ID, Format: "go", Name: "github.com/gin-gonic/gin", VersionCount: 1, LatestVersion: "v1.10.0", UpdatedAt: now},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatalf("create packages: %v", err)
+	}
+	artifacts := []model.Artifact{
+		{RepositoryID: repo.ID, Format: "go", Kind: "version", IdentityKey: "version/example.com/v1.0.0", Name: "example.com", Version: "v1.0.0"},
+		{RepositoryID: repo.ID, Format: "go", Kind: "file", IdentityKey: "file/github.com/gin-gonic/gin/@v/v1.10.0.mod", Name: "github.com/gin-gonic/gin", Version: "v1.10.0", RemotePath: "github.com/gin-gonic/gin/@v/v1.10.0.mod"},
+	}
+	if err := db.Create(&artifacts).Error; err != nil {
+		t.Fatalf("create artifacts: %v", err)
+	}
+	if err := db.Create(&model.ArtifactBlob{ArtifactID: artifacts[1].ID, BlobID: 1, Position: 0}).Error; err != nil {
+		t.Fatalf("create artifact blob: %v", err)
+	}
+
+	svc := NewPackageSearchService(db)
+	got, err := svc.Search(context.Background(), &SearchRequest{
+		Type:     "go",
+		Page:     1,
+		PageSize: 20,
+	})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if got.Total != 2 || len(got.List) != 2 {
+		t.Fatalf("expected only valid go rows, got total=%d list=%#v", got.Total, got.List)
+	}
+	names := []string{got.List[0].Name, got.List[1].Name}
+	want := []string{"example.com", "github.com/gin-gonic/gin"}
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("names = %#v, want %#v", names, want)
 	}
 }

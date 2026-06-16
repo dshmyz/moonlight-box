@@ -294,8 +294,10 @@ const getPackageTypeLabel = (type: string) => {
 }
 
 const formatTime = (time?: string) => {
-  if (!time) return '-'
-  return new Date(time).toLocaleString('zh-CN')
+  if (!time || time === '') return '-'
+  const date = new Date(time)
+  if (isNaN(date.getTime())) return '-'
+  return date.toLocaleString('zh-CN')
 }
 
 const getHealthClass = (repo: RepositoryWithHealth) => {
@@ -331,7 +333,8 @@ const getHealthDetail = (repo: RepositoryWithHealth) => {
   if (health.consecutive_failures > 0) {
     return `最近 ${health.consecutive_failures} 次失败，当前已恢复 | 响应: ${responseTimeMs}ms`
   }
-  return `响应时间: ${responseTimeMs}ms | 最后检查: ${new Date(health.last_check_time).toLocaleString('zh-CN')}`
+  const lastCheckTime = health.last_check_time ? formatTime(health.last_check_time) : '-'
+  return `响应时间: ${responseTimeMs}ms | 最后检查: ${lastCheckTime}`
 }
 
 async function loadRepo() {

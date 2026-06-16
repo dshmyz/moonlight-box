@@ -47,8 +47,8 @@ func (s *PermissionCacheService) GetUserPermissions(userID uint) ([]model.Permis
 }
 
 func (s *PermissionCacheService) InvalidateUser(userID uint) {
-	cacheKey := fmt.Sprintf("permissions:user:%d", userID)
-	s.cache.Delete(cacheKey)
+	s.cache.Delete(fmt.Sprintf("permissions:user:%d", userID))
+	s.cache.Delete(fmt.Sprintf("permset:user:%d", userID))
 }
 
 func (s *PermissionCacheService) InvalidateAll() {

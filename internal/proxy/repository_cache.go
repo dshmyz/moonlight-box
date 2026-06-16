@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
+	"golang.org/x/sync/singleflight"
 )
 
 type RepositoryCache struct {
@@ -20,6 +22,7 @@ type RepositoryCache struct {
 	groupRepo *repository.GroupRepository
 	ttl       time.Duration
 	stopCh    chan struct{}
+	loadGroup singleflight.Group
 }
 
 type repositoryCacheEntry struct {
@@ -61,14 +64,28 @@ func (c *RepositoryCache) GetByNameContext(ctx context.Context, name string) (*m
 		return entry.repo, nil
 	}
 
-	repo, err := c.repoRepo.FindByNameContext(ctx, name)
+	result, err, _ := c.loadGroup.Do("name:"+name, func() (interface{}, error) {
+		c.mu.RLock()
+		entry, exists := c.repos[name]
+		c.mu.RUnlock()
+		if exists && time.Now().Before(entry.expiresAt) {
+			return entry.repo, nil
+		}
+
+		repo, err := c.repoRepo.FindByNameContext(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+
+		c.mu.Lock()
+		c.setCacheEntry(repo)
+		c.mu.Unlock()
+		return repo, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	c.mu.Lock()
-	c.setCacheEntry(repo)
-	c.mu.Unlock()
+	repo := result.(*model.Repository)
 
 	slog.Debug("Cached repository",
 		"module", "repository_cache",
@@ -92,14 +109,28 @@ func (c *RepositoryCache) GetByIDContext(ctx context.Context, id uint) (*model.R
 		return entry.repo, nil
 	}
 
-	repo, err := c.repoRepo.FindByIDContext(ctx, id)
+	result, err, _ := c.loadGroup.Do("id:"+strconv.FormatUint(uint64(id), 10), func() (interface{}, error) {
+		c.mu.RLock()
+		entry, exists := c.reposByID[id]
+		c.mu.RUnlock()
+		if exists && time.Now().Before(entry.expiresAt) {
+			return entry.repo, nil
+		}
+
+		repo, err := c.repoRepo.FindByIDContext(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+
+		c.mu.Lock()
+		c.setCacheEntry(repo)
+		c.mu.Unlock()
+		return repo, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	c.mu.Lock()
-	c.setCacheEntry(repo)
-	c.mu.Unlock()
+	repo := result.(*model.Repository)
 
 	slog.Debug("Cached repository by ID",
 		"module", "repository_cache",
@@ -134,14 +165,32 @@ func (c *RepositoryCache) GetVirtualRepoContext(ctx context.Context, pkgType str
 	}
 	c.mu.RUnlock()
 
-	repo, err := c.repoRepo.FindVirtualByPackageTypeContext(ctx, pkgType)
+	result, err, _ := c.loadGroup.Do("virtual:"+pkgType, func() (interface{}, error) {
+		c.mu.RLock()
+		for _, entry := range c.repos {
+			if entry.repo.Type == model.RepoTypeVirtual && entry.repo.PackageType == pkgType && entry.repo.Enabled {
+				if time.Now().Before(entry.expiresAt) {
+					c.mu.RUnlock()
+					return entry.repo, nil
+				}
+			}
+		}
+		c.mu.RUnlock()
+
+		repo, err := c.repoRepo.FindVirtualByPackageTypeContext(ctx, pkgType)
+		if err != nil {
+			return nil, err
+		}
+
+		c.mu.Lock()
+		c.setCacheEntry(repo)
+		c.mu.Unlock()
+		return repo, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	c.mu.Lock()
-	c.setCacheEntry(repo)
-	c.mu.Unlock()
+	repo := result.(*model.Repository)
 
 	slog.Debug("Cached virtual repository",
 		"module", "repository_cache",
@@ -177,22 +226,48 @@ func (c *RepositoryCache) GetMembersContext(ctx context.Context, virtualRepoID u
 		}
 	}
 
-	members, err := c.groupRepo.GetMembersByVirtualRepoContext(ctx, virtualRepoID)
+	result, err, _ := c.loadGroup.Do("members:"+strconv.FormatUint(uint64(virtualRepoID), 10), func() (interface{}, error) {
+		c.mu.RLock()
+		entries, exists := c.members[virtualRepoID]
+		c.mu.RUnlock()
+		if exists {
+			var validMembers []model.RepositoryMember
+			allValid := true
+			for _, entry := range entries {
+				if time.Now().Before(entry.expiresAt) {
+					validMembers = append(validMembers, *entry.member)
+				} else {
+					allValid = false
+					break
+				}
+			}
+			if allValid && len(validMembers) > 0 {
+				return validMembers, nil
+			}
+		}
+
+		members, err := c.groupRepo.GetMembersByVirtualRepoContext(ctx, virtualRepoID)
+		if err != nil {
+			return nil, err
+		}
+
+		c.mu.Lock()
+		var entriesToCache []*memberCacheEntry
+		for i := range members {
+			memberCopy := members[i]
+			entriesToCache = append(entriesToCache, &memberCacheEntry{
+				member:    &memberCopy,
+				expiresAt: time.Now().Add(c.ttl),
+			})
+		}
+		c.members[virtualRepoID] = entriesToCache
+		c.mu.Unlock()
+		return members, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	c.mu.Lock()
-	var entriesToCache []*memberCacheEntry
-	for i := range members {
-		memberCopy := members[i]
-		entriesToCache = append(entriesToCache, &memberCacheEntry{
-			member:    &memberCopy,
-			expiresAt: time.Now().Add(c.ttl),
-		})
-	}
-	c.members[virtualRepoID] = entriesToCache
-	c.mu.Unlock()
+	members := result.([]model.RepositoryMember)
 
 	slog.Debug("Cached virtual repository members",
 		"module", "repository_cache",

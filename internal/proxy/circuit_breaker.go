@@ -12,8 +12,8 @@ import (
 type CircuitState string
 
 const (
-	CircuitClosed   CircuitState = "closed"   // 正常状态，允许请求通过
-	CircuitOpen     CircuitState = "open"     // 熔断状态，拒绝请求
+	CircuitClosed   CircuitState = "closed"    // 正常状态，允许请求通过
+	CircuitOpen     CircuitState = "open"      // 熔断状态，拒绝请求
 	CircuitHalfOpen CircuitState = "half_open" // 半开状态，允许探测请求
 )
 
@@ -22,18 +22,19 @@ type CircuitBreaker struct {
 	mu sync.RWMutex
 
 	// 状态配置
-	maxFailures      int           // 最大失败次数，超过后熔断
-	probeInterval    time.Duration // 熔断后探测间隔
-	resetTimeout     time.Duration // 熔断后多久进入半开状态
+	maxFailures   int           // 最大失败次数，超过后熔断
+	probeInterval time.Duration // 熔断后探测间隔
+	resetTimeout  time.Duration // 熔断后多久进入半开状态
 
 	// 运行时状态
-	state            CircuitState
-	failureCount     int
-	successCount     int
-	lastFailureTime  time.Time
-	lastSuccessTime  time.Time
-	lastStateChange  time.Time
-	consecutiveFailures int // 连续失败次数
+	state                 CircuitState
+	failureCount          int
+	successCount          int
+	lastFailureTime       time.Time
+	lastSuccessTime       time.Time
+	lastStateChange       time.Time
+	halfOpenProbeInFlight bool
+	consecutiveFailures   int // 连续失败次数
 
 	// 统计信息
 	totalRequests  int64
@@ -44,17 +45,17 @@ type CircuitBreaker struct {
 
 // CircuitBreakerConfig 断路器配置
 type CircuitBreakerConfig struct {
-	MaxFailures   int           `json:"max_failures"`    // 触发熔断的最大失败次数
-	ResetTimeout  time.Duration `json:"reset_timeout"`   // 熔断后多久进入半开状态
-	ProbeInterval time.Duration `json:"probe_interval"`  // 半开状态下的探测间隔
+	MaxFailures   int           `json:"max_failures"`   // 触发熔断的最大失败次数
+	ResetTimeout  time.Duration `json:"reset_timeout"`  // 熔断后多久进入半开状态
+	ProbeInterval time.Duration `json:"probe_interval"` // 半开状态下的探测间隔
 }
 
 // DefaultCircuitBreakerConfig 默认断路器配置
 func DefaultCircuitBreakerConfig() CircuitBreakerConfig {
 	return CircuitBreakerConfig{
-		MaxFailures:   5,                    // 连续5次失败后熔断
-		ResetTimeout:  60 * time.Second,     // 熔断60秒后进入半开状态
-		ProbeInterval: 10 * time.Second,     // 半开状态下每10秒探测一次
+		MaxFailures:   5,                // 连续5次失败后熔断
+		ResetTimeout:  60 * time.Second, // 熔断60秒后进入半开状态
+		ProbeInterval: 10 * time.Second, // 半开状态下每10秒探测一次
 	}
 }
 
@@ -83,14 +84,19 @@ func (cb *CircuitBreaker) AllowRequest() bool {
 		// 熔断状态，检查是否已过重置超时
 		if time.Since(cb.lastStateChange) > cb.resetTimeout {
 			cb.transitionTo(CircuitHalfOpen)
+			cb.halfOpenProbeInFlight = true
 			return true
 		}
 		return false
 
 	case CircuitHalfOpen:
-		// 半开状态，允许探测请求通过
-		// 检查探测间隔，避免频繁探测
+		// 半开状态一次只允许一个探测请求通过，避免探测风暴。
+		if cb.halfOpenProbeInFlight {
+			return false
+		}
 		if time.Since(cb.lastStateChange) >= cb.probeInterval {
+			cb.halfOpenProbeInFlight = true
+			cb.lastStateChange = time.Now()
 			return true
 		}
 		return false
@@ -110,6 +116,7 @@ func (cb *CircuitBreaker) RecordSuccess() {
 	cb.successCount++
 	cb.lastSuccessTime = time.Now()
 	cb.consecutiveFailures = 0 // 重置连续失败计数
+	cb.halfOpenProbeInFlight = false
 
 	// 如果在半开状态，成功则恢复到关闭状态
 	if cb.state == CircuitHalfOpen {
@@ -127,6 +134,7 @@ func (cb *CircuitBreaker) RecordFailure() {
 	cb.failureCount++
 	cb.lastFailureTime = time.Now()
 	cb.consecutiveFailures++
+	cb.halfOpenProbeInFlight = false
 
 	// 在半开状态下，任何失败都立即回到熔断状态
 	if cb.state == CircuitHalfOpen {
@@ -151,6 +159,12 @@ func (cb *CircuitBreaker) RecordTimeout() {
 	cb.failureCount++
 	cb.lastFailureTime = time.Now()
 	cb.consecutiveFailures++
+	cb.halfOpenProbeInFlight = false
+
+	if cb.state == CircuitHalfOpen {
+		cb.transitionTo(CircuitOpen)
+		return
+	}
 
 	// 超时也计入失败次数
 	if cb.consecutiveFailures >= cb.maxFailures && cb.state == CircuitClosed {
@@ -197,6 +211,7 @@ func (cb *CircuitBreaker) Reset() {
 	cb.failureCount = 0
 	cb.successCount = 0
 	cb.consecutiveFailures = 0
+	cb.halfOpenProbeInFlight = false
 }
 
 // transitionTo 内部状态转换方法（必须在持有锁的情况下调用）
@@ -205,6 +220,9 @@ func (cb *CircuitBreaker) transitionTo(newState CircuitState) {
 		oldState := cb.state
 		cb.state = newState
 		cb.lastStateChange = time.Now()
+		if newState != CircuitHalfOpen {
+			cb.halfOpenProbeInFlight = false
+		}
 		logrus.WithFields(logrus.Fields{
 			"module":    "circuit_breaker",
 			"old_state": string(oldState),
@@ -213,9 +231,9 @@ func (cb *CircuitBreaker) transitionTo(newState CircuitState) {
 
 		if newState == CircuitOpen {
 			logrus.WithFields(logrus.Fields{
-				"module":              "circuit_breaker",
+				"module":               "circuit_breaker",
 				"consecutive_failures": cb.consecutiveFailures,
-				"reset_timeout":       cb.resetTimeout.Seconds(),
+				"reset_timeout":        cb.resetTimeout.Seconds(),
 			}).Warn("Circuit breaker opened, requests will be rejected")
 		} else if newState == CircuitClosed {
 			logrus.WithFields(logrus.Fields{

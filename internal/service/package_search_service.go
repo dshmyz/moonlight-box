@@ -422,7 +422,9 @@ func searchableArtifactSQL(alias string) string {
 	if alias != "" {
 		prefix = alias + "."
 	}
+	idExpr := prefix + "id"
 	return "(" + prefix + "kind IS NULL OR " + prefix + "kind NOT IN ('metadata', 'checksum', 'directory'))" +
+		" AND (" + prefix + "format != 'go' OR " + prefix + "kind = 'version' OR EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = " + idExpr + "))" +
 		" AND NOT (" + prefix + "format = 'yum' AND (" +
 		prefix + "remote_path LIKE 'repodata/%' OR " +
 		prefix + "remote_path LIKE '%/repodata/%' OR " +
@@ -441,6 +443,13 @@ func searchablePackageSQL(alias string) string {
 	versionCount := prefix + "version_count"
 
 	return "(" + name + " IS NOT NULL AND " + name + " != '' AND " + versionCount + " > 0)" +
+		" AND (" + format + " != 'go' OR EXISTS (" +
+		"SELECT 1 FROM artifacts go_artifacts " +
+		"WHERE go_artifacts.repository_id = " + prefix + "repository_id " +
+		"AND go_artifacts.format = " + format + " " +
+		"AND go_artifacts.name = " + name + " " +
+		"AND go_artifacts.version != '' " +
+		"AND (go_artifacts.kind = 'version' OR EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = go_artifacts.id))))" +
 		" AND NOT (" + format + " = 'yum' AND (" +
 		name + " = 'repomd.xml' OR " +
 		name + " LIKE '%.xml' OR " +

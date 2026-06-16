@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+type contextKey string
+
 func TestHostedUploadSessionAbortDeletesAllCreatedBlobs(t *testing.T) {
 	blobStore := &uploadSessionBlobStore{}
 	session := NewHostedUploadSession(&uploadSessionMetadataStore{}, blobStore)
@@ -83,6 +85,22 @@ func TestHostedUploadSessionCommitUsesBatchPut(t *testing.T) {
 	}
 }
 
+func TestHostedUploadSessionPutBlobUsesContextAwareBlobStore(t *testing.T) {
+	ctx := context.WithValue(context.Background(), contextKey("request"), "upload-ctx")
+	blobStore := &contextUploadSessionBlobStore{}
+	session := NewHostedUploadSession(&uploadSessionMetadataStore{}, blobStore)
+
+	if _, err := session.PutBlob(ctx, strings.NewReader("first")); err != nil {
+		t.Fatalf("put blob: %v", err)
+	}
+	if got := blobStore.contextValue; got != "upload-ctx" {
+		t.Fatalf("context value = %v, want upload-ctx", got)
+	}
+	if blobStore.putCalls != 0 {
+		t.Fatalf("fallback Put called %d times, want 0", blobStore.putCalls)
+	}
+}
+
 type uploadSessionMetadataStore struct {
 	putCalls   int
 	batchCalls int
@@ -139,4 +157,20 @@ func (s *uploadSessionBlobStore) Stat(ref BlobRef) (*BlobMetadata, error) {
 func (s *uploadSessionBlobStore) Delete(ref BlobRef) error {
 	s.deleted = append(s.deleted, ref)
 	return nil
+}
+
+type contextUploadSessionBlobStore struct {
+	uploadSessionBlobStore
+	contextValue any
+	putCalls     int
+}
+
+func (s *contextUploadSessionBlobStore) Put(reader io.Reader) (BlobRef, error) {
+	s.putCalls++
+	return s.uploadSessionBlobStore.Put(reader)
+}
+
+func (s *contextUploadSessionBlobStore) PutContext(ctx context.Context, reader io.Reader) (BlobRef, error) {
+	s.contextValue = ctx.Value(contextKey("request"))
+	return s.uploadSessionBlobStore.Put(reader)
 }

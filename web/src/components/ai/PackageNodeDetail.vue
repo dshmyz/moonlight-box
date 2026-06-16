@@ -363,7 +363,10 @@ const getPackageTypeTag = (type?: string): 'success' | 'warning' | 'info' | 'dan
 }
 
 const formatDate = (dateStr: string) => {
-  return new Date(dateStr).toLocaleDateString('zh-CN', {
+  if (!dateStr || dateStr === '') return '-'
+  const date = new Date(dateStr)
+  if (isNaN(date.getTime())) return '-'
+  return date.toLocaleDateString('zh-CN', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit'

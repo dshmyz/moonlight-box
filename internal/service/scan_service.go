@@ -20,7 +20,14 @@ type SecurityScanner struct {
 	blockRepo       *repository.BlockRuleRepository
 	vulnRuleService *VulnRuleService
 	logger          *logrus.Logger
+	scanSem         chan struct{}
+	scanPackage     func(ctx context.Context, versionID uint, pkgType, name, version string) *model.ScanResult
 }
+
+const (
+	defaultMaxConcurrentScans = 8
+	scanAllPackagesBatchSize  = 500
+)
 
 type ScanRule struct {
 	PackagePattern *regexp.Regexp
@@ -127,12 +134,15 @@ var scanRules = []ScanRule{
 }
 
 func NewSecurityScanner(scanRepo *repository.ScanRepository, db *gorm.DB, blockRepo *repository.BlockRuleRepository) *SecurityScanner {
-	return &SecurityScanner{
+	scanner := &SecurityScanner{
 		scanRepo:  scanRepo,
 		db:        db,
 		blockRepo: blockRepo,
 		logger:    logrus.New(),
+		scanSem:   make(chan struct{}, defaultMaxConcurrentScans),
 	}
+	scanner.scanPackage = scanner.ScanPackage
+	return scanner
 }
 
 func (s *SecurityScanner) SetVulnRuleService(vulnRuleService *VulnRuleService) {
@@ -207,7 +217,21 @@ func (s *SecurityScanner) ScanPackage(ctx context.Context, versionID uint, pkgTy
 }
 
 func (s *SecurityScanner) TriggerScan(ctx context.Context, versionID uint, pkgType, name, version string) {
-	go s.ScanPackage(ctx, versionID, pkgType, name, version)
+	scanPackage := s.scanPackage
+	if scanPackage == nil {
+		scanPackage = s.ScanPackage
+	}
+	go func() {
+		if s.scanSem != nil {
+			select {
+			case s.scanSem <- struct{}{}:
+				defer func() { <-s.scanSem }()
+			case <-ctx.Done():
+				return
+			}
+		}
+		scanPackage(ctx, versionID, pkgType, name, version)
+	}()
 }
 
 func (s *SecurityScanner) GetScanResult(versionID uint) (*model.ScanResult, error) {
@@ -293,17 +317,30 @@ func parseVersion(v string) []int {
 
 func (s *SecurityScanner) ScanAllPackages(ctx context.Context) {
 	for _, pkgType := range []string{"npm", "maven", "pypi", "go"} {
-		var artifacts []model.Artifact
-		s.db.WithContext(ctx).Model(&model.Artifact{}).
+		var total int64
+		query := s.db.WithContext(ctx).Model(&model.Artifact{}).
 			Where("format = ?", pkgType).
-			Find(&artifacts)
+			Where("name != ''").
+			Where("version != ''")
+		if err := query.Count(&total).Error; err != nil {
+			s.logger.Errorf("Failed to count %s packages for scan: %v", pkgType, err)
+			continue
+		}
 
-		s.logger.Infof("Scanning %d %s packages", len(artifacts), pkgType)
-		for _, a := range artifacts {
-			name := a.Name
-			version := a.Version
-			s.TriggerScan(ctx, a.ID, pkgType, name, version)
-			time.Sleep(50 * time.Millisecond)
+		s.logger.Infof("Scanning %d %s packages", total, pkgType)
+		var artifacts []model.Artifact
+		if err := query.Order("id ASC").FindInBatches(&artifacts, scanAllPackagesBatchSize, func(tx *gorm.DB, batch int) error {
+			for _, a := range artifacts {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
+				s.TriggerScan(ctx, a.ID, pkgType, a.Name, a.Version)
+			}
+			return nil
+		}).Error; err != nil {
+			s.logger.Errorf("Failed to scan %s packages: %v", pkgType, err)
 		}
 	}
 }

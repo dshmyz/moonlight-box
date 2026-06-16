@@ -1283,9 +1283,19 @@ func (p *PyPIPlugin) mergePackageInfo(artifacts []*runtime.Artifact, info map[st
 }
 
 func parsePyPITime(s string) (time.Time, error) {
+	// 支持多种 ISO 8601 时间格式
 	layouts := []string{
-		time.RFC3339,
-		"2006-01-02T15:04:05",
+		time.RFC3339,                  // 2006-01-02T15:04:05Z07:00
+		time.RFC3339Nano,              // 2006-01-02T15:04:05.999999999Z07:00
+		"2006-01-02T15:04:05.999999Z", // PyPI 标准：6 位小数
+		"2006-01-02T15:04:05.99999Z",  // 5 位小数
+		"2006-01-02T15:04:05.9999Z",   // 4 位小数
+		"2006-01-02T15:04:05.999Z",    // 3 位小数
+		"2006-01-02T15:04:05.99Z",     // 2 位小数（非标准但可能存在）
+		"2006-01-02T15:04:05.9Z",      // 1 位小数
+		"2006-01-02T15:04:05Z",        // 无小数
+		"2006-01-02T15:04:05",         // 无时区信息
+		"2006-01-02 15:04:05",         // 空格分隔
 	}
 	for _, layout := range layouts {
 		if t, err := time.Parse(layout, s); err == nil {

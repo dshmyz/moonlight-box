@@ -124,6 +124,38 @@ func TestHealthCheckService_BasicCheck(t *testing.T) {
 	assert.Equal(t, CircuitClosed, cb.GetState())
 }
 
+func TestHealthCheckService_ReusesRemoteClient(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	tm := NewTransportManager(5*time.Second, NewDNSResolver(nil))
+	remoteClient := NewRemoteClient(tm, 10)
+	healthSvc := NewHealthCheckService(nil, nil, &mockStorageChecker{}, remoteClient, HealthCheckConfig{
+		Timeout: 2 * time.Second,
+	}, &mockConfigReader{})
+
+	for i := 0; i < 2; i++ {
+		status, err := healthSvc.doHealthCheck(context.Background(), server.URL)
+		if err != nil {
+			t.Fatalf("health check %d failed: %v", i, err)
+		}
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want %d", status, http.StatusOK)
+		}
+	}
+
+	cacheEntries := 0
+	remoteClient.clientCache.Range(func(_, _ interface{}) bool {
+		cacheEntries++
+		return true
+	})
+	if cacheEntries != 1 {
+		t.Fatalf("remote client cache entries = %d, want 1 reused client", cacheEntries)
+	}
+}
+
 func TestHealthCheckService_FailedCheck(t *testing.T) {
 	// 创建总是返回500的测试服务器
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

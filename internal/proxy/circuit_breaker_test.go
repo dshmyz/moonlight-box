@@ -133,6 +133,30 @@ func TestCircuitBreaker_FailureFromHalfOpen(t *testing.T) {
 	assert.Equal(t, CircuitOpen, cb.GetState())
 }
 
+func TestCircuitBreaker_AllowsOnlyOneHalfOpenProbe(t *testing.T) {
+	config := CircuitBreakerConfig{
+		MaxFailures:   1,
+		ResetTimeout:  time.Millisecond,
+		ProbeInterval: time.Millisecond,
+	}
+	cb := NewCircuitBreaker(config)
+	cb.RecordFailure()
+
+	time.Sleep(2 * time.Millisecond)
+	assert.True(t, cb.AllowRequest())
+	cb.mu.Lock()
+	cb.lastStateChange = time.Now().Add(-time.Hour)
+	cb.mu.Unlock()
+
+	allowed := 0
+	for i := 0; i < 100; i++ {
+		if cb.AllowRequest() {
+			allowed++
+		}
+	}
+	assert.Equal(t, 0, allowed, "half-open state should not allow another probe while one is in flight")
+}
+
 func TestCircuitBreaker_Reset(t *testing.T) {
 	config := CircuitBreakerConfig{
 		MaxFailures:   3,

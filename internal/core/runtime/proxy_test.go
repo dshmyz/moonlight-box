@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -94,6 +95,45 @@ func TestProxyRuntimeCachesMetadataStoreHit(t *testing.T) {
 	if store.getCalls != 1 {
 		t.Fatalf("expected one metadata store get, got %d", store.getCalls)
 	}
+}
+
+func TestProxyRuntimeEvictOldestEntriesDoesNotSortWholeCache(t *testing.T) {
+	source, err := os.ReadFile("proxy.go")
+	if err != nil {
+		t.Fatalf("read proxy source: %v", err)
+	}
+	body := extractRuntimeFunctionBodyForTest(string(source), "func (n *ProxyRuntime) evictOldestEntries")
+	if body == "" {
+		t.Fatal("ProxyRuntime.evictOldestEntries source not found")
+	}
+	if strings.Contains(body, "sort.Slice") {
+		t.Fatal("evictOldestEntries should avoid sorting the whole metadata cache while holding the write lock")
+	}
+}
+
+func extractRuntimeFunctionBodyForTest(source, signature string) string {
+	start := strings.Index(source, signature)
+	if start < 0 {
+		return ""
+	}
+	open := strings.Index(source[start:], "{")
+	if open < 0 {
+		return ""
+	}
+	pos := start + open
+	depth := 0
+	for i := pos; i < len(source); i++ {
+		switch source[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return source[pos : i+1]
+			}
+		}
+	}
+	return ""
 }
 
 func TestProxyRuntimeCachedArtifactOpensBlobEachRequest(t *testing.T) {
@@ -338,6 +378,30 @@ func TestEnsureArtifactBlobStreamsUpstreamReaderToBlobStore(t *testing.T) {
 	}
 }
 
+func TestEnsureArtifactBlobUsesContextAwareBlobStore(t *testing.T) {
+	ctx := context.WithValue(context.Background(), contextKey("request"), "proxy-ctx")
+	artifact := &Artifact{ID: "stream", RepositoryID: "repo", Format: "npm", Name: "pkg"}
+	blobStore := &contextCapturingBlobStore{}
+	rt := &ProxyRuntime{
+		MetadataStore: newFakeMetadataStore(),
+		BlobStore:     blobStore,
+		RemoteClient:  &fakeRemoteClient{blob: io.NopCloser(strings.NewReader("stream-content"))},
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute, MaxBlobSize: 0},
+	}
+	key := ArtifactKey{RepositoryID: "repo", Format: "npm", Filename: "pkg.tgz", RemotePath: "pkg"}
+
+	if err := rt.ensureArtifactBlob(ctx, artifact, key); err != nil {
+		t.Fatalf("ensureArtifactBlob failed: %v", err)
+	}
+	if got := blobStore.contextValue; got != "proxy-ctx" {
+		t.Fatalf("context value = %v, want proxy-ctx", got)
+	}
+	if blobStore.putCalls != 0 {
+		t.Fatalf("fallback Put called %d times, want 0", blobStore.putCalls)
+	}
+}
+
 type markerReadCloser struct {
 	*strings.Reader
 }
@@ -356,6 +420,22 @@ func (s *capturingBlobStore) Put(reader io.Reader) (BlobRef, error) {
 func (s *capturingBlobStore) Open(ref BlobRef) (io.ReadCloser, error) { return io.NopCloser(nil), nil }
 func (s *capturingBlobStore) Stat(ref BlobRef) (*BlobMetadata, error) { return nil, nil }
 func (s *capturingBlobStore) Delete(ref BlobRef) error                { return nil }
+
+type contextCapturingBlobStore struct {
+	capturingBlobStore
+	contextValue any
+	putCalls     int
+}
+
+func (s *contextCapturingBlobStore) Put(reader io.Reader) (BlobRef, error) {
+	s.putCalls++
+	return s.capturingBlobStore.Put(reader)
+}
+
+func (s *contextCapturingBlobStore) PutContext(ctx context.Context, reader io.Reader) (BlobRef, error) {
+	s.contextValue = ctx.Value(contextKey("request"))
+	return s.capturingBlobStore.Put(reader)
+}
 
 func TestConcurrentGetArtifactOnlyFetchesRemoteOnce(t *testing.T) {
 	ctx := context.Background()

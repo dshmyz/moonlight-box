@@ -74,7 +74,9 @@ const roleName = computed(() =>
 
 const formatTime = (timestamp?: number) => {
   if (!timestamp) return ''
-  return new Date(timestamp * 1000).toLocaleTimeString('zh-CN', {
+  const date = new Date(timestamp * 1000)
+  if (isNaN(date.getTime())) return ''
+  return date.toLocaleTimeString('zh-CN', {
     hour: '2-digit',
     minute: '2-digit'
   })

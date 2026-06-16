@@ -300,10 +300,8 @@ func (p *NpmPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Repo
 		return p.handleNpmInternal(ctx, repoRuntime, path)
 	}
 
-	// npm adduser/login endpoint: POST /-/v1/login
-	if strings.HasPrefix(path, "-/v1/login") {
-		return p.handleNpmLogin(ctx, repoRuntime)
-	}
+	// npm adduser/login 端点已在路由层直接处理（cmd/registry/router.go），
+	// 不经过 Plugin 架构，因为认证操作需要 AuthService 访问权限。
 
 	if strings.Contains(path, "/-/") {
 		return p.handleTarballDownload(ctx, repoRuntime, path)
@@ -373,37 +371,6 @@ func (p *NpmPlugin) handleNpmInternal(ctx *runtime.RequestContext, repoRuntime r
 	}
 
 	http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-	return nil
-}
-
-// handleNpmLogin 处理 npm adduser/login 请求。
-// npm CLI 发送 POST /-/v1/login 带有 username, password, email。
-// 我们复用系统认证，返回 JWT token 作为 npm token。
-func (p *NpmPlugin) handleNpmLogin(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
-	if ctx.Request.Method != http.MethodPut && ctx.Request.Method != http.MethodPost {
-		http.Error(ctx.Writer, "method not allowed", http.StatusMethodNotAllowed)
-		return nil
-	}
-
-	var loginReq struct {
-		Username string `json:"name"`
-		Password string `json:"password"`
-		Email    string `json:"email"`
-	}
-	if err := json.NewDecoder(ctx.Request.Body).Decode(&loginReq); err != nil {
-		http.Error(ctx.Writer, "invalid request: "+err.Error(), http.StatusBadRequest)
-		return nil
-	}
-
-	if loginReq.Username == "" || loginReq.Password == "" {
-		http.Error(ctx.Writer, "username and password required", http.StatusUnauthorized)
-		return nil
-	}
-
-	// 通过 API 验证用户凭证
-	// 注意：这个端点需要访问 AuthService，但 plugin 没有直接访问权限
-	// 暂时返回 401，提示用户使用 JWT token
-	http.Error(ctx.Writer, `{"error": "use JWT token from /api/v1/auth/login"}`, http.StatusUnauthorized)
 	return nil
 }
 

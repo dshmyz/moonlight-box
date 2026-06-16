@@ -16,8 +16,10 @@ export const formatNumber = (num: number | undefined): string => {
  * @returns 格式化后的日期字符串
  */
 export const formatDate = (date: string | undefined): string => {
-  if (!date) return '-'
-  return new Date(date).toLocaleString('zh-CN')
+  if (!date || date === '') return '-'
+  const d = new Date(date)
+  if (isNaN(d.getTime())) return '-' // 检查是否是有效日期
+  return d.toLocaleString('zh-CN')
 }
 
 const relativeTimeCache = new Map<string, { time: number; result: string }>()

@@ -216,8 +216,10 @@ function handleRowLeave() {
 }
 
 const formatDate = (date: string): string => {
-  if (!date) return '-'
-  return new Date(date).toLocaleString('zh-CN')
+  if (!date || date === '') return '-'
+  const d = new Date(date)
+  if (isNaN(d.getTime())) return '-'
+  return d.toLocaleString('zh-CN')
 }
 
 const loadWebhooks = async () => {
