@@ -244,3 +244,91 @@ describe('usePackageSearch - URL 同步', () => {
     expect(mockReplace).not.toHaveBeenCalled()
   })
 })
+
+describe('usePackageSearch - 最近搜索', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    localStorage.clear()
+    ;(packageApi.search as any).mockReset()
+  })
+
+  it('addRecentSearch 添加并去重', () => {
+    const cs = mountComposable()
+    cs.addRecentSearch('react')
+    cs.addRecentSearch('vue')
+    cs.addRecentSearch('react')
+
+    expect(cs.recentSearches.value).toEqual(['react', 'vue'])
+  })
+
+  it('最近搜索最多保留 5 个', () => {
+    const cs = mountComposable()
+    cs.addRecentSearch('a')
+    cs.addRecentSearch('b')
+    cs.addRecentSearch('c')
+    cs.addRecentSearch('d')
+    cs.addRecentSearch('e')
+    cs.addRecentSearch('f')
+
+    expect(cs.recentSearches.value).toEqual(['f', 'e', 'd', 'c', 'b'])
+    expect(cs.recentSearches.value).toHaveLength(5)
+  })
+
+  it('clearRecentSearches 清空历史', () => {
+    const cs = mountComposable()
+    cs.addRecentSearch('react')
+    cs.clearRecentSearches()
+
+    expect(cs.recentSearches.value).toEqual([])
+  })
+
+  it('最近搜索持久化到 localStorage', () => {
+    const cs = mountComposable()
+    cs.addRecentSearch('react')
+
+    const stored = localStorage.getItem('package-explorer:recent:admin')
+    expect(stored).toBeTruthy()
+    expect(JSON.parse(stored!)).toEqual(['react'])
+  })
+})
+
+describe('usePackageSearch - 键盘快捷键', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    ;(packageApi.search as any).mockReset()
+  })
+
+  it('Esc 清空搜索词', async () => {
+    ;(packageApi.search as any).mockResolvedValue(mockSearchResponse())
+
+    const cs = mountComposable()
+    cs.query.q = 'react'
+
+    const event = new KeyboardEvent('keydown', { key: 'Escape' })
+    document.dispatchEvent(event)
+
+    expect(cs.query.q).toBe('')
+  })
+
+  it('焦点在 input 时不拦截 / 字符', async () => {
+    ;(packageApi.search as any).mockResolvedValue(mockSearchResponse())
+
+    mountComposable()
+
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+
+    // 在 input 上派发并冒泡到 document，模拟真实按键从聚焦元素冒泡的场景。
+    // 若用 document.dispatchEvent，event.target 为 document 而非 input，
+    // handleKeydown 中的 isInputFocused 判断将失效。
+    const event = new KeyboardEvent('keydown', { key: '/', bubbles: true })
+    const spy = vi.spyOn(event, 'preventDefault')
+    input.dispatchEvent(event)
+
+    expect(spy).not.toHaveBeenCalled()
+    document.body.removeChild(input)
+  })
+})
