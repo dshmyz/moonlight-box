@@ -16,6 +16,7 @@ export const permission: Directive<HTMLElement, string> = {
 
     const resource = perm.slice(0, sep)
     const action = perm.slice(sep + 1)
+    if (!resource || !action) return
 
     const store = useAuthStore()
     if (!store.hasPermission(resource, action)) {

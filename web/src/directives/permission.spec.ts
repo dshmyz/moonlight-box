@@ -32,14 +32,42 @@ describe('v-permission', () => {
     expect(wrapper.find('button').exists()).toBe(false)
   })
 
-  it('权限字符串格式为 resource:action', () => {
+  it('非法权限字符串格式时保留元素（fail-open）', () => {
     setActivePinia(createPinia())
     const store = useAuthStore()
     // @ts-expect-error 测试直接注入 user
-    store.user = { permissions: [{ resource: 'package', action: 'write' }] }
+    store.user = { permissions: [] }
+
+    // 空字符串
+    const w1 = mount(defineComponent({
+      directives: { permission },
+      template: `<div><button v-permission="''">x</button></div>`,
+    }))
+    expect(w1.find('button').exists()).toBe(true)
+
+    // 无冒号
+    const w2 = mount(defineComponent({
+      directives: { permission },
+      template: `<div><button v-permission="'package'">x</button></div>`,
+    }))
+    expect(w2.find('button').exists()).toBe(true)
+
+    // action 为空（"package:"）
+    const w3 = mount(defineComponent({
+      directives: { permission },
+      template: `<div><button v-permission="'package:'">x</button></div>`,
+    }))
+    expect(w3.find('button').exists()).toBe(true)
+  })
+
+  it('admin 用户拥有所有权限', () => {
+    setActivePinia(createPinia())
+    const store = useAuthStore()
+    // @ts-expect-error 测试直接注入 user，roles 包含 admin 使 isAdmin computed 为 true
+    store.user = { roles: ['admin'], permissions: [] }
     const wrapper = mount(defineComponent({
       directives: { permission },
-      template: `<div><button v-permission="'package:write'">上传</button></div>`,
+      template: `<div><button v-permission="'package:delete'">删除</button></div>`,
     }))
     expect(wrapper.find('button').exists()).toBe(true)
   })
