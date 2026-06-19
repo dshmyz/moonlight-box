@@ -5,6 +5,18 @@ import { packageApi, type Package } from '@/api/package'
 export type PackageSort = 'updated_at' | 'download_count' | 'name'
 export type PackageSource = 'all' | 'local' | 'proxy'
 
+// 与 packageApi.search 参数类型保持一致
+interface SearchParams {
+  q?: string
+  type?: string
+  name?: string
+  version?: string
+  repository?: string
+  sort?: string
+  page?: number
+  page_size?: number
+}
+
 export interface PackageQuery {
   q: string
   type: string
@@ -58,12 +70,13 @@ export function usePackageSearch(options: UsePackageSearchOptions) {
   const recentSearches = ref<string[]>([])
 
   const isEmpty = computed(() => !loading.value && packages.value.length === 0)
+  // source 筛选暂未启用（后端不支持），保留字段供未来扩展
   const hasActiveFilter = computed(() =>
     !!query.repository || !!query.version || query.source !== 'all'
   )
 
-  function buildApiParams() {
-    const params: Record<string, unknown> = {
+  function buildApiParams(): SearchParams {
+    const params: SearchParams = {
       q: query.q,
       page: query.page,
       page_size: query.pageSize,
@@ -79,7 +92,7 @@ export function usePackageSearch(options: UsePackageSearchOptions) {
     loading.value = true
     error.value = null
     try {
-      const res = await packageApi.search(buildApiParams() as any)
+      const res = await packageApi.search(buildApiParams())
       packages.value = (res.list || []).map(normalizePackage)
       total.value = res.total || 0
       searchTime.value = res.search_time_ms || 0
@@ -94,8 +107,8 @@ export function usePackageSearch(options: UsePackageSearchOptions) {
 
   async function refresh() {
     await search()
-    // 删除后页码修正：当前页无数据且非第 1 页，回退一页重试
-    if (packages.value.length === 0 && query.page > 1) {
+    // 删除后页码修正：当前页无数据时连续回退，直到有数据或到第 1 页
+    while (packages.value.length === 0 && query.page > 1) {
       query.page--
       await search()
     }
@@ -182,6 +195,8 @@ export function usePackageSearch(options: UsePackageSearchOptions) {
   }
 
   // 键盘快捷键
+  // 全局快捷键：本 composable 设计为单实例使用（PackageExplorer 唯一调用方）
+  // 多实例同时挂载会导致快捷键重复触发
   function handleKeydown(e: KeyboardEvent) {
     const target = e.target as HTMLElement
     const isInputFocused = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
