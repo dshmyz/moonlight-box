@@ -113,3 +113,79 @@ describe('usePackageSearch - 核心查询', () => {
     expect(cs.packages.value).toEqual([])
   })
 })
+
+describe('usePackageSearch - 删除后页码修正', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(packageApi.search as any).mockReset()
+    ;(packageApi.deletePackage as any).mockReset()
+    setActivePinia(createPinia())
+    mockRouteQuery = {}
+  })
+
+  it('删除后当前页空且非第1页，自动回退一页重试', async () => {
+    ;(packageApi.search as any)
+      .mockResolvedValueOnce(mockSearchResponse([], 0))
+      .mockResolvedValueOnce(mockSearchResponse([
+        { id: 2, name: 'pkg2', type: 'npm' },
+      ], 1))
+
+    const cs = mountComposable()
+    cs.query.page = 3
+    await cs.refresh()
+
+    expect(packageApi.search).toHaveBeenCalledTimes(2)
+    expect(packageApi.search).toHaveBeenNthCalledWith(1, expect.objectContaining({ page: 3 }))
+    expect(packageApi.search).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 2 }))
+    expect(cs.query.page).toBe(2)
+    expect(cs.packages.value).toHaveLength(1)
+  })
+
+  it('删除后当前页空但已是第1页，不回退', async () => {
+    ;(packageApi.search as any).mockResolvedValue(mockSearchResponse([], 0))
+
+    const cs = mountComposable()
+    cs.query.page = 1
+    await cs.refresh()
+
+    expect(packageApi.search).toHaveBeenCalledTimes(1)
+    expect(cs.query.page).toBe(1)
+  })
+
+  it('批量删除导致多页变空时连续回退到有数据的页（验证 while 循环）', async () => {
+    // 模拟：第5页空 → 第4页空 → 第3页空 → 第2页有数据
+    ;(packageApi.search as any)
+      .mockResolvedValueOnce(mockSearchResponse([], 0))  // page 5
+      .mockResolvedValueOnce(mockSearchResponse([], 0))  // page 4
+      .mockResolvedValueOnce(mockSearchResponse([], 0))  // page 3
+      .mockResolvedValueOnce(mockSearchResponse([
+        { id: 10, name: 'pkg10', type: 'npm' },
+      ], 1))  // page 2
+
+    const cs = mountComposable()
+    cs.query.page = 5
+    await cs.refresh()
+
+    // 应该连续回退 3 次（5→4→3→2），共 4 次 API 调用
+    expect(packageApi.search).toHaveBeenCalledTimes(4)
+    expect(packageApi.search).toHaveBeenNthCalledWith(1, expect.objectContaining({ page: 5 }))
+    expect(packageApi.search).toHaveBeenNthCalledWith(2, expect.objectContaining({ page: 4 }))
+    expect(packageApi.search).toHaveBeenNthCalledWith(3, expect.objectContaining({ page: 3 }))
+    expect(packageApi.search).toHaveBeenNthCalledWith(4, expect.objectContaining({ page: 2 }))
+    expect(cs.query.page).toBe(2)
+    expect(cs.packages.value).toHaveLength(1)
+  })
+
+  it('所有页都空时回退到第1页停止（不会死循环）', async () => {
+    ;(packageApi.search as any).mockResolvedValue(mockSearchResponse([], 0))
+
+    const cs = mountComposable()
+    cs.query.page = 5
+    await cs.refresh()
+
+    // 从 page 5 回退到 page 1，共 5 次调用
+    expect(packageApi.search).toHaveBeenCalledTimes(5)
+    expect(cs.query.page).toBe(1)
+    expect(cs.packages.value).toEqual([])
+  })
+})
