@@ -189,3 +189,58 @@ describe('usePackageSearch - 删除后页码修正', () => {
     expect(cs.packages.value).toEqual([])
   })
 })
+
+describe('usePackageSearch - URL 同步', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    mockRouteQuery = {}
+    ;(packageApi.search as any).mockReset()
+  })
+
+  it('从 URL 读取初始查询参数', async () => {
+    mockRouteQuery = { q: 'react', type: 'npm', sort: 'download_count', page: '3' }
+    ;(packageApi.search as any).mockResolvedValue(mockSearchResponse())
+
+    const cs = mountComposable()
+    // onMounted 触发 readFromUrl
+    await cs.search()
+
+    expect(cs.query.q).toBe('react')
+    expect(cs.query.type).toBe('npm')
+    expect(cs.query.sort).toBe('download_count')
+    expect(cs.query.page).toBe(3)
+  })
+
+  it('setQuery 后用 replace 更新 URL（非分页变化）', async () => {
+    ;(packageApi.search as any).mockResolvedValue(mockSearchResponse())
+
+    const cs = mountComposable()
+    cs.setQuery({ q: 'vue' })
+
+    expect(mockReplace).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ q: 'vue' }),
+    }))
+  })
+
+  it('分页变化用 push 更新 URL（支持前进后退）', async () => {
+    ;(packageApi.search as any).mockResolvedValue(mockSearchResponse())
+
+    const cs = mountComposable()
+    cs.setQuery({ page: 2 })
+
+    expect(mockPush).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ page: '2' }),
+    }))
+  })
+
+  it('syncUrl=false 时不更新 URL', async () => {
+    ;(packageApi.search as any).mockResolvedValue(mockSearchResponse())
+
+    const cs = mountComposable('admin', { syncUrl: false })
+    cs.setQuery({ q: 'vue' })
+
+    expect(mockPush).not.toHaveBeenCalled()
+    expect(mockReplace).not.toHaveBeenCalled()
+  })
+})
