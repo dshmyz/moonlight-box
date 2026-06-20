@@ -36,7 +36,7 @@ const ElTableStub = defineComponent({
       // 收集 el-table-column 子节点
       const children = slots.default?.() || []
       const columns = children
-        .filter((v: any) => v && v.type && (v.type as any).name === 'ElTableColumnStub' || (v.type as any).__isTableColumn)
+        .filter((v: any) => v && v.type && ((v.type as any).name === 'ElTableColumn' || (v.type as any).__isTableColumn))
         .map((v: any) => v.props || {})
 
       // 表头
@@ -178,13 +178,23 @@ describe('PackageTable', () => {
   })
 
   it('columns 配置控制列显隐', () => {
-    const wrapper = mountIt({
+    // 隐藏所有可选列
+    const hidden = mountIt({
       columns: { description: false, source: false, versions: false, downloads: false, updatedAt: false },
     })
-    // 隐藏的列不应渲染表头
-    const headers = wrapper.findAll('.el-table__header th')
-    const headerTexts = headers.map(h => h.text())
-    expect(headerTexts.some(t => t.includes('描述'))).toBe(false)
+    const hiddenHeaders = hidden.findAll('.el-table__header th').map(h => h.text())
+    expect(hiddenHeaders.some(t => t.includes('来源'))).toBe(false)
+    expect(hiddenHeaders.some(t => t.includes('版本'))).toBe(false)
+    expect(hiddenHeaders.some(t => t.includes('下载'))).toBe(false)
+    expect(hiddenHeaders.some(t => t.includes('更新时间'))).toBe(false)
+
+    // 显示所有可选列
+    const shown = mountIt({ columns: {} })
+    const shownHeaders = shown.findAll('.el-table__header th').map(h => h.text())
+    expect(shownHeaders.some(t => t.includes('来源'))).toBe(true)
+    expect(shownHeaders.some(t => t.includes('版本'))).toBe(true)
+    expect(shownHeaders.some(t => t.includes('下载'))).toBe(true)
+    expect(shownHeaders.some(t => t.includes('更新时间'))).toBe(true)
   })
 
   it('density 传给 el-table 的 size', () => {
