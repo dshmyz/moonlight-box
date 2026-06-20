@@ -27,12 +27,6 @@ export const menuConfig: MenuItem[] = [
         permission: { resource: 'package', action: 'read' },
       },
       {
-        index: '/admin/packages-v2',
-        title: '软件包中心',
-        icon: 'fa-solid fa-store',
-        permission: { resource: 'package', action: 'read' },
-      },
-      {
         index: '/admin/repositories',
         title: '仓库管理',
         icon: 'fa-solid fa-folder-tree',

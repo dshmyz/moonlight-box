@@ -21,12 +21,6 @@ const routes: RouteRecordRaw[] = [
       {
         path: '',
         name: 'Browse',
-        component: () => import('@/views/BrowsePage.vue'),
-        meta: { title: '浏览仓库' },
-      },
-      {
-        path: 'browse-new',
-        name: 'BrowseNew',
         component: () => import('@/views/PublicBrowsePage.vue'),
         meta: { title: '浏览仓库' },
       },
@@ -77,20 +71,12 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'packages',
         name: 'AdminPackages',
-        component: () => import('@/views/PackageList.vue'),
+        component: () => import('@/views/PackageExplorerPage.vue'),
         meta: { title: '包管理', permission: { resource: 'package', action: 'read' } },
       },
       {
         path: 'packages-v2',
-        name: 'AdminPackagesV2',
-        component: () => import('@/views/PackageCenterV2.vue'),
-        meta: { title: '软件包中心', permission: { resource: 'package', action: 'read' } },
-      },
-      {
-        path: 'packages-new',
-        name: 'AdminPackagesNew',
-        component: () => import('@/views/PackageExplorerPage.vue'),
-        meta: { title: '包管理（新）', permission: { resource: 'package', action: 'read' } },
+        redirect: '/admin/packages',
       },
       {
         path: 'packages/:type/:name',
