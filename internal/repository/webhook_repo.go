@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"gorm.io/gorm"
 )
@@ -75,6 +77,58 @@ func (r *WebhookRepository) ListByEvent(event model.WebhookEvent) ([]model.Webho
 
 func (r *WebhookRepository) CreateDelivery(delivery *model.WebhookDelivery) error {
 	return r.db.Create(delivery).Error
+}
+
+// UpdateDelivery 更新投递记录状态，强制更新所有字段（包括 nil 的 next_retry_at）
+func (r *WebhookRepository) UpdateDelivery(delivery *model.WebhookDelivery) error {
+	// 使用 Exec 原生 SQL，确保 nil 的 next_retry_at 能正确写入数据库为 NULL
+	if delivery.NextRetryAt == nil {
+		return r.db.Exec(
+			"UPDATE webhook_deliveries SET response_code = ?, success = ?, error = ?, duration = ?, status = ?, retry_count = ?, max_retries = ?, next_retry_at = NULL, updated_at = ? WHERE id = ?",
+			delivery.ResponseCode, delivery.Success, delivery.Error, delivery.Duration,
+			delivery.Status, delivery.RetryCount, delivery.MaxRetries,
+			time.Now(), delivery.ID,
+		).Error
+	}
+	return r.db.Exec(
+		"UPDATE webhook_deliveries SET response_code = ?, success = ?, error = ?, duration = ?, status = ?, retry_count = ?, max_retries = ?, next_retry_at = ?, updated_at = ? WHERE id = ?",
+		delivery.ResponseCode, delivery.Success, delivery.Error, delivery.Duration,
+		delivery.Status, delivery.RetryCount, delivery.MaxRetries,
+		delivery.NextRetryAt, time.Now(), delivery.ID,
+	).Error
+}
+
+// ListPendingDeliveries 查询待投递和到期待重试的 delivery 记录，按创建时间排序。
+// limit 限制单次拉取数量，避免一次拉取过多。
+func (r *WebhookRepository) ListPendingDeliveries(limit int) ([]model.WebhookDelivery, error) {
+	var deliveries []model.WebhookDelivery
+	now := time.Now()
+	err := r.db.Where(
+		"status IN ? AND (next_retry_at IS NULL OR next_retry_at <= ?)",
+		[]model.DeliveryStatus{model.DeliveryStatusPending, model.DeliveryStatusRetrying},
+		now,
+	).Order("created_at ASC").Limit(limit).Find(&deliveries).Error
+	return deliveries, err
+}
+
+// MarkDeliveryProcessing 原子地将 delivery 状态标记为 processing，避免被其他 worker 重复拉取。
+// 返回更新行数，若为 0 说明状态已被其他 worker 改变（并发竞争），调用方应跳过。
+func (r *WebhookRepository) MarkDeliveryProcessing(id uint) (int64, error) {
+	result := r.db.Model(&model.WebhookDelivery{}).
+		Where("id = ? AND status IN ?", id, []model.DeliveryStatus{
+			model.DeliveryStatusPending, model.DeliveryStatusRetrying,
+		}).
+		Update("status", model.DeliveryStatusProcessing)
+	return result.RowsAffected, result.Error
+}
+
+// RequeueStuckDeliveries 将卡在 processing 状态的 delivery 重置为 pending。
+// 用于服务重启时恢复上次崩溃未完成的投递任务。
+func (r *WebhookRepository) RequeueStuckDeliveries() (int64, error) {
+	result := r.db.Model(&model.WebhookDelivery{}).
+		Where("status = ?", model.DeliveryStatusProcessing).
+		Update("status", model.DeliveryStatusPending)
+	return result.RowsAffected, result.Error
 }
 
 func (r *WebhookRepository) ListDeliveries(webhookID uint, page, pageSize int) ([]model.WebhookDelivery, int64, error) {

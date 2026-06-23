@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -157,6 +158,12 @@ func (s *PackageSearchService) searchFromPackages(ctx context.Context, req *Sear
 		query = query.Where("name = ?", req.Name)
 	}
 
+	// 版本筛选：packages 表只有 latest_version，无法匹配历史版本
+	// 传了 version 参数时必须回退到 artifacts 慢路径
+	if req.Version != "" {
+		return nil, fmt.Errorf("version filter requires artifacts fallback")
+	}
+
 	// 查询总数
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
@@ -296,7 +303,8 @@ func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *Sea
 
 		if req.Version != "" {
 			ver := row.Version
-			if ver != req.Version {
+			matched, _ := filepath.Match(req.Version, ver)
+			if !matched {
 				continue
 			}
 		}

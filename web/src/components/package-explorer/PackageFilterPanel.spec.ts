@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { mount } from '@vue/test-utils'
+import { flushPromises } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import PackageFilterPanel from './PackageFilterPanel.vue'
 
@@ -13,24 +14,26 @@ vi.mock('@/api/repository', () => ({
 }))
 
 const mountIt = (props: Record<string, any> = {}) => mount(PackageFilterPanel, {
-  props: {
-    visible: true,
-    repository: '',
-    version: '',
-    ...props,
-  } as any,
+  props: { visible: true, repository: '', version: '', ...props } as any,
   global: { plugins: [ElementPlus] },
 })
 
 describe('PackageFilterPanel', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
+  beforeEach(() => { vi.clearAllMocks() })
+
+  it('visible=false 时不渲染面板', () => {
+    const wrapper = mountIt({ visible: false })
+    expect(wrapper.find('.filter-panel-inline').exists()).toBe(false)
+  })
+
+  it('visible=true 时渲染面板', () => {
+    const wrapper = mountIt()
+    expect(wrapper.find('.filter-panel-inline').exists()).toBe(true)
   })
 
   it('打开时加载仓库列表', async () => {
     const wrapper = mountIt()
     await flushPromises()
-    // 仓库列表加载后应有 2 个选项（通过 el-option 渲染）
     const options = wrapper.findAllComponents({ name: 'ElOption' })
     expect(options.length).toBeGreaterThanOrEqual(2)
   })
@@ -45,7 +48,6 @@ describe('PackageFilterPanel', () => {
   it('输入版本触发 update:version', async () => {
     const wrapper = mountIt()
     await flushPromises()
-    // el-input 的 update:modelValue 事件
     const input = wrapper.findComponent({ name: 'ElInput' })
     await input.vm.$emit('update:modelValue', '1.2.*')
     expect(wrapper.emitted('update:version')?.[0]).toEqual(['1.2.*'])

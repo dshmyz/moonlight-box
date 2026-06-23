@@ -34,6 +34,16 @@
       @open-filter="showFilter = true"
     />
 
+    <!-- 行内筛选面板 -->
+    <PackageFilterPanel
+      v-show="showFilter"
+      :visible="showFilter"
+      v-model:repository="query.repository"
+      v-model:version="query.version"
+      @apply="onFilterApply"
+      @reset="onFilterApply"
+    />
+
     <!-- 批量操作栏（admin + 选中后） -->
     <div v-if="mode === 'admin' && selectedIds.length > 0" class="batch-bar">
       <span class="batch-info">已选 {{ selectedIds.length }} 项</span>
@@ -100,14 +110,6 @@
         @update:page-size="onPageSizeChange"
       />
     </div>
-
-    <!-- 筛选抽屉 -->
-    <PackageFilterPanel
-      v-model:visible="showFilter"
-      v-model:repository="query.repository"
-      v-model:version="query.version"
-      @apply="onFilterApply"
-    />
 
     <!-- 版本抽屉（复用现有组件） -->
     <VersionDrawer

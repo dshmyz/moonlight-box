@@ -73,10 +73,11 @@ func TestHandle_Packages(t *testing.T) {
 	p := NewAptPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("apt", "package", map[string]string{
-			"package":  "nginx",
-			"name":     "nginx",
-			"version":  "1.18.0-6.1",
-			"filename": "nginx_1.18.0-6.1_amd64.deb",
+			"package":     "nginx",
+			"name":        "nginx",
+			"version":     "1.18.0-6.1",
+			"filename":    "nginx_1.18.0-6.1_amd64.deb",
+			"remote_path": "dists/jammy/main/binary-amd64/Packages",
 		}, ""),
 	}
 	arts[0].Properties = map[string]string{"filename": "nginx_1.18.0-6.1_amd64.deb"}

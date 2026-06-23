@@ -8,9 +8,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/dshmyz/moonlight-box/internal/util"
 )
+
+// copyBufferPool 复用 io.CopyBuffer 的 32KB buffer，减少每次 Put 的内存分配
+var copyBufferPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 32*1024)
+		return &buf
+	},
+}
 
 type LocalStorage struct {
 	basePath string
@@ -82,7 +91,11 @@ func (s *LocalStorage) Put(ctx context.Context, key string, reader io.Reader, si
 	}
 	defer file.Close()
 
-	written, err := io.Copy(file, reader)
+	// 从 pool 获取复用 buffer，减少每次 Put 的内存分配
+	bufPtr := copyBufferPool.Get().(*[]byte)
+	defer copyBufferPool.Put(bufPtr)
+
+	written, err := io.CopyBuffer(file, reader, *bufPtr)
 	if err != nil {
 		os.Remove(fullPath)
 		return err

@@ -4,6 +4,14 @@
       <div class="card-header">
         <span class="card-title">版本列表</span>
         <div class="header-actions">
+          <el-input
+            v-model="versionSearch"
+            placeholder="搜索版本号"
+            clearable
+            size="small"
+            class="version-search-input"
+            :prefix-icon="Search"
+          />
           <el-radio-group v-model="cacheFilter" size="small" class="cache-filter">
             <el-radio-button value="all">全部 ({{ versions.length }})</el-radio-button>
             <el-radio-button value="cached">已缓存 ({{ cachedCount }})</el-radio-button>
@@ -155,6 +163,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { Search } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
 import { formatNumber, formatSize, formatDate } from '@/utils/format'
 import { getVersionStatusColor, getVersionStatusLabel } from '@/constants/package'
@@ -178,10 +187,11 @@ const emit = defineEmits<{
 const pageSize = 10
 const currentPage = ref(1)
 const cacheFilter = ref<'all' | 'cached' | 'uncached'>('all')
+const versionSearch = ref('')
 const expandedFiles = ref<Set<string>>(new Set())
 
 // 筛选变化时重置页码
-watch(cacheFilter, () => {
+watch([cacheFilter, versionSearch], () => {
   currentPage.value = 1
 })
 
@@ -203,13 +213,20 @@ const sortedVersions = computed(() => {
 
 // 根据筛选条件过滤版本
 const filteredVersions = computed(() => {
+  let result = sortedVersions.value
+  // 版本号搜索
+  if (versionSearch.value.trim()) {
+    const keyword = versionSearch.value.trim().toLowerCase()
+    result = result.filter(v => v.version.toLowerCase().includes(keyword))
+  }
+  // 缓存状态筛选
   switch (cacheFilter.value) {
     case 'cached':
-      return sortedVersions.value.filter(v => v.files_downloaded)
+      return result.filter(v => v.files_downloaded)
     case 'uncached':
-      return sortedVersions.value.filter(v => !v.files_downloaded)
+      return result.filter(v => !v.files_downloaded)
     default:
-      return sortedVersions.value
+      return result
   }
 })
 
@@ -326,6 +343,24 @@ function copyChecksum(checksum: string) {
 .cache-filter {
   --el-radio-button-checked-bg-color: var(--lunar-accent);
   --el-radio-button-checked-border-color: var(--lunar-accent);
+}
+
+.version-search-input {
+  width: 200px;
+}
+
+.version-search-input :deep(.el-input__wrapper) {
+  background: var(--lunar-bg-glass);
+  border-color: var(--lunar-border);
+  box-shadow: none;
+}
+
+.version-search-input :deep(.el-input__inner) {
+  color: var(--lunar-silver);
+}
+
+.version-search-input :deep(.el-input__inner::placeholder) {
+  color: var(--lunar-silver-dim);
 }
 
 .cache-filter :deep(.el-radio-button__inner) {

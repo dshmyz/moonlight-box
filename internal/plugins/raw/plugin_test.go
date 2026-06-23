@@ -309,7 +309,9 @@ func TestContentTypes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		p := NewGenericPlugin(http.DefaultClient)
-		art := testhelper.NewArtifact("generic", "file", map[string]string{"name": tt.filename, "path": "", "filename": tt.filename}, "data")
+		// 补上 remote_path：handleDownload 构造的 key.RemotePath = 请求路径，
+		// 收紧后的 matchArtifact 要求 artifact.RemotePath 必须与之相等。
+		art := testhelper.NewArtifact("generic", "file", map[string]string{"name": tt.filename, "path": "", "filename": tt.filename, "remote_path": tt.filename}, "data")
 		rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
 		ctx, w := newCtx("GET", tt.filename, nil)
@@ -355,7 +357,9 @@ func TestFetchRemote_EmptyPath(t *testing.T) {
 // Ensure JSON API returns proper structure.
 func TestHandle_JSONContentType(t *testing.T) {
 	p := NewGenericPlugin(http.DefaultClient)
-	art := testhelper.NewArtifact("generic", "file", map[string]string{"name": "data.json", "path": "", "filename": "data.json"}, `{"key":"value"}`)
+	// 补上 remote_path：handleDownload 构造的 key.RemotePath = 请求路径，
+	// 收紧后的 matchArtifact 要求 artifact.RemotePath 必须与之相等。
+	art := testhelper.NewArtifact("generic", "file", map[string]string{"name": "data.json", "path": "", "filename": "data.json", "remote_path": "data.json"}, `{"key":"value"}`)
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
 	ctx, w := newCtx("GET", "data.json", nil)

@@ -250,6 +250,11 @@ func (s *SecurityScanner) ListVulnerabilities(scanResultID uint) ([]model.Vulner
 	return s.scanRepo.ListVulnerabilities(scanResultID)
 }
 
+// ListVulnerabilitiesByScanResultIDs 批量查询多个 scan result 的 vulnerabilities，避免 N+1 查询。
+func (s *SecurityScanner) ListVulnerabilitiesByScanResultIDs(scanResultIDs []uint) ([]model.Vulnerability, error) {
+	return s.scanRepo.ListVulnerabilitiesByScanResultIDs(scanResultIDs)
+}
+
 func (s *SecurityScanner) ListVulnerabilitiesPaginated(page, pageSize int, severity, pkgType string) ([]model.Vulnerability, int64, error) {
 	return s.scanRepo.ListVulnerabilitiesPaginated(page, pageSize, severity, pkgType)
 }

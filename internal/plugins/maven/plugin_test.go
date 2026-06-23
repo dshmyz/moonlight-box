@@ -1168,16 +1168,21 @@ func TestHandle_Metadata_ArtifactIdContainsSnapshot(t *testing.T) {
 
 func TestHandle_Metadata_SNAPSHOT(t *testing.T) {
 	p := NewMavenPlugin(http.DefaultClient)
+	// version 记录在生产中由 fetchMetadata 回源产生（无 RemotePath），
+	// ProxyRuntime.QueryArtifacts 回源后直接返回 fetched 列表，不应用 RemotePath 过滤。
+	// MockRuntime 无 FetchRemote，需给 artifact 设置 RemotePath 以模拟回源后命中缓存的效果。
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("maven", "version", map[string]string{
-			"group":    "com.example",
-			"artifact": "app",
-			"version":  "1.0-20230101.120000-1",
+			"group":       "com.example",
+			"artifact":    "app",
+			"version":     "1.0-20230101.120000-1",
+			"remote_path": "com/example/app/1.0-SNAPSHOT/maven-metadata.xml",
 		}, ""),
 		testhelper.NewArtifact("maven", "version", map[string]string{
-			"group":    "com.example",
-			"artifact": "app",
-			"version":  "1.0-SNAPSHOT",
+			"group":       "com.example",
+			"artifact":    "app",
+			"version":     "1.0-SNAPSHOT",
+			"remote_path": "com/example/app/1.0-SNAPSHOT/maven-metadata.xml",
 		}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}

@@ -1,5 +1,5 @@
 <template>
-  <el-container class="public-layout" :class="themeClass">
+  <el-container class="public-layout">
     <div class="layout-noise" />
     <el-header class="public-header-wrapper">
       <PublicHeader />
@@ -18,9 +18,7 @@
 import PublicHeader from '@/components/public/PublicHeader.vue'
 import PublicFooter from '@/components/public/PublicFooter.vue'
 import AIAssistant from '@/components/ai/AIAssistant.vue'
-import { useLunarTheme } from '@/composables/useLunarTheme'
 
-const { themeClass } = useLunarTheme()
 </script>
 
 <style scoped>
@@ -43,10 +41,6 @@ const { themeClass } = useLunarTheme()
   background-size: 256px;
   mix-blend-mode: overlay;
   transition: opacity 1s ease;
-}
-
-.public-layout.lunar-dawn .layout-noise {
-  opacity: 0.02;
 }
 
 .public-header-wrapper {

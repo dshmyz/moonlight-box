@@ -32,12 +32,12 @@ describe('PackageSearchBar', () => {
     expect(wrapper.findAll('.type-chip:not(.type-chip--more)')).toHaveLength(6)
   })
 
-  it('输入触发 300ms debounce 后 emit search', async () => {
+  it('输入触发 500ms debounce 后 emit search', async () => {
     const wrapper = mountIt()
     await wrapper.find('.search-input input').setValue('react')
     expect(wrapper.emitted('update:query')).toBeTruthy()
 
-    vi.advanceTimersByTime(299)
+    vi.advanceTimersByTime(499)
     expect(wrapper.emitted('search')).toBeFalsy()
 
     vi.advanceTimersByTime(1)
@@ -83,7 +83,7 @@ describe('PackageSearchBar', () => {
 
   it('清空按钮触发清空并搜索', async () => {
     const wrapper = mountIt({ query: { ...baseQuery, q: 'react' } })
-    await wrapper.find('.clear-btn').trigger('click')
+    wrapper.findComponent({ name: 'ElInput' }).vm.$emit('clear')
     const emitted = wrapper.emitted('update:query')?.[0]?.[0] as any
     expect(emitted.q).toBe('')
     expect(wrapper.emitted('search')).toBeTruthy()

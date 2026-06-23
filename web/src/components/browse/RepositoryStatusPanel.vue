@@ -41,17 +41,17 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { repositoryApi, type RepositoryWithHealth } from '@/api/repository'
+import { publicRepoApi, type PublicRepoListItem } from '@/api/public'
 import { getPackageTypeLabel } from '@/constants/package'
 
-const repositories = ref<RepositoryWithHealth[]>([])
+const repositories = ref<PublicRepoListItem[]>([])
 const loading = ref(false)
 
 async function loadRepositories() {
   loading.value = true
   try {
-    const res = await repositoryApi.list({ page_size: 8 })
-    repositories.value = Array.isArray(res) ? res : (res.items || [])
+    const res = await publicRepoApi.list()
+    repositories.value = res || []
   } catch (error) {
     console.error('Failed to load repositories:', error)
   } finally {
@@ -59,24 +59,18 @@ async function loadRepositories() {
   }
 }
 
-function getStatusDotClass(repo: RepositoryWithHealth): string {
+function getStatusDotClass(repo: PublicRepoListItem): string {
   if (!repo.enabled) return 'repo-status-dot--disabled'
-  if (repo.health_info?.health_status?.is_healthy === false) return 'repo-status-dot--error'
-  if (repo.health_info?.circuit_breaker?.state === 'open') return 'repo-status-dot--warning'
   return 'repo-status-dot--active'
 }
 
-function getStatusBadgeClass(repo: RepositoryWithHealth): string {
+function getStatusBadgeClass(repo: PublicRepoListItem): string {
   if (!repo.enabled) return 'repo-status-badge--disabled'
-  if (repo.health_info?.health_status?.is_healthy === false) return 'repo-status-badge--down'
-  if (repo.health_info?.circuit_breaker?.state === 'open') return 'repo-status-badge--degraded'
   return 'repo-status-badge--healthy'
 }
 
-function getStatusText(repo: RepositoryWithHealth): string {
+function getStatusText(repo: PublicRepoListItem): string {
   if (!repo.enabled) return '已禁用'
-  if (repo.health_info?.health_status?.is_healthy === false) return '异常'
-  if (repo.health_info?.circuit_breaker?.state === 'open') return '熔断'
   return '健康'
 }
 

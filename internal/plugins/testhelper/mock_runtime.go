@@ -124,7 +124,8 @@ func matchArtifact(a *runtime.Artifact, key runtime.ArtifactKey) bool {
 	if key.Version != "" && a.Version != "" && a.Version != key.Version {
 		return false
 	}
-	if key.RemotePath != "" && a.RemotePath != "" && a.RemotePath != key.RemotePath {
+	// RemotePath 精确匹配：key 带 RemotePath 时，artifact 必须有且等于该值。
+	if key.RemotePath != "" && a.RemotePath != key.RemotePath {
 		return false
 	}
 	if key.Path != "" && a.Path != "" && a.Path != key.Path {
@@ -156,7 +157,9 @@ func matchQuery(a *runtime.Artifact, query runtime.ArtifactQuery) bool {
 	if query.Version != "" && a.Version != query.Version {
 		return false
 	}
-	if query.RemotePath != "" && a.RemotePath != "" && a.RemotePath != query.RemotePath {
+	// RemotePath 精确匹配：查询带 RemotePath 时，artifact 必须有且等于该值。
+	// 与生产 MetadataStore.Query 的 remote_path = ? 行为一致。
+	if query.RemotePath != "" && a.RemotePath != query.RemotePath {
 		return false
 	}
 	if query.Path != "" && a.Path != "" && a.Path != query.Path {
@@ -180,10 +183,13 @@ func NewArtifact(format, kind string, coords map[string]string, content string) 
 		name = coords["group"] + ":" + coords["artifact"]
 	}
 	qualifiers := map[string]string{}
+	checksums := map[string]string{}
 	for k, v := range coords {
 		switch k {
-		case "name", "version", "path", "filename", "file":
+		case "name", "version", "path", "filename", "file", "remote_path":
 			continue
+		case "sha256", "sha1", "md5":
+			checksums[k] = v
 		default:
 			qualifiers[k] = v
 		}
@@ -195,8 +201,10 @@ func NewArtifact(format, kind string, coords map[string]string, content string) 
 		Version:    coords["version"],
 		Path:       coords["path"],
 		Filename:   firstNonEmptyTest(coords["filename"], coords["file"]),
+		RemotePath: coords["remote_path"],
 		Qualifiers: qualifiers,
 		Properties: map[string]string{},
+		Checksums:  checksums,
 	})
 	if content != "" {
 		a.Content = io.NopCloser(strings.NewReader(content))

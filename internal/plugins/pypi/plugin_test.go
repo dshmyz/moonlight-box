@@ -180,6 +180,10 @@ func TestHandle_PackageList(t *testing.T) {
 		}, ""),
 	}
 	arts[0].Properties = map[string]string{"remote_path": "ab/cd/requests-2.28.0.tar.gz"}
+	// NewArtifact 会经 NormalizeArtifactForStore 去掉 RemotePath 尾部斜杠，
+	// 这里覆盖为请求路径（含尾部斜杠），与 handlePackageList 查询的 RemotePath 一致，
+	// 模拟回源后 Runtime 层存储的 RemotePath。
+	arts[0].RemotePath = "simple/requests/"
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 
 	ctx, w := newCtx("GET", "simple/requests/", nil)
@@ -203,6 +207,10 @@ func TestHandle_PackageListSortsByPEP440Version(t *testing.T) {
 	}
 	for _, a := range arts {
 		a.Properties = map[string]string{"remote_path": "packages/" + a.Filename}
+		// NewArtifact 会经 NormalizeArtifactForStore 去掉 RemotePath 尾部斜杠，
+		// 这里覆盖为请求路径（含尾部斜杠），与 handlePackageList 查询的 RemotePath 一致，
+		// 模拟回源后 Runtime 层存储的 RemotePath。
+		a.RemotePath = "simple/demo/"
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 
@@ -638,6 +646,10 @@ func TestHandle_PackageList_JSON(t *testing.T) {
 		}, ""),
 	}
 	arts[0].Properties = map[string]string{"remote_path": "ab/cd/requests-2.28.0.tar.gz"}
+	// NewArtifact 会经 NormalizeArtifactForStore 去掉 RemotePath 尾部斜杠，
+	// 这里覆盖为请求路径（含尾部斜杠），与 handlePackageList 查询的 RemotePath 一致，
+	// 模拟回源后 Runtime 层存储的 RemotePath。
+	arts[0].RemotePath = "simple/requests/"
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 
 	ctx, w := newCtx("GET", "simple/requests/", nil)
@@ -666,6 +678,7 @@ func TestHandle_PackageListUsesStoredChecksumWithoutBlobRef(t *testing.T) {
 		Version:    "2.28.0",
 		Path:       "packages/ab/cd",
 		Filename:   "requests-2.28.0.tar.gz",
+		RemotePath: "simple/requests/", // 与 handlePackageList 查询的 RemotePath 一致，模拟回源后 Runtime 层存储的 RemotePath
 		Checksums:  map[string]string{"sha256": "abc123"},
 		Properties: map[string]string{"remote_path": "packages/ab/cd/requests-2.28.0.tar.gz"},
 	}

@@ -28,8 +28,9 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 func TestHandle_Repomd(t *testing.T) {
 	p := NewYumPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
-		testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{"file": "repomd.xml"}, ""),
-		testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{"file": "abc123-primary.xml.gz", "type": "primary", "href": "repodata/abc123-primary.xml.gz"}, ""),
+		// remote_path 与 handleRepomd 查询用的 RemotePath 一致，模拟回源后 Runtime 层存储的 RemotePath
+		testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{"file": "repomd.xml", "remote_path": "repodata/repomd.xml"}, ""),
+		testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{"file": "abc123-primary.xml.gz", "type": "primary", "href": "repodata/abc123-primary.xml.gz", "remote_path": "repodata/repomd.xml"}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 
@@ -50,8 +51,10 @@ func TestHandle_Repomd(t *testing.T) {
 
 func TestHandle_RepomdDynamicHasRequiredFields(t *testing.T) {
 	p := NewYumPlugin(http.DefaultClient)
+	// remote_path 与 handleRepomd 查询用的 RemotePath 一致，模拟回源后 Runtime 层存储的 RemotePath
 	art := testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{
 		"file": "abc123-primary.xml.gz", "type": "primary", "href": "repodata/abc123-primary.xml.gz",
+		"remote_path": "repodata/repomd.xml",
 	}, "")
 	art.SizeBytes = 12345
 	art.BlobRefs = []runtime.BlobRef{{Algorithm: "sha256", Digest: "abc123hash", Size: 12345}}
@@ -162,10 +165,12 @@ func TestHandle_RepomdHeadReturnsHeadersWithoutBody(t *testing.T) {
 func TestHandle_Primary(t *testing.T) {
 	p := NewYumPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
+		// remote_path 与 handlePrimary 的 GetArtifact key.RemotePath（请求路径）一致
 		testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{
-			"name":    "nginx",
-			"version": "1.20.1",
-			"file":    "primary.xml",
+			"name":       "nginx",
+			"version":    "1.20.1",
+			"file":       "primary.xml",
+			"remote_path": "repodata/primary.xml",
 		}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}

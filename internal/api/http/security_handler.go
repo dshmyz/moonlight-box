@@ -136,28 +136,30 @@ func (h *SecurityHandler) GetDashboard(c *gin.Context) {
 
 	results, _, _ := h.securityScanner.ListScanResults(1, 10, "", "")
 
+	// 批量查询所有 scan result 的 vulnerabilities，避免 N+1 查询
 	recentVulns := make([]map[string]interface{}, 0)
-	for _, result := range results {
-		vulns, err := h.securityScanner.ListVulnerabilities(result.ID)
-		if err != nil {
-			continue
+	if len(results) > 0 {
+		scanResultIDs := make([]uint, 0, len(results))
+		for _, r := range results {
+			scanResultIDs = append(scanResultIDs, r.ID)
 		}
-		for _, v := range vulns {
-			recentVulns = append(recentVulns, map[string]interface{}{
-				"cve_id":          v.CVEID,
-				"severity":        v.Severity,
-				"cvss_score":      v.CVSSScore,
-				"title":           v.Title,
-				"dependency_name": v.DependencyName,
-				"fixed_version":   v.FixedVersion,
-				"scan_result_id":  v.ScanResultID,
-			})
-			if len(recentVulns) >= 20 {
-				break
+
+		allVulns, err := h.securityScanner.ListVulnerabilitiesByScanResultIDs(scanResultIDs)
+		if err == nil {
+			for _, v := range allVulns {
+				recentVulns = append(recentVulns, map[string]interface{}{
+					"cve_id":          v.CVEID,
+					"severity":        v.Severity,
+					"cvss_score":      v.CVSSScore,
+					"title":           v.Title,
+					"dependency_name": v.DependencyName,
+					"fixed_version":   v.FixedVersion,
+					"scan_result_id":  v.ScanResultID,
+				})
+				if len(recentVulns) >= 20 {
+					break
+				}
 			}
-		}
-		if len(recentVulns) >= 20 {
-			break
 		}
 	}
 

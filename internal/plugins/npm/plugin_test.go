@@ -27,9 +27,10 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 
 func TestHandle_PackageMetadata(t *testing.T) {
 	p := NewNpmPlugin(http.DefaultClient)
+	// handlePackageGet 用 RemotePath=packageName 查询，artifact 需带匹配的 remote_path
 	arts := []*runtime.Artifact{
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "express", "version": "4.18.2"}, ""),
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "express", "version": "4.17.3"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "express", "version": "4.18.2", "remote_path": "express"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "express", "version": "4.17.3", "remote_path": "express"}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 
@@ -59,8 +60,9 @@ func TestHandle_PackageMetadata(t *testing.T) {
 
 func TestHandle_PackageMetadataHeadReturnsHeadersWithoutBody(t *testing.T) {
 	p := NewNpmPlugin(http.DefaultClient)
+	// handlePackageGet 用 RemotePath=packageName 查询，artifact 需带匹配的 remote_path
 	arts := []*runtime.Artifact{
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "express", "version": "4.18.2"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "express", "version": "4.18.2", "remote_path": "express"}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 
@@ -81,8 +83,9 @@ func TestHandle_PackageMetadataHeadReturnsHeadersWithoutBody(t *testing.T) {
 
 func TestHandle_ScopedPackage(t *testing.T) {
 	p := NewNpmPlugin(http.DefaultClient)
+	// handlePackageGet 用 RemotePath=packageName 查询，scoped 包名含 @ 但无斜杠，remote_path 需与包名一致
 	arts := []*runtime.Artifact{
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "@scope/pkg", "version": "1.0.0"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "@scope/pkg", "version": "1.0.0", "remote_path": "@scope/pkg"}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 
@@ -385,10 +388,11 @@ func TestRepoBaseURLSupportsRootMountedRepository(t *testing.T) {
 
 func TestDistTags_SemverSorting(t *testing.T) {
 	p := NewNpmPlugin(http.DefaultClient)
+	// handlePackageGet 用 RemotePath=packageName 查询，artifact 需带匹配的 remote_path
 	arts := []*runtime.Artifact{
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "v1.0.0"}, ""),
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "v2.0.0"}, ""),
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "v1.5.0"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "v1.0.0", "remote_path": "pkg"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "v2.0.0", "remote_path": "pkg"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "v1.5.0", "remote_path": "pkg"}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 
@@ -405,10 +409,11 @@ func TestDistTags_SemverSorting(t *testing.T) {
 
 func TestDistTags_NpmVersionsWithoutVPrefix(t *testing.T) {
 	p := NewNpmPlugin(http.DefaultClient)
+	// handlePackageGet 用 RemotePath=packageName 查询，artifact 需带匹配的 remote_path
 	arts := []*runtime.Artifact{
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "1.9.0"}, ""),
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "1.10.0"}, ""),
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "2.0.0-beta.1"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "1.9.0", "remote_path": "pkg"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "1.10.0", "remote_path": "pkg"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "pkg", "version": "2.0.0-beta.1", "remote_path": "pkg"}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 
@@ -810,12 +815,13 @@ func TestExtractLicenseFiltersNonSPDX(t *testing.T) {
 
 func TestDistTags_Prerelease(t *testing.T) {
 	p := NewNpmPlugin(http.DefaultClient)
+	// handlePackageGet 用 RemotePath=packageName 查询，artifact 需带匹配的 remote_path
 	arts := []*runtime.Artifact{
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v1.0.0-alpha.1"}, ""),
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v1.0.0-beta.1"}, ""),
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v1.0.0-rc.1"}, ""),
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v1.0.0"}, ""),
-		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v0.9.0"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v1.0.0-alpha.1", "remote_path": "prerelease-pkg"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v1.0.0-beta.1", "remote_path": "prerelease-pkg"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v1.0.0-rc.1", "remote_path": "prerelease-pkg"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v1.0.0", "remote_path": "prerelease-pkg"}, ""),
+		testhelper.NewArtifact("npm", "version", map[string]string{"name": "prerelease-pkg", "version": "v0.9.0", "remote_path": "prerelease-pkg"}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
 

@@ -34,7 +34,12 @@
 
     <el-table-column prop="type" label="类型" width="100">
       <template #default="{ row }">
-        <el-tag :color="getTypeColor(row.type)" effect="light" size="small">
+        <el-tag
+          :color="getTypeBg(row.type)"
+          effect="plain"
+          size="small"
+          :style="{ color: getTypeColor(row.type), borderColor: getTypeColor(row.type) + '33' }"
+        >
           {{ row.type }}
         </el-tag>
       </template>
@@ -66,12 +71,9 @@
       </template>
     </el-table-column>
 
-    <el-table-column label="操作" width="260" fixed="right">
+    <el-table-column label="操作" width="160" fixed="right">
       <template #default="{ row }">
         <div class="action-buttons">
-          <el-button class="btn-view-versions" size="small" @click="$emit('view-versions', row)">
-            查看版本
-          </el-button>
           <el-button class="btn-view-detail" size="small" type="primary" @click="$emit('view-detail', row)">
             详情
           </el-button>

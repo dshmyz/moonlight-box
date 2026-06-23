@@ -258,10 +258,14 @@ func TestHandle_Latest(t *testing.T) {
 	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("go", "version", map[string]string{
-			"module": "github.com/gin-gonic/gin", "version": "v1.10.0",
+			"module":      "github.com/gin-gonic/gin",
+			"version":     "v1.10.0",
+			"remote_path": "github.com/gin-gonic/gin/@latest",
 		}, ""),
 		testhelper.NewArtifact("go", "version", map[string]string{
-			"module": "github.com/gin-gonic/gin", "version": "v1.9.0",
+			"module":      "github.com/gin-gonic/gin",
+			"version":     "v1.9.0",
+			"remote_path": "github.com/gin-gonic/gin/@latest",
 		}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
@@ -284,7 +288,9 @@ func TestHandle_LatestHeadReturnsHeadersWithoutBody(t *testing.T) {
 	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("go", "version", map[string]string{
-			"module": "github.com/gin-gonic/gin", "version": "v1.10.0",
+			"module":      "github.com/gin-gonic/gin",
+			"version":     "v1.10.0",
+			"remote_path": "github.com/gin-gonic/gin/@latest",
 		}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
@@ -308,10 +314,14 @@ func TestHandle_Latest_SemanticImportVersion(t *testing.T) {
 	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("go", "version", map[string]string{
-			"module": "github.com/labstack/echo/v4", "version": "v4.13.0",
+			"module":      "github.com/labstack/echo/v4",
+			"version":     "v4.13.0",
+			"remote_path": "github.com/labstack/echo/v4/@latest",
 		}, ""),
 		testhelper.NewArtifact("go", "version", map[string]string{
-			"module": "github.com/labstack/echo/v4", "version": "v4.12.0",
+			"module":      "github.com/labstack/echo/v4",
+			"version":     "v4.12.0",
+			"remote_path": "github.com/labstack/echo/v4/@latest",
 		}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
@@ -334,13 +344,19 @@ func TestHandle_Latest_FiltersPrerelease(t *testing.T) {
 	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("go", "version", map[string]string{
-			"module": "github.com/example/mod", "version": "v2.0.0-rc1",
+			"module":      "github.com/example/mod",
+			"version":     "v2.0.0-rc1",
+			"remote_path": "github.com/example/mod/@latest",
 		}, ""),
 		testhelper.NewArtifact("go", "version", map[string]string{
-			"module": "github.com/example/mod", "version": "v1.5.0",
+			"module":      "github.com/example/mod",
+			"version":     "v1.5.0",
+			"remote_path": "github.com/example/mod/@latest",
 		}, ""),
 		testhelper.NewArtifact("go", "version", map[string]string{
-			"module": "github.com/example/mod", "version": "v2.0.0-alpha.1",
+			"module":      "github.com/example/mod",
+			"version":     "v2.0.0-alpha.1",
+			"remote_path": "github.com/example/mod/@latest",
 		}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
@@ -363,7 +379,9 @@ func TestHandle_Latest_OnlyPrerelease(t *testing.T) {
 	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("go", "version", map[string]string{
-			"module": "github.com/example/mod", "version": "v2.0.0-rc1",
+			"module":      "github.com/example/mod",
+			"version":     "v2.0.0-rc1",
+			"remote_path": "github.com/example/mod/@latest",
 		}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
@@ -416,13 +434,19 @@ func TestHandle_VersionList(t *testing.T) {
 	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("go", "version", map[string]string{
-			"module": "github.com/gin-gonic/gin", "version": "v1.10.0",
+			"module":      "github.com/gin-gonic/gin",
+			"version":     "v1.10.0",
+			"remote_path": "github.com/gin-gonic/gin/@v/list",
 		}, ""),
 		testhelper.NewArtifact("go", "version", map[string]string{
-			"module": "github.com/gin-gonic/gin", "version": "v1.9.0",
+			"module":      "github.com/gin-gonic/gin",
+			"version":     "v1.9.0",
+			"remote_path": "github.com/gin-gonic/gin/@v/list",
 		}, ""),
 		testhelper.NewArtifact("go", "version", map[string]string{
-			"module": "github.com/gin-gonic/gin", "version": "v1.9.0",
+			"module":      "github.com/gin-gonic/gin",
+			"version":     "v1.9.0",
+			"remote_path": "github.com/gin-gonic/gin/@v/list",
 		}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
@@ -444,10 +468,14 @@ func TestHandle_VersionList_Dedup(t *testing.T) {
 	p := NewGoPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("go", "version", map[string]string{
-			"module": "github.com/example/mod", "version": "v1.0.0",
+			"module":      "github.com/example/mod",
+			"version":     "v1.0.0",
+			"remote_path": "github.com/example/mod/@v/list",
 		}, ""),
 		testhelper.NewArtifact("go", "version", map[string]string{
-			"module": "github.com/example/mod", "version": "v1.0.0",
+			"module":      "github.com/example/mod",
+			"version":     "v1.0.0",
+			"remote_path": "github.com/example/mod/@v/list",
 		}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}

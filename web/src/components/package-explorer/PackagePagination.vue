@@ -44,9 +44,8 @@ function onSizeChange(size: number) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 18px 24px;
-  border-top: 1px solid rgba(0, 0, 0, 0.04);
-  background: #fafbfc;
+  padding: 16px 0;
+  border-top: 1px solid var(--lunar-border);
 }
 .pagination-info { display: flex; align-items: center; gap: 8px; }
 .total-badge {
@@ -54,13 +53,20 @@ function onSizeChange(size: number) {
   align-items: center;
   justify-content: center;
   min-width: 28px;
-  height: 26px;
-  padding: 0 12px;
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  color: #fff;
+  height: 24px;
+  padding: 0 10px;
+  background: var(--lunar-bg-glass);
+  color: var(--lunar-accent);
   font-size: 12px;
   font-weight: 600;
-  border-radius: 8px;
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  border-radius: var(--radius-full);
 }
-.total-label { font-size: 13px; color: #64748b; }
+.total-label {
+  font-size: 12px;
+  color: var(--lunar-silver-muted);
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+}
 </style>

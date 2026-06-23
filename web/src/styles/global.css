@@ -440,100 +440,6 @@ h6 { font-size: var(--font-size-base); }
   background: #3b82f6;
 }
 
-/* ========== Lunar 深空主题系统（仅作用于公共页面） ========== */
-
-.public-layout.lunar-night {
-  --lunar-bg-deep: var(--lunar-night-bg-deep);
-  --lunar-bg-surface: var(--lunar-night-bg-surface);
-  --lunar-bg-card: var(--lunar-night-bg-card);
-  --lunar-bg-card-hover: var(--lunar-night-bg-card-hover);
-  --lunar-bg-glass: var(--lunar-night-bg-glass);
-  --lunar-accent: var(--lunar-night-accent);
-  --lunar-accent-soft: var(--lunar-night-accent-soft);
-  --lunar-accent-glow: var(--lunar-night-accent-glow);
-  --lunar-silver: var(--lunar-night-silver);
-  --lunar-silver-muted: var(--lunar-night-silver-muted);
-  --lunar-silver-dim: var(--lunar-night-silver-dim);
-  --lunar-border: var(--lunar-night-border);
-  --lunar-border-hover: var(--lunar-night-border-hover);
-  --lunar-gradient-hero: var(--lunar-night-gradient-hero);
-  --lunar-gradient-card: var(--lunar-night-gradient-card);
-  --lunar-gradient-btn: var(--lunar-night-gradient-btn);
-  --lunar-shadow-glow: var(--lunar-night-shadow-glow);
-  --lunar-shadow-card: var(--lunar-night-shadow-card);
-  --lunar-shadow-elevated: var(--lunar-night-shadow-elevated);
-  --lunar-hero-opacity: var(--lunar-night-hero-opacity);
-  --lunar-star-opacity: var(--lunar-night-star-opacity);
-
-  --el-bg-color: var(--lunar-night-bg-surface);
-  --el-bg-color-overlay: var(--lunar-night-bg-deep);
-  --el-bg-color-page: var(--lunar-night-bg-deep);
-  --el-text-color-primary: var(--lunar-night-silver);
-  --el-text-color-regular: var(--lunar-night-silver-muted);
-  --el-text-color-secondary: var(--lunar-night-silver-dim);
-  --el-text-color-placeholder: var(--lunar-night-silver-dim);
-  --el-border-color: var(--lunar-night-border);
-  --el-border-color-light: var(--lunar-night-border);
-  --el-border-color-lighter: var(--lunar-night-border);
-  --el-border-color-extra-light: var(--lunar-night-border);
-  --el-fill-color: var(--lunar-night-bg-glass);
-  --el-fill-color-light: var(--lunar-night-bg-glass);
-  --el-fill-color-lighter: var(--lunar-night-bg-glass);
-  --el-fill-color-blank: var(--lunar-night-bg-card);
-  --el-mask-color: rgba(11, 15, 43, 0.8);
-  --el-color-primary: var(--lunar-night-accent);
-  --el-color-primary-light-3: var(--lunar-night-accent-soft);
-  --el-color-primary-light-5: rgba(196, 181, 253, 0.5);
-  --el-color-primary-light-7: rgba(196, 181, 253, 0.7);
-  --el-color-primary-light-8: rgba(196, 181, 253, 0.8);
-  --el-color-primary-light-9: rgba(196, 181, 253, 0.9);
-  --el-color-primary-dark-2: var(--lunar-night-accent-soft);
-  --el-overlay-color: rgba(11, 15, 43, 0.7);
-}
-
-.public-layout.lunar-dawn {
-  --el-bg-color: var(--lunar-dawn-bg-surface);
-  --el-bg-color-overlay: var(--lunar-dawn-bg-deep);
-  --el-bg-color-page: var(--lunar-dawn-bg-deep);
-  --el-text-color-primary: var(--lunar-dawn-silver);
-  --el-text-color-regular: var(--lunar-dawn-silver-muted);
-  --el-text-color-secondary: var(--lunar-dawn-silver-dim);
-  --el-text-color-placeholder: var(--lunar-dawn-silver-dim);
-  --el-border-color: var(--lunar-dawn-border);
-  --el-border-color-light: var(--lunar-dawn-border);
-  --el-border-color-lighter: var(--lunar-dawn-border);
-  --el-border-color-extra-light: var(--lunar-dawn-border);
-  --el-fill-color: var(--lunar-dawn-bg-glass);
-  --el-fill-color-light: var(--lunar-dawn-bg-glass);
-  --el-fill-color-lighter: var(--lunar-dawn-bg-glass);
-  --el-fill-color-blank: var(--lunar-dawn-bg-card);
-  --el-mask-color: rgba(240, 242, 248, 0.8);
-  --el-color-primary: var(--lunar-dawn-accent);
-  --el-color-primary-light-3: var(--lunar-dawn-accent-soft);
-  --el-color-primary-light-5: rgba(124, 58, 237, 0.5);
-  --el-color-primary-light-7: rgba(124, 58, 237, 0.7);
-  --el-color-primary-light-8: rgba(124, 58, 237, 0.8);
-  --el-color-primary-light-9: rgba(124, 58, 237, 0.9);
-  --el-color-primary-dark-2: var(--lunar-dawn-accent-soft);
-  --el-overlay-color: rgba(240, 242, 248, 0.7);
-}
-
-.public-layout .el-loading-mask {
-  background-color: rgba(11, 15, 43, 0.6);
-}
-
-.public-layout.lunar-dawn .el-loading-mask {
-  background-color: rgba(240, 242, 248, 0.6);
-}
-
-.public-layout .el-loading-spinner .el-loading-text {
-  color: var(--lunar-silver-muted);
-}
-
-.public-layout .el-loading-spinner .path-loading-circle {
-  stroke: var(--lunar-accent);
-}
-
 .public-layout .el-select-dropdown {
   background: var(--lunar-bg-surface);
   border-color: var(--lunar-border);
@@ -630,9 +536,4 @@ h6 { font-size: var(--font-size-base); }
 
 .public-layout .el-breadcrumb__item:last-child .el-breadcrumb__inner {
   color: var(--lunar-silver);
-}
-
-/* 深色模式下公共页面背景 */
-.public-layout.lunar-night {
-  background: var(--lunar-night-bg-deep) !important;
 }

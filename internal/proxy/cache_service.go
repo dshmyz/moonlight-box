@@ -355,7 +355,7 @@ func (s *CacheShard) set(item *CacheItem, ttl time.Duration) error {
 		key:         item.Key,
 		content:     item.Content,
 		contentType: item.ContentType,
-		size:        item.Size,
+		size:        entrySize, // 使用实际内容长度，和 usedBytes 保持一致
 		expiry:      time.Now().Add(ttl),
 		isNegative:  false,
 	}

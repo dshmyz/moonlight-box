@@ -14,6 +14,7 @@ type SchedulerService struct {
 	configSvc  *SystemConfigService
 	webhookSvc *WebhookService
 	tickers    map[string]*time.Ticker
+	cancelChs  map[string]chan struct{} // 每个任务独立的取消 channel
 	mu         sync.RWMutex
 	stopChan   chan struct{}
 }
@@ -28,6 +29,7 @@ func NewSchedulerService(
 		configSvc:  configSvc,
 		webhookSvc: webhookSvc,
 		tickers:    make(map[string]*time.Ticker),
+		cancelChs:  make(map[string]chan struct{}),
 		stopChan:   make(chan struct{}),
 	}
 }
@@ -54,6 +56,11 @@ func (s *SchedulerService) Stop() {
 
 	for name, ticker := range s.tickers {
 		ticker.Stop()
+		delete(s.tickers, name)
+		if cancelCh, exists := s.cancelChs[name]; exists {
+			close(cancelCh)
+			delete(s.cancelChs, name)
+		}
 		logrus.WithField("task", name).Info("Stopped scheduled task")
 	}
 }
@@ -67,6 +74,10 @@ func (s *SchedulerService) ScheduleBackupFromConfig() error {
 	if ticker, exists := s.tickers["daily_backup"]; exists {
 		ticker.Stop()
 		delete(s.tickers, "daily_backup")
+	}
+	if cancelCh, exists := s.cancelChs["daily_backup"]; exists {
+		close(cancelCh)
+		delete(s.cancelChs, "daily_backup")
 	}
 
 	// 读取备份配置
@@ -105,10 +116,15 @@ func (s *SchedulerService) ScheduleBackupFromConfig() error {
 		"interval":      interval,
 	}).Info("Scheduling backup from config")
 
+	cancelCh := make(chan struct{})
+	s.cancelChs["daily_backup"] = cancelCh
+
 	go func() {
 		select {
 		case <-time.After(initialDelay):
 			s.performBackup()
+		case <-cancelCh:
+			return
 		case <-s.stopChan:
 			return
 		}
@@ -122,7 +138,11 @@ func (s *SchedulerService) ScheduleBackupFromConfig() error {
 			select {
 			case <-ticker.C:
 				s.performBackup()
+			case <-cancelCh:
+				ticker.Stop()
+				return
 			case <-s.stopChan:
+				ticker.Stop()
 				return
 			}
 		}
@@ -140,6 +160,9 @@ func (s *SchedulerService) scheduleBackupWithInterval(interval time.Duration) er
 	ticker := time.NewTicker(interval)
 	s.tickers["daily_backup"] = ticker
 
+	cancelCh := make(chan struct{})
+	s.cancelChs["daily_backup"] = cancelCh
+
 	go func() {
 		// 立即执行一次
 		s.performBackup()
@@ -148,7 +171,11 @@ func (s *SchedulerService) scheduleBackupWithInterval(interval time.Duration) er
 			select {
 			case <-ticker.C:
 				s.performBackup()
+			case <-cancelCh:
+				ticker.Stop()
+				return
 			case <-s.stopChan:
+				ticker.Stop()
 				return
 			}
 		}
@@ -245,12 +272,19 @@ func (s *SchedulerService) ScheduleConfigSync() {
 	ticker := time.NewTicker(1 * time.Hour)
 	s.tickers["config_sync"] = ticker
 
+	cancelCh := make(chan struct{})
+	s.cancelChs["config_sync"] = cancelCh
+
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
 				s.syncConfigs()
+			case <-cancelCh:
+				ticker.Stop()
+				return
 			case <-s.stopChan:
+				ticker.Stop()
 				return
 			}
 		}
@@ -274,12 +308,19 @@ func (s *SchedulerService) ScheduleCustomTask(name string, interval time.Duratio
 	ticker := time.NewTicker(interval)
 	s.tickers[name] = ticker
 
+	cancelCh := make(chan struct{})
+	s.cancelChs[name] = cancelCh
+
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
 				task()
+			case <-cancelCh:
+				ticker.Stop()
+				return
 			case <-s.stopChan:
+				ticker.Stop()
 				return
 			}
 		}
@@ -304,6 +345,11 @@ func (s *SchedulerService) RemoveTask(name string) error {
 
 	ticker.Stop()
 	delete(s.tickers, name)
+
+	if cancelCh, exists := s.cancelChs[name]; exists {
+		close(cancelCh)
+		delete(s.cancelChs, name)
+	}
 
 	logrus.WithField("task", name).Info("Removed scheduled task")
 	return nil

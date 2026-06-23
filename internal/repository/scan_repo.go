@@ -56,6 +56,19 @@ func (r *ScanRepository) ListVulnerabilities(scanResultID uint) ([]model.Vulnera
 	return vulns, err
 }
 
+// ListVulnerabilitiesByScanResultIDs 批量查询多个 scan result 的 vulnerabilities，避免 N+1 查询。
+// 结果按 cvss_score DESC 排序，与 ListVulnerabilities 保持一致。
+func (r *ScanRepository) ListVulnerabilitiesByScanResultIDs(scanResultIDs []uint) ([]model.Vulnerability, error) {
+	if len(scanResultIDs) == 0 {
+		return nil, nil
+	}
+	var vulns []model.Vulnerability
+	err := r.db.Where("scan_result_id IN ?", scanResultIDs).
+		Order("cvss_score DESC").
+		Find(&vulns).Error
+	return vulns, err
+}
+
 func (r *ScanRepository) ListVulnerabilitiesPaginated(page, pageSize int, severity, pkgType string) ([]model.Vulnerability, int64, error) {
 	var vulns []model.Vulnerability
 	var total int64
