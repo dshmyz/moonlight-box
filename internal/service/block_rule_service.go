@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,24 +19,32 @@ type cachedWildcardRule struct {
 	compiled *regexp.Regexp
 }
 
+// cachedConditionalRule 条件规则缓存，带预编译的包名正则，用于第二层匹配前先检查包名+版本
+type cachedConditionalRule struct {
+	rule        *model.BlockRule
+	pkgCompiled *regexp.Regexp // 包名正则（exact 时为精确匹配，wildcard 时为通配符）
+}
+
 type BlockRuleService struct {
 	repo     *repository.BlockRuleRepository
 	auditSvc *AuditService
 
-	cacheMu         sync.RWMutex
-	cachedAt        time.Time
-	cacheTTL        time.Duration
-	exactRulesCache map[string][]*model.BlockRule
-	wildcardRules   map[string][]cachedWildcardRule
+	cacheMu          sync.RWMutex
+	cachedAt         time.Time
+	cacheTTL         time.Duration
+	exactRulesCache  map[string][]*model.BlockRule
+	wildcardRules    map[string][]cachedWildcardRule
+	conditionalRules map[string][]cachedConditionalRule // 按 PackageType 分组的条件规则（第二层匹配）
 }
 
 func NewBlockRuleService(repo *repository.BlockRuleRepository, auditSvc *AuditService) *BlockRuleService {
 	svc := &BlockRuleService{
-		repo:            repo,
-		auditSvc:        auditSvc,
-		cacheTTL:        1 * time.Minute,
-		exactRulesCache: make(map[string][]*model.BlockRule),
-		wildcardRules:   make(map[string][]cachedWildcardRule),
+		repo:             repo,
+		auditSvc:         auditSvc,
+		cacheTTL:         1 * time.Minute,
+		exactRulesCache:  make(map[string][]*model.BlockRule),
+		wildcardRules:    make(map[string][]cachedWildcardRule),
+		conditionalRules: make(map[string][]cachedConditionalRule),
 	}
 	return svc
 }
@@ -43,6 +52,63 @@ func NewBlockRuleService(repo *repository.BlockRuleRepository, auditSvc *AuditSe
 type BlockResult struct {
 	Blocked bool
 	Rule    *model.BlockRule
+}
+
+// ConditionalRuleRequirement identifies a conditional rule that may apply to a
+// package key and the semantic artifact attribute needed to evaluate it.
+type ConditionalRuleRequirement struct {
+	RuleID    uint
+	Attribute string
+}
+
+// RequiredAttributes returns the attributes needed by conditional rules whose
+// package name and version constraints can match. It only reads the local rule
+// cache and never performs remote I/O.
+func (s *BlockRuleService) RequiredAttributes(pkgType, pkgName, version string) []ConditionalRuleRequirement {
+	s.cacheMu.RLock()
+	cacheValid := time.Since(s.cachedAt) < s.cacheTTL
+	s.cacheMu.RUnlock()
+	if !cacheValid && s.refreshCache() != nil {
+		return nil
+	}
+
+	s.cacheMu.RLock()
+	rules := append([]cachedConditionalRule(nil), s.conditionalRules[pkgType]...)
+	allRules := append([]cachedConditionalRule(nil), s.conditionalRules[model.PackageTypeAll]...)
+	s.cacheMu.RUnlock()
+
+	requirements := make([]ConditionalRuleRequirement, 0)
+	seen := make(map[string]struct{})
+	for _, cached := range append(rules, allRules...) {
+		if !s.matchPkgNameVersion(&cached, pkgName, version) {
+			continue
+		}
+		attribute := conditionalRuleAttribute(cached.rule.ConditionType)
+		if attribute == "" {
+			continue
+		}
+		key := strconv.FormatUint(uint64(cached.rule.ID), 10) + ":" + attribute
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		requirements = append(requirements, ConditionalRuleRequirement{
+			RuleID:    cached.rule.ID,
+			Attribute: attribute,
+		})
+	}
+	return requirements
+}
+
+func conditionalRuleAttribute(conditionType model.ConditionType) string {
+	switch conditionType {
+	case model.ConditionTypeLicense:
+		return "license"
+	case model.ConditionTypePublishTime:
+		return "published_at"
+	default:
+		return ""
+	}
 }
 
 func (s *BlockRuleService) IsBlocked(pkgType, pkgName, version string) (*BlockResult, error) {
@@ -85,6 +151,108 @@ func (s *BlockRuleService) IsBlocked(pkgType, pkgName, version string) (*BlockRe
 	return &BlockResult{Blocked: false}, nil
 }
 
+// IsBlockedWithArtifact 两层规则匹配：
+// 第一层调用 IsBlocked（包名+版本）；未命中时进入第二层条件匹配，
+// 遍历条件规则，按 ConditionType 从 attrs 取值并按 ConditionOp 匹配。
+// attrs 中缺少对应 key 时放行（元数据缺失不阻断）。
+func (s *BlockRuleService) IsBlockedWithArtifact(pkgType, pkgName, version string, attrs map[string]interface{}) (*BlockResult, error) {
+	// 第一层：包名+版本匹配
+	firstResult, err := s.IsBlocked(pkgType, pkgName, version)
+	if err != nil {
+		return nil, err
+	}
+	if firstResult.Blocked {
+		return firstResult, nil
+	}
+
+	// 第二层：条件匹配（先检查包名+版本是否匹配规则，再检查条件）
+	// 同时检查当前包类型和 "all"（跨包类型）的规则
+	s.cacheMu.RLock()
+	rules := s.conditionalRules[pkgType]
+	allRules := s.conditionalRules[model.PackageTypeAll]
+	s.cacheMu.RUnlock()
+
+	for _, cached := range rules {
+		// 先匹配包名和版本
+		if !s.matchPkgNameVersion(&cached, pkgName, version) {
+			continue
+		}
+		// 再匹配条件
+		if s.matchCondition(cached.rule, attrs) {
+			return &BlockResult{Blocked: true, Rule: cached.rule}, nil
+		}
+	}
+	for _, cached := range allRules {
+		if !s.matchPkgNameVersion(&cached, pkgName, version) {
+			continue
+		}
+		if s.matchCondition(cached.rule, attrs) {
+			return &BlockResult{Blocked: true, Rule: cached.rule}, nil
+		}
+	}
+
+	return &BlockResult{Blocked: false}, nil
+}
+
+// matchCondition 根据规则的 ConditionType/ConditionOp 对 attrs 进行条件匹配。
+// attrs 中缺少对应 key 时返回 false（元数据缺失放行）。
+func (s *BlockRuleService) matchCondition(rule *model.BlockRule, attrs map[string]interface{}) bool {
+	switch rule.ConditionType {
+	case model.ConditionTypeLicense:
+		raw, ok := attrs["license"]
+		if !ok {
+			return false
+		}
+		value, ok := raw.(string)
+		if !ok {
+			return false
+		}
+		switch rule.ConditionOp {
+		case model.ConditionOpEquals:
+			return value == rule.ConditionValue
+		case model.ConditionOpContains:
+			return strings.Contains(value, rule.ConditionValue)
+		}
+	case model.ConditionTypePublishTime:
+		raw, ok := attrs["published_at"]
+		if !ok {
+			return false
+		}
+		value, ok := raw.(string)
+		if !ok {
+			return false
+		}
+		// 解析 attrs 中的时间（RFC3339）
+		actualTime, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return false
+		}
+		switch rule.ConditionOp {
+		case model.ConditionOpBefore:
+			thresholdTime, err := time.Parse(time.RFC3339, rule.ConditionValue)
+			if err != nil {
+				return false
+			}
+			return actualTime.Before(thresholdTime)
+		case model.ConditionOpAfter:
+			thresholdTime, err := time.Parse(time.RFC3339, rule.ConditionValue)
+			if err != nil {
+				return false
+			}
+			return actualTime.After(thresholdTime)
+		case model.ConditionOpWithinLast:
+			// ConditionValue 为天数，计算最近 N 天的阈值时间
+			days, err := strconv.Atoi(rule.ConditionValue)
+			if err != nil || days < 0 {
+				return false
+			}
+			threshold := time.Now().AddDate(0, 0, -days)
+			return actualTime.After(threshold)
+		}
+	}
+	return false
+}
+
 func (s *BlockRuleService) refreshCache() error {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
@@ -99,6 +267,12 @@ func (s *BlockRuleService) refreshCache() error {
 	}
 
 	wildcardRules, err := s.repo.FindAllEnabledWildcardRules()
+	if err != nil {
+		return err
+	}
+
+	// 加载第二层条件规则
+	conditionalRules, err := s.repo.FindAllEnabledConditionalRules()
 	if err != nil {
 		return err
 	}
@@ -124,11 +298,63 @@ func (s *BlockRuleService) refreshCache() error {
 		})
 	}
 
+	// 按 PackageType 分组构建条件规则缓存，预编译包名正则
+	newConditionalCache := make(map[string][]cachedConditionalRule)
+	for i := range conditionalRules {
+		rule := &conditionalRules[i]
+		pkgType := string(rule.PackageType)
+
+		// 为 wildcard 规则预编译包名正则；PackageName=* 或 exact 规则不需要正则
+		var compiled *regexp.Regexp
+		if rule.MatchType == model.BlockMatchWildcard && rule.PackageName != "*" {
+			pattern := "^" + strings.ReplaceAll(regexp.QuoteMeta(rule.PackageName), `\*`, ".*") + "$"
+			compiled, err = regexp.Compile(pattern)
+			if err != nil {
+				continue
+			}
+		}
+		newConditionalCache[pkgType] = append(newConditionalCache[pkgType], cachedConditionalRule{
+			rule:        rule,
+			pkgCompiled: compiled,
+		})
+	}
+
 	s.exactRulesCache = newExactCache
 	s.wildcardRules = newWildcardCache
+	s.conditionalRules = newConditionalCache
 	s.cachedAt = time.Now()
 
 	return nil
+}
+
+// matchPkgNameVersion 检查请求的包名和版本是否匹配条件规则的包名和版本约束。
+// 快速路径：PackageName=* + Version=* 时直接返回 true，不编译/使用正则。
+// exact 规则精确匹配包名；wildcard 规则用预编译正则匹配包名。
+func (s *BlockRuleService) matchPkgNameVersion(cached *cachedConditionalRule, pkgName, version string) bool {
+	// 快速路径：PackageName=* + Version=* 直接放行
+	if cached.rule.PackageName == "*" && cached.rule.Version == "*" {
+		return true
+	}
+
+	// 包名匹配
+	if cached.rule.MatchType == model.BlockMatchExact {
+		if cached.rule.PackageName != pkgName {
+			return false
+		}
+	} else {
+		// wildcard：用预编译正则匹配（PackageName=* 时 pkgCompiled 为 nil，但上面已快速路径返回）
+		if cached.pkgCompiled != nil && !cached.pkgCompiled.MatchString(pkgName) {
+			return false
+		}
+	}
+
+	// 版本匹配
+	if cached.rule.Version == "*" {
+		return true
+	}
+	versionPattern := "^" + strings.ReplaceAll(regexp.QuoteMeta(cached.rule.Version), `\*`, ".*") + "$"
+	matched, _ := regexp.MatchString(versionPattern, version)
+	return matched
 }
 
 func (s *BlockRuleService) matchCachedWildcard(cached *cachedWildcardRule, pkgName, version string) bool {
