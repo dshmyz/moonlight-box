@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 )
@@ -116,10 +117,65 @@ type RemoteFetcher interface {
 	FetchRemote(ctx context.Context, remoteURL, path string) ([]*Artifact, error)
 }
 
+var (
+	// ErrMetadataUnsupported indicates that a protocol cannot provide the
+	// conditional metadata required to evaluate a rule.
+	ErrMetadataUnsupported = errors.New("artifact metadata unsupported")
+	// ErrMetadataUnavailable indicates that metadata is unavailable for a
+	// concrete artifact although the protocol supports metadata retrieval.
+	ErrMetadataUnavailable = errors.New("artifact metadata unavailable")
+)
+
+// ArtifactMetadata contains protocol-normalized metadata for a concrete artifact.
+// Plugins return only semantic attributes; Runtime owns the cache and policy.
+type ArtifactMetadata struct {
+	Attributes map[string]string
+}
+
+// ArtifactMetadataFetcher is an optional plugin capability used by ProxyRuntime
+// to obtain semantic attributes for a direct artifact download.
+type ArtifactMetadataFetcher interface {
+	FetchArtifactMetadata(ctx context.Context, remoteURL string, key ArtifactKey) (*ArtifactMetadata, error)
+}
+
+// ConditionRequirement describes one rule that requires an artifact attribute.
+type ConditionRequirement struct {
+	RuleID    uint
+	Attribute string
+}
+
+// ConditionalBlocker is an optional extension of PackageBlocker. It lets Runtime
+// avoid metadata requests unless a conditional rule can match the package key.
+type ConditionalBlocker interface {
+	RequiredAttributes(packageType, packageName, version string) []ConditionRequirement
+}
+
+// ConditionUnverifiedEntry describes a download that was allowed because a
+// potentially applicable conditional rule could not be evaluated.
+type ConditionUnverifiedEntry struct {
+	RepositoryID      string
+	Format            string
+	Name              string
+	Version           string
+	RemotePath        string
+	RuleIDs           []uint
+	MissingAttributes []string
+	Reason            string
+}
+
+// ConditionAuditLogger is an optional audit sink for conditional-rule bypasses.
+type ConditionAuditLogger interface {
+	LogConditionUnverified(ctx context.Context, entry ConditionUnverifiedEntry)
+}
+
 // PackageBlocker 阻断规则检查——在请求进入 Plugin 前检查。
 type PackageBlocker interface {
 	IsBlocked(packageType, packageName, version string) bool
 	BlockReason(packageType, packageName, version string) string
+	// IsBlockedWithAttrs 带元数据的第二层阻断检查。
+	// 在包名+版本第一层未命中时，结合 attrs（license/published_at 等元数据）做条件匹配。
+	// 返回是否阻断及原因；未阻断时 reason 为空字符串。
+	IsBlockedWithAttrs(packageType, packageName, version string, attrs map[string]interface{}) (blocked bool, reason string)
 }
 
 // AuditLogger 审计日志记录器。

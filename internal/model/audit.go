@@ -5,17 +5,18 @@ import "time"
 type AuditAction string
 
 const (
-	ActionLogin           AuditAction = "login"
-	ActionLogout          AuditAction = "logout"
-	ActionPackageUpload   AuditAction = "package_upload"
-	ActionPackageDownload AuditAction = "package_download"
-	ActionPackageDelete   AuditAction = "package_delete"
-	ActionUserCreate      AuditAction = "user_create"
-	ActionUserUpdate      AuditAction = "user_update"
-	ActionUserDelete      AuditAction = "user_delete"
-	ActionRoleAssign      AuditAction = "role_assign"
-	ActionConfigChange    AuditAction = "config_change"
-	ActionBlock           AuditAction = "block"
+	ActionLogin               AuditAction = "login"
+	ActionLogout              AuditAction = "logout"
+	ActionPackageUpload       AuditAction = "package_upload"
+	ActionPackageDownload     AuditAction = "package_download"
+	ActionPackageDelete       AuditAction = "package_delete"
+	ActionUserCreate          AuditAction = "user_create"
+	ActionUserUpdate          AuditAction = "user_update"
+	ActionUserDelete          AuditAction = "user_delete"
+	ActionRoleAssign          AuditAction = "role_assign"
+	ActionConfigChange        AuditAction = "config_change"
+	ActionBlock               AuditAction = "block"
+	ActionConditionUnverified AuditAction = "condition_unverified"
 )
 
 type AuditLog struct {
