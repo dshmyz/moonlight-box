@@ -24,9 +24,10 @@ func TestProxyRuntimeServesStaleMetadataWhenRefreshFails(t *testing.T) {
 		BlobRefs:     []BlobRef{{Digest: "cached"}},
 		UpdatedAt:    time.Now().Add(-2 * time.Hour),
 	}
+	blobStore := &fakeBlobStore{}
 	runtime := &ProxyRuntime{
 		MetadataStore: store,
-		BlobStore:     &fakeBlobStore{},
+		BlobStore:     blobStore,
 		RemoteClient:  &fakeRemoteClient{metadataErr: errors.New("connection refused")},
 		RemoteBaseURL: "https://example.test",
 		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
@@ -1383,4 +1384,296 @@ func TestSanitizeFilename(t *testing.T) {
 			t.Errorf("SanitizeFilename(%q) = %q, want %q", tt.input, got, tt.expected)
 		}
 	}
+}
+
+// ── 后置阻断检查测试（第二层检查：基于 artifact.Attributes）──────────────
+
+// mockConditionBlocker 模拟条件阻断：第一层不阻断，第二层根据 attrs 中的 license 判断。
+type mockConditionBlocker struct{}
+
+func (m *mockConditionBlocker) IsBlocked(packageType, packageName, version string) bool {
+	return false // 第一层不阻断
+}
+
+func (m *mockConditionBlocker) BlockReason(packageType, packageName, version string) string {
+	return "blocked"
+}
+
+// IsBlockedWithAttrs 第二层检查：当 attrs 中 license=GPL-3.0 时阻断。
+func (m *mockConditionBlocker) IsBlockedWithAttrs(packageType, packageName, version string, attrs map[string]interface{}) (bool, string) {
+	if lic, ok := attrs["license"]; ok {
+		if licStr, ok := lic.(string); ok && licStr == "GPL-3.0" {
+			return true, "license blocked"
+		}
+	}
+	return false, ""
+}
+
+// TestGetArtifact_PostBlockCheck_LicenseBlocked 验证：artifact 的 Attributes 中
+// license=GPL-3.0 时，GetArtifact 应返回 ErrBlocked（第二层检查命中）。
+func TestGetArtifact_PostBlockCheck_LicenseBlocked(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeMetadataStore()
+	store.artifact = &Artifact{
+		ID:           "cached",
+		RepositoryID: "repo",
+		Format:       "npm",
+		Kind:         KindArtifact,
+		Name:         "test-pkg",
+		Version:      "1.0.0",
+		BlobRefs:     []BlobRef{{Digest: "cached"}},
+		UpdatedAt:    time.Now(),
+		Attributes:   map[string]string{"license": "GPL-3.0"},
+	}
+	blobStore := &fakeBlobStore{}
+	runtime := &ProxyRuntime{
+		MetadataStore: store,
+		BlobStore:     blobStore,
+		RemoteClient:  &fakeRemoteClient{},
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
+		Format:        "npm",
+		Blocker:       &mockConditionBlocker{},
+	}
+	key := ArtifactKey{RepositoryID: "repo", Format: "npm", Name: "test-pkg", Version: "1.0.0", Filename: "test-pkg.tgz"}
+
+	_, err := runtime.GetArtifact(ctx, key)
+	if !errors.Is(err, ErrBlocked) {
+		t.Fatalf("expected ErrBlocked for GPL-3.0 license, got %v", err)
+	}
+	if blobStore.openCalls != 0 {
+		t.Fatalf("blocked artifact opened %d blob(s), want 0", blobStore.openCalls)
+	}
+}
+
+// TestGetArtifact_PostBlockCheck_NotBlocked 验证：artifact 的 Attributes 中
+// license=MIT 时，GetArtifact 应正常返回 artifact（第二层检查未命中）。
+func TestGetArtifact_PostBlockCheck_NotBlocked(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeMetadataStore()
+	store.artifact = &Artifact{
+		ID:           "cached",
+		RepositoryID: "repo",
+		Format:       "npm",
+		Kind:         KindArtifact,
+		Name:         "test-pkg",
+		Version:      "1.0.0",
+		BlobRefs:     []BlobRef{{Digest: "cached"}},
+		UpdatedAt:    time.Now(),
+		Attributes:   map[string]string{"license": "MIT"},
+	}
+	runtime := &ProxyRuntime{
+		MetadataStore: store,
+		BlobStore:     &fakeBlobStore{},
+		RemoteClient:  &fakeRemoteClient{},
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
+		Format:        "npm",
+		Blocker:       &mockConditionBlocker{},
+	}
+	key := ArtifactKey{RepositoryID: "repo", Format: "npm", Name: "test-pkg", Version: "1.0.0", Filename: "test-pkg.tgz"}
+
+	artifact, err := runtime.GetArtifact(ctx, key)
+	if err != nil {
+		t.Fatalf("expected no error for MIT license, got %v", err)
+	}
+	if artifact == nil || artifact.ID != "cached" {
+		t.Fatalf("expected cached artifact, got %v", artifact)
+	}
+}
+
+// TestGetArtifact_PostBlockCheck_NoBlocker 验证：Blocker 为 nil 时，
+// GetArtifact 应正常返回 artifact（不执行第二层检查）。
+func TestGetArtifact_PostBlockCheck_NoBlocker(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeMetadataStore()
+	store.artifact = &Artifact{
+		ID:           "cached",
+		RepositoryID: "repo",
+		Format:       "npm",
+		Kind:         KindArtifact,
+		Name:         "test-pkg",
+		Version:      "1.0.0",
+		BlobRefs:     []BlobRef{{Digest: "cached"}},
+		UpdatedAt:    time.Now(),
+		Attributes:   map[string]string{"license": "GPL-3.0"},
+	}
+	runtime := &ProxyRuntime{
+		MetadataStore: store,
+		BlobStore:     &fakeBlobStore{},
+		RemoteClient:  &fakeRemoteClient{},
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
+		Format:        "npm",
+		Blocker:       nil,
+	}
+	key := ArtifactKey{RepositoryID: "repo", Format: "npm", Name: "test-pkg", Version: "1.0.0", Filename: "test-pkg.tgz"}
+
+	artifact, err := runtime.GetArtifact(ctx, key)
+	if err != nil {
+		t.Fatalf("expected no error when Blocker is nil, got %v", err)
+	}
+	if artifact == nil || artifact.ID != "cached" {
+		t.Fatalf("expected cached artifact, got %v", artifact)
+	}
+}
+
+// TestGetArtifact_PostBlockCheck_CacheHitPath 验证：内存缓存命中路径也会执行第二层检查。
+// 先不用 Blocker 让 artifact 进内存缓存，再设置 Blocker 调用，验证缓存命中路径被阻断。
+func TestGetArtifact_PostBlockCheck_CacheHitPath(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeMetadataStore()
+	store.artifact = &Artifact{
+		ID:           "cached",
+		RepositoryID: "repo",
+		Format:       "npm",
+		Kind:         KindArtifact,
+		Name:         "test-pkg",
+		Version:      "1.0.0",
+		BlobRefs:     []BlobRef{{Digest: "cached"}},
+		UpdatedAt:    time.Now(),
+		Attributes:   map[string]string{"license": "GPL-3.0"},
+	}
+	runtime := &ProxyRuntime{
+		MetadataStore: store,
+		BlobStore:     &fakeBlobStore{},
+		RemoteClient:  &fakeRemoteClient{},
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
+		Format:        "npm",
+		Blocker:       nil, // 先不用 Blocker
+	}
+	key := ArtifactKey{RepositoryID: "repo", Format: "npm", Name: "test-pkg", Version: "1.0.0", Filename: "test-pkg.tgz"}
+
+	// 第一次调用：走 store 路径，artifact 进入内存缓存
+	if _, err := runtime.GetArtifact(ctx, key); err != nil {
+		t.Fatalf("first get failed: %v", err)
+	}
+
+	// 设置 Blocker，第二次调用应命中内存缓存路径并被阻断
+	runtime.Blocker = &mockConditionBlocker{}
+	_, err := runtime.GetArtifact(ctx, key)
+	if !errors.Is(err, ErrBlocked) {
+		t.Fatalf("expected ErrBlocked on cache hit path, got %v", err)
+	}
+}
+
+// TestQueryArtifacts_PostBlockFilter 验证：QueryArtifacts 返回的 artifacts 中，
+// 被 license=GPL-3.0 条件规则阻断的 artifact 会被过滤掉（返回空列表）。
+func TestQueryArtifacts_PostBlockFilter(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeMetadataStore()
+	store.artifact = &Artifact{
+		ID:           "cached",
+		RepositoryID: "repo",
+		Format:       "npm",
+		Kind:         KindVersion,
+		Name:         "test-pkg",
+		Version:      "1.0.0",
+		UpdatedAt:    time.Now(),
+		Attributes:   map[string]string{"license": "GPL-3.0"},
+	}
+	runtime := &ProxyRuntime{
+		MetadataStore: store,
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
+		Format:        "npm",
+		Blocker:       &mockConditionBlocker{},
+	}
+
+	artifacts, err := runtime.QueryArtifacts(ctx, ArtifactQuery{
+		RepositoryID: "repo",
+		Format:       "npm",
+		RemotePath:   "test-pkg",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(artifacts) != 0 {
+		t.Fatalf("expected 0 artifacts after filter, got %d", len(artifacts))
+	}
+}
+
+// TestQueryArtifacts_PostBlockFilter_PartialFilter 验证：QueryArtifacts 只过滤
+// 被阻断的 artifact，保留未被阻断的。
+// 使用 fakeMultiMetadataStore 返回多个 artifact。
+func TestQueryArtifacts_PostBlockFilter_PartialFilter(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeMultiMetadataStore{
+		artifacts: []*Artifact{
+			{
+				ID:         "gpl-pkg",
+				Format:     "npm",
+				Kind:       KindVersion,
+				Name:       "gpl-pkg",
+				Version:    "1.0.0",
+				UpdatedAt:  time.Now(),
+				Attributes: map[string]string{"license": "GPL-3.0"},
+			},
+			{
+				ID:         "mit-pkg",
+				Format:     "npm",
+				Kind:       KindVersion,
+				Name:       "mit-pkg",
+				Version:    "2.0.0",
+				UpdatedAt:  time.Now(),
+				Attributes: map[string]string{"license": "MIT"},
+			},
+		},
+	}
+	runtime := &ProxyRuntime{
+		MetadataStore: store,
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
+		Format:        "npm",
+		Blocker:       &mockConditionBlocker{},
+	}
+
+	artifacts, err := runtime.QueryArtifacts(ctx, ArtifactQuery{
+		RepositoryID: "repo",
+		Format:       "npm",
+		RemotePath:   "multi-pkg",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 artifact after partial filter, got %d", len(artifacts))
+	}
+	if artifacts[0].ID != "mit-pkg" {
+		t.Fatalf("expected mit-pkg to survive filter, got %s", artifacts[0].ID)
+	}
+}
+
+// fakeMultiMetadataStore 支持返回多个 artifact 的 fake store，用于测试过滤逻辑。
+type fakeMultiMetadataStore struct {
+	artifacts []*Artifact
+	getCalls  int
+	putCalls  int
+}
+
+func (s *fakeMultiMetadataStore) Get(ctx context.Context, key ArtifactKey) (*Artifact, error) {
+	s.getCalls++
+	if len(s.artifacts) == 0 {
+		return nil, ErrNotFound
+	}
+	return s.artifacts[0], nil
+}
+
+func (s *fakeMultiMetadataStore) Put(ctx context.Context, artifact *Artifact) error {
+	s.putCalls++
+	return nil
+}
+
+func (s *fakeMultiMetadataStore) BatchPut(ctx context.Context, artifacts []*Artifact) error {
+	s.putCalls += len(artifacts)
+	return nil
+}
+
+func (s *fakeMultiMetadataStore) Delete(ctx context.Context, key ArtifactKey) error {
+	return nil
+}
+
+func (s *fakeMultiMetadataStore) Query(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
+	return s.artifacts, nil
 }

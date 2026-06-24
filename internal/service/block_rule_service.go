@@ -12,17 +12,20 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/sirupsen/logrus"
 )
 
 type cachedWildcardRule struct {
-	rule     *model.BlockRule
-	compiled *regexp.Regexp
+	rule            *model.BlockRule
+	compiled        *regexp.Regexp // 包名正则
+	versionCompiled *regexp.Regexp // 版本正则（Version=="*" 时为 nil）
 }
 
 // cachedConditionalRule 条件规则缓存，带预编译的包名正则，用于第二层匹配前先检查包名+版本
 type cachedConditionalRule struct {
-	rule        *model.BlockRule
-	pkgCompiled *regexp.Regexp // 包名正则（exact 时为精确匹配，wildcard 时为通配符）
+	rule            *model.BlockRule
+	pkgCompiled     *regexp.Regexp // 包名正则（exact 时为精确匹配，wildcard 时为通配符）
+	versionCompiled *regexp.Regexp // 版本正则（Version=="*" 时为 nil）
 }
 
 type BlockRuleService struct {
@@ -68,8 +71,15 @@ func (s *BlockRuleService) RequiredAttributes(pkgType, pkgName, version string) 
 	s.cacheMu.RLock()
 	cacheValid := time.Since(s.cachedAt) < s.cacheTTL
 	s.cacheMu.RUnlock()
-	if !cacheValid && s.refreshCache() != nil {
-		return nil
+	if !cacheValid {
+		if err := s.refreshCache(); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"pkg_type": pkgType,
+				"pkg_name": pkgName,
+				"version":  version,
+			}).Warn("刷新条件规则缓存失败，本次请求将跳过条件拦截")
+			return nil
+		}
 	}
 
 	s.cacheMu.RLock()
@@ -172,26 +182,29 @@ func (s *BlockRuleService) IsBlockedWithArtifact(pkgType, pkgName, version strin
 	allRules := s.conditionalRules[model.PackageTypeAll]
 	s.cacheMu.RUnlock()
 
-	for _, cached := range rules {
-		// 先匹配包名和版本
-		if !s.matchPkgNameVersion(&cached, pkgName, version) {
-			continue
-		}
-		// 再匹配条件
-		if s.matchCondition(cached.rule, attrs) {
-			return &BlockResult{Blocked: true, Rule: cached.rule}, nil
-		}
+	if result := s.matchConditionalRules(rules, pkgName, version, attrs); result != nil {
+		return result, nil
 	}
-	for _, cached := range allRules {
-		if !s.matchPkgNameVersion(&cached, pkgName, version) {
-			continue
-		}
-		if s.matchCondition(cached.rule, attrs) {
-			return &BlockResult{Blocked: true, Rule: cached.rule}, nil
-		}
+	if result := s.matchConditionalRules(allRules, pkgName, version, attrs); result != nil {
+		return result, nil
 	}
 
 	return &BlockResult{Blocked: false}, nil
+}
+
+// matchConditionalRules 遍历条件规则，先匹配包名+版本，再匹配条件。
+// 命中时返回 *BlockResult，未命中返回 nil。
+func (s *BlockRuleService) matchConditionalRules(rules []cachedConditionalRule, pkgName, version string, attrs map[string]interface{}) *BlockResult {
+	for i := range rules {
+		cached := &rules[i]
+		if !s.matchPkgNameVersion(cached, pkgName, version) {
+			continue
+		}
+		if s.matchCondition(cached.rule, attrs) {
+			return &BlockResult{Blocked: true, Rule: cached.rule}
+		}
+	}
+	return nil
 }
 
 // matchCondition 根据规则的 ConditionType/ConditionOp 对 attrs 进行条件匹配。
@@ -253,6 +266,19 @@ func (s *BlockRuleService) matchCondition(rule *model.BlockRule, attrs map[strin
 	return false
 }
 
+// compileVersionRegex 预编译版本通配符正则。Version=="*" 时返回 nil（匹配所有版本，走快速路径）。
+func compileVersionRegex(version string) *regexp.Regexp {
+	if version == "*" {
+		return nil
+	}
+	pattern := "^" + strings.ReplaceAll(regexp.QuoteMeta(version), `\*`, ".*") + "$"
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil
+	}
+	return compiled
+}
+
 func (s *BlockRuleService) refreshCache() error {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
@@ -291,10 +317,11 @@ func (s *BlockRuleService) refreshCache() error {
 		if err != nil {
 			continue
 		}
-		pkgType := string(rule.PackageType)
-		newWildcardCache[pkgType] = append(newWildcardCache[pkgType], cachedWildcardRule{
-			rule:     rule,
-			compiled: compiled,
+		versionCompiled := compileVersionRegex(rule.Version)
+		newWildcardCache[rule.PackageType] = append(newWildcardCache[rule.PackageType], cachedWildcardRule{
+			rule:            rule,
+			compiled:        compiled,
+			versionCompiled: versionCompiled,
 		})
 	}
 
@@ -302,7 +329,6 @@ func (s *BlockRuleService) refreshCache() error {
 	newConditionalCache := make(map[string][]cachedConditionalRule)
 	for i := range conditionalRules {
 		rule := &conditionalRules[i]
-		pkgType := string(rule.PackageType)
 
 		// 为 wildcard 规则预编译包名正则；PackageName=* 或 exact 规则不需要正则
 		var compiled *regexp.Regexp
@@ -313,9 +339,11 @@ func (s *BlockRuleService) refreshCache() error {
 				continue
 			}
 		}
-		newConditionalCache[pkgType] = append(newConditionalCache[pkgType], cachedConditionalRule{
-			rule:        rule,
-			pkgCompiled: compiled,
+		versionCompiled := compileVersionRegex(rule.Version)
+		newConditionalCache[rule.PackageType] = append(newConditionalCache[rule.PackageType], cachedConditionalRule{
+			rule:            rule,
+			pkgCompiled:     compiled,
+			versionCompiled: versionCompiled,
 		})
 	}
 
@@ -349,24 +377,20 @@ func (s *BlockRuleService) matchPkgNameVersion(cached *cachedConditionalRule, pk
 	}
 
 	// 版本匹配
-	if cached.rule.Version == "*" {
+	if cached.rule.Version == "*" || cached.versionCompiled == nil {
 		return true
 	}
-	versionPattern := "^" + strings.ReplaceAll(regexp.QuoteMeta(cached.rule.Version), `\*`, ".*") + "$"
-	matched, _ := regexp.MatchString(versionPattern, version)
-	return matched
+	return cached.versionCompiled.MatchString(version)
 }
 
 func (s *BlockRuleService) matchCachedWildcard(cached *cachedWildcardRule, pkgName, version string) bool {
 	if !cached.compiled.MatchString(pkgName) {
 		return false
 	}
-	if cached.rule.Version == "*" {
+	if cached.rule.Version == "*" || cached.versionCompiled == nil {
 		return true
 	}
-	versionPattern := "^" + strings.ReplaceAll(regexp.QuoteMeta(cached.rule.Version), `\*`, ".*") + "$"
-	matched, _ := regexp.MatchString(versionPattern, version)
-	return matched
+	return cached.versionCompiled.MatchString(version)
 }
 
 func (s *BlockRuleService) LogBlock(ctx context.Context, pkgName, version string, rule *model.BlockRule, ipAddress, userAgent string) error {
@@ -380,6 +404,24 @@ func (s *BlockRuleService) LogBlock(ctx context.Context, pkgName, version string
 	return s.auditSvc.LogWithRequest(ctx, nil, model.ActionBlock, "package", nil,
 		fmt.Sprintf("%s@%s", pkgName, version),
 		string(details), ipAddress, userAgent)
+}
+
+// LogConditionUnverified records an allowed download whose applicable
+// conditional rule could not be evaluated because metadata was unavailable.
+func (s *BlockRuleService) LogConditionUnverified(ctx context.Context, repositoryID, format, pkgName, version, remotePath string, ruleIDs []uint, missing []string, reason string) error {
+	if s.auditSvc == nil {
+		return nil
+	}
+	details, _ := json.Marshal(map[string]interface{}{
+		"repository_id":      repositoryID,
+		"format":             format,
+		"remote_path":        remotePath,
+		"rule_ids":           ruleIDs,
+		"missing_attributes": missing,
+		"reason":             reason,
+	})
+	return s.auditSvc.LogWithRequestAndStatus(ctx, nil, model.ActionConditionUnverified, "package", nil,
+		fmt.Sprintf("%s@%s", pkgName, version), string(details), "", "", 200, 0)
 }
 
 func (s *BlockRuleService) Create(rule *model.BlockRule) error {
@@ -400,6 +442,11 @@ func (s *BlockRuleService) BatchCreate(rules []*model.BlockRule) (int, int, erro
 		}
 		if rule.MatchType == "" {
 			rule.MatchType = model.BlockMatchExact
+		}
+		// 条件规则字段一致性校验：设置了 ConditionType 时必须同时有 ConditionOp 和 ConditionValue
+		if rule.ConditionType != "" && (rule.ConditionOp == "" || rule.ConditionValue == "") {
+			failed++
+			continue
 		}
 		if err := s.repo.Create(rule); err != nil {
 			failed++

@@ -159,6 +159,44 @@ func (p *MavenPlugin) FetchRemote(ctx context.Context, remoteURL, path string) (
 	}, nil
 }
 
+// FetchArtifactMetadata retrieves the version POM and exposes its license as a
+// protocol-normalized artifact attribute for conditional rule evaluation.
+func (p *MavenPlugin) FetchArtifactMetadata(ctx context.Context, remoteURL string, key runtime.ArtifactKey) (*runtime.ArtifactMetadata, error) {
+	group := key.Qualifiers["group"]
+	artifact := key.Qualifiers["artifact"]
+	if group == "" || artifact == "" {
+		parts := strings.SplitN(key.Name, ":", 2)
+		if len(parts) == 2 {
+			group, artifact = parts[0], parts[1]
+		}
+	}
+	if group == "" || artifact == "" || key.Version == "" {
+		return nil, runtime.ErrMetadataUnavailable
+	}
+	pomPath := strings.ReplaceAll(group, ".", "/") + "/" + artifact + "/" + key.Version + "/" + artifact + "-" + key.Version + ".pom"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(remoteURL, "/")+"/"+pomPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, runtime.ErrMetadataUnavailable
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	license := parsePOMLicense(body)
+	if license == "" {
+		return nil, runtime.ErrMetadataUnavailable
+	}
+	return &runtime.ArtifactMetadata{Attributes: map[string]string{"license": license}}, nil
+}
+
 // fetchMetadata fetches maven-metadata.xml from the remote repository and extracts versions.
 func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
 	start := time.Now()

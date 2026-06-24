@@ -20,22 +20,27 @@ const maxMetadataCacheSize = 10000 // 内存缓存上限，防止无限增长
 const maxNegativeCacheSize = 5000  // 负缓存上限，防止 DoS
 
 type ProxyRuntime struct {
-	MetadataStore MetadataStore
-	BlobStore     BlobStore
-	RemoteClient  RemoteClient
-	RepositoryID  string
-	RemoteBaseURL string
-	CachePolicy   CachePolicy
-	Fetcher       RemoteFetcher  // 由 Plugin 实现，Runtime 控制回源时机
-	Blocker       PackageBlocker // 阻断规则检查
-	Format        string         // 仓库协议类型，供阻断检查使用
+	MetadataStore        MetadataStore
+	BlobStore            BlobStore
+	RemoteClient         RemoteClient
+	RepositoryID         string
+	RemoteBaseURL        string
+	CachePolicy          CachePolicy
+	Fetcher              RemoteFetcher  // 由 Plugin 实现，Runtime 控制回源时机
+	Blocker              PackageBlocker // 阻断规则检查
+	Format               string         // 仓库协议类型，供阻断检查使用
+	ConditionAudit       ConditionAuditLogger
+	MetadataFetchTimeout time.Duration
+	MetadataFailureTTL   time.Duration
 
-	metadataCacheMu sync.RWMutex
-	metadataCache   map[string]cachedArtifact
-	negativeCache   map[string]time.Time
-	fetchGroup      singleflight.Group
-	refreshingMu    sync.Mutex
-	refreshingPaths map[string]struct{}
+	metadataCacheMu   sync.RWMutex
+	metadataCache     map[string]cachedArtifact
+	negativeCache     map[string]time.Time
+	fetchGroup        singleflight.Group
+	refreshingMu      sync.Mutex
+	refreshingPaths   map[string]struct{}
+	metadataFailureMu sync.Mutex
+	metadataFailures  map[string]time.Time
 }
 
 type cachedArtifact struct {
@@ -65,6 +70,164 @@ func (n *ProxyRuntime) checkBlocked(key ArtifactKey) error {
 		return ErrBlocked
 	}
 	return nil
+}
+
+// checkBlockedWithAttrs 第二层阻断检查：拿到 artifact 后，用其 Attributes 做条件阻断判断。
+// 与第一层（checkBlocked）的区别：第一层只有包名+版本，第二层结合 license/publish_time 等元数据。
+func (n *ProxyRuntime) checkBlockedWithAttrs(key ArtifactKey, artifact *Artifact) error {
+	if n.Blocker == nil || artifact == nil {
+		return nil
+	}
+	name := key.Name
+	ver := key.Version
+	if name == "" {
+		return nil
+	}
+	// 把 map[string]string 转成 map[string]interface{}
+	attrs := make(map[string]interface{}, len(artifact.Attributes))
+	for k, v := range artifact.Attributes {
+		attrs[k] = v
+	}
+	blocked, _ := n.Blocker.IsBlockedWithAttrs(n.Format, name, ver, attrs)
+	if blocked {
+		return ErrBlocked
+	}
+	return nil
+}
+
+func (n *ProxyRuntime) evaluateConditionalAccess(ctx context.Context, key ArtifactKey, artifact *Artifact) error {
+	conditional, ok := n.Blocker.(ConditionalBlocker)
+	if !ok || key.Name == "" {
+		return n.checkBlockedWithAttrs(key, artifact)
+	}
+	requirements := conditional.RequiredAttributes(n.Format, key.Name, key.Version)
+	if len(requirements) == 0 {
+		return nil
+	}
+	missing := missingConditionAttributes(artifact, requirements)
+	if len(missing) == 0 {
+		return n.checkBlockedWithAttrs(key, artifact)
+	}
+
+	failureKey := "attrs:" + n.RepositoryID + ":" + n.Format + ":" + key.Name + ":" + key.Version
+	if n.metadataFailureCached(failureKey) {
+		n.auditConditionUnverified(ctx, key, requirements, missing, "cached_unavailable")
+		return nil
+	}
+
+	fetcher, ok := n.Fetcher.(ArtifactMetadataFetcher)
+	if !ok {
+		n.cacheMetadataFailure(failureKey)
+		n.auditConditionUnverified(ctx, key, requirements, missing, "unsupported")
+		return nil
+	}
+	timeout := n.MetadataFetchTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	value, err, _ := n.fetchGroup.Do(failureKey, func() (interface{}, error) {
+		fetchCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return fetcher.FetchArtifactMetadata(fetchCtx, n.RemoteBaseURL, key)
+	})
+	if err != nil {
+		n.cacheMetadataFailure(failureKey)
+		reason := "fetch_failed"
+		if errors.Is(err, ErrMetadataUnsupported) {
+			reason = "unsupported"
+		} else if errors.Is(err, ErrMetadataUnavailable) {
+			reason = "unavailable"
+		}
+		n.auditConditionUnverified(ctx, key, requirements, missing, reason)
+		return nil
+	}
+	metadata, _ := value.(*ArtifactMetadata)
+	if metadata == nil {
+		n.cacheMetadataFailure(failureKey)
+		n.auditConditionUnverified(ctx, key, requirements, missing, "unavailable")
+		return nil
+	}
+	if artifact.Attributes == nil {
+		artifact.Attributes = make(map[string]string)
+	}
+	for name, value := range metadata.Attributes {
+		artifact.Attributes[name] = value
+	}
+	missing = missingConditionAttributes(artifact, requirements)
+	if len(missing) > 0 {
+		n.cacheMetadataFailure(failureKey)
+		n.auditConditionUnverified(ctx, key, requirements, missing, "unavailable")
+		return nil
+	}
+	return n.checkBlockedWithAttrs(key, artifact)
+}
+
+func missingConditionAttributes(artifact *Artifact, requirements []ConditionRequirement) []string {
+	seen := make(map[string]struct{})
+	missing := make([]string, 0)
+	for _, requirement := range requirements {
+		if artifact == nil || artifact.Attributes[requirement.Attribute] == "" {
+			if _, ok := seen[requirement.Attribute]; !ok {
+				seen[requirement.Attribute] = struct{}{}
+				missing = append(missing, requirement.Attribute)
+			}
+		}
+	}
+	return missing
+}
+
+func (n *ProxyRuntime) metadataFailureCached(key string) bool {
+	n.metadataFailureMu.Lock()
+	defer n.metadataFailureMu.Unlock()
+	expiry, ok := n.metadataFailures[key]
+	return ok && time.Now().Before(expiry)
+}
+func (n *ProxyRuntime) cacheMetadataFailure(key string) {
+	ttl := n.MetadataFailureTTL
+	if ttl <= 0 {
+		ttl = 5 * time.Minute
+	}
+	n.metadataFailureMu.Lock()
+	if n.metadataFailures == nil {
+		n.metadataFailures = make(map[string]time.Time)
+	}
+	n.metadataFailures[key] = time.Now().Add(ttl)
+	n.metadataFailureMu.Unlock()
+}
+func (n *ProxyRuntime) auditConditionUnverified(ctx context.Context, key ArtifactKey, requirements []ConditionRequirement, missing []string, reason string) {
+	if n.ConditionAudit == nil {
+		return
+	}
+	ids := make([]uint, 0, len(requirements))
+	for _, requirement := range requirements {
+		ids = append(ids, requirement.RuleID)
+	}
+	n.ConditionAudit.LogConditionUnverified(ctx, ConditionUnverifiedEntry{RepositoryID: n.RepositoryID, Format: n.Format, Name: key.Name, Version: key.Version, RemotePath: key.RemotePath, RuleIDs: ids, MissingAttributes: missing, Reason: reason})
+}
+
+// filterBlockedArtifacts 用条件规则过滤掉被阻断的 artifacts（用于 QueryArtifacts）。
+// 与 GetArtifact 不同，QueryArtifacts 是过滤而非报错：返回过滤后的列表。
+func (n *ProxyRuntime) filterBlockedArtifacts(artifacts []*Artifact) []*Artifact {
+	if n.Blocker == nil || len(artifacts) == 0 {
+		return artifacts
+	}
+	result := make([]*Artifact, 0, len(artifacts))
+	for _, a := range artifacts {
+		// 没有 Name 的 artifact（如纯文件/目录）不参与条件阻断，直接保留
+		if a == nil || a.Name == "" {
+			result = append(result, a)
+			continue
+		}
+		attrs := make(map[string]interface{}, len(a.Attributes))
+		for k, v := range a.Attributes {
+			attrs[k] = v
+		}
+		blocked, _ := n.Blocker.IsBlockedWithAttrs(n.Format, a.Name, a.Version, attrs)
+		if !blocked {
+			result = append(result, a)
+		}
+	}
+	return result
 }
 
 func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artifact, error) {
@@ -98,6 +261,9 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 			"duration": time.Since(start).Seconds(),
 		}).Debug("proxy: GetArtifact memory cache hit")
 		artifact = cloneArtifactForResponse(artifact)
+		if err := n.evaluateConditionalAccess(ctx, key, artifact); err != nil {
+			return nil, err
+		}
 		if err := n.openArtifactContent(ctx, artifact); err != nil {
 			return nil, err
 		}
@@ -126,6 +292,9 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 	}
 	res := result.(getArtifactResult)
 	artifact := cloneArtifactForResponse(res.artifact)
+	if err := n.evaluateConditionalAccess(ctx, key, artifact); err != nil {
+		return nil, err
+	}
 	if err := n.openArtifactContent(ctx, artifact); err != nil {
 		return nil, err
 	}
@@ -152,6 +321,9 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 	if err == nil {
 		if refreshErr := n.refreshStaleMetadata(ctx, artifact, key); refreshErr != nil {
 			return getArtifactResult{}, refreshErr
+		}
+		if blockErr := n.evaluateConditionalAccess(ctx, key, artifact); blockErr != nil {
+			return getArtifactResult{}, blockErr
 		}
 		hadBlob := len(artifact.BlobRefs) > 0
 		if ensureErr := n.ensureArtifactBlob(ctx, artifact, key); ensureErr != nil {
@@ -219,6 +391,9 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 	}
 	if ip := ClientIPFromContext(ctx); ip != "" {
 		artifact.Properties["trigger_ip"] = ip
+	}
+	if blockErr := n.evaluateConditionalAccess(ctx, key, artifact); blockErr != nil {
+		return getArtifactResult{}, blockErr
 	}
 
 	if err := n.MetadataStore.Put(ctx, artifact); err != nil {
@@ -312,7 +487,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 					}()
 				}
 				metrics.RecordProxyStaleServed(n.Format)
-				return artifacts, nil
+				return n.filterBlockedArtifacts(artifacts), nil
 			}
 		}
 	}
@@ -329,7 +504,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 			}
 		}
 		if hasMetadataArtifacts {
-			return artifacts, nil
+			return n.filterBlockedArtifacts(artifacts), nil
 		}
 		// 缓存不完整，继续走回源逻辑
 		logrus.WithFields(logrus.Fields{
@@ -363,7 +538,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 					"cachedCount": len(artifacts),
 					"remotePath":  query.RemotePath,
 				}).Warn("proxy: serving cached artifacts after FetchRemote failure")
-				return artifacts, nil
+				return n.filterBlockedArtifacts(artifacts), nil
 			}
 			return nil, fetchErr
 		}
@@ -389,13 +564,13 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		for _, a := range fetched {
 			n.clearNegativeCacheForArtifact(a)
 		}
-		return fetched, nil
+		return n.filterBlockedArtifacts(fetched), nil
 	}
 	logrus.WithFields(logrus.Fields{
 		"hasFetcher":    n.Fetcher != nil,
 		"remoteBaseURL": n.RemoteBaseURL,
 	}).Warn("proxy: no fetcher or remote URL, returning empty result")
-	return artifacts, nil
+	return n.filterBlockedArtifacts(artifacts), nil
 }
 
 func (n *ProxyRuntime) RenderProjection(ctx context.Context, query ProjectionQuery) (*ProjectionResult, error) {

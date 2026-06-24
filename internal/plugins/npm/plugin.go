@@ -123,6 +123,25 @@ func (p *NpmPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 	return artifacts, nil
 }
 
+// FetchArtifactMetadata returns normalized attributes for one npm package
+// version. It reuses FetchRemote so package metadata parsing stays identical
+// between projection and conditional-rule evaluation.
+func (p *NpmPlugin) FetchArtifactMetadata(ctx context.Context, remoteURL string, key runtime.ArtifactKey) (*runtime.ArtifactMetadata, error) {
+	if key.Name == "" || key.Version == "" {
+		return nil, runtime.ErrMetadataUnavailable
+	}
+	artifacts, err := p.FetchRemote(ctx, remoteURL, key.Name)
+	if err != nil {
+		return nil, err
+	}
+	for _, artifact := range artifacts {
+		if artifact.Kind == runtime.KindVersion && artifact.Name == key.Name && artifact.Version == key.Version {
+			return &runtime.ArtifactMetadata{Attributes: artifact.Attributes}, nil
+		}
+	}
+	return nil, runtime.ErrMetadataUnavailable
+}
+
 // parseNpmMetadata 解析 npm registry JSON, 提取版本列表为 artifact
 func (p *NpmPlugin) parseNpmMetadata(packageName string, body io.Reader) ([]*runtime.Artifact, error) {
 	var raw map[string]interface{}

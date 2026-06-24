@@ -158,6 +158,9 @@ func createRuntimeForRepo(
 			pr.Fetcher = f
 		}
 		pr.Blocker = blocker
+		if audit, ok := blocker.(runtime.ConditionAuditLogger); ok {
+			pr.ConditionAudit = audit
+		}
 		return pr, nil
 
 	case model.RepoTypeVirtual:
@@ -253,6 +256,9 @@ func createGroupRuntime(
 					n.Fetcher = f
 				}
 				n.Blocker = blocker
+				if audit, ok := blocker.(runtime.ConditionAuditLogger); ok {
+					n.ConditionAudit = audit
+				}
 				node = n
 			default:
 				logrus.WithFields(logrus.Fields{
@@ -331,6 +337,39 @@ func (b *blockRuleBlocker) BlockReason(packageType, packageName, version string)
 		return "blocked"
 	}
 	return result.Rule.Reason
+}
+
+// IsBlockedWithAttrs 带元数据的第二层阻断检查。
+// 调用 BlockRuleService.IsBlockedWithArtifact 做包名+版本 + 条件两层匹配，
+// 未阻断返回 (false, "")；命中则返回 (true, reason)。
+func (b *blockRuleBlocker) IsBlockedWithAttrs(packageType, packageName, version string, attrs map[string]interface{}) (bool, string) {
+	result, err := b.svc.IsBlockedWithArtifact(packageType, packageName, version, attrs)
+	if err != nil || !result.Blocked {
+		return false, ""
+	}
+	if result.Rule != nil {
+		return true, result.Rule.Reason
+	}
+	return true, "blocked"
+}
+
+// RequiredAttributes exposes conditional-rule requirements to ProxyRuntime
+// without making the runtime package depend on the service package.
+func (b *blockRuleBlocker) RequiredAttributes(packageType, packageName, version string) []runtime.ConditionRequirement {
+	requirements := b.svc.RequiredAttributes(packageType, packageName, version)
+	result := make([]runtime.ConditionRequirement, 0, len(requirements))
+	for _, requirement := range requirements {
+		result = append(result, runtime.ConditionRequirement{
+			RuleID:    requirement.RuleID,
+			Attribute: requirement.Attribute,
+		})
+	}
+	return result
+}
+
+func (b *blockRuleBlocker) LogConditionUnverified(ctx context.Context, entry runtime.ConditionUnverifiedEntry) {
+	_ = b.svc.LogConditionUnverified(ctx, entry.RepositoryID, entry.Format, entry.Name, entry.Version,
+		entry.RemotePath, entry.RuleIDs, entry.MissingAttributes, entry.Reason)
 }
 
 type auditLoggerAdapter struct {

@@ -158,6 +158,25 @@ func (p *PyPIPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([
 	return artifacts, nil
 }
 
+// FetchArtifactMetadata returns normalized metadata for one PyPI release. It
+// reuses the simple-index fetch path, which already enriches artifacts from the
+// PyPI JSON API when it is available.
+func (p *PyPIPlugin) FetchArtifactMetadata(ctx context.Context, remoteURL string, key runtime.ArtifactKey) (*runtime.ArtifactMetadata, error) {
+	if key.Name == "" || key.Version == "" {
+		return nil, runtime.ErrMetadataUnavailable
+	}
+	artifacts, err := p.FetchRemote(ctx, remoteURL, "simple/"+normalizePackageName(key.Name)+"/")
+	if err != nil {
+		return nil, err
+	}
+	for _, artifact := range artifacts {
+		if artifact.Name == normalizePackageName(key.Name) && artifact.Version == key.Version {
+			return &runtime.ArtifactMetadata{Attributes: artifact.Attributes}, nil
+		}
+	}
+	return nil, runtime.ErrMetadataUnavailable
+}
+
 func (p *PyPIPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
 	path := ctx.RepositoryPath
 	path = strings.TrimPrefix(path, "/")
