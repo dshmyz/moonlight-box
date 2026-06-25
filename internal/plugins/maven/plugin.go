@@ -1482,6 +1482,11 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		}
 	}
 
+	// SNAPSHOT 版本标记为默认可见，前端只展示最新一组（同 extension+classifier）
+	if strings.Contains(key.Version, "-SNAPSHOT") {
+		attributes["default_visible"] = "true"
+	}
+
 	blobRef, err := session.PutBlob(ctx.Request.Context(), body)
 	if err != nil {
 		session.Abort(ctx.Request.Context())
@@ -1521,6 +1526,12 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		return nil
 	}
 
+	// SNAPSHOT 版本：清除同 extension+classifier 旧文件的 default_visible 标记
+	// 这样前端只展示最新一组，旧文件可通过"更多"展开
+	if strings.Contains(key.Version, "-SNAPSHOT") {
+		p.clearOldSnapshotDefaultVisible(ctx, repoRuntime, key)
+	}
+
 	// 创建返回 201，更新返回 200
 	if isUpdate {
 		ctx.Writer.WriteHeader(http.StatusOK)
@@ -1528,6 +1539,77 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		ctx.Writer.WriteHeader(http.StatusCreated)
 	}
 	return nil
+}
+
+// clearOldSnapshotDefaultVisible 清除同 extension+classifier 旧 SNAPSHOT 文件的 default_visible 标记。
+// 使用 BeginUpload + PutArtifact 走 upsert 路径，只更新 attributes，不删除文件、不动 blob。
+func (p *MavenPlugin) clearOldSnapshotDefaultVisible(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) {
+	oldArtifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "maven",
+		Kind:         runtime.KindArtifact,
+		Name:         key.Name,
+		Version:      key.Version,
+	})
+	if err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"name":    key.Name,
+			"version": key.Version,
+		}).Warn("maven: query old snapshot artifacts failed, skip clearing default_visible")
+		return
+	}
+
+	classifier := key.Qualifiers["classifier"]
+	var toUpdate []*runtime.Artifact
+	for _, old := range oldArtifacts {
+		// 跳过刚上传的新文件
+		if old.RemotePath == key.RemotePath {
+			continue
+		}
+		// 只处理同 extension + classifier 的
+		oldClassifier := old.Qualifiers["classifier"]
+		if old.Extension != key.Extension || oldClassifier != classifier {
+			continue
+		}
+		// 只处理带 default_visible 标记的
+		if _, has := old.Attributes["default_visible"]; !has {
+			continue
+		}
+		delete(old.Attributes, "default_visible")
+		toUpdate = append(toUpdate, old)
+	}
+
+	if len(toUpdate) == 0 {
+		return
+	}
+
+	updateSession, err := repoRuntime.BeginUpload(ctx.Request.Context(), runtime.UploadRequest{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "maven",
+	})
+	if err != nil {
+		logrus.WithError(err).Warn("maven: begin upload session for clearing default_visible failed")
+		return
+	}
+
+	for _, a := range toUpdate {
+		if err := updateSession.PutArtifact(ctx.Request.Context(), a); err != nil {
+			logrus.WithError(err).Warn("maven: put artifact for clearing default_visible failed")
+			updateSession.Abort(ctx.Request.Context())
+			return
+		}
+	}
+
+	if err := updateSession.Commit(ctx.Request.Context()); err != nil {
+		logrus.WithError(err).Warn("maven: commit clearing default_visible failed")
+		return
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"name":    key.Name,
+		"version": key.Version,
+		"cleared": len(toUpdate),
+	}).Debug("maven: cleared default_visible from old snapshot artifacts")
 }
 
 func (p *MavenPlugin) handleChecksumUpload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey, originalFile string, algo checksumAlgo) error {
