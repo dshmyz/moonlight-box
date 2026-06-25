@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -55,6 +56,70 @@ func NewBlockRuleService(repo *repository.BlockRuleRepository, auditSvc *AuditSe
 type BlockResult struct {
 	Blocked bool
 	Rule    *model.BlockRule
+}
+
+var ErrInvalidBlockRule = errors.New("invalid block rule")
+
+func invalidBlockRule(format string, args ...interface{}) error {
+	return fmt.Errorf("%w: %s", ErrInvalidBlockRule, fmt.Sprintf(format, args...))
+}
+
+func (s *BlockRuleService) ValidateRule(rule *model.BlockRule) error {
+	if rule == nil {
+		return invalidBlockRule("rule is required")
+	}
+	if strings.TrimSpace(rule.PackageName) == "" {
+		return invalidBlockRule("package_name is required")
+	}
+	if strings.TrimSpace(rule.Version) == "" {
+		return invalidBlockRule("version is required")
+	}
+	if strings.TrimSpace(rule.PackageType) == "" {
+		return invalidBlockRule("package_type is required")
+	}
+	if rule.MatchType == "" {
+		rule.MatchType = model.BlockMatchExact
+	}
+	if rule.MatchType != model.BlockMatchExact && rule.MatchType != model.BlockMatchWildcard {
+		return invalidBlockRule("match_type must be 'exact' or 'wildcard'")
+	}
+
+	hasConditionType := rule.ConditionType != ""
+	hasConditionOp := rule.ConditionOp != ""
+	hasConditionValue := rule.ConditionValue != ""
+	if !hasConditionType {
+		if hasConditionOp || hasConditionValue {
+			return invalidBlockRule("condition_type is required when condition_op or condition_value is set")
+		}
+		return nil
+	}
+	if !hasConditionOp || !hasConditionValue {
+		return invalidBlockRule("condition_op and condition_value are required when condition_type is set")
+	}
+
+	switch rule.ConditionType {
+	case model.ConditionTypeLicense:
+		if rule.ConditionOp != model.ConditionOpEquals && rule.ConditionOp != model.ConditionOpContains {
+			return invalidBlockRule("license condition_op must be 'equals' or 'contains'")
+		}
+	case model.ConditionTypePublishTime:
+		switch rule.ConditionOp {
+		case model.ConditionOpBefore, model.ConditionOpAfter:
+			if _, ok := parseRFC3339(rule.ConditionValue); !ok {
+				return invalidBlockRule("publish_time %s requires RFC3339 condition_value", rule.ConditionOp)
+			}
+		case model.ConditionOpWithinLast:
+			days, err := strconv.Atoi(rule.ConditionValue)
+			if err != nil || days <= 0 {
+				return invalidBlockRule("publish_time within_last requires positive integer days")
+			}
+		default:
+			return invalidBlockRule("publish_time condition_op must be 'before', 'after' or 'within_last'")
+		}
+	default:
+		return invalidBlockRule("condition_type must be 'license' or 'publish_time'")
+	}
+	return nil
 }
 
 // ConditionalRuleRequirement identifies a conditional rule that may apply to a
@@ -207,16 +272,28 @@ func (s *BlockRuleService) matchConditionalRules(rules []cachedConditionalRule, 
 	return nil
 }
 
+// attrString 从 attrs 中取 string 值，key 不存在或类型不是 string 时返回 false。
+func attrString(attrs map[string]interface{}, key string) (string, bool) {
+	raw, ok := attrs[key]
+	if !ok {
+		return "", false
+	}
+	value, ok := raw.(string)
+	return value, ok
+}
+
+// parseRFC3339 解析 RFC3339 时间字符串，失败时返回 false。
+func parseRFC3339(value string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339, value)
+	return t, err == nil
+}
+
 // matchCondition 根据规则的 ConditionType/ConditionOp 对 attrs 进行条件匹配。
 // attrs 中缺少对应 key 时返回 false（元数据缺失放行）。
 func (s *BlockRuleService) matchCondition(rule *model.BlockRule, attrs map[string]interface{}) bool {
 	switch rule.ConditionType {
 	case model.ConditionTypeLicense:
-		raw, ok := attrs["license"]
-		if !ok {
-			return false
-		}
-		value, ok := raw.(string)
+		value, ok := attrString(attrs, "license")
 		if !ok {
 			return false
 		}
@@ -227,29 +304,24 @@ func (s *BlockRuleService) matchCondition(rule *model.BlockRule, attrs map[strin
 			return strings.Contains(value, rule.ConditionValue)
 		}
 	case model.ConditionTypePublishTime:
-		raw, ok := attrs["published_at"]
+		value, ok := attrString(attrs, "published_at")
 		if !ok {
 			return false
 		}
-		value, ok := raw.(string)
+		actualTime, ok := parseRFC3339(value)
 		if !ok {
-			return false
-		}
-		// 解析 attrs 中的时间（RFC3339）
-		actualTime, err := time.Parse(time.RFC3339, value)
-		if err != nil {
 			return false
 		}
 		switch rule.ConditionOp {
 		case model.ConditionOpBefore:
-			thresholdTime, err := time.Parse(time.RFC3339, rule.ConditionValue)
-			if err != nil {
+			thresholdTime, ok := parseRFC3339(rule.ConditionValue)
+			if !ok {
 				return false
 			}
 			return actualTime.Before(thresholdTime)
 		case model.ConditionOpAfter:
-			thresholdTime, err := time.Parse(time.RFC3339, rule.ConditionValue)
-			if err != nil {
+			thresholdTime, ok := parseRFC3339(rule.ConditionValue)
+			if !ok {
 				return false
 			}
 			return actualTime.After(thresholdTime)
@@ -425,6 +497,9 @@ func (s *BlockRuleService) LogConditionUnverified(ctx context.Context, repositor
 }
 
 func (s *BlockRuleService) Create(rule *model.BlockRule) error {
+	if err := s.ValidateRule(rule); err != nil {
+		return err
+	}
 	err := s.repo.Create(rule)
 	if err == nil {
 		s.invalidateCache()
@@ -436,15 +511,7 @@ func (s *BlockRuleService) BatchCreate(rules []*model.BlockRule) (int, int, erro
 	success := 0
 	failed := 0
 	for _, rule := range rules {
-		if rule.PackageName == "" || rule.Version == "" || rule.PackageType == "" {
-			failed++
-			continue
-		}
-		if rule.MatchType == "" {
-			rule.MatchType = model.BlockMatchExact
-		}
-		// 条件规则字段一致性校验：设置了 ConditionType 时必须同时有 ConditionOp 和 ConditionValue
-		if rule.ConditionType != "" && (rule.ConditionOp == "" || rule.ConditionValue == "") {
+		if err := s.ValidateRule(rule); err != nil {
 			failed++
 			continue
 		}
@@ -461,11 +528,89 @@ func (s *BlockRuleService) BatchCreate(rules []*model.BlockRule) (int, int, erro
 }
 
 func (s *BlockRuleService) Update(id uint, updates map[string]interface{}) error {
-	err := s.repo.Update(id, updates)
+	current, err := s.repo.GetByID(id)
+	if err != nil {
+		return err
+	}
+	candidate := *current
+	if err := applyBlockRuleUpdates(&candidate, updates); err != nil {
+		return err
+	}
+	if err := s.ValidateRule(&candidate); err != nil {
+		return err
+	}
+	err = s.repo.Update(id, updates)
 	if err == nil {
 		s.invalidateCache()
 	}
 	return err
+}
+
+func applyBlockRuleUpdates(rule *model.BlockRule, updates map[string]interface{}) error {
+	for key, value := range updates {
+		switch key {
+		case "package_name", "PackageName":
+			v, ok := updateString(value)
+			if !ok {
+				return invalidBlockRule("package_name must be a string")
+			}
+			rule.PackageName = v
+		case "version", "Version":
+			v, ok := updateString(value)
+			if !ok {
+				return invalidBlockRule("version must be a string")
+			}
+			rule.Version = v
+		case "match_type", "MatchType":
+			v, ok := updateString(value)
+			if !ok {
+				return invalidBlockRule("match_type must be a string")
+			}
+			rule.MatchType = model.BlockMatchType(v)
+		case "package_type", "PackageType":
+			v, ok := updateString(value)
+			if !ok {
+				return invalidBlockRule("package_type must be a string")
+			}
+			rule.PackageType = v
+		case "reason", "Reason":
+			v, ok := updateString(value)
+			if !ok {
+				return invalidBlockRule("reason must be a string")
+			}
+			rule.Reason = v
+		case "enabled", "Enabled":
+			v, ok := value.(bool)
+			if !ok {
+				return invalidBlockRule("enabled must be a boolean")
+			}
+			rule.Enabled = v
+		case "condition_type", "ConditionType":
+			v, ok := updateString(value)
+			if !ok {
+				return invalidBlockRule("condition_type must be a string")
+			}
+			rule.ConditionType = model.ConditionType(v)
+		case "condition_op", "ConditionOp":
+			v, ok := updateString(value)
+			if !ok {
+				return invalidBlockRule("condition_op must be a string")
+			}
+			rule.ConditionOp = model.ConditionOp(v)
+		case "condition_value", "ConditionValue":
+			v, ok := updateString(value)
+			if !ok {
+				return invalidBlockRule("condition_value must be a string")
+			}
+			rule.ConditionValue = v
+		}
+	}
+	return nil
+}
+
+func updateString(value interface{}) (string, bool) {
+	v, ok := value.(string)
+	return v, ok
 }
 
 func (s *BlockRuleService) Delete(id uint) error {

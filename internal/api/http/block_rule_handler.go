@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -60,21 +61,19 @@ func (h *BlockRuleHandler) List(c *gin.Context) {
 
 func (h *BlockRuleHandler) Create(c *gin.Context) {
 	var req struct {
-		PackageName string `json:"package_name" binding:"required"`
-		Version     string `json:"version" binding:"required"`
-		MatchType   string `json:"match_type" binding:"required"`
-		PackageType string `json:"package_type" binding:"required"`
-		Reason      string `json:"reason"`
-		Enabled     *bool  `json:"enabled"`
+		PackageName    string `json:"package_name" binding:"required"`
+		Version        string `json:"version" binding:"required"`
+		MatchType      string `json:"match_type" binding:"required"`
+		PackageType    string `json:"package_type" binding:"required"`
+		Reason         string `json:"reason"`
+		Enabled        *bool  `json:"enabled"`
+		ConditionType  string `json:"condition_type"`
+		ConditionOp    string `json:"condition_op"`
+		ConditionValue string `json:"condition_value"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request", err.Error())
-		return
-	}
-
-	if req.MatchType != string(model.BlockMatchExact) && req.MatchType != string(model.BlockMatchWildcard) {
-		response.BadRequest(c, "Invalid match_type", "must be 'exact' or 'wildcard'")
 		return
 	}
 
@@ -85,12 +84,15 @@ func (h *BlockRuleHandler) Create(c *gin.Context) {
 	}
 
 	rule := &model.BlockRule{
-		PackageName: req.PackageName,
-		Version:     req.Version,
-		MatchType:   model.BlockMatchType(req.MatchType),
-		PackageType: req.PackageType,
-		Reason:      req.Reason,
-		Enabled:     enabled,
+		PackageName:    req.PackageName,
+		Version:        req.Version,
+		MatchType:      model.BlockMatchType(req.MatchType),
+		PackageType:    req.PackageType,
+		Reason:         req.Reason,
+		Enabled:        enabled,
+		ConditionType:  model.ConditionType(req.ConditionType),
+		ConditionOp:    model.ConditionOp(req.ConditionOp),
+		ConditionValue: req.ConditionValue,
 	}
 	if exists {
 		uid := userID.(uint)
@@ -98,6 +100,10 @@ func (h *BlockRuleHandler) Create(c *gin.Context) {
 	}
 
 	if err := h.svc.Create(rule); err != nil {
+		if errors.Is(err, service.ErrInvalidBlockRule) {
+			response.BadRequest(c, "Invalid block rule", err.Error())
+			return
+		}
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -119,6 +125,10 @@ func (h *BlockRuleHandler) Update(c *gin.Context) {
 	}
 
 	if err := h.svc.Update(uint(id), updates); err != nil {
+		if errors.Is(err, service.ErrInvalidBlockRule) {
+			response.BadRequest(c, "Invalid block rule", err.Error())
+			return
+		}
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -163,12 +173,15 @@ func (h *BlockRuleHandler) ListBlockLogs(c *gin.Context) {
 func (h *BlockRuleHandler) BatchImport(c *gin.Context) {
 	var req struct {
 		Rules []struct {
-			PackageName string `json:"package_name" binding:"required"`
-			Version     string `json:"version" binding:"required"`
-			MatchType   string `json:"match_type"`
-			PackageType string `json:"package_type" binding:"required"`
-			Reason      string `json:"reason"`
-			Enabled     *bool  `json:"enabled"`
+			PackageName    string `json:"package_name" binding:"required"`
+			Version        string `json:"version" binding:"required"`
+			MatchType      string `json:"match_type"`
+			PackageType    string `json:"package_type" binding:"required"`
+			Reason         string `json:"reason"`
+			Enabled        *bool  `json:"enabled"`
+			ConditionType  string `json:"condition_type"`
+			ConditionOp    string `json:"condition_op"`
+			ConditionValue string `json:"condition_value"`
 		} `json:"rules" binding:"required"`
 	}
 
@@ -189,12 +202,15 @@ func (h *BlockRuleHandler) BatchImport(c *gin.Context) {
 			matchType = model.BlockMatchType(r.MatchType)
 		}
 		rule := &model.BlockRule{
-			PackageName: r.PackageName,
-			Version:     r.Version,
-			MatchType:   matchType,
-			PackageType: r.PackageType,
-			Reason:      r.Reason,
-			Enabled:     enabled,
+			PackageName:    r.PackageName,
+			Version:        r.Version,
+			MatchType:      matchType,
+			PackageType:    r.PackageType,
+			Reason:         r.Reason,
+			Enabled:        enabled,
+			ConditionType:  model.ConditionType(r.ConditionType),
+			ConditionOp:    model.ConditionOp(r.ConditionOp),
+			ConditionValue: r.ConditionValue,
 		}
 		if exists {
 			uid := userID.(uint)
