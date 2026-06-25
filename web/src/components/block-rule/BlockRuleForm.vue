@@ -114,6 +114,20 @@ const form = ref<BlockRuleCreateParams>({
 watch(
   () => props.modelValue,
   (val) => {
+    // 值未变时跳过，避免与下方 watch(form) 形成回环更新
+    if (
+      val.package_name === form.value.package_name &&
+      val.version === form.value.version &&
+      val.match_type === form.value.match_type &&
+      val.package_type === form.value.package_type &&
+      val.reason === form.value.reason &&
+      val.enabled === form.value.enabled &&
+      (val.condition_type ?? '') === form.value.condition_type &&
+      (val.condition_op ?? '') === form.value.condition_op &&
+      (val.condition_value ?? '') === form.value.condition_value
+    ) {
+      return
+    }
     form.value = {
       ...val,
       condition_type: val.condition_type ?? '',
