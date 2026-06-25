@@ -22,6 +22,11 @@ type S3Storage struct {
 }
 
 func NewS3Storage(endpoint, region, accessKeyID, secretAccessKey, bucket, basePath string, maxSizeGB int64, useSSL bool) (*S3Storage, error) {
+	// 自定义 endpoint（MinIO/OBS/R2 等）region 无意义，但 AWS SDK endpoint resolver 强制要求非空
+	if region == "" {
+		region = "us-east-1"
+	}
+
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithRegion(region),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, "")),
