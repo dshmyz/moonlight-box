@@ -72,6 +72,10 @@ func (i *ConfigInitializer) InitializeDefaultConfigs() error {
 		{"health_check.timeout", "5", "int", "network", "健康检查超时时间（秒）", false},
 		{"health_check.failure_threshold", "3", "int", "network", "健康检查失败阈值", false},
 		{"health_check.block_on_unhealthy", "false", "bool", "network", "不健康时是否阻断请求", false},
+
+		{"log_cleanup.enabled", "true", "bool", "logging", "启用下载日志自动清理", false},
+		{"log_cleanup.retention_days", "30", "int", "logging", "下载日志保留天数", false},
+		{"log_cleanup.interval", "24h", "string", "logging", "清理执行间隔（如 24h, 12h, 1h）", false},
 	}
 
 	for _, config := range defaultConfigs {

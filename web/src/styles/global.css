@@ -212,7 +212,7 @@ h6 { font-size: var(--font-size-base); }
 .el-button--large {
   padding: 12px 24px;
   font-size: 15px;
-  height: 48px;
+  height: 40px;
 }
 
 .el-button:active {
@@ -222,7 +222,7 @@ h6 { font-size: var(--font-size-base); }
 /* ElInput */
 .el-input__wrapper {
   border-radius: 8px;
-  border-color: #d1d5db;
+  border: 1px solid #d1d5db;
   box-shadow: none;
 }
 

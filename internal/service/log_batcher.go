@@ -34,7 +34,9 @@ func NewLogBatcher(logRepo *repository.DownloadLogRepository, batchSize int, flu
 		flushInterval: flushInterval,
 		stopCh:        make(chan struct{}),
 		doneCh:        make(chan struct{}),
-		logCh:         make(chan *model.DownloadLog, batchSize*4),
+		// 容量设为 batchSize 的 20 倍，避免高并发下载时 channel 打满丢日志。
+		// 每条 DownloadLog 结构体很小（几百字节），2000 条约 1MB 内存开销。
+		logCh: make(chan *model.DownloadLog, batchSize*20),
 	}
 
 	util.SafeGo("log-batcher.flush-loop", batcher.flushLoop)
@@ -49,9 +51,15 @@ func (b *LogBatcher) Record(log *model.DownloadLog) {
 	select {
 	case b.logCh <- log:
 	default:
-		util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
-			util.LogKeyModule: "service",
-		}).Warn("download log channel is full, dropping log")
+		// channel 已满，短暂等待 100ms 给 flushLoop 消费时间，
+		// 超时后丢弃并告警，避免无限阻塞调用方。
+		select {
+		case b.logCh <- log:
+		case <-time.After(100 * time.Millisecond):
+			util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
+				util.LogKeyModule: "service",
+			}).Warn("download log channel full after 100ms, dropping log")
+		}
 	}
 }
 
@@ -90,25 +98,6 @@ func (b *LogBatcher) flushLoop() {
 					return
 				}
 			}
-		}
-	}
-}
-
-func (b *LogBatcher) flush() {
-	logs := make([]*model.DownloadLog, 0, b.batchSize)
-	for {
-		select {
-		case log := <-b.logCh:
-			logs = append(logs, log)
-			if len(logs) >= b.batchSize {
-				b.flushLogs(logs)
-				logs = make([]*model.DownloadLog, 0, b.batchSize)
-			}
-		default:
-			if len(logs) > 0 {
-				b.flushLogs(logs)
-			}
-			return
 		}
 	}
 }

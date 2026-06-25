@@ -9,6 +9,7 @@
       :page-size="pageSize"
       :total="total"
       :page-sizes="pageSizeOptions"
+      size="default"
       layout="sizes, prev, pager, next"
       @current-change="onCurrentChange"
       @size-change="onSizeChange"

@@ -27,31 +27,32 @@ type RouterContext struct {
 	WebhookSvc       *service.WebhookService
 	RepositoryRouter http.Handler
 	Handlers         struct {
-		Auth           *handler.AuthHandler
-		Repo           *handler.RepositoryHandler
-		PublicRepo     *handler.PublicRepoHandler
-		Cache          *handler.CacheHandler
-		BlockRule      *handler.BlockRuleHandler
-		Search         *handler.PackageSearchHandler
-		Dashboard      *handler.DashboardHandler
-		CAS            *handler.CASHandler
-		StorageBackend *handler.StorageBackendHandler
-		Security       *handler.SecurityHandler
-		AuditLog       *handler.AuditLogHandler
-		User           *handler.UserHandler
-		Role           *handler.RoleHandler
-		Backup         *handler.BackupHandler
-		BackupConfig   *handler.BackupConfigHandler
-		Webhook        *handler.WebhookHandler
-		SystemConfig   *handler.SystemConfigHandler
-		SystemInfo     *handler.SystemInfoHandler
-		FileBrowse     *handler.FileBrowseHandler
-		MigrationV2    *migv2handler.MigrationV2Handler
-		AI             *handler.AIHandler
-		DownloadLog    *handler.DownloadLogHandler
-		HealthCheck    *handler.HealthCheckHandler
-		VulnRule       *handler.VulnRuleHandler
-		PackageVersion *handler.PackageVersionHandler
+		Auth             *handler.AuthHandler
+		Repo             *handler.RepositoryHandler
+		PublicRepo       *handler.PublicRepoHandler
+		Cache            *handler.CacheHandler
+		BlockRule        *handler.BlockRuleHandler
+		Search           *handler.PackageSearchHandler
+		Dashboard        *handler.DashboardHandler
+		CAS              *handler.CASHandler
+		StorageBackend   *handler.StorageBackendHandler
+		Security         *handler.SecurityHandler
+		AuditLog         *handler.AuditLogHandler
+		User             *handler.UserHandler
+		Role             *handler.RoleHandler
+		Backup           *handler.BackupHandler
+		BackupConfig     *handler.BackupConfigHandler
+		Webhook          *handler.WebhookHandler
+		SystemConfig     *handler.SystemConfigHandler
+		SystemInfo       *handler.SystemInfoHandler
+		FileBrowse       *handler.FileBrowseHandler
+		MigrationV2      *migv2handler.MigrationV2Handler
+		AI               *handler.AIHandler
+		DownloadLog      *handler.DownloadLogHandler
+		LogCleanupConfig *handler.LogCleanupConfigHandler
+		HealthCheck      *handler.HealthCheckHandler
+		VulnRule         *handler.VulnRuleHandler
+		PackageVersion   *handler.PackageVersionHandler
 	}
 }
 
@@ -366,6 +367,11 @@ func (ctx *RouterContext) setupAuditRoutes(protected *gin.RouterGroup) {
 		downloadLogs.GET("/logs", ctx.Handlers.DownloadLog.List)
 		downloadLogs.GET("/stats", ctx.Handlers.DownloadLog.GetStats)
 	}
+
+	// 清理配置需要 system admin 权限
+	downloadLogs.GET("/cleanup/config", ctx.requirePermission("system", "admin"), ctx.Handlers.LogCleanupConfig.GetConfig)
+	downloadLogs.PUT("/cleanup/config", ctx.requirePermission("system", "admin"), ctx.Handlers.LogCleanupConfig.UpdateConfig)
+	downloadLogs.POST("/cleanup/now", ctx.requirePermission("system", "admin"), ctx.Handlers.LogCleanupConfig.CleanupNow)
 }
 
 func (ctx *RouterContext) setupBackupRoutes(protected *gin.RouterGroup) {

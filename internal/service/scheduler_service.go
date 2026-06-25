@@ -116,23 +116,26 @@ func (s *SchedulerService) ScheduleBackupFromConfig() error {
 		"interval":      interval,
 	}).Info("Scheduling backup from config")
 
+	// 提前创建并注册 ticker，保证 RemoveTask/Stop 随时能找到并清理，
+	// 避免 goroutine 内延迟注册导致的 ticker 泄漏和热更新窗口竞态。
+	ticker := time.NewTicker(interval)
+	s.tickers["daily_backup"] = ticker
+
 	cancelCh := make(chan struct{})
 	s.cancelChs["daily_backup"] = cancelCh
 
 	go func() {
+		// 先等待到首次备份时间，再开始按 ticker 周期执行
 		select {
 		case <-time.After(initialDelay):
 			s.performBackup()
 		case <-cancelCh:
+			ticker.Stop()
 			return
 		case <-s.stopChan:
+			ticker.Stop()
 			return
 		}
-
-		ticker := time.NewTicker(interval)
-		s.mu.Lock()
-		s.tickers["daily_backup"] = ticker
-		s.mu.Unlock()
 
 		for {
 			select {
@@ -151,7 +154,10 @@ func (s *SchedulerService) ScheduleBackupFromConfig() error {
 	return nil
 }
 
-// scheduleBackupWithInterval 使用固定间隔调度备份
+// scheduleBackupWithInterval 使用固定间隔调度备份。
+// 调用约束：调用方必须持有 s.mu 写锁（与 ScheduleBackupFromConfig 一致），
+// 因为它直接读写 s.tickers 和 s.cancelChs。Go 的 sync.RWMutex 不可重入，
+// 所以本方法不再自行加锁，避免死锁。
 func (s *SchedulerService) scheduleBackupWithInterval(interval time.Duration) error {
 	if _, exists := s.tickers["daily_backup"]; exists {
 		return fmt.Errorf("backup already scheduled")

@@ -162,3 +162,17 @@ Plugin 调用 QueryArtifacts(RemotePath=...)
 - **Batcher 模式**: Download Count 和 Proxy Log 使用批量处理器（定时 flush），`defer Stop()` 确保优雅关闭
 - **健康检查**: 远程仓库健康检查配置优先从系统配置读取，其次回退到 YAML 配置
 - **前端测试**: 使用 Vitest + Playwright (e2e)，`web/scripts/e2e/` 存放端到端测试
+
+## Agent skills
+
+### Issue tracker
+
+Issues tracked on GitHub Issues (`dshmyz/moonlight-box`). External PRs are NOT a triage surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default label names: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout: `CONTEXT.md` + `docs/adr/` at repo root. See `docs/agents/domain.md`.

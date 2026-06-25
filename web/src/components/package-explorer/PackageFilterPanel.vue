@@ -9,7 +9,8 @@
             placeholder="全部仓库"
             clearable
             filterable
-            size="default"
+            size="large"
+            class="filter-control"
             @update:model-value="(v: string) => emit('update:repository', v || '')"
           >
             <el-option
@@ -30,14 +31,15 @@
             :model-value="version"
             placeholder="支持精确版本号或通配符，如 1.2.*"
             clearable
-            size="default"
+            size="large"
+            class="filter-control"
             @update:model-value="(v: string) => emit('update:version', v)"
           />
         </div>
 
         <div class="filter-actions">
-          <el-button data-test="reset" size="default" @click="onReset">重置</el-button>
-          <el-button data-test="apply" type="primary" size="default" @click="emit('apply')">搜索</el-button>
+          <el-button data-test="reset" size="large" @click="onReset">重置</el-button>
+          <el-button data-test="apply" type="primary" size="large" @click="emit('apply')">搜索</el-button>
         </div>
       </div>
     </section>
@@ -115,6 +117,9 @@ function onReset() {
   gap: 6px;
   flex: 1;
   min-width: 200px;
+}
+.filter-control {
+  width: 100%;
 }
 .filter-label {
   font-size: 12px;

@@ -188,6 +188,199 @@ if [ -n "$RULE3_ID" ] && [ "$RULE3_ID" != "0" ] && [ "$RULE3_ID" != "" ]; then
 fi
 
 # ============================================================
+# 第四部分：条件阻断 — 按 License 阻断
+# 验证 ConditionType=license 的第二层阻断检查
+# ProxyRuntime 在拿到 artifact 后，用 Attributes["license"] 做条件匹配
+# ============================================================
+echo ""
+echo "════════════════════════════════════════"
+echo "  条件阻断 — License 阻断验证"
+echo "════════════════════════════════════════"
+
+# 4.1 创建 license 条件阻断规则
+info "创建 license 条件阻断规则 (license equals GPL-3.0)..."
+LICENSE_RULE_RESP=$(curl -s -X POST "$BASE/api/v1/block-rules" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"package_name":"*","version":"*","match_type":"wildcard","package_type":"npm","reason":"test-license-block","enabled":true,"condition_type":"license","condition_op":"equals","condition_value":"GPL-3.0"}')
+LICENSE_RULE_ID=$(echo "$LICENSE_RULE_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',d).get('id',''))" 2>/dev/null)
+if [ -n "$LICENSE_RULE_ID" ] && [ "$LICENSE_RULE_ID" != "0" ] && [ "$LICENSE_RULE_ID" != "" ]; then
+  pass "license 条件阻断规则创建成功 (ID=$LICENSE_RULE_ID)"
+else
+  fail "license 条件阻断规则创建失败: $LICENSE_RULE_RESP"
+fi
+
+# 4.2 验证条件字段正确落库
+if [ -n "$LICENSE_RULE_ID" ] && [ "$LICENSE_RULE_ID" != "0" ] && [ "$LICENSE_RULE_ID" != "" ]; then
+  RULE_DETAIL=$(curl -s "$BASE/api/v1/block-rules" -H "Authorization: Bearer $TOKEN")
+  COND_TYPE=$(echo "$RULE_DETAIL" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for r in d.get('data',[]):
+    if r.get('id')==$LICENSE_RULE_ID:
+        print(r.get('condition_type',''))
+        break
+" 2>/dev/null)
+  if [ "$COND_TYPE" = "license" ]; then
+    pass "条件字段 condition_type=license 正确落库"
+  else
+    fail "条件字段 condition_type 未正确落库 (got: $COND_TYPE)"
+  fi
+fi
+
+# 4.3 清理 license 条件规则
+if [ -n "$LICENSE_RULE_ID" ] && [ "$LICENSE_RULE_ID" != "0" ] && [ "$LICENSE_RULE_ID" != "" ]; then
+  DEL_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$BASE/api/v1/block-rules/$LICENSE_RULE_ID" \
+    -H "Authorization: Bearer $TOKEN")
+  if [ "$DEL_CODE" = "200" ] || [ "$DEL_CODE" = "204" ]; then
+    pass "license 条件阻断规则删除成功 (HTTP $DEL_CODE)"
+  else
+    fail "license 条件阻断规则删除失败 (HTTP $DEL_CODE)"
+  fi
+fi
+
+# ============================================================
+# 第五部分：条件阻断 — 按发布时间阻断
+# 验证 ConditionType=publish_time 的第二层阻断检查
+# ============================================================
+echo ""
+echo "════════════════════════════════════════"
+echo "  条件阻断 — 发布时间阻断验证"
+echo "════════════════════════════════════════"
+
+# 5.1 创建 publish_time before 条件阻断规则
+info "创建 publish_time before 条件阻断规则..."
+TIME_RULE_RESP=$(curl -s -X POST "$BASE/api/v1/block-rules" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"package_name":"*","version":"*","match_type":"wildcard","package_type":"maven","reason":"test-time-block","enabled":true,"condition_type":"publish_time","condition_op":"before","condition_value":"2020-01-01T00:00:00Z"}')
+TIME_RULE_ID=$(echo "$TIME_RULE_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',d).get('id',''))" 2>/dev/null)
+if [ -n "$TIME_RULE_ID" ] && [ "$TIME_RULE_ID" != "0" ] && [ "$TIME_RULE_ID" != "" ]; then
+  pass "publish_time 条件阻断规则创建成功 (ID=$TIME_RULE_ID)"
+else
+  fail "publish_time 条件阻断规则创建失败: $TIME_RULE_RESP"
+fi
+
+# 5.2 验证条件字段正确落库
+if [ -n "$TIME_RULE_ID" ] && [ "$TIME_RULE_ID" != "0" ] && [ "$TIME_RULE_ID" != "" ]; then
+  RULE_DETAIL=$(curl -s "$BASE/api/v1/block-rules" -H "Authorization: Bearer $TOKEN")
+  COND_TYPE=$(echo "$RULE_DETAIL" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for r in d.get('data',[]):
+    if r.get('id')==$TIME_RULE_ID:
+        print(r.get('condition_type',''))
+        break
+" 2>/dev/null)
+  COND_OP=$(echo "$RULE_DETAIL" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for r in d.get('data',[]):
+    if r.get('id')==$TIME_RULE_ID:
+        print(r.get('condition_op',''))
+        break
+" 2>/dev/null)
+  if [ "$COND_TYPE" = "publish_time" ] && [ "$COND_OP" = "before" ]; then
+    pass "条件字段 condition_type=publish_time, condition_op=before 正确落库"
+  else
+    fail "条件字段未正确落库 (type=$COND_TYPE, op=$COND_OP)"
+  fi
+fi
+
+# 5.3 清理 publish_time 条件规则
+if [ -n "$TIME_RULE_ID" ] && [ "$TIME_RULE_ID" != "0" ] && [ "$TIME_RULE_ID" != "" ]; then
+  DEL_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$BASE/api/v1/block-rules/$TIME_RULE_ID" \
+    -H "Authorization: Bearer $TOKEN")
+  if [ "$DEL_CODE" = "200" ] || [ "$DEL_CODE" = "204" ]; then
+    pass "publish_time 条件阻断规则删除成功 (HTTP $DEL_CODE)"
+  else
+    fail "publish_time 条件阻断规则删除失败 (HTTP $DEL_CODE)"
+  fi
+fi
+
+# ============================================================
+# 第六部分：条件阻断 — 非法字段校验
+# 验证 API 层对非法 condition_type / condition_op 的校验
+# ============================================================
+echo ""
+echo "════════════════════════════════════════"
+echo "  条件阻断 — 非法字段校验"
+echo "════════════════════════════════════════"
+
+# 6.1 非法 condition_type 应返回 400
+INVALID_TYPE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/api/v1/block-rules" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"package_name":"test","version":"1.0.0","match_type":"exact","package_type":"npm","reason":"test","enabled":true,"condition_type":"invalid_type","condition_op":"equals","condition_value":"MIT"}')
+if [ "$INVALID_TYPE_CODE" = "400" ]; then
+  pass "非法 condition_type 正确返回 400"
+else
+  fail "非法 condition_type 应返回 400，实际返回 $INVALID_TYPE_CODE"
+fi
+
+# 6.2 非法 condition_op 应返回 400
+INVALID_OP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/api/v1/block-rules" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"package_name":"test","version":"1.0.0","match_type":"exact","package_type":"npm","reason":"test","enabled":true,"condition_type":"license","condition_op":"invalid_op","condition_value":"MIT"}')
+if [ "$INVALID_OP_CODE" = "400" ]; then
+  pass "非法 condition_op 正确返回 400"
+else
+  fail "非法 condition_op 应返回 400，实际返回 $INVALID_OP_CODE"
+fi
+
+# 6.3 不传条件字段应正常创建（向后兼容）
+COMPAT_RESP=$(curl -s -X POST "$BASE/api/v1/block-rules" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"package_name":"compat-test-pkg","version":"1.0.0","match_type":"exact","package_type":"npm","reason":"compat-test","enabled":true}')
+COMPAT_ID=$(echo "$COMPAT_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',d).get('id',''))" 2>/dev/null)
+if [ -n "$COMPAT_ID" ] && [ "$COMPAT_ID" != "0" ] && [ "$COMPAT_ID" != "" ]; then
+  pass "不传条件字段正常创建 (向后兼容, ID=$COMPAT_ID)"
+  # 清理
+  curl -s -X DELETE "$BASE/api/v1/block-rules/$COMPAT_ID" -H "Authorization: Bearer $TOKEN" > /dev/null
+else
+  fail "不传条件字段创建失败: $COMPAT_RESP"
+fi
+
+# ============================================================
+# 第七部分：条件阻断 — within_last（最近 N 天内发布）
+# 验证 publish_time + within_last 操作符的创建与字段落库
+# ============================================================
+echo ""
+echo "════════════════════════════════════════"
+echo "  条件阻断 — within_last (最近 N 天内)"
+echo "════════════════════════════════════════"
+
+# 7.1 创建 within_last 规则
+WITHIN_LAST_RESP=$(curl -s -X POST "$BASE/api/v1/block-rules" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"package_name":"within-last-test-pkg","version":"1.0.0","match_type":"exact","package_type":"npm","reason":"block packages published within 15 days","enabled":true,"condition_type":"publish_time","condition_op":"within_last","condition_value":"15"}')
+WITHIN_LAST_ID=$(echo "$WITHIN_LAST_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',d).get('id',''))" 2>/dev/null)
+if [ -n "$WITHIN_LAST_ID" ] && [ "$WITHIN_LAST_ID" != "0" ] && [ "$WITHIN_LAST_ID" != "" ]; then
+  pass "创建 within_last 规则成功 (ID=$WITHIN_LAST_ID)"
+else
+  fail "创建 within_last 规则失败: $WITHIN_LAST_RESP"
+fi
+
+# 7.2 验证字段正确落库
+WITHIN_LAST_CT=$(echo "$WITHIN_LAST_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',d).get('condition_type',''))" 2>/dev/null)
+WITHIN_LAST_OP=$(echo "$WITHIN_LAST_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',d).get('condition_op',''))" 2>/dev/null)
+WITHIN_LAST_VAL=$(echo "$WITHIN_LAST_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',d).get('condition_value',''))" 2>/dev/null)
+if [ "$WITHIN_LAST_CT" = "publish_time" ] && [ "$WITHIN_LAST_OP" = "within_last" ] && [ "$WITHIN_LAST_VAL" = "15" ]; then
+  pass "within_last 字段落库正确 (type=$WITHIN_LAST_CT, op=$WITHIN_LAST_OP, value=$WITHIN_LAST_VAL)"
+else
+  fail "within_last 字段落库错误: type=$WITHIN_LAST_CT, op=$WITHIN_LAST_OP, value=$WITHIN_LAST_VAL"
+fi
+
+# 7.3 清理
+if [ -n "$WITHIN_LAST_ID" ] && [ "$WITHIN_LAST_ID" != "" ]; then
+  curl -s -X DELETE "$BASE/api/v1/block-rules/$WITHIN_LAST_ID" -H "Authorization: Bearer $TOKEN" > /dev/null
+  pass "清理 within_last 规则"
+fi
+
+# ============================================================
 # 总结
 # ============================================================
 echo ""

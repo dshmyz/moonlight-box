@@ -8,6 +8,9 @@ export interface BlockRule {
   package_type: string
   reason: string
   enabled: boolean
+  condition_type: string
+  condition_op: string
+  condition_value: string
   created_by?: number
   created_at: string
   updated_at: string
@@ -20,6 +23,9 @@ export interface BlockRuleCreateParams {
   package_type: string
   reason: string
   enabled?: boolean
+  condition_type?: string
+  condition_op?: string
+  condition_value?: string
 }
 
 export const blockRuleApi = {

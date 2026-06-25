@@ -5,8 +5,8 @@
     </div>
     <div class="hero-row">
       <div class="hero-head">
-        <h1 class="hero-title">软件包</h1>
-        <p class="hero-subtitle">浏览与搜索企业内所有制品</p>
+        <h1 class="hero-title">制品仓库</h1>
+        <!-- <p class="hero-subtitle">浏览与搜索企业内所有制品</p> -->
       </div>
       <div class="hero-moon">
         <div class="moon-body">
@@ -14,7 +14,7 @@
         </div>
       </div>
     </div>
-    <div class="hero-accent-line"></div>
+    <!-- <div class="hero-accent-line"></div> -->
   </section>
 </template>
 

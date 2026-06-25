@@ -79,6 +79,12 @@
                 </template>
               </el-table-column>
               <el-table-column prop="reason" label="阻断原因" min-width="150" show-overflow-tooltip />
+              <el-table-column label="条件" min-width="140" align="center">
+                <template #default="{ row }">
+                  <span v-if="!row.condition_type">—</span>
+                  <span v-else class="condition-summary">{{ formatCondition(row) }}</span>
+                </template>
+              </el-table-column>
               <el-table-column prop="enabled" label="状态" min-width="85" align="center">
                 <template #default="{ row }">
                   <el-switch
@@ -174,10 +180,34 @@ const formData = ref<BlockRuleCreateParams>({
   package_type: 'npm',
   reason: '',
   enabled: true,
+  condition_type: '',
+  condition_op: '',
+  condition_value: '',
 })
 
 const ruleFormRef = ref<InstanceType<typeof BlockRuleForm> | null>(null)
 const logTableRef = ref<InstanceType<typeof BlockLogTable> | null>(null)
+
+// 操作符的中文映射
+const OPERATOR_LABELS: Record<string, string> = {
+  equals: '等于',
+  contains: '包含',
+  before: '早于',
+  after: '晚于',
+}
+
+// 条件类型的中文映射
+const CONDITION_TYPE_LABELS: Record<string, string> = {
+  license: 'License',
+  publish_time: '发布时间',
+}
+
+// 生成条件摘要文案，如 "License 等于 GPL-3.0"
+const formatCondition = (row: BlockRule) => {
+  const typeLabel = CONDITION_TYPE_LABELS[row.condition_type] || row.condition_type
+  const opLabel = OPERATOR_LABELS[row.condition_op] || row.condition_op
+  return `${typeLabel} ${opLabel} ${row.condition_value}`
+}
 
 const loadRules = async () => {
   loading.value = true
@@ -210,6 +240,9 @@ const openCreateDialog = () => {
     package_type: 'npm',
     reason: '',
     enabled: true,
+    condition_type: '',
+    condition_op: '',
+    condition_value: '',
   }
   showDialog.value = true
 }
@@ -224,6 +257,9 @@ const openEditDialog = (row: BlockRule) => {
     package_type: row.package_type,
     reason: row.reason,
     enabled: row.enabled,
+    condition_type: row.condition_type ?? '',
+    condition_op: row.condition_op ?? '',
+    condition_value: row.condition_value ?? '',
   }
   showDialog.value = true
 }
@@ -542,6 +578,11 @@ onMounted(loadRules)
   background: #f1f5f9;
   padding: 3px 8px;
   border-radius: 4px;
+}
+
+.condition-summary {
+  font-size: 12px;
+  color: #475569;
 }
 
 .operation-buttons {

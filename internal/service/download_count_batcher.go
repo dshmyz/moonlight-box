@@ -24,10 +24,12 @@ type DownloadCountKey struct {
 }
 
 type DownloadCountBatcher struct {
-	db            *gorm.DB
-	flushInterval time.Duration
-	stopCh        chan struct{}
-	shards        []downloadCountShard
+	db                *gorm.DB
+	flushInterval     time.Duration
+	stopCh            chan struct{}
+	shards            []downloadCountShard
+	packagesTableOk   bool
+	packagesTableOnce sync.Once
 }
 
 const defaultDownloadCountShardCount = 32
@@ -119,19 +121,26 @@ func hashDownloadCountKey(key DownloadCountKey) uint32 {
 	return h.Sum32()
 }
 
+// pkgCountKey packages 表下载计数的聚合键
+type pkgCountKey struct {
+	RepoID uint
+	Format string
+	Name   string
+}
+
 func (b *DownloadCountBatcher) batchUpdateCounts(ctx context.Context, counts map[DownloadCountKey]int64) {
 	// 按仓库 ID 聚合，更新 repositories.download_count
 	repoMap := make(map[uint]int64)
 	// 按 (repoID, format, name) 聚合，更新 packages.download_count
-	pkgMap := make(map[string]int64) // key: "repoID|format|name"
+	pkgMap := make(map[pkgCountKey]int64)
 
 	for key, count := range counts {
 		if key.RepoID > 0 {
 			repoMap[key.RepoID] += count
 		}
 		if key.RepoID > 0 && key.Format != "" && key.PackageName != "" {
-			pkgKey := fmt.Sprintf("%d|%s|%s", key.RepoID, key.Format, key.PackageName)
-			pkgMap[pkgKey] += count
+			pk := pkgCountKey{RepoID: key.RepoID, Format: key.Format, Name: key.PackageName}
+			pkgMap[pk] += count
 		}
 	}
 
@@ -193,8 +202,35 @@ func (b *DownloadCountBatcher) batchUpdateRepoCounts(ctx context.Context, counts
 	}
 }
 
+// checkPackagesTable 检查 packages 表是否存在，结果只查一次并缓存。
+// 避免每次 flush 都查询系统表。
+func (b *DownloadCountBatcher) checkPackagesTable() bool {
+	b.packagesTableOnce.Do(func() {
+		sqlDB, err := b.db.DB()
+		if err != nil {
+			return
+		}
+		var tableCount int
+		if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='packages'").Scan(&tableCount); err != nil {
+			// PostgreSQL
+			if err := sqlDB.QueryRow("SELECT count(*) FROM information_schema.tables WHERE table_name = 'packages'").Scan(&tableCount); err != nil {
+				tableCount = 0
+			}
+		}
+		b.packagesTableOk = tableCount > 0
+		if !b.packagesTableOk {
+			slog.Debug("packages table not found, package download count update will be skipped")
+		}
+	})
+	return b.packagesTableOk
+}
+
 // batchUpdatePackageCounts 批量更新 packages.download_count
-func (b *DownloadCountBatcher) batchUpdatePackageCounts(ctx context.Context, pkgMap map[string]int64) {
+func (b *DownloadCountBatcher) batchUpdatePackageCounts(ctx context.Context, pkgMap map[pkgCountKey]int64) {
+	if !b.checkPackagesTable() {
+		return
+	}
+
 	sqlDB, err := b.db.DB()
 	if err != nil {
 		slog.Error("failed to get sql.DB", "error", err)
@@ -207,20 +243,6 @@ func (b *DownloadCountBatcher) batchUpdatePackageCounts(ctx context.Context, pkg
 	}
 	defer tx.Rollback()
 
-	// 检查 packages 表是否存在，避免启动初期表未创建时报错
-	var tableCount int
-	if err := tx.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='packages'").Scan(&tableCount); err != nil {
-		// 可能是 PostgreSQL，尝试另一种检查
-		if err := tx.QueryRow("SELECT count(*) FROM information_schema.tables WHERE table_name = 'packages'").Scan(&tableCount); err != nil {
-			tableCount = 0
-		}
-	}
-	if tableCount == 0 {
-		slog.Debug("packages table not found, skipping package download count update")
-		tx.Rollback()
-		return
-	}
-
 	stmt, err := tx.Prepare("UPDATE packages SET download_count = download_count + ? WHERE repository_id = ? AND format = ? AND name = ?")
 	if err != nil {
 		slog.Error("failed to prepare packages update statement", "error", err)
@@ -228,17 +250,9 @@ func (b *DownloadCountBatcher) batchUpdatePackageCounts(ctx context.Context, pkg
 	}
 	defer stmt.Close()
 
-	for pkgKeyStr, cnt := range pkgMap {
-		parts := strings.SplitN(pkgKeyStr, "|", 3)
-		if len(parts) != 3 {
-			continue
-		}
-		var repoID uint
-		fmt.Sscanf(parts[0], "%d", &repoID)
-		format := parts[1]
-		name := parts[2]
-		if _, err := stmt.ExecContext(ctx, cnt, repoID, format, name); err != nil {
-			slog.Error("failed to update package download count", "repoID", repoID, "format", format, "name", name, "error", err)
+	for pk, cnt := range pkgMap {
+		if _, err := stmt.ExecContext(ctx, cnt, pk.RepoID, pk.Format, pk.Name); err != nil {
+			slog.Error("failed to update package download count", "repoID", pk.RepoID, "format", pk.Format, "name", pk.Name, "error", err)
 		}
 	}
 

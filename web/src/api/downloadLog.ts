@@ -43,6 +43,12 @@ export interface DownloadLogListResponse {
   }
 }
 
+export interface LogCleanupConfig {
+  enabled: boolean
+  retention_days: number
+  interval: string
+}
+
 export const downloadLogApi = {
   list(params?: { page?: number; page_size?: number; repository_id?: number; package_type?: string; status?: string; start_date?: string; end_date?: string }) {
     return request.get<DownloadLogListResponse>('/download-logs/logs', { params })
@@ -50,5 +56,17 @@ export const downloadLogApi = {
 
   getStats(params?: { repository_id?: number; start_date?: string; end_date?: string }) {
     return request.get<DownloadStats>('/download-logs/stats', { params })
+  },
+
+  getCleanupConfig() {
+    return request.get<LogCleanupConfig>('/download-logs/cleanup/config')
+  },
+
+  updateCleanupConfig(config: LogCleanupConfig) {
+    return request.put<LogCleanupConfig>('/download-logs/cleanup/config', config)
+  },
+
+  cleanupNow() {
+    return request.post<{ message: string }>('/download-logs/cleanup/now')
   },
 }

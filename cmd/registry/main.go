@@ -246,6 +246,7 @@ func main() {
 		cfg.Logging.LogRetentionDays,
 		cfg.Logging.CleanupInterval,
 	)
+	logCleanupSvc.SetConfigService(systemConfigSvc)
 	logCleanupSvc.Start()
 	defer logCleanupSvc.Stop()
 
@@ -419,6 +420,9 @@ func main() {
 	// 初始化下载日志 handler
 	downloadLogHandler := handler.NewDownloadLogHandler(downloadLogRepo)
 
+	// 初始化日志清理配置 handler
+	logCleanupConfigHandler := handler.NewLogCleanupConfigHandler(systemConfigSvc, logCleanupSvc)
+
 	// 初始化健康检查 handler
 	healthCheckHandler := handler.NewHealthCheckHandler(healthCheckSvc)
 
@@ -503,6 +507,7 @@ func main() {
 	routerCtx.Handlers.MigrationV2 = migV2Handler
 	routerCtx.Handlers.AI = aiHandler
 	routerCtx.Handlers.DownloadLog = downloadLogHandler
+	routerCtx.Handlers.LogCleanupConfig = logCleanupConfigHandler
 	routerCtx.Handlers.HealthCheck = healthCheckHandler
 	routerCtx.Handlers.VulnRule = vulnRuleHandler
 	routerCtx.Handlers.PackageVersion = packageVersionHandler

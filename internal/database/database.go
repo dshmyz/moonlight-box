@@ -74,8 +74,10 @@ func Initialize(cfg *config.Config) error {
 	}
 
 	if cfg.Database.Driver == "sqlite" {
-		sqlDB.SetMaxOpenConns(1)
-		sqlDB.SetMaxIdleConns(1)
+		// WAL 模式支持多读单写，允许多个读连接并发。
+		// 写串行由 DSN 中的 _txlock=immediate 保证，不会产生写冲突。
+		sqlDB.SetMaxOpenConns(4)
+		sqlDB.SetMaxIdleConns(2)
 		sqlDB.SetConnMaxLifetime(time.Hour)
 		sqlDB.SetConnMaxIdleTime(30 * time.Minute)
 

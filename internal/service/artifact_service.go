@@ -617,6 +617,7 @@ func (s *ArtifactService) recalcPackageVersions(tx *gorm.DB, seenPackages map[st
 		}
 
 		var latest model.Artifact
+		latestVersion := ""
 		if err := tx.Where("repository_id = ? AND format = ?", repoID, format).
 			Where("name = ?", name).
 			Where("version != ''").
@@ -625,10 +626,14 @@ func (s *ArtifactService) recalcPackageVersions(tx *gorm.DB, seenPackages map[st
 			Where("NOT (format = ? AND (remote_path LIKE ? OR remote_path LIKE ? OR path = ? OR path LIKE ? OR filename = ?))",
 				"yum", "repodata/%", "%/repodata/%", "repodata", "%/repodata", "repomd.xml").
 			Order("updated_at DESC").First(&latest).Error; err != nil {
-			return err
+			// 没有 version 的 artifact（如 generic/raw 文件）查不到记录属正常，
+			// latest_version 留空即可，不应让上传事务失败。
+			if err != gorm.ErrRecordNotFound {
+				return err
+			}
+		} else {
+			latestVersion = latest.Version
 		}
-
-		latestVersion := latest.Version
 
 		if err := tx.Model(&model.Package{}).
 			Where("repository_id = ? AND format = ? AND name = ?", repoID, format, name).

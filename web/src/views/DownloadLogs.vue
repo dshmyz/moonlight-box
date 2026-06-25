@@ -16,6 +16,45 @@
       </el-button>
     </header>
 
+    <!-- 自动清理配置 -->
+    <div class="cleanup-config-card">
+      <div class="cleanup-config-header" @click="showCleanupConfig = !showCleanupConfig">
+        <div class="cleanup-config-title">
+          <i class="fa-solid fa-broom"></i>
+          <span>自动清理配置</span>
+          <el-tag v-if="cleanupConfig.enabled" type="success" size="small">已启用</el-tag>
+          <el-tag v-else type="info" size="small">已禁用</el-tag>
+        </div>
+        <i class="fa-solid" :class="showCleanupConfig ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+      </div>
+      <el-collapse-transition>
+        <div v-show="showCleanupConfig" class="cleanup-config-body">
+          <el-form :model="cleanupConfig" label-width="120px" class="cleanup-form">
+            <el-form-item label="启用自动清理">
+              <el-switch v-model="cleanupConfig.enabled" />
+            </el-form-item>
+            <el-form-item label="保留天数">
+              <el-input-number v-model="cleanupConfig.retention_days" :min="1" :max="3650" :disabled="!cleanupConfig.enabled" />
+              <span class="form-hint">超过此天数的日志将被自动删除</span>
+            </el-form-item>
+            <el-form-item label="清理间隔">
+              <el-select v-model="cleanupConfig.interval" placeholder="选择清理间隔" :disabled="!cleanupConfig.enabled" style="width: 180px">
+                <el-option label="每小时" value="1h" />
+                <el-option label="每6小时" value="6h" />
+                <el-option label="每12小时" value="12h" />
+                <el-option label="每天" value="24h" />
+                <el-option label="每周" value="168h" />
+              </el-select>
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" size="small" @click="saveCleanupConfig" :loading="savingCleanupConfig">保存配置</el-button>
+              <el-button size="small" @click="cleanupNow" :loading="cleaningNow">立即清理</el-button>
+            </el-form-item>
+          </el-form>
+        </div>
+      </el-collapse-transition>
+    </div>
+
     <div class="stats-bar">
       <div class="stat-card stat-card--total">
         <div class="stat-icon">
@@ -201,7 +240,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
-import { downloadLogApi, type DownloadLog, type DownloadStats } from '@/api/downloadLog'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { downloadLogApi, type DownloadLog, type DownloadStats, type LogCleanupConfig } from '@/api/downloadLog'
 import { repositoryApi, type Repository } from '@/api/repository'
 
 const loading = ref(false)
@@ -216,6 +256,12 @@ const filterPkgType = ref('')
 const filterStatus = ref('')
 const dateRange = ref<[Date, Date] | null>(null)
 const hoveredRow = ref<number | null>(null)
+
+// 清理配置
+const showCleanupConfig = ref(false)
+const cleanupConfig = ref<LogCleanupConfig>({ enabled: true, retention_days: 30, interval: '24h' })
+const savingCleanupConfig = ref(false)
+const cleaningNow = ref(false)
 
 function tableRowClass({ rowIndex }: { rowIndex: number }) {
   return rowIndex === hoveredRow.value ? 'row-hovered' : ''
@@ -325,9 +371,57 @@ function handlePageChange(p: number) {
   loadLogs()
 }
 
+async function loadCleanupConfig() {
+  try {
+    const config = await downloadLogApi.getCleanupConfig()
+    if (config) {
+      cleanupConfig.value = config
+    }
+  } catch {
+    console.error('Failed to load cleanup config')
+  }
+}
+
+async function saveCleanupConfig() {
+  savingCleanupConfig.value = true
+  try {
+    await downloadLogApi.updateCleanupConfig(cleanupConfig.value)
+    ElMessage.success('清理配置保存成功')
+    await loadCleanupConfig()
+  } catch {
+    ElMessage.error('保存清理配置失败')
+  } finally {
+    savingCleanupConfig.value = false
+  }
+}
+
+async function cleanupNow() {
+  try {
+    await ElMessageBox.confirm(
+      `将立即删除超过 ${cleanupConfig.value.retention_days} 天的下载日志，此操作不可撤销，是否继续？`,
+      '确认立即清理',
+      { confirmButtonText: '确认清理', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+
+  cleaningNow.value = true
+  try {
+    await downloadLogApi.cleanupNow()
+    ElMessage.success('清理完成')
+    await loadLogs()
+  } catch {
+    ElMessage.error('清理失败')
+  } finally {
+    cleaningNow.value = false
+  }
+}
+
 onMounted(() => {
   loadRepositories()
   loadLogs()
+  loadCleanupConfig()
 })
 </script>
 
@@ -398,6 +492,56 @@ onMounted(() => {
   background: #f1f5f9;
   border-color: #cbd5e1;
   color: #475569;
+}
+
+.cleanup-config-card {
+  background: #fff;
+  border-radius: 14px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+}
+
+.cleanup-config-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s ease;
+}
+
+.cleanup-config-header:hover {
+  background: #f8fafc;
+}
+
+.cleanup-config-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.cleanup-config-title i {
+  color: #6366f1;
+}
+
+.cleanup-config-body {
+  padding: 8px 24px 20px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.cleanup-form {
+  margin-top: 12px;
+}
+
+.form-hint {
+  margin-left: 12px;
+  font-size: 12px;
+  color: #94a3b8;
 }
 
 .stats-bar {

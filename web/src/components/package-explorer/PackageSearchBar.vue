@@ -6,6 +6,7 @@
         ref="searchInputRef"
         v-model="localQuery"
         class="search-input"
+        size="large"
         placeholder="搜索包名、描述或标签（按 / 聚焦）"
         clearable
         @input="onInput"
@@ -44,6 +45,7 @@
       <el-select
         :model-value="query.sort"
         class="sort-select"
+        size="large"
         @change="(v: string) => emitUpdate({ sort: v as any })"
       >
         <el-option label="更新时间" value="updated_at" />
@@ -52,16 +54,16 @@
       </el-select>
 
       <div class="view-toggle">
-        <el-button :class="{ active: viewMode === 'table' }" @click="$emit('update:viewMode', 'table')" title="表格视图">
+        <el-button size="large" :class="{ active: viewMode === 'table' }" @click="$emit('update:viewMode', 'table')" title="表格视图">
           <el-icon><List /></el-icon>
         </el-button>
-        <el-button :class="{ active: viewMode === 'grid' }" @click="$emit('update:viewMode', 'grid')" title="网格视图">
+        <el-button size="large" :class="{ active: viewMode === 'grid' }" @click="$emit('update:viewMode', 'grid')" title="网格视图">
           <el-icon><Grid /></el-icon>
         </el-button>
       </div>
 
       <el-badge :is-dot="hasActiveFilter">
-        <el-button class="filter-btn" @click="$emit('open-filter')">
+        <el-button class="filter-btn" size="large" @click="$emit('open-filter')">
           <el-icon><Filter /></el-icon>高级查询
         </el-button>
       </el-badge>
@@ -232,19 +234,18 @@ defineExpose({
 .recent-item:hover { background: var(--lunar-bg-glass); }
 .recent-term { font-family: var(--font-family-mono); }
 
-.sort-select { width: 124px; }
+.sort-select { width: 140px; }
 .view-toggle {
   display: flex;
   border: 1px solid var(--lunar-border);
   border-radius: var(--radius-md);
   overflow: hidden;
-  height: 32px;
 }
 .view-toggle .el-button {
   border: none;
   border-radius: 0;
-  padding: 0 10px;
-  height: 32px;
+  padding: 0 12px;
+  height: 40px;
 }
 .view-toggle .el-button + .el-button { border-left: 1px solid var(--lunar-border); }
 .view-toggle .el-button.active {
@@ -257,13 +258,13 @@ defineExpose({
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 28px;
-  padding: 0 12px;
+  height: 40px;
+  padding: 0 14px;
   border: 1px solid var(--lunar-border);
   border-radius: var(--radius-full);
   background: transparent;
   color: var(--lunar-silver-muted);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   transition: all var(--transition-fast);

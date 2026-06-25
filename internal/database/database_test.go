@@ -69,7 +69,7 @@ func TestCleanupLegacyArtifactColumnsDropsCoordinates(t *testing.T) {
 	}
 }
 
-func TestInitializeSQLiteUsesSingleWriterConnection(t *testing.T) {
+func TestInitializeSQLiteUsesConcurrentReadConnection(t *testing.T) {
 	if err := util.InitLogger(&util.LoggerConfig{Level: "error", Format: "console", Output: "stdout"}); err != nil {
 		t.Fatalf("init logger: %v", err)
 	}
@@ -97,8 +97,9 @@ func TestInitializeSQLiteUsesSingleWriterConnection(t *testing.T) {
 		t.Fatalf("get sql db: %v", err)
 	}
 	stats := sqlDB.Stats()
-	if stats.MaxOpenConnections != 1 {
-		t.Fatalf("sqlite MaxOpenConnections = %d, want 1 to avoid writer lock contention", stats.MaxOpenConnections)
+	// WAL 模式支持多读单写，允许多个读连接并发，写串行由 _txlock=immediate 保证
+	if stats.MaxOpenConnections != 4 {
+		t.Fatalf("sqlite MaxOpenConnections = %d, want 4 for concurrent reads under WAL", stats.MaxOpenConnections)
 	}
 }
 
