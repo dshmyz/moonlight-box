@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/domain"
@@ -69,6 +70,22 @@ func artifactSourceFormat(comp source.SourceComponent, repoFormat string) string
 		format = repoFormat
 	}
 	return nexusTargetFormat(format)
+}
+
+// isMavenMetadataAsset 判断 asset 是否为 maven-metadata.xml 或其 checksum 文件。
+// 这类文件是派生数据，运行时会根据实际制品动态生成，迁移时跳过以避免覆盖目标库更新的 metadata。
+func isMavenMetadataAsset(format, assetPath string) bool {
+	if nexusTargetFormat(format) != "maven" {
+		return false
+	}
+	name := filepath.Base(assetPath)
+	if name == "maven-metadata.xml" {
+		return true
+	}
+	if strings.HasPrefix(name, "maven-metadata.xml.") {
+		return true
+	}
+	return false
 }
 
 func repositoryFormatByName(repos []source.SourceRepository) map[string]string {
@@ -449,6 +466,9 @@ func (p *Planner) scanArtifacts(ctx context.Context, repos []source.SourceReposi
 			}
 			for _, comp := range page.Items {
 				for _, asset := range comp.Assets {
+					if isMavenMetadataAsset(artifactSourceFormat(comp, repoFormats[repoName]), asset.Path) {
+						continue
+					}
 					assetCheckpoint, _ := migrationAssetCheckpointJSON(asset)
 					allItems = append(allItems, domain.MigrationItem{
 						PlanID:           p.planID,
@@ -542,6 +562,9 @@ func (p *Planner) scanArtifactsStreaming(ctx context.Context, repos []source.Sou
 			}
 			for _, comp := range page.Items {
 				for _, asset := range comp.Assets {
+					if isMavenMetadataAsset(artifactSourceFormat(comp, repoFormats[repoName]), asset.Path) {
+						continue
+					}
 					assetCheckpoint, _ := migrationAssetCheckpointJSON(asset)
 					allItems = append(allItems, domain.MigrationItem{
 						PlanID:           p.planID,
