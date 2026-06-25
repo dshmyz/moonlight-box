@@ -158,10 +158,23 @@ func (s *PackageSearchService) searchFromPackages(ctx context.Context, req *Sear
 		query = query.Where("name = ?", req.Name)
 	}
 
-	// 版本筛选：packages 表只有 latest_version，无法匹配历史版本
-	// 传了 version 参数时必须回退到 artifacts 慢路径
+	// 版本筛选：packages 表只有 latest_version，无法匹配历史版本。
+	// 用 IN 子查询下推到 artifacts 表，先查出匹配版本的 (repo_id, format, name) 集合，
+	// 再过滤 packages，避免 EXISTS 对每行 packages 重复执行相关子查询。
+	// 注意：含 [ 的 glob 字符类（如 [12].0.0）SQL LIKE 不支持，
+	// 需回退到 searchFromArtifacts 内存 filepath.Match 精确过滤。
 	if req.Version != "" {
-		return nil, fmt.Errorf("version filter requires artifacts fallback")
+		if strings.Contains(req.Version, "[") {
+			return nil, fmt.Errorf("version pattern with char class requires artifacts fallback")
+		}
+		verCond, verArgs := versionToSQLCondition("a.version", req.Version)
+		if verCond != "" {
+			subQuery := "packages.repository_id || '|' || packages.format || '|' || packages.name IN (" +
+				"SELECT a.repository_id || '|' || a.format || '|' || a.name FROM artifacts a " +
+				"WHERE a.version != '' AND " + verCond + " AND " +
+				"(a.kind IS NULL OR a.kind NOT IN ('metadata','checksum','directory')))"
+			query = query.Where(subQuery, verArgs...)
+		}
 	}
 
 	// 查询总数
@@ -243,6 +256,10 @@ func (s *PackageSearchService) searchFromPackages(ctx context.Context, req *Sear
 
 // searchFromArtifacts 从 artifacts 表聚合查询（慢速路径，回退方案）
 func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *SearchRequest) (*SearchResult, error) {
+	if !strings.Contains(req.Version, "[") {
+		return s.searchFromArtifactsGrouped(ctx, req)
+	}
+
 	start := time.Now()
 
 	// 构建基础查询条件
@@ -270,6 +287,15 @@ func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *Sea
 		conditions = append(conditions, "name = ?")
 		args = append(args, req.Name)
 	}
+	// version 下推到 SQL，走 idx_artifact_version 索引，避免全量加载后内存逐行 Match。
+	// 含 [ 的字符类 SQL LIKE 不支持，跳过 SQL 过滤，在内存用 filepath.Match 精过滤。
+	if req.Version != "" && !strings.Contains(req.Version, "[") {
+		verCond, verArgs := versionToSQLCondition("version", req.Version)
+		if verCond != "" {
+			conditions = append(conditions, verCond)
+			args = append(args, verArgs...)
+		}
+	}
 	conditions = append(conditions, searchableArtifactSQL("artifacts"))
 
 	whereClause := ""
@@ -277,56 +303,63 @@ func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *Sea
 		whereClause = " WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	// 步骤1：查询所有匹配的 artifacts（用于聚合）
-	// 使用索引优化查询，按时间倒序
-	query := "SELECT id, repository_id, format, name, version, attributes, created_at, updated_at FROM artifacts" +
-		whereClause + " ORDER BY updated_at DESC"
-
-	var rawRows []rawArtifact
-	if err := s.db.WithContext(ctx).Raw(query, args...).Scan(&rawRows).Error; err != nil {
-		return nil, err
-	}
-
-	// 步骤2：在内存中聚合（按 repository_id + format + name 分组）
+	// 对包含字符类的版本模式，数据库无法用跨方言 SQL 完整表达 filepath.Match。
+	// 逐批扫描并立即聚合，既保持原有匹配语义，也不会截断较旧的 artifact。
 	type groupKey struct {
 		repositoryID uint
 		format       string
 		name         string
 	}
 	groups := make(map[groupKey]*groupAcc)
-
-	for _, row := range rawRows {
-		name := row.Name
-		if name == "" {
-			continue
+	const artifactBatchSize = 1000
+	rawCount := 0
+	lastID := uint(0)
+	for {
+		batchArgs := append([]interface{}{}, args...)
+		batchArgs = append(batchArgs, lastID, artifactBatchSize)
+		batchWhere := whereClause + " AND artifacts.id > ?"
+		batchQuery := "SELECT id, repository_id, format, name, version, attributes, created_at, updated_at FROM artifacts" +
+			batchWhere + " ORDER BY id ASC LIMIT ?"
+		var rows []rawArtifact
+		if err := s.db.WithContext(ctx).Raw(batchQuery, batchArgs...).Scan(&rows).Error; err != nil {
+			return nil, err
 		}
+		if len(rows) == 0 {
+			break
+		}
+		rawCount += len(rows)
+		lastID = rows[len(rows)-1].ID
 
-		if req.Version != "" {
-			ver := row.Version
-			matched, _ := filepath.Match(req.Version, ver)
+		for _, row := range rows {
+			if row.Name == "" {
+				continue
+			}
+			matched, _ := filepath.Match(req.Version, row.Version)
 			if !matched {
 				continue
 			}
+			key := groupKey{row.RepositoryID, row.Format, row.Name}
+			acc, ok := groups[key]
+			if !ok {
+				acc = &groupAcc{name: row.Name, format: row.Format, repositoryID: row.RepositoryID}
+				groups[key] = acc
+			}
+			acc.versionCount++
+			if row.UpdatedAt.After(acc.latestTime) {
+				acc.latestTime = row.UpdatedAt
+			}
+			if acc.firstID == 0 {
+				acc.firstID = row.ID
+			}
+			if acc.license == "" {
+				acc.license = extractField(row.Attributes, "license")
+			}
+			if acc.description == "" {
+				acc.description = extractField(row.Attributes, "description")
+			}
 		}
-
-		key := groupKey{row.RepositoryID, row.Format, name}
-		acc, ok := groups[key]
-		if !ok {
-			acc = &groupAcc{name: name, format: row.Format, repositoryID: row.RepositoryID}
-			groups[key] = acc
-		}
-		acc.versionCount++
-		if row.UpdatedAt.After(acc.latestTime) {
-			acc.latestTime = row.UpdatedAt
-		}
-		if acc.firstID == 0 {
-			acc.firstID = row.ID
-		}
-		if acc.license == "" {
-			acc.license = extractField(row.Attributes, "license")
-		}
-		if acc.description == "" {
-			acc.description = extractField(row.Attributes, "description")
+		if len(rows) < artifactBatchSize {
+			break
 		}
 	}
 
@@ -410,8 +443,156 @@ func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *Sea
 		Page:         req.Page,
 		PageSize:     req.PageSize,
 		SearchTimeMs: time.Since(start).Milliseconds(),
-		RawCount:     len(rawRows),
+		RawCount:     rawCount,
 	}, nil
+}
+
+type groupedArtifact struct {
+	ID           uint   `gorm:"column:id"`
+	RepositoryID uint   `gorm:"column:repository_id"`
+	Format       string `gorm:"column:format"`
+	Name         string `gorm:"column:name"`
+	Attributes   string `gorm:"column:attributes"`
+	VersionCount int    `gorm:"column:version_count"`
+	UpdatedAt    string `gorm:"column:updated_at"`
+}
+
+// searchFromArtifactsGrouped lets the database group artifact rows before it
+// counts and paginates packages. This prevents a package with many versions
+// from hiding older packages behind an arbitrary artifact-row scan limit.
+func (s *PackageSearchService) searchFromArtifactsGrouped(ctx context.Context, req *SearchRequest) (*SearchResult, error) {
+	start := time.Now()
+	conditions, args := artifactSearchConditions(req)
+	conditions = append(conditions, searchableArtifactSQL("artifacts"))
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	var rawCount int64
+	if err := s.db.WithContext(ctx).Raw("SELECT COUNT(*) FROM artifacts"+whereClause, args...).Scan(&rawCount).Error; err != nil {
+		return nil, err
+	}
+
+	groupedQuery := "SELECT MIN(id) AS id, repository_id, format, name, " +
+		"MAX(attributes) AS attributes, COUNT(*) AS version_count, MAX(updated_at) AS updated_at " +
+		"FROM artifacts" + whereClause + " GROUP BY repository_id, format, name"
+
+	var total int64
+	if err := s.db.WithContext(ctx).Raw("SELECT COUNT(*) FROM ("+groupedQuery+") grouped", args...).Scan(&total).Error; err != nil {
+		return nil, err
+	}
+
+	orderBy := "updated_at DESC"
+	if req.Sort == "name" {
+		orderBy = "name ASC"
+	}
+	offset := (req.Page - 1) * req.PageSize
+	pageArgs := append(append([]interface{}{}, args...), req.PageSize, offset)
+	var rows []groupedArtifact
+	pageQuery := "SELECT id, repository_id, format, name, attributes, version_count, updated_at FROM (" +
+		groupedQuery + ") grouped ORDER BY " + orderBy + " LIMIT ? OFFSET ?"
+	if err := s.db.WithContext(ctx).Raw(pageQuery, pageArgs...).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	repoIDs := make(map[uint]bool)
+	for _, row := range rows {
+		repoIDs[row.RepositoryID] = true
+	}
+	repoIDList := make([]uint, 0, len(repoIDs))
+	for id := range repoIDs {
+		repoIDList = append(repoIDList, id)
+	}
+	repoNameMap := make(map[uint]string)
+	if len(repoIDList) > 0 {
+		type repoRow struct {
+			ID   uint
+			Name string
+		}
+		var repoRows []repoRow
+		if err := s.db.WithContext(ctx).Model(&model.Repository{}).Select("id, name").Where("id IN ?", repoIDList).Find(&repoRows).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range repoRows {
+			repoNameMap[row.ID] = row.Name
+		}
+	}
+
+	list := make([]SearchEntry, len(rows))
+	for i, row := range rows {
+		updatedAt, err := parseGroupedArtifactTime(row.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse grouped artifact updated_at %q: %w", row.UpdatedAt, err)
+		}
+		list[i] = SearchEntry{
+			ID:             row.ID,
+			RepositoryID:   row.RepositoryID,
+			Format:         row.Format,
+			Name:           row.Name,
+			Description:    extractField(row.Attributes, "description"),
+			VersionCount:   row.VersionCount,
+			UpdatedAt:      updatedAt,
+			RepositoryName: repoNameMap[row.RepositoryID],
+			License:        extractField(row.Attributes, "license"),
+		}
+	}
+
+	return &SearchResult{
+		List:         list,
+		Total:        total,
+		Page:         req.Page,
+		PageSize:     req.PageSize,
+		SearchTimeMs: time.Since(start).Milliseconds(),
+		RawCount:     int(rawCount),
+	}, nil
+}
+
+func parseGroupedArtifactTime(value string) (time.Time, error) {
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999",
+	} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported timestamp format")
+}
+
+func artifactSearchConditions(req *SearchRequest) ([]string, []interface{}) {
+	var conditions []string
+	var args []interface{}
+	if req.Type != "" {
+		types := util.ExpandPackageTypeAliases(req.Type)
+		placeholders := make([]string, len(types))
+		for i, t := range types {
+			placeholders[i] = "?"
+			args = append(args, t)
+		}
+		conditions = append(conditions, fmt.Sprintf("format IN (%s)", strings.Join(placeholders, ",")))
+	}
+	if req.Repository != "" {
+		conditions = append(conditions, "repository_id = (SELECT id FROM repositories WHERE name = ? LIMIT 1)")
+		args = append(args, req.Repository)
+	}
+	if req.Query != "" {
+		conditions = append(conditions, "LOWER(name) LIKE ?")
+		args = append(args, "%"+strings.ToLower(req.Query)+"%")
+	}
+	if req.Name != "" {
+		conditions = append(conditions, "name = ?")
+		args = append(args, req.Name)
+	}
+	if req.Version != "" {
+		verCond, verArgs := versionToSQLCondition("version", req.Version)
+		if verCond != "" {
+			conditions = append(conditions, verCond)
+			args = append(args, verArgs...)
+		}
+	}
+	return conditions, args
 }
 
 type groupAcc struct {
@@ -491,4 +672,38 @@ func extractField(coordsJSON, key string) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return s
+}
+
+// versionToSQLCondition 将版本过滤条件转换为 SQL 片段和参数。
+// - 无通配符：精确匹配，走 idx_artifact_version 索引，最快
+// - 前缀通配（如 1.2.*）：转 LIKE '1.2.%'，走索引前缀
+// - 其他通配（如 1.*.0）：转 LIKE，可能全表扫描
+// 返回 (SQL片段, 参数)。pattern 为空时返回 ("", nil) 表示不过滤。
+func versionToSQLCondition(column string, pattern string) (string, []interface{}) {
+	if pattern == "" {
+		return "", nil
+	}
+	// filepath.Match 的通配符：* ? [ ]，SQL LIKE 的通配符：% _
+	// 不含通配符时用精确匹配，走索引
+	if !strings.ContainsAny(pattern, "*?[") {
+		return column + " = ?", []interface{}{pattern}
+	}
+	// 转换 glob 到 SQL LIKE：
+	// % 和 _ 需要转义，* → %，? → _，[...] 不转（SQL LIKE 不支持字符类，退化为普通字符）
+	var b strings.Builder
+	for _, r := range pattern {
+		switch r {
+		case '%', '_':
+			// 转义 LIKE 的特殊字符
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case '*':
+			b.WriteByte('%')
+		case '?':
+			b.WriteByte('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return column + " LIKE ? ESCAPE '\\'", []interface{}{b.String()}
 }
