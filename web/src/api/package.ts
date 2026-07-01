@@ -70,6 +70,7 @@ export interface PackageVersion {
   checksum_md5?: string
   trigger_ip?: string
   files?: PackageFile[]
+  file_count?: number
   dependencies?: Array<{
     id: number
     version_id: number
@@ -112,6 +113,12 @@ export const packageApi = {
 
   getVersions(type: string, name: string) {
     return request.get<VersionListResponse>(`/packages/${type}/versions`, { params: { name } })
+  },
+
+  getVersionFiles(type: string, name: string, version: string, repositoryId?: number) {
+    return request.get<{ files: PackageFile[] }>(`/packages/${type}/versions/files`, {
+      params: { name, version, repository_id: repositoryId },
+    })
   },
 
   deprecateVersion(versionId: number, reason: string) {

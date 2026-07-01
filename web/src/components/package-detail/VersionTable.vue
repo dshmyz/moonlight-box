@@ -99,6 +99,15 @@
               更多文件（{{ hiddenFileCount(row) }}）
             </button>
           </div>
+          <button
+            v-else-if="!row.files && row.file_count && row.file_count > 0"
+            class="more-files-hint"
+            type="button"
+            :disabled="loadingFiles.has(row.version)"
+            @click.stop="loadFiles(row)"
+          >
+            {{ loadingFiles.has(row.version) ? '加载中...' : `加载文件（${row.file_count}）` }}
+          </button>
           <span v-else class="no-files">-</span>
         </template>
       </el-table-column>
@@ -168,12 +177,15 @@ import { ElMessageBox } from 'element-plus'
 import { formatNumber, formatSize, formatDate } from '@/utils/format'
 import { getVersionStatusColor, getVersionStatusLabel } from '@/constants/package'
 import { copyToClipboard } from '@/utils/clipboard'
-import type { PackageVersion, PackageFile } from '@/api/package'
+import { packageApi, type PackageVersion, PackageFile } from '@/api/package'
 
 const props = defineProps<{
   versions: PackageVersion[]
   selectedVersion: string
   showAdminActions?: boolean
+  pkgType?: string
+  pkgName?: string
+  repositoryId?: number
 }>()
 
 const emit = defineEmits<{
@@ -189,6 +201,22 @@ const currentPage = ref(1)
 const cacheFilter = ref<'all' | 'cached' | 'uncached'>('all')
 const versionSearch = ref('')
 const expandedFiles = ref<Set<string>>(new Set())
+const loadingFiles = ref<Set<string>>(new Set())
+
+async function loadFiles(row: PackageVersion) {
+  if (row.files || loadingFiles.value.has(row.version)) return
+  if (!props.pkgType || !props.pkgName) return
+
+  loadingFiles.value.add(row.version)
+  try {
+    const resp = await packageApi.getVersionFiles(props.pkgType, props.pkgName, row.version, row.repository_id ?? props.repositoryId)
+    row.files = resp.files || []
+  } catch {
+    // 保持未加载状态，允许用户在临时请求失败后重试。
+  } finally {
+    loadingFiles.value.delete(row.version)
+  }
+}
 
 // 筛选变化时重置页码
 watch([cacheFilter, versionSearch], () => {

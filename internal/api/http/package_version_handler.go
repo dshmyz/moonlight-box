@@ -67,41 +67,282 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		repositoryID = uint(repoID)
 	}
 
-	db := h.db.WithContext(c.Request.Context()).Model(&model.Artifact{}).
-		Where("format = ?", pkgType)
+	// 优先走 package_versions 读模型
+	if summaries, ok := h.loadPackageVersionSummaries(c.Request.Context(), pkgType, pkgName, repositoryID); ok {
+		h.respondVersionsFromArtifacts(c, pkgType, pkgName, repositoryID, summaries)
+		return
+	}
 
-	db = db.Where("name = ?", pkgName)
+	// 回退：package_versions 表不存在或无数据时，从 artifacts 聚合
+	h.respondVersionsFromArtifacts(c, pkgType, pkgName, repositoryID, nil)
+}
+
+// respondVersionsFromArtifacts 从 artifacts 表按版本聚合；当 summaries 存在时，
+// 优先使用 package_versions 读模型字段，并补齐读模型暂缺的 artifact 版本。
+func (h *PackageVersionHandler) respondVersionsFromArtifacts(c *gin.Context, pkgType, pkgName string, repositoryID uint, summaries []model.PackageVersion) {
+	db := h.db.WithContext(c.Request.Context()).Model(&model.Artifact{}).
+		Where("format = ?", pkgType).
+		Where("name = ?", pkgName).
+		Where("version != ''").
+		Where("(kind IS NULL OR kind NOT IN ?)", []string{"metadata", "checksum", "directory"}).
+		Where("(format != 'go' OR kind = 'version' OR EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = artifacts.id))").
+		Where("NOT (format = 'yum' AND (remote_path LIKE 'repodata/%' OR remote_path LIKE '%/repodata/%' OR path = 'repodata' OR path LIKE '%/repodata' OR filename = 'repomd.xml'))")
 
 	if repositoryID > 0 {
 		db = db.Where("repository_id = ?", repositoryID)
 	}
-
-	versionSummaries, _ := h.loadPackageVersionSummaries(c.Request.Context(), pkgType, pkgName, repositoryID)
-	versionSummaryMap := make(map[string]model.PackageVersion, len(versionSummaries))
+	db = excludeSummarizedArtifactVersions(db, summaries)
 
 	var artifacts []model.Artifact
-	if err := db.Order("created_at DESC").Find(&artifacts).Error; err != nil {
+	if err := db.Order("updated_at DESC").Find(&artifacts).Error; err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
 
-	// 批量加载仓库名称（用于构造下载 URL）
-	repoNameMap := make(map[uint]string)
-	{
-		repoIDs := make(map[uint]bool)
-		for _, a := range artifacts {
-			repoIDs[a.RepositoryID] = true
+	repoIDs := make(map[uint]bool)
+	for _, a := range artifacts {
+		repoIDs[a.RepositoryID] = true
+	}
+	for _, s := range summaries {
+		repoIDs[s.RepositoryID] = true
+	}
+	downloadCountMap := h.batchDownloadCounts(c.Request.Context(), pkgType, pkgName, repoIDs)
+
+	type versionGroup struct {
+		id              uint
+		latestAt        time.Time
+		publishedAt     string
+		publishedAtTime *time.Time
+		license         string
+		name            string
+		namespace       string
+		identityKey     string
+		status          string
+		filesDownloaded bool
+		downloadCount   int64
+		sizeBytes       int64
+		sha256          string
+		fileCount       int
+		hasSummary      bool
+		repoIDs         map[uint]bool
+	}
+	verGroups := make(map[string]*versionGroup)
+	var verOrder []string
+	for _, s := range summaries {
+		vp, ok := verGroups[s.Version]
+		if !ok {
+			vp = &versionGroup{repoIDs: make(map[uint]bool)}
+			verGroups[s.Version] = vp
+			verOrder = append(verOrder, s.Version)
 		}
-		if len(repoIDs) > 0 {
-			ids := make([]uint, 0, len(repoIDs))
-			for id := range repoIDs {
-				ids = append(ids, id)
+		vp.repoIDs[s.RepositoryID] = true
+		if vp.id == 0 {
+			vp.id = s.ID
+		}
+		if s.LatestArtifactAt.After(vp.latestAt) {
+			vp.latestAt = s.LatestArtifactAt
+		}
+		if s.PublishedAt != nil && vp.publishedAtTime == nil {
+			publishedAt := *s.PublishedAt
+			vp.publishedAtTime = &publishedAt
+		}
+		if vp.name == "" {
+			vp.name = s.PackageName
+		}
+		if vp.namespace == "" {
+			vp.namespace = s.Namespace
+		}
+		if s.Status != "" {
+			vp.status = s.Status
+		}
+		if s.License != "" {
+			vp.license = s.License
+		}
+		if s.SizeBytes > 0 {
+			vp.sizeBytes += s.SizeBytes
+		}
+		if vp.sha256 == "" {
+			vp.sha256 = s.ChecksumSHA256
+		}
+		vp.fileCount += s.FileCount
+		vp.filesDownloaded = vp.filesDownloaded || s.FilesDownloaded
+		vp.downloadCount += s.DownloadCount
+		vp.hasSummary = true
+	}
+	for _, a := range artifacts {
+		version := a.Version
+		vp, ok := verGroups[version]
+		if !ok {
+			vp = &versionGroup{repoIDs: make(map[uint]bool)}
+			verGroups[version] = vp
+			verOrder = append(verOrder, version)
+		}
+		vp.repoIDs[a.RepositoryID] = true
+		if vp.id == 0 {
+			vp.id = a.ID
+		}
+		if a.CreatedAt.After(vp.latestAt) {
+			vp.latestAt = a.CreatedAt
+			vp.id = a.ID
+		}
+		if !vp.hasSummary && vp.sizeBytes == 0 && a.SizeBytes > 0 {
+			vp.sizeBytes = a.SizeBytes
+		}
+		if !vp.hasSummary && vp.sha256 == "" {
+			vp.sha256 = jsonbString(a.Checksums, "sha256")
+		}
+		if vp.name == "" {
+			vp.name = a.Name
+		}
+		if vp.namespace == "" {
+			vp.namespace = a.Namespace
+		}
+		if vp.identityKey == "" {
+			vp.identityKey = a.IdentityKey
+		}
+		if !vp.hasSummary && vp.license == "" {
+			vp.license = jsonbString(a.Attributes, "license")
+		}
+		if !vp.hasSummary && vp.publishedAt == "" {
+			vp.publishedAt = jsonbString(a.Attributes, "published_at")
+		}
+		if !vp.hasSummary {
+			vp.fileCount++
+		}
+	}
+
+	versions := make([]gin.H, 0, len(verOrder))
+	for _, ver := range verOrder {
+		vp := verGroups[ver]
+		publishedAt := vp.latestAt
+		if vp.publishedAtTime != nil {
+			publishedAt = *vp.publishedAtTime
+		} else if vp.publishedAt != "" {
+			if t, err := time.Parse(time.RFC3339, vp.publishedAt); err == nil {
+				publishedAt = t
 			}
-			var repos []model.Repository
-			h.db.Where("id IN ?", ids).Find(&repos)
-			for _, r := range repos {
-				repoNameMap[r.ID] = r.Name
+		}
+		if publishedAt.IsZero() {
+			publishedAt = time.Now()
+		}
+
+		var downloadCount int64
+		downloadCount = vp.downloadCount
+		if downloadCount == 0 {
+			for repoID := range vp.repoIDs {
+				downloadCount += downloadCountMap[fmt.Sprintf("%d|%s", repoID, ver)]
 			}
+		}
+		status := vp.status
+		if status == "" {
+			status = "published"
+		}
+
+		entry := gin.H{
+			"id":               vp.id,
+			"repository_id":    singleRepositoryID(vp.repoIDs),
+			"version":          ver,
+			"name":             vp.name,
+			"namespace":        vp.namespace,
+			"identity_key":     vp.identityKey,
+			"status":           status,
+			"published_at":     publishedAt,
+			"size_bytes":       vp.sizeBytes,
+			"checksum_sha256":  vp.sha256,
+			"file_count":       vp.fileCount,
+			"files_downloaded": vp.filesDownloaded,
+			"download_count":   downloadCount,
+		}
+		if vp.license != "" {
+			entry["license"] = vp.license
+		}
+		versions = append(versions, entry)
+	}
+
+	response.Success(c, gin.H{
+		"package_name": pkgName,
+		"type":         pkgType,
+		"versions":     versions,
+	})
+}
+
+// batchDownloadCounts 批量查询版本级下载计数。
+func (h *PackageVersionHandler) batchDownloadCounts(ctx context.Context, pkgType, pkgName string, repoIDs map[uint]bool) map[string]int64 {
+	result := make(map[string]int64)
+	if len(repoIDs) == 0 {
+		return result
+	}
+	ids := make([]uint, 0, len(repoIDs))
+	for id := range repoIDs {
+		ids = append(ids, id)
+	}
+	var countRows []struct {
+		RepositoryID uint
+		Version      string
+		Count        int64
+	}
+	err := h.db.WithContext(ctx).Table("download_logs").
+		Select("repository_id, version, COUNT(*) as count").
+		Where("repository_id IN ? AND package_type = ? AND package_name = ? AND status IN ?",
+			ids, pkgType, pkgName, []string{"success", "cached"}).
+		Where("version != ''").
+		Group("repository_id, version").
+		Scan(&countRows).Error
+	if err != nil {
+		return result
+	}
+	for _, cr := range countRows {
+		result[fmt.Sprintf("%d|%s", cr.RepositoryID, cr.Version)] += cr.Count
+	}
+	return result
+}
+
+// ListVersionFiles 按版本加载文件列表（artifacts + blobs），供前端懒加载。
+func (h *PackageVersionHandler) ListVersionFiles(c *gin.Context) {
+	pkgType := c.Param("type")
+	pkgName := c.Query("name")
+	version := c.Query("version")
+
+	if pkgName == "" || version == "" {
+		response.BadRequest(c, "missing parameters", "name and version are required")
+		return
+	}
+
+	var repositoryID uint
+	if repoIDParam := c.Query("repository_id"); repoIDParam != "" {
+		repoID, err := strconv.ParseUint(repoIDParam, 10, 32)
+		if err != nil {
+			response.BadRequest(c, "invalid repository ID", "repository_id must be a positive integer")
+			return
+		}
+		repositoryID = uint(repoID)
+	}
+
+	artifacts, err := findVersionArtifacts(h.db.WithContext(c.Request.Context()), repositoryID, pkgType, pkgName, version)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if len(artifacts) == 0 {
+		response.Success(c, gin.H{"files": []gin.H{}})
+		return
+	}
+
+	// 批量加载仓库名称
+	repoIDs := make(map[uint]bool)
+	for _, a := range artifacts {
+		repoIDs[a.RepositoryID] = true
+	}
+	repoNameMap := make(map[uint]string)
+	if len(repoIDs) > 0 {
+		ids := make([]uint, 0, len(repoIDs))
+		for id := range repoIDs {
+			ids = append(ids, id)
+		}
+		var repos []model.Repository
+		h.db.Where("id IN ?", ids).Find(&repos)
+		for _, r := range repos {
+			repoNameMap[r.ID] = r.Name
 		}
 	}
 
@@ -129,279 +370,43 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		}
 	}
 
-	// 批量获取版本级下载计数（从 download_logs 聚合）
-	downloadCountMap := make(map[string]int64) // key: "repoID|version"
-	if len(artifacts) > 0 {
-		repoIDsForCount := make([]uint, 0)
-		repoIDSet := make(map[uint]bool)
-		for _, a := range artifacts {
-			if !repoIDSet[a.RepositoryID] {
-				repoIDSet[a.RepositoryID] = true
-				repoIDsForCount = append(repoIDsForCount, a.RepositoryID)
-			}
-		}
-		var countRows []struct {
-			RepositoryID uint
-			Version      string
-			Count        int64
-		}
-		err := h.db.Table("download_logs").
-			Select("repository_id, version, COUNT(*) as count").
-			Where("repository_id IN ? AND package_type = ? AND package_name = ? AND status IN ?",
-				repoIDsForCount, pkgType, pkgName, []string{"success", "cached"}).
-			Where("version != ''").
-			Group("repository_id, version").
-			Scan(&countRows).Error
-		if err == nil {
-			for _, cr := range countRows {
-				key := fmt.Sprintf("%d|%s", cr.RepositoryID, cr.Version)
-				downloadCountMap[key] += cr.Count
-			}
-		}
-	}
-
-	// 按版本号分组，聚合文件列表
-	type versionGroup struct {
-		id          uint
-		latestAt    time.Time
-		publishedAt string
-		license     string
-		triggerIP   string
-		name        string
-		namespace   string
-		identityKey string
-		attributes  model.JSONB
-		qualifiers  model.JSONB
-		metadata    model.JSONB
-		files       []gin.H
-		blobs       []blobInfo
-		repoIDs     map[uint]bool // 该版本涉及的仓库 ID 集合
-		sizeBytes   int64         // 从 artifact 元数据记录的大小（回源时即有，无需下载 blob）
-		sha256      string
-		summary     *model.PackageVersion
-	}
-	verGroups := make(map[string]*versionGroup)
-	var verOrder []string
-	for _, summary := range versionSummaries {
-		s := summary
-		versionSummaryMap[summary.Version] = summary
-		verGroups[summary.Version] = &versionGroup{
-			latestAt:  summary.LatestArtifactAt,
-			name:      summary.PackageName,
-			namespace: summary.Namespace,
-			license:   summary.License,
-			repoIDs:   map[uint]bool{summary.RepositoryID: true},
-			sizeBytes: summary.SizeBytes,
-			sha256:    summary.ChecksumSHA256,
-			summary:   &s,
-		}
-		verOrder = append(verOrder, summary.Version)
-	}
-
+	files := make([]gin.H, 0, len(artifacts))
 	for _, a := range artifacts {
-		version := a.Version
-		if version == "" {
-			continue
-		}
-
-		vp, ok := verGroups[version]
-		if !ok {
-			vp = &versionGroup{repoIDs: make(map[uint]bool)}
-			if summary, hasSummary := versionSummaryMap[version]; hasSummary {
-				s := summary
-				vp.summary = &s
-			}
-			verGroups[version] = vp
-			verOrder = append(verOrder, version)
-		}
-		vp.repoIDs[a.RepositoryID] = true
-		if vp.id == 0 {
-			vp.id = a.ID
-		}
-		if a.CreatedAt.After(vp.latestAt) {
-			vp.latestAt = a.CreatedAt
-			vp.id = a.ID
-		}
-		if vp.sizeBytes == 0 && a.SizeBytes > 0 {
-			vp.sizeBytes = a.SizeBytes
-		}
-		if vp.sha256 == "" {
-			vp.sha256 = jsonbString(a.Checksums, "sha256")
-		}
-		if vp.name == "" {
-			vp.name = a.Name
-		}
-		if vp.namespace == "" {
-			vp.namespace = a.Namespace
-		}
-		if vp.identityKey == "" {
-			vp.identityKey = a.IdentityKey
-		}
-		mergeJSONB(vp.attributes, a.Attributes)
-		if vp.attributes == nil && len(a.Attributes) > 0 {
-			vp.attributes = cloneJSONB(a.Attributes)
-		}
-		mergeJSONB(vp.qualifiers, a.Qualifiers)
-		if vp.qualifiers == nil && len(a.Qualifiers) > 0 {
-			vp.qualifiers = cloneJSONB(a.Qualifiers)
-		}
-		mergeJSONB(vp.metadata, a.Metadata)
-		if vp.metadata == nil && len(a.Metadata) > 0 {
-			vp.metadata = cloneJSONB(a.Metadata)
-		}
-		if vp.publishedAt == "" && a.Attributes != nil {
-			if pa, ok := a.Attributes["published_at"]; ok {
-				if s, ok := pa.(string); ok && s != "" {
-					vp.publishedAt = s
-				}
-			}
-		}
-		if vp.license == "" && a.Attributes != nil {
-			if lic, ok := a.Attributes["license"]; ok {
-				if s, ok := lic.(string); ok && s != "" {
-					vp.license = s
-				}
-			}
-		}
-		if vp.triggerIP == "" && a.Metadata != nil {
-			if tip, ok := a.Metadata["trigger_ip"]; ok {
-				if s, ok := tip.(string); ok && s != "" {
-					vp.triggerIP = s
-				}
-			}
-		}
-
 		filename := a.Filename
-
 		fileType := classifyFileType(a.Format, filename)
-
 		blobs := blobMap[a.ID]
-		for _, b := range blobs {
-			vp.blobs = append(vp.blobs, b)
-		}
-
 		repoName := repoNameMap[a.RepositoryID]
 		downloadURL := buildDownloadURL(repoName, a)
 
-		if isDownloadableArtifact(a, filename, downloadURL, blobs) {
-			vp.files = append(vp.files, gin.H{
-				"id":           a.ID,
-				"version_id":   a.ID,
-				"filename":     filename,
-				"file_type":    fileType,
-				"storage_path": firstNonEmptyString(a.RemotePath, a.Path),
-				"path":         a.Path,
-				"remote_path":  a.RemotePath,
-				"size_bytes":   firstNonZeroInt64(sumBlobSizes(blobs), a.SizeBytes),
-				"checksum_sha256": firstNonEmptyString(
-					firstBlobDigest(blobs),
-					jsonbString(a.Checksums, "sha256"),
-				),
-				"download_url": downloadURL,
-				"qualifiers":   a.Qualifiers,
-				"attributes":   a.Attributes,
-				"metadata":     a.Metadata,
-			})
+		if !isDownloadableArtifact(a, filename, downloadURL, blobs) {
+			continue
 		}
+
+		fileEntry := gin.H{
+			"id":              a.ID,
+			"version_id":      a.ID,
+			"filename":        filename,
+			"file_type":       fileType,
+			"storage_path":    firstNonEmptyString(a.RemotePath, a.Path),
+			"path":            a.Path,
+			"remote_path":     a.RemotePath,
+			"size_bytes":      firstNonZeroInt64(sumBlobSizes(blobs), a.SizeBytes),
+			"checksum_sha256": firstNonEmptyString(firstBlobDigest(blobs), jsonbString(a.Checksums, "sha256")),
+			"download_url":    downloadURL,
+			"qualifiers":      a.Qualifiers,
+			"attributes":      a.Attributes,
+			"metadata":        a.Metadata,
+		}
+		files = append(files, fileEntry)
 	}
 
-	versions := make([]gin.H, 0, len(verOrder))
-	for _, ver := range verOrder {
-		vp := verGroups[ver]
-		totalSize := int64(0)
-		for _, b := range vp.blobs {
-			totalSize += b.Size
-		}
-		// blob 不存在时（未回源下载）回退到 artifact 元数据记录的大小
-		totalSize = firstNonZeroInt64(totalSize, vp.sizeBytes)
-		sha256 := ""
-		if len(vp.blobs) > 0 && vp.blobs[0].Digest != "" {
-			sha256 = vp.blobs[0].Digest
-		}
-		if sha256 == "" {
-			sha256 = vp.sha256
-		}
-
-		publishedAt := vp.latestAt
-		if vp.publishedAt != "" {
-			if t, err := time.Parse(time.RFC3339, vp.publishedAt); err == nil {
-				publishedAt = t
-			}
-		}
-		// 如果 publishedAt 是零值（没有有效的时间信息），使用当前时间作为默认值
-		if publishedAt.IsZero() {
-			publishedAt = time.Now()
-		}
-
-		// 聚合该版本在所有仓库中的下载计数
-		var downloadCount int64
-		if vp.summary != nil {
-			downloadCount = vp.summary.DownloadCount
-		}
-		if downloadCount == 0 {
-			for repoID := range vp.repoIDs {
-				key := fmt.Sprintf("%d|%s", repoID, ver)
-				downloadCount += downloadCountMap[key]
-			}
-		}
-		if isMavenPackageType(pkgType) {
-			decorateMavenSnapshotDisplayAttributes(ver, mavenArtifactID(vp.name, vp.qualifiers), vp.files)
-		}
-
-		status := "published"
-		filesDownloaded := len(vp.blobs) > 0
-		if vp.summary != nil {
-			if vp.summary.Status != "" {
-				status = vp.summary.Status
-			}
-			if vp.summary.PublishedAt != nil {
-				publishedAt = *vp.summary.PublishedAt
-			} else if !vp.summary.LatestArtifactAt.IsZero() {
-				publishedAt = vp.summary.LatestArtifactAt
-			}
-			if vp.summary.SizeBytes > 0 {
-				totalSize = vp.summary.SizeBytes
-			}
-			if vp.summary.ChecksumSHA256 != "" {
-				sha256 = vp.summary.ChecksumSHA256
-			}
-			if vp.summary.License != "" {
-				vp.license = vp.summary.License
-			}
-			filesDownloaded = vp.summary.FilesDownloaded
-		}
-
-		entry := gin.H{
-			"id":               vp.id,
-			"repository_id":    singleRepositoryID(vp.repoIDs),
-			"version":          ver,
-			"name":             vp.name,
-			"namespace":        vp.namespace,
-			"identity_key":     vp.identityKey,
-			"status":           status,
-			"published_at":     publishedAt,
-			"size_bytes":       totalSize,
-			"checksum_sha256":  sha256,
-			"files":            vp.files,
-			"files_downloaded": filesDownloaded,
-			"download_count":   downloadCount,
-			"attributes":       vp.attributes,
-			"qualifiers":       vp.qualifiers,
-			"metadata":         vp.metadata,
-		}
-		if vp.license != "" {
-			entry["license"] = vp.license
-		}
-		if vp.triggerIP != "" {
-			entry["trigger_ip"] = vp.triggerIP
-		}
-		versions = append(versions, entry)
+	// Maven SNAPSHOT 文件标记 default_visible
+	if isMavenPackageType(pkgType) && len(artifacts) > 0 {
+		decorateMavenSnapshotDisplayAttributes(version, mavenArtifactID(pkgName, artifacts[0].Qualifiers), files)
 	}
 
 	response.Success(c, gin.H{
-		"package_name": pkgName,
-		"type":         pkgType,
-		"versions":     versions,
+		"files": files,
 	})
 }
 
@@ -418,6 +423,37 @@ func (h *PackageVersionHandler) loadPackageVersionSummaries(ctx context.Context,
 		return nil, false
 	}
 	return summaries, true
+}
+
+func excludeSummarizedArtifactVersions(db *gorm.DB, summaries []model.PackageVersion) *gorm.DB {
+	if len(summaries) == 0 {
+		return db
+	}
+
+	versionsByRepo := make(map[uint][]string)
+	seen := make(map[string]bool)
+	for _, s := range summaries {
+		if s.RepositoryID == 0 || s.Version == "" {
+			continue
+		}
+		key := fmt.Sprintf("%d|%s", s.RepositoryID, s.Version)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		versionsByRepo[s.RepositoryID] = append(versionsByRepo[s.RepositoryID], s.Version)
+	}
+	if len(versionsByRepo) == 0 {
+		return db
+	}
+
+	clauses := make([]string, 0, len(versionsByRepo))
+	args := make([]interface{}, 0, len(versionsByRepo)*2)
+	for repoID, versions := range versionsByRepo {
+		clauses = append(clauses, "(repository_id = ? AND version IN ?)")
+		args = append(args, repoID, versions)
+	}
+	return db.Where("NOT ("+strings.Join(clauses, " OR ")+")", args...)
 }
 
 func (h *PackageVersionHandler) hasPackageVersionTable() bool {
@@ -559,6 +595,24 @@ func buildDownloadURL(repoName string, artifact model.Artifact) string {
 	return "/repository/" + repoName + "/" + artifact.RemotePath
 }
 
+// findVersionArtifacts 查询某版本的所有 artifacts（复用 service 层同名逻辑，
+// 但因包隔离在此处独立实现）。
+func findVersionArtifacts(db *gorm.DB, repoID uint, format, name, version string) ([]model.Artifact, error) {
+	q := db.Model(&model.Artifact{}).
+		Where("format = ?", format).
+		Where("name = ? AND version = ?", name, version).
+		Where("(kind IS NULL OR kind NOT IN ?)", []string{runtime.KindMetadata, runtime.KindChecksum, runtime.KindDirectory}).
+		Where("(format != ? OR kind = ? OR EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = artifacts.id))", "go", runtime.KindVersion).
+		Where("NOT (format = ? AND (remote_path LIKE ? OR remote_path LIKE ? OR path = ? OR path LIKE ? OR filename = ?))",
+			"yum", "repodata/%", "%/repodata/%", "repodata", "%/repodata", "repomd.xml").
+		Order("updated_at DESC")
+	if repoID > 0 {
+		q = q.Where("repository_id = ?", repoID)
+	}
+	var artifacts []model.Artifact
+	return artifacts, q.Find(&artifacts).Error
+}
+
 func isDownloadableArtifact(a model.Artifact, filename, downloadURL string, blobs []blobInfo) bool {
 	if filename == "" && downloadURL == "" && len(blobs) == 0 {
 		return false
@@ -603,28 +657,6 @@ func jsonbString(data model.JSONB, key string) string {
 		return ""
 	}
 	return s
-}
-
-func cloneJSONB(src model.JSONB) model.JSONB {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make(model.JSONB, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
-}
-
-func mergeJSONB(dst model.JSONB, src model.JSONB) {
-	if len(dst) == 0 || len(src) == 0 {
-		return
-	}
-	for k, v := range src {
-		if _, exists := dst[k]; !exists {
-			dst[k] = v
-		}
-	}
 }
 
 func (h *PackageVersionHandler) DeprecateVersion(c *gin.Context) {

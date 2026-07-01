@@ -1,8 +1,18 @@
-import { describe, it, expect } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
 import VersionTable from './VersionTable.vue'
 import type { PackageVersion } from '@/api/package'
+
+const apiMocks = vi.hoisted(() => ({
+  getVersionFiles: vi.fn(),
+}))
+
+vi.mock('@/api/package', () => ({
+  packageApi: {
+    getVersionFiles: apiMocks.getVersionFiles,
+  },
+}))
 
 const versions: PackageVersion[] = [
   {
@@ -48,11 +58,12 @@ const tableColumnStub = defineComponent({
   },
 })
 
-function mountVersionTable(inputVersions = versions) {
+function mountVersionTable(inputVersions = versions, extraProps: Record<string, unknown> = {}) {
   return mount(VersionTable, {
     props: {
       versions: inputVersions,
       selectedVersion: '1.0.0',
+      ...extraProps,
     },
     global: {
       stubs: {
@@ -72,6 +83,10 @@ function mountVersionTable(inputVersions = versions) {
 }
 
 describe('VersionTable', () => {
+  beforeEach(() => {
+    apiMocks.getVersionFiles.mockReset()
+  })
+
   it('renders package files as direct download links', () => {
     const wrapper = mountVersionTable()
 
@@ -151,5 +166,48 @@ describe('VersionTable', () => {
 
     expect(wrapper.text()).toContain('lib-current.jar')
     expect(wrapper.text()).toContain('lib-old.jar')
+  })
+
+  it('loads files using the row repository id', async () => {
+    apiMocks.getVersionFiles.mockResolvedValue({ files: [] })
+    const wrapper = mountVersionTable([
+      {
+        ...versions[0],
+        repository_id: 99,
+        files: undefined,
+        file_count: 1,
+      },
+    ], {
+      pkgType: 'maven',
+      pkgName: 'com.example:lib',
+      repositoryId: 1,
+    })
+
+    await wrapper.get('.more-files-hint').trigger('click')
+    await flushPromises()
+
+    expect(apiMocks.getVersionFiles).toHaveBeenCalledWith('maven', 'com.example:lib', '1.0.0', 99)
+  })
+
+  it('keeps lazy file loading retryable after a failed request', async () => {
+    apiMocks.getVersionFiles
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValueOnce({ files: [] })
+    const retryableVersion = {
+      ...versions[0],
+      files: undefined,
+      file_count: 1,
+    }
+    const wrapper = mountVersionTable([retryableVersion], {
+      pkgType: 'maven',
+      pkgName: 'com.example:lib',
+    })
+
+    await wrapper.get('.more-files-hint').trigger('click')
+    await flushPromises()
+    await wrapper.get('.more-files-hint').trigger('click')
+    await flushPromises()
+
+    expect(apiMocks.getVersionFiles).toHaveBeenCalledTimes(2)
   })
 })

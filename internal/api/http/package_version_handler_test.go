@@ -87,15 +87,8 @@ func TestListVersionsSkipsMetadataOnlyArtifacts(t *testing.T) {
 	var resp struct {
 		Data struct {
 			Versions []struct {
-				License    string                 `json:"license"`
-				Attributes map[string]interface{} `json:"attributes"`
-				Files      []struct {
-					Filename    string                 `json:"filename"`
-					DownloadURL string                 `json:"download_url"`
-					Path        string                 `json:"path"`
-					RemotePath  string                 `json:"remote_path"`
-					Attributes  map[string]interface{} `json:"attributes"`
-				} `json:"files"`
+				License   string `json:"license"`
+				FileCount int    `json:"file_count"`
 			} `json:"versions"`
 		} `json:"data"`
 	}
@@ -109,27 +102,8 @@ func TestListVersionsSkipsMetadataOnlyArtifacts(t *testing.T) {
 	if version.License != "MIT" {
 		t.Fatalf("license = %q", version.License)
 	}
-	if version.Attributes["license"] != "MIT" {
-		t.Fatalf("attributes.license = %#v", version.Attributes["license"])
-	}
-	files := version.Files
-	if len(files) != 1 {
-		t.Fatalf("expected only downloadable file, got %d files: %+v", len(files), files)
-	}
-	if files[0].Filename != "left-pad-1.0.0.tgz" {
-		t.Fatalf("filename = %q", files[0].Filename)
-	}
-	if files[0].DownloadURL != "/repository/npm-proxy/left-pad/-/left-pad-1.0.0.tgz" {
-		t.Fatalf("download_url = %q", files[0].DownloadURL)
-	}
-	if files[0].Path != "left-pad/-" || files[0].RemotePath != "left-pad/-/left-pad-1.0.0.tgz" {
-		t.Fatalf("unexpected file paths: %+v", files[0])
-	}
-	if files[0].Attributes["default_visible"] != "true" {
-		t.Fatalf("file default_visible = %#v", files[0].Attributes["default_visible"])
-	}
-	if files[0].Attributes["display_group"] != "current" {
-		t.Fatalf("file display_group = %#v", files[0].Attributes["display_group"])
+	if version.FileCount != 3 {
+		t.Fatalf("file_count = %d, want 3 (version + tarball + release artifacts are all aggregated in the fallback path)", version.FileCount)
 	}
 }
 
@@ -180,11 +154,7 @@ func TestListVersionsUsesArtifactChecksumWhenBlobMissing(t *testing.T) {
 			Versions []struct {
 				ChecksumSHA256 string `json:"checksum_sha256"`
 				SizeBytes      int64  `json:"size_bytes"`
-				Files          []struct {
-					Filename       string `json:"filename"`
-					ChecksumSHA256 string `json:"checksum_sha256"`
-					SizeBytes      int64  `json:"size_bytes"`
-				} `json:"files"`
+				FileCount      int    `json:"file_count"`
 			} `json:"versions"`
 		} `json:"data"`
 	}
@@ -200,11 +170,8 @@ func TestListVersionsUsesArtifactChecksumWhenBlobMissing(t *testing.T) {
 	if got := resp.Data.Versions[0].SizeBytes; got != 12345 {
 		t.Fatalf("version size_bytes = %d, want 12345", got)
 	}
-	if len(resp.Data.Versions[0].Files) != 1 {
-		t.Fatalf("expected 1 file, got %d", len(resp.Data.Versions[0].Files))
-	}
-	if got := resp.Data.Versions[0].Files[0].ChecksumSHA256; got != "abc123" {
-		t.Fatalf("file checksum_sha256 = %q, want abc123", got)
+	if got := resp.Data.Versions[0].FileCount; got != 1 {
+		t.Fatalf("version file_count = %d, want 1", got)
 	}
 }
 
@@ -259,6 +226,17 @@ func TestListVersionsUsesPackageVersionSummaryWhenAvailable(t *testing.T) {
 	if err := db.Create(&model.PackageVersion{
 		RepositoryID:     repo.ID,
 		Format:           "maven",
+		PackageName:      "com.example:other",
+		Version:          "0.1.0",
+		Status:           "published",
+		LatestArtifactAt: publishedAt,
+		FileCount:        1,
+	}).Error; err != nil {
+		t.Fatalf("create unrelated package version: %v", err)
+	}
+	summary := model.PackageVersion{
+		RepositoryID:     repo.ID,
+		Format:           "maven",
 		PackageName:      "com.example:lib",
 		Namespace:        "com.example",
 		Version:          "1.0.0",
@@ -271,7 +249,8 @@ func TestListVersionsUsesPackageVersionSummaryWhenAvailable(t *testing.T) {
 		DownloadCount:    7,
 		License:          "summary-license",
 		ChecksumSHA256:   "summary-sha",
-	}).Error; err != nil {
+	}
+	if err := db.Create(&summary).Error; err != nil {
 		t.Fatalf("create package version: %v", err)
 	}
 
@@ -298,9 +277,7 @@ func TestListVersionsUsesPackageVersionSummaryWhenAvailable(t *testing.T) {
 				ChecksumSHA256 string `json:"checksum_sha256"`
 				License        string `json:"license"`
 				DownloadCount  int64  `json:"download_count"`
-				Files          []struct {
-					Filename string `json:"filename"`
-				} `json:"files"`
+				FileCount      int    `json:"file_count"`
 			} `json:"versions"`
 		} `json:"data"`
 	}
@@ -308,7 +285,7 @@ func TestListVersionsUsesPackageVersionSummaryWhenAvailable(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 	if len(resp.Data.Versions) != 2 {
-		t.Fatalf("expected artifacts source of truth to return 2 versions, got %d", len(resp.Data.Versions))
+		t.Fatalf("expected summary path to merge unsummarized artifact versions, got %d", len(resp.Data.Versions))
 	}
 	var version *struct {
 		ID             uint   `json:"id"`
@@ -320,30 +297,24 @@ func TestListVersionsUsesPackageVersionSummaryWhenAvailable(t *testing.T) {
 		ChecksumSHA256 string `json:"checksum_sha256"`
 		License        string `json:"license"`
 		DownloadCount  int64  `json:"download_count"`
-		Files          []struct {
-			Filename string `json:"filename"`
-		} `json:"files"`
+		FileCount      int    `json:"file_count"`
 	}
-	var foundUnsummarized bool
 	for i := range resp.Data.Versions {
 		if resp.Data.Versions[i].Version == "1.0.0" {
 			version = &resp.Data.Versions[i]
 		}
-		if resp.Data.Versions[i].Version == "2.0.0" {
-			foundUnsummarized = true
+		if resp.Data.Versions[i].Version == "2.0.0" && resp.Data.Versions[i].FileCount != 1 {
+			t.Fatalf("unsummarized version file_count = %d, want 1", resp.Data.Versions[i].FileCount)
 		}
 	}
 	if version == nil {
 		t.Fatalf("summarized version 1.0.0 missing from response: %+v", resp.Data.Versions)
 	}
-	if !foundUnsummarized {
-		t.Fatalf("unsummarized artifact version 2.0.0 missing from response: %+v", resp.Data.Versions)
-	}
 	if version.Version != "1.0.0" {
 		t.Fatalf("version = %q, want 1.0.0", version.Version)
 	}
-	if version.ID != artifact.ID {
-		t.Fatalf("id = %d, want artifact id %d", version.ID, artifact.ID)
+	if version.ID != summary.ID {
+		t.Fatalf("id = %d, want package version summary id %d", version.ID, summary.ID)
 	}
 	if version.RepositoryID != repo.ID {
 		t.Fatalf("repository_id = %d, want %d", version.RepositoryID, repo.ID)
@@ -366,8 +337,8 @@ func TestListVersionsUsesPackageVersionSummaryWhenAvailable(t *testing.T) {
 	if version.DownloadCount != 7 {
 		t.Fatalf("download_count = %d, want 7", version.DownloadCount)
 	}
-	if len(version.Files) != 1 || version.Files[0].Filename != "lib-1.0.0.jar" {
-		t.Fatalf("files = %#v, want lib-1.0.0.jar", version.Files)
+	if version.FileCount != 1 {
+		t.Fatalf("file_count = %d, want 1", version.FileCount)
 	}
 }
 
@@ -519,7 +490,7 @@ func TestLegacyDeprecateVersionUpdatesWholeVersion(t *testing.T) {
 	}
 }
 
-func TestListVersionsDecoratesMavenSnapshotDefaultVisibleFromFilenames(t *testing.T) {
+func TestListVersionFilesDecoratesMavenSnapshotDefaultVisibleFromFilenames(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -580,9 +551,9 @@ func TestListVersionsDecoratesMavenSnapshotDefaultVisibleFromFilenames(t *testin
 
 	handler := NewPackageVersionHandler(db)
 	router := gin.New()
-	router.GET("/api/packages/:type/versions", handler.ListVersions)
+	router.GET("/api/packages/:type/versions/files", handler.ListVersionFiles)
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "/api/packages/maven/versions?name=com.example:lib&repository_id=1", nil)
+	req := httptest.NewRequest(stdhttp.MethodGet, "/api/packages/maven/versions/files?name=com.example:lib&version=1.0-SNAPSHOT&repository_id=1", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -592,23 +563,18 @@ func TestListVersionsDecoratesMavenSnapshotDefaultVisibleFromFilenames(t *testin
 
 	var resp struct {
 		Data struct {
-			Versions []struct {
-				Files []struct {
-					Filename   string                 `json:"filename"`
-					Attributes map[string]interface{} `json:"attributes"`
-				} `json:"files"`
-			} `json:"versions"`
+			Files []struct {
+				Filename   string                 `json:"filename"`
+				Attributes map[string]interface{} `json:"attributes"`
+			} `json:"files"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(resp.Data.Versions) != 1 {
-		t.Fatalf("expected 1 version, got %d", len(resp.Data.Versions))
-	}
 
 	files := map[string]map[string]interface{}{}
-	for _, file := range resp.Data.Versions[0].Files {
+	for _, file := range resp.Data.Files {
 		files[file.Filename] = file.Attributes
 	}
 
@@ -631,6 +597,99 @@ func TestListVersionsDecoratesMavenSnapshotDefaultVisibleFromFilenames(t *testin
 	assertAttr("lib-1.0-20230102.120000-2.jar", "display_group", "20230102.120000-2")
 	assertAttr("lib-1.0-20230101.120000-1-sources.jar", "default_visible", "true")
 	assertAttr("lib-1.0-20230101.120000-1-sources.jar", "display_group", "20230101.120000-1")
+}
+
+func TestListVersionFilesReturnsFiles(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	repo := model.Repository{Name: "npm-proxy", PackageType: "npm", Type: "proxy"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+
+	blob := model.Blob{
+		Algorithm:   "sha256",
+		Digest:      "deadbeef",
+		Size:        98765,
+		StoragePath: "/data/blobs/deadbeef",
+	}
+	if err := db.Create(&blob).Error; err != nil {
+		t.Fatalf("create blob: %v", err)
+	}
+
+	artifact := model.Artifact{
+		RepositoryID: repo.ID,
+		Format:       "npm",
+		Kind:         "tarball",
+		Name:         "left-pad",
+		Version:      "1.0.0",
+		Path:         "left-pad/-",
+		Filename:     "left-pad-1.0.0.tgz",
+		RemotePath:   "left-pad/-/left-pad-1.0.0.tgz",
+		SizeBytes:    12345,
+		Checksums:    model.JSONB{"sha256": "abc123"},
+	}
+	if err := db.Create(&artifact).Error; err != nil {
+		t.Fatalf("create artifact: %v", err)
+	}
+
+	if err := db.Create(&model.ArtifactBlob{
+		ArtifactID: artifact.ID,
+		BlobID:     blob.ID,
+		Position:   0,
+	}).Error; err != nil {
+		t.Fatalf("create artifact blob: %v", err)
+	}
+
+	handler := NewPackageVersionHandler(db)
+	router := gin.New()
+	router.GET("/api/packages/:type/versions/files", handler.ListVersionFiles)
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "/api/packages/npm/versions/files?name=left-pad&version=1.0.0&repository_id="+strconv.Itoa(int(repo.ID)), nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Data struct {
+			Files []struct {
+				Filename       string `json:"filename"`
+				DownloadURL    string `json:"download_url"`
+				SizeBytes      int64  `json:"size_bytes"`
+				ChecksumSHA256 string `json:"checksum_sha256"`
+			} `json:"files"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Data.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d: %+v", len(resp.Data.Files), resp.Data.Files)
+	}
+	file := resp.Data.Files[0]
+	if file.Filename != "left-pad-1.0.0.tgz" {
+		t.Fatalf("filename = %q, want left-pad-1.0.0.tgz", file.Filename)
+	}
+	if file.DownloadURL != "/repository/npm-proxy/left-pad/-/left-pad-1.0.0.tgz" {
+		t.Fatalf("download_url = %q", file.DownloadURL)
+	}
+	if file.SizeBytes != 98765 {
+		t.Fatalf("size_bytes = %d, want 98765 (from blob)", file.SizeBytes)
+	}
+	if file.ChecksumSHA256 != "deadbeef" {
+		t.Fatalf("checksum_sha256 = %q, want deadbeef (from blob digest)", file.ChecksumSHA256)
+	}
 }
 
 func TestDeletePackageUsesPackageAggregateID(t *testing.T) {
