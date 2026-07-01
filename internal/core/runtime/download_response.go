@@ -137,11 +137,8 @@ func setArtifactCacheHeaders(w http.ResponseWriter, artifact *Artifact) {
 	if artifact == nil {
 		return
 	}
-	for _, ref := range artifact.BlobRefs {
-		if ref.Algorithm != "" && ref.Digest != "" {
-			w.Header().Set("ETag", "\""+ref.Algorithm+":"+ref.Digest+"\"")
-			break
-		}
+	if etag := artifactETag(artifact); etag != "" {
+		w.Header().Set("ETag", etag)
 	}
 	modified := artifact.UpdatedAt
 	if modified.IsZero() {
@@ -192,7 +189,25 @@ func artifactETag(artifact *Artifact) string {
 			return "\"" + ref.Algorithm + ":" + ref.Digest + "\""
 		}
 	}
+	if artifact.Properties != nil {
+		return normalizeETag(artifact.Properties["remote_etag"])
+	}
 	return ""
+}
+
+func normalizeETag(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "W/\"") && strings.HasSuffix(value, "\"") {
+		return value
+	}
+	value = strings.Trim(value, `"`)
+	if value == "" {
+		return ""
+	}
+	return "\"" + value + "\""
 }
 
 func artifactModifiedTime(artifact *Artifact) time.Time {

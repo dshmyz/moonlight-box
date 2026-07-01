@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/model"
+	mavenplugin "github.com/dshmyz/moonlight-box/internal/plugins/maven"
 	"github.com/dshmyz/moonlight-box/internal/response"
 	"github.com/dshmyz/moonlight-box/internal/service"
 
@@ -19,8 +21,10 @@ import (
 )
 
 type PackageVersionHandler struct {
-	db          *gorm.DB
-	artifactSvc *service.ArtifactService
+	db                       *gorm.DB
+	artifactSvc              *service.ArtifactService
+	packageVersionTableOnce  sync.Once
+	packageVersionTableReady bool
 }
 
 func NewPackageVersionHandler(db *gorm.DB) *PackageVersionHandler {
@@ -35,6 +39,13 @@ type blobInfo struct {
 	ArtifactID uint
 	Size       int64
 	Digest     string
+}
+
+type packageVersionCoordinateRequest struct {
+	RepositoryID uint   `json:"repository_id"`
+	Name         string `json:"name"`
+	Version      string `json:"version"`
+	Reason       string `json:"reason"`
 }
 
 func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
@@ -64,6 +75,9 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 	if repositoryID > 0 {
 		db = db.Where("repository_id = ?", repositoryID)
 	}
+
+	versionSummaries, _ := h.loadPackageVersionSummaries(c.Request.Context(), pkgType, pkgName, repositoryID)
+	versionSummaryMap := make(map[string]model.PackageVersion, len(versionSummaries))
 
 	var artifacts []model.Artifact
 	if err := db.Order("created_at DESC").Find(&artifacts).Error; err != nil {
@@ -148,6 +162,7 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 
 	// 按版本号分组，聚合文件列表
 	type versionGroup struct {
+		id          uint
 		latestAt    time.Time
 		publishedAt string
 		license     string
@@ -163,9 +178,25 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		repoIDs     map[uint]bool // 该版本涉及的仓库 ID 集合
 		sizeBytes   int64         // 从 artifact 元数据记录的大小（回源时即有，无需下载 blob）
 		sha256      string
+		summary     *model.PackageVersion
 	}
 	verGroups := make(map[string]*versionGroup)
 	var verOrder []string
+	for _, summary := range versionSummaries {
+		s := summary
+		versionSummaryMap[summary.Version] = summary
+		verGroups[summary.Version] = &versionGroup{
+			latestAt:  summary.LatestArtifactAt,
+			name:      summary.PackageName,
+			namespace: summary.Namespace,
+			license:   summary.License,
+			repoIDs:   map[uint]bool{summary.RepositoryID: true},
+			sizeBytes: summary.SizeBytes,
+			sha256:    summary.ChecksumSHA256,
+			summary:   &s,
+		}
+		verOrder = append(verOrder, summary.Version)
+	}
 
 	for _, a := range artifacts {
 		version := a.Version
@@ -176,12 +207,20 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		vp, ok := verGroups[version]
 		if !ok {
 			vp = &versionGroup{repoIDs: make(map[uint]bool)}
+			if summary, hasSummary := versionSummaryMap[version]; hasSummary {
+				s := summary
+				vp.summary = &s
+			}
 			verGroups[version] = vp
 			verOrder = append(verOrder, version)
 		}
 		vp.repoIDs[a.RepositoryID] = true
+		if vp.id == 0 {
+			vp.id = a.ID
+		}
 		if a.CreatedAt.After(vp.latestAt) {
 			vp.latestAt = a.CreatedAt
+			vp.id = a.ID
 		}
 		if vp.sizeBytes == 0 && a.SizeBytes > 0 {
 			vp.sizeBytes = a.SizeBytes
@@ -296,22 +335,55 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 
 		// 聚合该版本在所有仓库中的下载计数
 		var downloadCount int64
-		for repoID := range vp.repoIDs {
-			key := fmt.Sprintf("%d|%s", repoID, ver)
-			downloadCount += downloadCountMap[key]
+		if vp.summary != nil {
+			downloadCount = vp.summary.DownloadCount
+		}
+		if downloadCount == 0 {
+			for repoID := range vp.repoIDs {
+				key := fmt.Sprintf("%d|%s", repoID, ver)
+				downloadCount += downloadCountMap[key]
+			}
+		}
+		if isMavenPackageType(pkgType) {
+			decorateMavenSnapshotDisplayAttributes(ver, mavenArtifactID(vp.name, vp.qualifiers), vp.files)
+		}
+
+		status := "published"
+		filesDownloaded := len(vp.blobs) > 0
+		if vp.summary != nil {
+			if vp.summary.Status != "" {
+				status = vp.summary.Status
+			}
+			if vp.summary.PublishedAt != nil {
+				publishedAt = *vp.summary.PublishedAt
+			} else if !vp.summary.LatestArtifactAt.IsZero() {
+				publishedAt = vp.summary.LatestArtifactAt
+			}
+			if vp.summary.SizeBytes > 0 {
+				totalSize = vp.summary.SizeBytes
+			}
+			if vp.summary.ChecksumSHA256 != "" {
+				sha256 = vp.summary.ChecksumSHA256
+			}
+			if vp.summary.License != "" {
+				vp.license = vp.summary.License
+			}
+			filesDownloaded = vp.summary.FilesDownloaded
 		}
 
 		entry := gin.H{
+			"id":               vp.id,
+			"repository_id":    singleRepositoryID(vp.repoIDs),
 			"version":          ver,
 			"name":             vp.name,
 			"namespace":        vp.namespace,
 			"identity_key":     vp.identityKey,
-			"status":           "published",
+			"status":           status,
 			"published_at":     publishedAt,
 			"size_bytes":       totalSize,
 			"checksum_sha256":  sha256,
 			"files":            vp.files,
-			"files_downloaded": len(vp.blobs) > 0,
+			"files_downloaded": filesDownloaded,
 			"download_count":   downloadCount,
 			"attributes":       vp.attributes,
 			"qualifiers":       vp.qualifiers,
@@ -331,6 +403,111 @@ func (h *PackageVersionHandler) ListVersions(c *gin.Context) {
 		"type":         pkgType,
 		"versions":     versions,
 	})
+}
+
+func (h *PackageVersionHandler) loadPackageVersionSummaries(ctx context.Context, pkgType, pkgName string, repositoryID uint) ([]model.PackageVersion, bool) {
+	if !h.hasPackageVersionTable() {
+		return nil, false
+	}
+	db := h.db.WithContext(ctx).Where("format = ? AND package_name = ?", pkgType, pkgName)
+	if repositoryID > 0 {
+		db = db.Where("repository_id = ?", repositoryID)
+	}
+	var summaries []model.PackageVersion
+	if err := db.Order("latest_artifact_at DESC").Find(&summaries).Error; err != nil || len(summaries) == 0 {
+		return nil, false
+	}
+	return summaries, true
+}
+
+func (h *PackageVersionHandler) hasPackageVersionTable() bool {
+	h.packageVersionTableOnce.Do(func() {
+		h.packageVersionTableReady = h.db.Migrator().HasTable(&model.PackageVersion{})
+	})
+	return h.packageVersionTableReady
+}
+
+func isMavenPackageType(pkgType string) bool {
+	switch strings.ToLower(strings.TrimSpace(pkgType)) {
+	case "maven", "maven2":
+		return true
+	default:
+		return false
+	}
+}
+
+func mavenArtifactID(name string, qualifiers model.JSONB) string {
+	if artifact := jsonbString(qualifiers, "artifact"); artifact != "" {
+		return artifact
+	}
+	if _, artifact, ok := strings.Cut(name, ":"); ok {
+		return artifact
+	}
+	return name
+}
+
+func decorateMavenSnapshotDisplayAttributes(version, artifact string, files []gin.H) {
+	if artifact == "" || !strings.HasSuffix(version, "-SNAPSHOT") || len(files) == 0 {
+		return
+	}
+
+	filenames := make([]string, 0, len(files))
+	for _, file := range files {
+		filename, _ := file["filename"].(string)
+		if filename != "" {
+			filenames = append(filenames, filename)
+		}
+	}
+	displays := mavenplugin.CurrentSnapshotFileDisplays(artifact, version, filenames)
+	if len(displays) == 0 {
+		return
+	}
+
+	for _, file := range files {
+		filename, _ := file["filename"].(string)
+		display, ok := displays[filename]
+		if !ok {
+			continue
+		}
+		attrs := cloneResponseAttributes(file["attributes"])
+		delete(attrs, "default_visible")
+		delete(attrs, "display_group")
+		if display.Current {
+			attrs["default_visible"] = "true"
+			attrs["display_group"] = display.DisplayGroup
+		}
+		file["attributes"] = attrs
+	}
+}
+
+func cloneResponseAttributes(value interface{}) map[string]interface{} {
+	attrs := make(map[string]interface{})
+	switch typed := value.(type) {
+	case nil:
+	case model.JSONB:
+		for k, v := range typed {
+			attrs[k] = v
+		}
+	case gin.H:
+		for k, v := range typed {
+			attrs[k] = v
+		}
+	case map[string]interface{}:
+		for k, v := range typed {
+			attrs[k] = v
+		}
+	}
+	return attrs
+}
+
+func singleRepositoryID(repoIDs map[uint]bool) uint {
+	if len(repoIDs) != 1 {
+		return 0
+	}
+	for repoID := range repoIDs {
+		return repoID
+	}
+	return 0
 }
 
 func classifyFileType(format, filename string) string {
@@ -470,13 +647,8 @@ func (h *PackageVersionHandler) DeprecateVersion(c *gin.Context) {
 		return
 	}
 
-	if artifact.Metadata == nil {
-		artifact.Metadata = make(model.JSONB)
-	}
-	artifact.Metadata["status"] = "deprecated"
-	artifact.Metadata["deprecation_reason"] = req.Reason
-	if err := h.db.Save(&artifact).Error; err != nil {
-		response.InternalError(c, err.Error())
+	if err := h.artifactSvc.UpdatePackageVersionStatus(c.Request.Context(), artifact.RepositoryID, artifact.Format, artifact.Name, artifact.Version, "deprecated", req.Reason); err != nil {
+		h.writeVersionOperationError(c, err)
 		return
 	}
 
@@ -500,13 +672,8 @@ func (h *PackageVersionHandler) RestoreVersion(c *gin.Context) {
 		return
 	}
 
-	if artifact.Metadata == nil {
-		artifact.Metadata = make(model.JSONB)
-	}
-	artifact.Metadata["status"] = "published"
-	delete(artifact.Metadata, "deprecation_reason")
-	if err := h.db.Save(&artifact).Error; err != nil {
-		response.InternalError(c, err.Error())
+	if err := h.artifactSvc.UpdatePackageVersionStatus(c.Request.Context(), artifact.RepositoryID, artifact.Format, artifact.Name, artifact.Version, "published", ""); err != nil {
+		h.writeVersionOperationError(c, err)
 		return
 	}
 
@@ -536,13 +703,8 @@ func (h *PackageVersionHandler) YankVersion(c *gin.Context) {
 		return
 	}
 
-	if artifact.Metadata == nil {
-		artifact.Metadata = make(model.JSONB)
-	}
-	artifact.Metadata["status"] = "yanked"
-	artifact.Metadata["yank_reason"] = req.Reason
-	if err := h.db.Save(&artifact).Error; err != nil {
-		response.InternalError(c, err.Error())
+	if err := h.artifactSvc.UpdatePackageVersionStatus(c.Request.Context(), artifact.RepositoryID, artifact.Format, artifact.Name, artifact.Version, "yanked", req.Reason); err != nil {
+		h.writeVersionOperationError(c, err)
 		return
 	}
 
@@ -566,26 +728,81 @@ func (h *PackageVersionHandler) DeleteVersion(c *gin.Context) {
 		return
 	}
 
-	if err := h.artifactSvc.Delete(c.Request.Context(), runtime.ArtifactKey{
-		RepositoryID: fmt.Sprint(artifact.RepositoryID),
-		Format:       artifact.Format,
-		Kind:         artifact.Kind,
-		IdentityKey:  artifact.IdentityKey,
-		RemotePath:   artifact.RemotePath,
-		Name:         artifact.Name,
-		Version:      artifact.Version,
-		Path:         artifact.Path,
-		Filename:     artifact.Filename,
-	}); err != nil {
-		response.InternalError(c, err.Error())
+	if err := h.artifactSvc.DeletePackageVersionByCoordinates(c.Request.Context(), artifact.RepositoryID, artifact.Format, artifact.Name, artifact.Version); err != nil {
+		h.writeVersionOperationError(c, err)
 		return
 	}
 
 	response.NoContent(c)
 }
 
+func (h *PackageVersionHandler) DeprecatePackageVersion(c *gin.Context) {
+	req, ok := h.bindPackageVersionCoordinate(c)
+	if !ok {
+		return
+	}
+	if req.Reason == "" {
+		req.Reason = "deprecated"
+	}
+	if err := h.artifactSvc.UpdatePackageVersionStatus(c.Request.Context(), req.RepositoryID, c.Param("type"), req.Name, req.Version, "deprecated", req.Reason); err != nil {
+		h.writeVersionOperationError(c, err)
+		return
+	}
+	response.Success(c, gin.H{
+		"message": "version deprecated",
+		"version": req.Version,
+		"reason":  req.Reason,
+	})
+}
+
+func (h *PackageVersionHandler) RestorePackageVersion(c *gin.Context) {
+	req, ok := h.bindPackageVersionCoordinate(c)
+	if !ok {
+		return
+	}
+	if err := h.artifactSvc.UpdatePackageVersionStatus(c.Request.Context(), req.RepositoryID, c.Param("type"), req.Name, req.Version, "published", ""); err != nil {
+		h.writeVersionOperationError(c, err)
+		return
+	}
+	response.Success(c, gin.H{
+		"message": "version restored",
+		"version": req.Version,
+	})
+}
+
+func (h *PackageVersionHandler) YankPackageVersion(c *gin.Context) {
+	req, ok := h.bindPackageVersionCoordinate(c)
+	if !ok {
+		return
+	}
+	if req.Reason == "" {
+		req.Reason = "yanked"
+	}
+	if err := h.artifactSvc.UpdatePackageVersionStatus(c.Request.Context(), req.RepositoryID, c.Param("type"), req.Name, req.Version, "yanked", req.Reason); err != nil {
+		h.writeVersionOperationError(c, err)
+		return
+	}
+	response.Success(c, gin.H{
+		"message": "version yanked",
+		"version": req.Version,
+		"reason":  req.Reason,
+	})
+}
+
+func (h *PackageVersionHandler) DeletePackageVersion(c *gin.Context) {
+	req, ok := h.bindPackageVersionCoordinate(c)
+	if !ok {
+		return
+	}
+	if err := h.artifactSvc.DeletePackageVersionByCoordinates(c.Request.Context(), req.RepositoryID, c.Param("type"), req.Name, req.Version); err != nil {
+		h.writeVersionOperationError(c, err)
+		return
+	}
+	response.NoContent(c)
+}
+
 func (h *PackageVersionHandler) DeletePackage(c *gin.Context) {
-	packageID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	packageID, err := strconv.ParseUint(packageIDParam(c), 10, 32)
 	if err != nil {
 		response.BadRequest(c, "invalid package ID", "package ID must be a positive integer")
 		return
@@ -609,6 +826,52 @@ func (h *PackageVersionHandler) DeletePackage(c *gin.Context) {
 	response.Success(c, gin.H{
 		"message": "package deleted",
 	})
+}
+
+func packageIDParam(c *gin.Context) string {
+	if id := c.Param("id"); id != "" {
+		return id
+	}
+	return c.Param("type")
+}
+
+func (h *PackageVersionHandler) bindPackageVersionCoordinate(c *gin.Context) (packageVersionCoordinateRequest, bool) {
+	var req packageVersionCoordinateRequest
+	if c.Request.Body != nil && c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.BadRequest(c, "invalid version request", err.Error())
+			return req, false
+		}
+	}
+	if req.Name == "" {
+		req.Name = c.Query("name")
+	}
+	if req.Version == "" {
+		req.Version = c.Query("version")
+	}
+	if req.RepositoryID == 0 {
+		if repoIDParam := c.Query("repository_id"); repoIDParam != "" {
+			repoID, err := strconv.ParseUint(repoIDParam, 10, 32)
+			if err != nil {
+				response.BadRequest(c, "invalid repository ID", "repository_id must be a positive integer")
+				return req, false
+			}
+			req.RepositoryID = uint(repoID)
+		}
+	}
+	if req.Name == "" || req.Version == "" {
+		response.BadRequest(c, "invalid version request", "name and version are required")
+		return req, false
+	}
+	return req, true
+}
+
+func (h *PackageVersionHandler) writeVersionOperationError(c *gin.Context, err error) {
+	if errors.Is(err, runtime.ErrNotFound) {
+		response.NotFound(c, "version not found")
+		return
+	}
+	response.InternalError(c, err.Error())
 }
 
 func (h *PackageVersionHandler) resolvePackageDeleteTarget(c *gin.Context, packageID uint) (uint, string, string, error) {

@@ -142,6 +142,307 @@ func TestArtifactServiceCountsDistinctVersionsForMavenPackage(t *testing.T) {
 	}
 }
 
+func TestArtifactServiceSaveSyncsPackageVersionSummaryForMavenFiles(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	repo := model.Repository{Name: "maven-local", Type: model.RepoTypeLocal, PackageType: "maven"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+
+	svc := NewArtifactService(db)
+	files := []struct {
+		filename string
+		size     int64
+		sha256   string
+		license  string
+	}{
+		{filename: "app-1.0.0.jar", size: 100, sha256: "jar-sha"},
+		{filename: "app-1.0.0.pom", size: 20, sha256: "pom-sha", license: "Apache-2.0"},
+		{filename: "app-1.0.0-sources.jar", size: 30, sha256: "sources-sha"},
+	}
+	for _, file := range files {
+		attrs := map[string]string{}
+		if file.license != "" {
+			attrs["license"] = file.license
+		}
+		if err := svc.Save(context.Background(), runtime.NewArtifact(runtime.ArtifactSpec{
+			RepositoryID: fmt.Sprint(repo.ID),
+			Format:       "maven",
+			Kind:         runtime.KindArtifact,
+			Name:         "com.example:app",
+			Version:      "1.0.0",
+			Path:         "com/example/app/1.0.0",
+			Filename:     file.filename,
+			RemotePath:   "com/example/app/1.0.0/" + file.filename,
+			SizeBytes:    file.size,
+			Checksums:    map[string]string{"sha256": file.sha256},
+			Attributes:   attrs,
+		})); err != nil {
+			t.Fatalf("save %s: %v", file.filename, err)
+		}
+	}
+
+	var versions []model.PackageVersion
+	if err := db.Where("repository_id = ? AND format = ? AND package_name = ?", repo.ID, "maven", "com.example:app").
+		Find(&versions).Error; err != nil {
+		t.Fatalf("query package versions: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("expected 1 package version row, got %d: %#v", len(versions), versions)
+	}
+	v := versions[0]
+	if v.Version != "1.0.0" {
+		t.Fatalf("Version = %q, want 1.0.0", v.Version)
+	}
+	if v.FileCount != 3 {
+		t.Fatalf("FileCount = %d, want 3", v.FileCount)
+	}
+	if v.SizeBytes != 150 {
+		t.Fatalf("SizeBytes = %d, want 150", v.SizeBytes)
+	}
+	if v.ChecksumSHA256 == "" {
+		t.Fatal("ChecksumSHA256 should be populated from artifacts")
+	}
+	if v.License != "Apache-2.0" {
+		t.Fatalf("License = %q, want Apache-2.0", v.License)
+	}
+}
+
+func TestArtifactServicePackageVersionSummaryUsesArtifactStatus(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	svc := NewArtifactService(db)
+	if err := svc.Save(context.Background(), runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: "1",
+		Format:       "maven",
+		Kind:         runtime.KindArtifact,
+		Name:         "com.example:app",
+		Version:      "1.0.0",
+		Path:         "com/example/app/1.0.0",
+		Filename:     "app-1.0.0.jar",
+		RemotePath:   "com/example/app/1.0.0/app-1.0.0.jar",
+		Properties:   map[string]string{"status": "deprecated"},
+	})); err != nil {
+		t.Fatalf("save artifact: %v", err)
+	}
+
+	var version model.PackageVersion
+	if err := db.Where("repository_id = ? AND format = ? AND package_name = ? AND version = ?", 1, "maven", "com.example:app", "1.0.0").
+		First(&version).Error; err != nil {
+		t.Fatalf("query package version: %v", err)
+	}
+	if version.Status != "deprecated" {
+		t.Fatalf("Status = %q, want deprecated", version.Status)
+	}
+}
+
+func TestArtifactServiceUpdatePackageVersionStatusUpdatesAllArtifacts(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	artifacts := []model.Artifact{
+		{
+			RepositoryID: 1,
+			Format:       "maven",
+			Kind:         runtime.KindArtifact,
+			IdentityKey:  "artifact/com.example:app/1.0.0/app-1.0.0.jar",
+			Name:         "com.example:app",
+			Version:      "1.0.0",
+			Filename:     "app-1.0.0.jar",
+			RemotePath:   "com/example/app/1.0.0/app-1.0.0.jar",
+		},
+		{
+			RepositoryID: 1,
+			Format:       "maven",
+			Kind:         runtime.KindArtifact,
+			IdentityKey:  "artifact/com.example:app/1.0.0/app-1.0.0.pom",
+			Name:         "com.example:app",
+			Version:      "1.0.0",
+			Filename:     "app-1.0.0.pom",
+			RemotePath:   "com/example/app/1.0.0/app-1.0.0.pom",
+		},
+	}
+	if err := db.Create(&artifacts).Error; err != nil {
+		t.Fatalf("create artifacts: %v", err)
+	}
+	svc := NewArtifactService(db)
+
+	if err := svc.UpdatePackageVersionStatus(context.Background(), 1, "maven", "com.example:app", "1.0.0", "deprecated", "bad release"); err != nil {
+		t.Fatalf("update package version status: %v", err)
+	}
+
+	var updated []model.Artifact
+	if err := db.Where("repository_id = ? AND format = ? AND name = ? AND version = ?", 1, "maven", "com.example:app", "1.0.0").
+		Order("filename").Find(&updated).Error; err != nil {
+		t.Fatalf("query artifacts: %v", err)
+	}
+	if len(updated) != 2 {
+		t.Fatalf("expected 2 artifacts, got %d", len(updated))
+	}
+	for _, artifact := range updated {
+		if artifact.Metadata["status"] != "deprecated" {
+			t.Fatalf("%s status = %#v, want deprecated", artifact.Filename, artifact.Metadata["status"])
+		}
+		if artifact.Metadata["deprecation_reason"] != "bad release" {
+			t.Fatalf("%s deprecation_reason = %#v, want bad release", artifact.Filename, artifact.Metadata["deprecation_reason"])
+		}
+	}
+
+	var version model.PackageVersion
+	if err := db.Where("repository_id = ? AND format = ? AND package_name = ? AND version = ?", 1, "maven", "com.example:app", "1.0.0").
+		First(&version).Error; err != nil {
+		t.Fatalf("query package version: %v", err)
+	}
+	if version.Status != "deprecated" {
+		t.Fatalf("summary status = %q, want deprecated", version.Status)
+	}
+}
+
+func TestArtifactServiceDeleteRemovesPackageVersionWhenLastArtifactDeleted(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	svc := NewArtifactService(db)
+	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: "1",
+		Format:       "maven",
+		Kind:         runtime.KindArtifact,
+		Name:         "com.example:app",
+		Version:      "1.0.0",
+		Path:         "com/example/app/1.0.0",
+		Filename:     "app-1.0.0.jar",
+		RemotePath:   "com/example/app/1.0.0/app-1.0.0.jar",
+	})
+	if err := svc.Save(context.Background(), artifact); err != nil {
+		t.Fatalf("save artifact: %v", err)
+	}
+	if err := svc.Delete(context.Background(), runtime.ArtifactKey{
+		RepositoryID: "1",
+		Format:       "maven",
+		RemotePath:   "com/example/app/1.0.0/app-1.0.0.jar",
+	}); err != nil {
+		t.Fatalf("delete artifact: %v", err)
+	}
+
+	var count int64
+	if err := db.Model(&model.PackageVersion{}).Where("format = ? AND package_name = ? AND version = ?", "maven", "com.example:app", "1.0.0").Count(&count).Error; err != nil {
+		t.Fatalf("count package versions: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected package version summary to be removed, got %d rows", count)
+	}
+}
+
+func TestArtifactServiceRebuildPackageVersionsFromArtifacts(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	artifacts := []model.Artifact{
+		{
+			RepositoryID: 1,
+			Format:       "maven",
+			Kind:         runtime.KindArtifact,
+			IdentityKey:  "artifact/com.example:app/1.0.0/com/example/app/1.0.0/app-1.0.0.jar",
+			Name:         "com.example:app",
+			Version:      "1.0.0",
+			Filename:     "app-1.0.0.jar",
+			RemotePath:   "com/example/app/1.0.0/app-1.0.0.jar",
+			SizeBytes:    100,
+			Checksums:    model.JSONB{"sha256": "jar-sha"},
+		},
+		{
+			RepositoryID: 1,
+			Format:       "maven",
+			Kind:         runtime.KindArtifact,
+			IdentityKey:  "artifact/com.example:app/1.0.0/com/example/app/1.0.0/app-1.0.0.pom",
+			Name:         "com.example:app",
+			Version:      "1.0.0",
+			Filename:     "app-1.0.0.pom",
+			RemotePath:   "com/example/app/1.0.0/app-1.0.0.pom",
+			SizeBytes:    20,
+			Attributes:   model.JSONB{"license": "MIT"},
+		},
+		{
+			RepositoryID: 1,
+			Format:       "maven",
+			Kind:         runtime.KindArtifact,
+			IdentityKey:  "artifact/com.example:app/2.0.0/com/example/app/2.0.0/app-2.0.0.jar",
+			Name:         "com.example:app",
+			Version:      "2.0.0",
+			Filename:     "app-2.0.0.jar",
+			RemotePath:   "com/example/app/2.0.0/app-2.0.0.jar",
+			SizeBytes:    200,
+		},
+	}
+	if err := db.Create(&artifacts).Error; err != nil {
+		t.Fatalf("create artifacts: %v", err)
+	}
+	if err := db.Create(&model.PackageVersion{
+		RepositoryID: 1,
+		Format:       "maven",
+		PackageName:  "stale",
+		Version:      "0.0.1",
+		Status:       "published",
+	}).Error; err != nil {
+		t.Fatalf("create stale package version: %v", err)
+	}
+
+	svc := NewArtifactService(db)
+	if err := svc.RebuildPackageVersions(context.Background()); err != nil {
+		t.Fatalf("rebuild package versions: %v", err)
+	}
+
+	var versions []model.PackageVersion
+	if err := db.Where("repository_id = ? AND format = ? AND package_name = ?", 1, "maven", "com.example:app").
+		Order("version").Find(&versions).Error; err != nil {
+		t.Fatalf("query package versions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("expected 2 rebuilt package versions, got %d: %#v", len(versions), versions)
+	}
+	if versions[0].Version != "1.0.0" || versions[0].FileCount != 2 || versions[0].SizeBytes != 120 || versions[0].License != "MIT" {
+		t.Fatalf("unexpected 1.0.0 summary: %#v", versions[0])
+	}
+	if versions[1].Version != "2.0.0" || versions[1].FileCount != 1 || versions[1].SizeBytes != 200 {
+		t.Fatalf("unexpected 2.0.0 summary: %#v", versions[1])
+	}
+	var staleCount int64
+	if err := db.Model(&model.PackageVersion{}).Where("package_name = ?", "stale").Count(&staleCount).Error; err != nil {
+		t.Fatalf("count stale rows: %v", err)
+	}
+	if staleCount != 0 {
+		t.Fatalf("expected stale package version rows to be removed, got %d", staleCount)
+	}
+}
+
 func TestArtifactServiceDoesNotAggregateYumRepodataAsPackage(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {

@@ -30,6 +30,8 @@ type DownloadCountBatcher struct {
 	shards            []downloadCountShard
 	packagesTableOk   bool
 	packagesTableOnce sync.Once
+	versionsTableOk   bool
+	versionsTableOnce sync.Once
 }
 
 const defaultDownloadCountShardCount = 32
@@ -128,11 +130,20 @@ type pkgCountKey struct {
 	Name   string
 }
 
+type pkgVersionCountKey struct {
+	RepoID  uint
+	Format  string
+	Name    string
+	Version string
+}
+
 func (b *DownloadCountBatcher) batchUpdateCounts(ctx context.Context, counts map[DownloadCountKey]int64) {
 	// 按仓库 ID 聚合，更新 repositories.download_count
 	repoMap := make(map[uint]int64)
 	// 按 (repoID, format, name) 聚合，更新 packages.download_count
 	pkgMap := make(map[pkgCountKey]int64)
+	// 按 (repoID, format, name, version) 聚合，更新 package_versions.download_count
+	versionMap := make(map[pkgVersionCountKey]int64)
 
 	for key, count := range counts {
 		if key.RepoID > 0 {
@@ -142,6 +153,10 @@ func (b *DownloadCountBatcher) batchUpdateCounts(ctx context.Context, counts map
 			pk := pkgCountKey{RepoID: key.RepoID, Format: key.Format, Name: key.PackageName}
 			pkgMap[pk] += count
 		}
+		if key.RepoID > 0 && key.Format != "" && key.PackageName != "" && key.Version != "" {
+			vk := pkgVersionCountKey{RepoID: key.RepoID, Format: key.Format, Name: key.PackageName, Version: key.Version}
+			versionMap[vk] += count
+		}
 	}
 
 	if len(repoMap) > 0 {
@@ -149,6 +164,9 @@ func (b *DownloadCountBatcher) batchUpdateCounts(ctx context.Context, counts map
 	}
 	if len(pkgMap) > 0 {
 		b.batchUpdatePackageCounts(ctx, pkgMap)
+	}
+	if len(versionMap) > 0 {
+		b.batchUpdatePackageVersionCounts(ctx, versionMap)
 	}
 }
 
@@ -206,23 +224,36 @@ func (b *DownloadCountBatcher) batchUpdateRepoCounts(ctx context.Context, counts
 // 避免每次 flush 都查询系统表。
 func (b *DownloadCountBatcher) checkPackagesTable() bool {
 	b.packagesTableOnce.Do(func() {
-		sqlDB, err := b.db.DB()
-		if err != nil {
-			return
-		}
-		var tableCount int
-		if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='packages'").Scan(&tableCount); err != nil {
-			// PostgreSQL
-			if err := sqlDB.QueryRow("SELECT count(*) FROM information_schema.tables WHERE table_name = 'packages'").Scan(&tableCount); err != nil {
-				tableCount = 0
-			}
-		}
-		b.packagesTableOk = tableCount > 0
+		b.packagesTableOk = b.checkTable("packages")
 		if !b.packagesTableOk {
 			slog.Debug("packages table not found, package download count update will be skipped")
 		}
 	})
 	return b.packagesTableOk
+}
+
+func (b *DownloadCountBatcher) checkPackageVersionsTable() bool {
+	b.versionsTableOnce.Do(func() {
+		b.versionsTableOk = b.checkTable("package_versions")
+		if !b.versionsTableOk {
+			slog.Debug("package_versions table not found, package version download count update will be skipped")
+		}
+	})
+	return b.versionsTableOk
+}
+
+func (b *DownloadCountBatcher) checkTable(table string) bool {
+	sqlDB, err := b.db.DB()
+	if err != nil {
+		return false
+	}
+	var tableCount int
+	if err := sqlDB.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name = ?", table).Scan(&tableCount); err != nil {
+		if err := sqlDB.QueryRow("SELECT count(*) FROM information_schema.tables WHERE table_name = ?", table).Scan(&tableCount); err != nil {
+			tableCount = 0
+		}
+	}
+	return tableCount > 0
 }
 
 // batchUpdatePackageCounts 批量更新 packages.download_count
@@ -258,6 +289,42 @@ func (b *DownloadCountBatcher) batchUpdatePackageCounts(ctx context.Context, pkg
 
 	if err := tx.Commit(); err != nil {
 		slog.Error("failed to commit package counts transaction", "error", err)
+	}
+}
+
+// batchUpdatePackageVersionCounts 批量更新 package_versions.download_count
+func (b *DownloadCountBatcher) batchUpdatePackageVersionCounts(ctx context.Context, versionMap map[pkgVersionCountKey]int64) {
+	if !b.checkPackageVersionsTable() {
+		return
+	}
+
+	sqlDB, err := b.db.DB()
+	if err != nil {
+		slog.Error("failed to get sql.DB", "error", err)
+		return
+	}
+	tx, err := sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		slog.Error("failed to begin transaction", "error", err)
+		return
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare("UPDATE package_versions SET download_count = download_count + ? WHERE repository_id = ? AND format = ? AND package_name = ? AND version = ?")
+	if err != nil {
+		slog.Error("failed to prepare package_versions update statement", "error", err)
+		return
+	}
+	defer stmt.Close()
+
+	for pk, cnt := range versionMap {
+		if _, err := stmt.ExecContext(ctx, cnt, pk.RepoID, pk.Format, pk.Name, pk.Version); err != nil {
+			slog.Error("failed to update package version download count", "repoID", pk.RepoID, "format", pk.Format, "name", pk.Name, "version", pk.Version, "error", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		slog.Error("failed to commit package version counts transaction", "error", err)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"path"
 	"strconv"
 	"strings"
@@ -371,6 +372,11 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 	}
 
 	now := time.Now()
+	updatedAt := now
+	if !metadata.ModifiedAt.IsZero() {
+		updatedAt = metadata.ModifiedAt
+	}
+	remoteETag := firstNonEmpty(metadata.ETag, metadata.Digest)
 	artifact = &Artifact{
 		RepositoryID: n.RepositoryID,
 		Format:       key.Format,
@@ -387,7 +393,13 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 			"remote_size":   strconv.FormatInt(metadata.Size, 10),
 		},
 		CreatedAt: now,
-		UpdatedAt: now,
+		UpdatedAt: updatedAt,
+	}
+	if remoteETag != "" {
+		artifact.Properties["remote_etag"] = remoteETag
+	}
+	if !metadata.ModifiedAt.IsZero() {
+		artifact.Properties["remote_last_modified"] = metadata.ModifiedAt.UTC().Format(http.TimeFormat)
 	}
 	if ip := ClientIPFromContext(ctx); ip != "" {
 		artifact.Properties["trigger_ip"] = ip
@@ -684,6 +696,12 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 		return fmt.Errorf("blob too large: %d bytes exceeds limit %d", readSize, n.CachePolicy.MaxBlobSize)
 	}
 	artifact.BlobRefs = []BlobRef{blobRef}
+	if blobRef.Algorithm == "sha256" && blobRef.Digest != "" {
+		if artifact.Checksums == nil {
+			artifact.Checksums = map[string]string{}
+		}
+		artifact.Checksums["sha256"] = blobRef.Digest
+	}
 	artifact.RemoteURL = key.RemoteURL
 	artifact.SizeBytes = blobRef.Size
 	if blobRef.Size > 0 {
@@ -762,6 +780,13 @@ func (n *ProxyRuntime) refreshStaleMetadata(ctx context.Context, artifact *Artif
 
 	artifact.Properties["remote_digest"] = remoteMeta.Digest
 	artifact.Properties["remote_size"] = newSize
+	if remoteETag := firstNonEmpty(remoteMeta.ETag, remoteMeta.Digest); remoteETag != "" {
+		artifact.Properties["remote_etag"] = remoteETag
+	}
+	if !remoteMeta.ModifiedAt.IsZero() {
+		artifact.Properties["remote_last_modified"] = remoteMeta.ModifiedAt.UTC().Format(http.TimeFormat)
+		artifact.UpdatedAt = remoteMeta.ModifiedAt
+	}
 	if changed {
 		artifact.BlobRefs = nil
 	}

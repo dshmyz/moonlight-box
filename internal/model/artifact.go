@@ -68,20 +68,20 @@ func (Blob) TableName() string {
 // Artifact 制品元数据
 type Artifact struct {
 	ID           uint   `gorm:"primaryKey" json:"id"`
-	RepositoryID uint   `gorm:"not null;index:idx_artifacts_repo;uniqueIndex:idx_artifact_identity,priority:1" json:"repository_id"`
-	Format       string `gorm:"not null;size:64;index:idx_artifact_format" json:"format"`
-	Kind         string `gorm:"size:64" json:"kind,omitempty"`
+	RepositoryID uint   `gorm:"not null;index:idx_artifacts_repo;index:idx_artifacts_repo_format_remote_path,priority:1;index:idx_artifacts_repo_format_name,priority:1;index:idx_artifacts_repo_format_name_version,priority:1;index:idx_artifacts_repo_format_filename,priority:1;index:idx_artifacts_repo_format_kind_name_version,priority:1;uniqueIndex:idx_artifact_identity,priority:1" json:"repository_id"`
+	Format       string `gorm:"not null;size:64;index:idx_artifact_format;index:idx_artifacts_repo_format_remote_path,priority:2;index:idx_artifacts_repo_format_name,priority:2;index:idx_artifacts_repo_format_name_version,priority:2;index:idx_artifacts_repo_format_filename,priority:2;index:idx_artifacts_repo_format_kind_name_version,priority:2" json:"format"`
+	Kind         string `gorm:"size:64;index:idx_artifacts_repo_format_kind_name_version,priority:3" json:"kind,omitempty"`
 	IdentityKey  string `gorm:"not null;size:1024;uniqueIndex:idx_artifact_identity,priority:2" json:"identity_key"`
-	Name         string `gorm:"size:512;index:idx_artifact_name" json:"name,omitempty"`
+	Name         string `gorm:"size:512;index:idx_artifact_name;index:idx_artifacts_repo_format_name,priority:3;index:idx_artifacts_repo_format_name_version,priority:3;index:idx_artifacts_repo_format_kind_name_version,priority:4" json:"name,omitempty"`
 	Namespace    string `gorm:"size:512;index:idx_artifact_namespace" json:"namespace,omitempty"`
-	Version      string `gorm:"size:255;index:idx_artifact_version" json:"version,omitempty"`
+	Version      string `gorm:"size:255;index:idx_artifact_version;index:idx_artifacts_repo_format_name_version,priority:4;index:idx_artifacts_repo_format_kind_name_version,priority:5" json:"version,omitempty"`
 	// Path 逻辑分组路径，不含文件名，如 "left-pad/-"、"com/google/guava/guava"
 	Path     string `gorm:"type:text" json:"path,omitempty"`
-	Filename string `gorm:"size:1024;index:idx_artifact_filename" json:"filename,omitempty"`
+	Filename string `gorm:"size:1024;index:idx_artifact_filename,length:512;index:idx_artifacts_repo_format_filename,priority:3,length:512" json:"filename,omitempty"`
 	// RemotePath 仓库内的相对路径（含文件名），用于回源定位、存储寻址和构造下载 URL。
 	// 格式：协议相关的相对路径，如 "left-pad/-/left-pad-1.0.0.tgz"、"packages/ab/cd/requests-2.28.0.tar.gz"
 	// 用途：ProxyRuntime 回源时拼接完整远端 URL；存储层寻址（file/{RemotePath}）；前端下载链接构造（/repository/{repoName}/{RemotePath}）
-	RemotePath string `gorm:"type:text" json:"remote_path,omitempty"`
+	RemotePath string `gorm:"type:varchar(1024);index:idx_artifacts_repo_format_remote_path,priority:3,length:512" json:"remote_path,omitempty"`
 	// DownloadURL 远端文件的绝对 URL，仅用于后端 ProxyRuntime 服务端回源拉取。
 	// 格式：完整的 HTTP(S) URL，如 "https://files.pythonhosted.org/packages/ab/cd/requests-2.28.0.tar.gz"
 	// 注意：此字段绝不暴露给前端作为下载链接（会导致 CORS 跨域问题），前端下载统一走 RemotePath 构造的本地路径

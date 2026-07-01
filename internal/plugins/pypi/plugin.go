@@ -44,23 +44,29 @@
 package pypi
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
+	urlpath "path"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
+	nethtml "golang.org/x/net/html"
 )
 
 // pypiNormalizeRe 匹配 PEP 503 规范中需要归一化的连续字符：[-_.]+
@@ -186,6 +192,10 @@ func (p *PyPIPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Rep
 		return nil
 	}
 
+	if p.isLegacyUploadRequest(path) {
+		return p.handleLegacyUpload(ctx, repoRuntime)
+	}
+
 	if p.isSimpleIndexRequest(path) {
 		return p.handleSimpleIndex(ctx, repoRuntime, path)
 	}
@@ -194,12 +204,21 @@ func (p *PyPIPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Rep
 		return p.handlePackageList(ctx, repoRuntime, path)
 	}
 
+	if p.isPackageFileMetadataRequest(path) {
+		return p.handleFileMetadataRequest(ctx, repoRuntime, path)
+	}
+
 	if p.isPackagesPath(path) {
 		return p.handlePackagesDownload(ctx, repoRuntime, path)
 	}
 
 	if p.isJsonAPIRequest(path) {
 		return p.handleJsonAPI(ctx, repoRuntime, path)
+	}
+
+	// PEP 658: dist-info-metadata 端点
+	if p.isMetadataRequest(path) {
+		return p.handleMetadataRequest(ctx, repoRuntime, path)
 	}
 
 	return errors.New("invalid pypi path")
@@ -220,8 +239,100 @@ func (p *PyPIPlugin) isPackagesPath(path string) bool {
 	return strings.HasPrefix(path, "packages/")
 }
 
+func (p *PyPIPlugin) isLegacyUploadRequest(path string) bool {
+	return path == "legacy" || path == "legacy/"
+}
+
+func (p *PyPIPlugin) isPackageFileMetadataRequest(path string) bool {
+	return strings.HasPrefix(path, "packages/") && strings.HasSuffix(path, ".metadata")
+}
+
 func (p *PyPIPlugin) isJsonAPIRequest(path string) bool {
 	return strings.HasPrefix(path, "pypi/") && strings.HasSuffix(path, "/json")
+}
+
+// isMetadataRequest 判断是否为 PEP 658 .metadata 请求。
+// 路径格式: simple/{package}/{filename}.metadata
+func (p *PyPIPlugin) isMetadataRequest(path string) bool {
+	trimmed := strings.Trim(path, "/")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) != 3 || parts[0] != "simple" {
+		return false
+	}
+	return strings.HasSuffix(parts[2], ".metadata")
+}
+
+// handleMetadataRequest 处理 PEP 658 .metadata 请求。
+// 路径格式: simple/{package}/{filename}.metadata
+// 返回包的 dist-info metadata 内容（如 Requires-Python、依赖等）。
+func (p *PyPIPlugin) handleMetadataRequest(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
+	if ctx.Request.Method != http.MethodGet && ctx.Request.Method != http.MethodHead {
+		return errors.New("method not allowed")
+	}
+
+	// 解析路径: simple/{package}/{filename}.metadata
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 3 {
+		http.Error(ctx.Writer, "invalid metadata path", http.StatusBadRequest)
+		return nil
+	}
+
+	packageName := normalizePackageName(parts[1])
+	filename := strings.TrimSuffix(parts[2], ".metadata")
+	packageListPath := "simple/" + packageName + "/"
+
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "pypi",
+		Name:         packageName,
+		Filename:     filename,
+		RemotePath:   packageListPath,
+	})
+	if err != nil || len(artifacts) == 0 {
+		// Hosted/local fallback: uploaded files may not have a package-list
+		// RemotePath, so this query is only for local aggregation.
+		artifacts, err = repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+			RepositoryID: ctx.Repository.ID,
+			Format:       "pypi",
+			Name:         packageName,
+			Filename:     filename,
+		})
+		if err != nil || len(artifacts) == 0 {
+			http.Error(ctx.Writer, "not found", http.StatusNotFound)
+			return nil
+		}
+	}
+
+	var artifact *runtime.Artifact
+	for _, candidate := range artifacts {
+		if candidate.Filename == filename {
+			artifact = candidate
+			break
+		}
+	}
+	if artifact == nil {
+		http.Error(ctx.Writer, "not found", http.StatusNotFound)
+		return nil
+	}
+
+	// 检查是否有存储的 metadata
+	metadata := artifact.Attributes["metadata"]
+	if metadata == "" {
+		http.Error(ctx.Writer, "metadata not available", http.StatusNotFound)
+		return nil
+	}
+
+	// 返回 metadata 内容
+	ctx.Writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	ctx.Writer.Header().Set("Content-Length", strconv.Itoa(len(metadata)))
+	ctx.Writer.WriteHeader(http.StatusOK)
+
+	if ctx.Request.Method == http.MethodHead {
+		return nil
+	}
+
+	ctx.Writer.Write([]byte(metadata))
+	return nil
 }
 
 func (p *PyPIPlugin) handleSimpleIndex(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
@@ -240,7 +351,7 @@ func (p *PyPIPlugin) handleSimpleIndex(ctx *runtime.RequestContext, repoRuntime 
 	}
 
 	// 对 hosted 仓库：RemotePath 查询可能无结果（本地上传的包没有 RemotePath="simple/"），
-	// 尝试聚合所有已存储包的 Name。
+	// 尝试聚合所有已存储包的 Name。该查询只用于本地索引渲染，不作为 proxy 回源入口。
 	if len(artifacts) == 0 {
 		allArts, qErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 			RepositoryID: ctx.Repository.ID,
@@ -267,7 +378,8 @@ func (p *PyPIPlugin) handleSimpleIndex(ctx *runtime.RequestContext, repoRuntime 
 	}
 
 	accept := ctx.Request.Header.Get("Accept")
-	if strings.Contains(accept, "application/vnd.pypi.simple") || strings.Contains(accept, "application/json") {
+	ctx.Writer.Header().Set("Vary", "Accept")
+	if wantsPyPISimpleJSON(accept) {
 		return p.writeSimpleIndexJSON(ctx, artifacts)
 	}
 	return p.writeSimpleIndexHTML(ctx, artifacts)
@@ -332,12 +444,16 @@ func (p *PyPIPlugin) writeSimpleIndexJSON(ctx *runtime.RequestContext, artifacts
 }
 
 func (p *PyPIPlugin) handlePackageList(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
-	if ctx.Request.Method != http.MethodGet {
+	if ctx.Request.Method != http.MethodGet && ctx.Request.Method != http.MethodHead {
 		return errors.New("method not allowed")
 	}
 
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	packageName := normalizePackageName(parts[1])
+	if parts[1] != packageName || !strings.HasSuffix(path, "/") {
+		http.Redirect(ctx.Writer, ctx.Request, p.canonicalPackageListPath(ctx, packageName), http.StatusMovedPermanently)
+		return nil
+	}
 
 	ctx.PackageName = packageName
 
@@ -357,7 +473,8 @@ func (p *PyPIPlugin) handlePackageList(ctx *runtime.RequestContext, repoRuntime 
 	}
 
 	accept := ctx.Request.Header.Get("Accept")
-	if strings.Contains(accept, "application/vnd.pypi.simple") || strings.Contains(accept, "application/json") {
+	ctx.Writer.Header().Set("Vary", "Accept")
+	if wantsPyPISimpleJSON(accept) {
 		return p.writePackageFilesJSON(ctx, packageName, artifacts)
 	}
 	return p.writePackageFilesHTML(ctx, packageName, artifacts)
@@ -387,6 +504,17 @@ func (p *PyPIPlugin) writePackageFilesHTML(ctx *runtime.RequestContext, packageN
 		sb.WriteString(`<a href="../../`)
 		sb.WriteString(html.EscapeString(remotePath))
 		sb.WriteString(html.EscapeString(hashFragment))
+		if requiresPython := artifact.Attributes["requires_python"]; requiresPython != "" {
+			sb.WriteString(`" data-requires-python="`)
+			sb.WriteString(html.EscapeString(requiresPython))
+		}
+		if yanked := pypiYankedValue(artifact); yanked != "" {
+			sb.WriteString(`" data-yanked="`)
+			sb.WriteString(html.EscapeString(yanked))
+		}
+		if artifact.Attributes["metadata"] != "" {
+			sb.WriteString(`" data-dist-info-metadata="true"`)
+		}
 		sb.WriteString(`">`)
 		sb.WriteString(html.EscapeString(filename))
 		sb.WriteString(`</a><br>` + "\n")
@@ -401,6 +529,14 @@ func (p *PyPIPlugin) writePackageFilesHTML(ctx *runtime.RequestContext, packageN
 	}
 	ctx.Writer.Write([]byte(output))
 	return nil
+}
+
+func (p *PyPIPlugin) canonicalPackageListPath(ctx *runtime.RequestContext, packageName string) string {
+	prefix := strings.TrimSuffix(ctx.Request.URL.Path, ctx.RepositoryPath)
+	if prefix == ctx.Request.URL.Path {
+		return "/simple/" + packageName + "/"
+	}
+	return strings.TrimRight(prefix, "/") + "/simple/" + packageName + "/"
 }
 
 func (p *PyPIPlugin) writePackageFilesJSON(ctx *runtime.RequestContext, packageName string, artifacts []*runtime.Artifact) error {
@@ -425,16 +561,40 @@ func (p *PyPIPlugin) writePackageFilesJSON(ctx *runtime.RequestContext, packageN
 		if sha256 := artifactSHA256(artifact); sha256 != "" {
 			hashes["sha256"] = sha256
 		}
-		if len(hashes) > 0 {
-			file["hashes"] = hashes
+		file["hashes"] = hashes
+		if requiresPython := artifact.Attributes["requires_python"]; requiresPython != "" {
+			file["requires-python"] = requiresPython
+		}
+		if yanked := pypiYankedValue(artifact); yanked != "" {
+			file["yanked"] = yanked
+		}
+		// PEP 658: dist-info-metadata
+		if artifact.Attributes["metadata"] != "" {
+			metadataField := map[string]string{}
+			if sha256 := artifactSHA256(artifact); sha256 != "" {
+				metadataField["sha256"] = sha256
+			}
+			file["core-metadata"] = metadataField
+			file["dist-info-metadata"] = metadataField
+		}
+		if artifact.SizeBytes > 0 {
+			file["size"] = artifact.SizeBytes
+		} else if len(artifact.BlobRefs) > 0 && artifact.BlobRefs[0].Size > 0 {
+			file["size"] = artifact.BlobRefs[0].Size
+		}
+		if publishedAt := artifact.Attributes["published_at"]; publishedAt != "" {
+			file["upload-time"] = publishedAt
 		}
 
 		files = append(files, file)
 	}
+	versions := uniquePyPIVersions(artifacts, packageName)
 
 	data := map[string]interface{}{
-		"meta":  map[string]string{"api-version": "1.0"},
-		"files": files,
+		"meta":     map[string]string{"api-version": "1.1"},
+		"name":     packageName,
+		"versions": versions,
+		"files":    files,
 	}
 
 	ctx.Writer.Header().Set("Content-Type", "application/vnd.pypi.simple.v1+json")
@@ -443,6 +603,36 @@ func (p *PyPIPlugin) writePackageFilesJSON(ctx *runtime.RequestContext, packageN
 		return nil
 	}
 	json.NewEncoder(ctx.Writer).Encode(data)
+	return nil
+}
+
+func (p *PyPIPlugin) handleFileMetadataRequest(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
+	if ctx.Request.Method != http.MethodGet && ctx.Request.Method != http.MethodHead {
+		return errors.New("method not allowed")
+	}
+
+	artifactPath := strings.TrimSuffix(path, ".metadata")
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "pypi",
+		RemotePath:   artifactPath,
+	})
+	if err != nil || len(artifacts) == 0 {
+		http.Error(ctx.Writer, "not found", http.StatusNotFound)
+		return nil
+	}
+	metadata := artifacts[0].Attributes["metadata"]
+	if metadata == "" {
+		http.Error(ctx.Writer, "metadata not available", http.StatusNotFound)
+		return nil
+	}
+	ctx.Writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	ctx.Writer.Header().Set("Content-Length", strconv.Itoa(len(metadata)))
+	ctx.Writer.WriteHeader(http.StatusOK)
+	if ctx.Request.Method == http.MethodHead {
+		return nil
+	}
+	_, _ = ctx.Writer.Write([]byte(metadata))
 	return nil
 }
 
@@ -530,7 +720,8 @@ func (p *PyPIPlugin) handleChecksumRequest(ctx *runtime.RequestContext, repoRunt
 	if err != nil || len(artifacts) == 0 {
 		// Backward-compatible fallback for older metadata that did not store
 		// remote_path. Exact path remains preferred to avoid same-filename
-		// collisions across different hash directories.
+		// collisions across different hash directories. This local lookup is not
+		// a proxy refetch path.
 		artifacts, err = repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 			RepositoryID: ctx.Repository.ID,
 			Format:       "pypi",
@@ -607,9 +798,15 @@ func (p *PyPIPlugin) handleJsonAPI(ctx *runtime.RequestContext, repoRuntime runt
 		}
 
 		if sha256 := artifactSHA256(artifact); sha256 != "" {
-			file["digest"] = map[string]string{
+			file["digests"] = map[string]string{
 				"sha256": sha256,
 			}
+		}
+		if requiresPython := artifact.Attributes["requires_python"]; requiresPython != "" {
+			file["requires_python"] = requiresPython
+		}
+		if yanked := pypiYankedValue(artifact); yanked != "" {
+			file["yanked"] = yanked
 		}
 		if len(artifact.BlobRefs) > 0 {
 			file["size"] = artifact.BlobRefs[0].Size
@@ -694,7 +891,7 @@ func (p *PyPIPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runti
 	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
-		Kind:         runtime.KindPackage,
+		Kind:         runtime.KindArtifact,
 		Name:         packageName,
 		Version:      version,
 		Filename:     key.Filename,
@@ -721,6 +918,113 @@ func (p *PyPIPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runti
 
 	ctx.Writer.WriteHeader(http.StatusCreated)
 	return nil
+}
+
+func (p *PyPIPlugin) handleLegacyUpload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
+	if ctx.Request.Method != http.MethodPost {
+		return errors.New("method not allowed")
+	}
+	if err := ctx.Request.ParseMultipartForm(64 << 20); err != nil {
+		http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
+		return nil
+	}
+	if action := ctx.Request.FormValue(":action"); action != "file_upload" {
+		http.Error(ctx.Writer, "unsupported legacy upload action", http.StatusBadRequest)
+		return nil
+	}
+
+	file, header, err := ctx.Request.FormFile("content")
+	if err != nil {
+		http.Error(ctx.Writer, "missing content file", http.StatusBadRequest)
+		return nil
+	}
+	defer file.Close()
+
+	content, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
+		return nil
+	}
+	filename := runtime.SanitizeFilename(header.Filename)
+	if filename == "" {
+		http.Error(ctx.Writer, "missing filename", http.StatusBadRequest)
+		return nil
+	}
+	packageName := normalizePackageName(firstNonEmptyPyPI(ctx.Request.FormValue("name"), p.extractPackageNameFromFilename(filename)))
+	version := firstNonEmptyPyPI(ctx.Request.FormValue("version"), p.extractVersionFromFilename(filename))
+	sum := sha256.Sum256(content)
+	digest := fmt.Sprintf("%x", sum[:])
+	if providedDigest := strings.TrimSpace(ctx.Request.FormValue("sha256_digest")); providedDigest != "" && providedDigest != digest {
+		http.Error(ctx.Writer, "sha256_digest does not match uploaded content", http.StatusBadRequest)
+		return nil
+	}
+	remotePath := pypiPackageRemotePath(digest, filename)
+
+	session, err := repoRuntime.BeginUpload(ctx.Request.Context(), runtime.UploadRequest{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "pypi",
+		Filename:     filename,
+		Size:         int64(len(content)),
+	})
+	if err != nil {
+		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		return nil
+	}
+
+	blobRef, err := session.PutBlob(ctx.Request.Context(), bytes.NewReader(content))
+	if err != nil {
+		session.Abort(ctx.Request.Context())
+		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		return nil
+	}
+	blobRef.Size = int64(len(content))
+
+	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "pypi",
+		Kind:         runtime.KindArtifact,
+		Name:         packageName,
+		Version:      version,
+		Path:         filepath.Dir(remotePath),
+		Filename:     filename,
+		RemotePath:   remotePath,
+		SizeBytes:    int64(len(content)),
+		BlobRefs:     []runtime.BlobRef{blobRef},
+		Checksums:    map[string]string{"sha256": digest},
+		Attributes: map[string]string{
+			"artifact_type": "package-file",
+			"filetype":      ctx.Request.FormValue("filetype"),
+			"pyversion":     ctx.Request.FormValue("pyversion"),
+		},
+		Qualifiers: map[string]string{
+			"package": packageName,
+		},
+		Properties: map[string]string{
+			"filename":    filename,
+			"remote_path": remotePath,
+		},
+	})
+
+	if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
+		session.Abort(ctx.Request.Context())
+		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		return nil
+	}
+	if err := session.Commit(ctx.Request.Context()); err != nil {
+		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		return nil
+	}
+
+	ctx.Writer.WriteHeader(http.StatusCreated)
+	return nil
+}
+
+func pypiPackageRemotePath(sha256Digest, filename string) string {
+	prefix := sha256Digest
+	if len(prefix) < 4 {
+		prefix = prefix + strings.Repeat("0", 4-len(prefix))
+	}
+	return "packages/" + prefix[:2] + "/" + prefix[2:4] + "/" + filename
 }
 
 func extractRelativePackagePath(rawURL string) string {
@@ -1110,6 +1414,16 @@ func (p *PyPIPlugin) buildArtifactsFromJSONAPI(packageName string, info map[stri
 			if homepage != "" {
 				attrs["homepage"] = homepage
 			}
+			if requiresPython, ok := file["requires_python"].(string); ok && requiresPython != "" {
+				attrs["requires_python"] = requiresPython
+			}
+			if yanked, ok := file["yanked"].(bool); ok && yanked {
+				attrs["yanked"] = "true"
+			}
+			if yankedReason, ok := file["yanked_reason"].(string); ok && yankedReason != "" {
+				attrs["yanked"] = "true"
+				attrs["yanked_reason"] = yankedReason
+			}
 			if uploadTime, ok := file["upload_time"].(string); ok && uploadTime != "" {
 				if t, err := parsePyPITime(uploadTime); err == nil {
 					parsed := t.Format(time.RFC3339)
@@ -1326,17 +1640,14 @@ func parsePyPITime(s string) (time.Time, error) {
 
 // parseSimpleIndex 解析 PyPI Simple Index 页面，提取包名列表
 func (p *PyPIPlugin) parseSimpleIndex(body io.Reader) ([]*runtime.Artifact, error) {
-	htmlBytes, err := io.ReadAll(body)
+	anchors, err := parsePyPIAnchors(body)
 	if err != nil {
 		return nil, err
 	}
-	html := string(htmlBytes)
-	re := regexp.MustCompile(`<a href="([^"]+)/">([^<]+)</a>`)
-	matches := re.FindAllStringSubmatch(html, -1)
 	seen := make(map[string]bool)
 	var artifacts []*runtime.Artifact
-	for _, m := range matches {
-		pkgName := normalizePackageName(m[2])
+	for _, anchor := range anchors {
+		pkgName := normalizePackageName(strings.TrimSpace(anchor.text))
 		if pkgName == "" || seen[pkgName] {
 			continue
 		}
@@ -1355,32 +1666,41 @@ func (p *PyPIPlugin) parseSimpleIndex(body io.Reader) ([]*runtime.Artifact, erro
 
 // parsePackageList 解析 PyPI 包版本列表页面，提取文件列表
 func (p *PyPIPlugin) parsePackageList(packageName string, body io.Reader) ([]*runtime.Artifact, error) {
-	htmlBytes, err := io.ReadAll(body)
+	anchors, err := parsePyPIAnchors(body)
 	if err != nil {
 		return nil, err
 	}
-	html := string(htmlBytes)
-	// 捕获完整 href（含域名），供 download_url 使用
-	re := regexp.MustCompile(`<a href="([^"]*?)/packages/([^"#]+)(?:#[^"]*)?[^>]*>([^<]+)</a>`)
-	matches := re.FindAllStringSubmatch(html, -1)
 	var artifacts []*runtime.Artifact
-	for _, m := range matches {
-		hrefPrefix := m[1]                     // e.g. "https://files.pythonhosted.org" 或 "../../"
-		pathAfterPkg := m[2]                   // e.g. "bf/78/.../requests-0.10.0.tar.gz"
-		fullPath := "packages/" + pathAfterPkg // 添加 packages/ 前缀，使 remote_path 完整
-		filename := filepath.Base(fullPath)    // e.g. "requests-0.10.0.tar.gz"
+	for _, anchor := range anchors {
+		remotePath, downloadURL, fragment := pypiRemotePathFromHref(anchor.attrs["href"])
+		if remotePath == "" {
+			continue
+		}
+		filename := filepath.Base(remotePath)
 		if !isValidPyPIFilename(filename) {
 			continue
 		}
 		version := p.extractVersionFromFilename(filename)
-		dir := filepath.Dir(fullPath) // e.g. "62/35/0230421b8c4efad6624518028163329ad0c2df9e58e6b3bee013427bf8f6"
+		dir := filepath.Dir(remotePath)
 		props := map[string]string{
-			"remote_path": fullPath,
+			"remote_path": remotePath,
 		}
-		// 只有绝对 URL 才能交给后端 HTTP client；相对链接保留 remote_path，
-		// 由 runtime 使用 RemoteBaseURL + remote_path 回源。
-		if parsed, err := url.Parse(hrefPrefix); err == nil && parsed.IsAbs() {
-			props["download_url"] = strings.TrimRight(hrefPrefix, "/") + "/packages/" + pathAfterPkg
+		if downloadURL != "" {
+			props["download_url"] = downloadURL
+		}
+		checksums := map[string]string{}
+		if sha256 := extractPyPISHA256Fragment(fragment); sha256 != "" {
+			checksums["sha256"] = sha256
+		}
+		attrs := map[string]string{"artifact_type": "package-file"}
+		if requiresPython := anchor.attrs["data-requires-python"]; requiresPython != "" {
+			attrs["requires_python"] = requiresPython
+		}
+		if yanked, ok := anchor.attrs["data-yanked"]; ok {
+			attrs["yanked"] = "true"
+			if yanked != "" {
+				attrs["yanked_reason"] = yanked
+			}
 		}
 		artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
 			Format:      "pypi",
@@ -1389,9 +1709,10 @@ func (p *PyPIPlugin) parsePackageList(packageName string, body io.Reader) ([]*ru
 			Version:     version,
 			Path:        dir,
 			Filename:    filename,
-			RemotePath:  fullPath,
+			RemotePath:  remotePath,
 			DownloadURL: props["download_url"],
-			Attributes:  map[string]string{"artifact_type": "package-file"},
+			Checksums:   checksums,
+			Attributes:  attrs,
 			Qualifiers: map[string]string{
 				"package": packageName,
 			},
@@ -1408,4 +1729,146 @@ func firstNonEmptyPyPI(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func uniquePyPIVersions(artifacts []*runtime.Artifact, packageName string) []string {
+	seen := make(map[string]bool)
+	versions := make([]string, 0)
+	for _, artifact := range artifacts {
+		if artifact.Name != packageName || artifact.Version == "" || seen[artifact.Version] {
+			continue
+		}
+		seen[artifact.Version] = true
+		versions = append(versions, artifact.Version)
+	}
+	return versions
+}
+
+type pypiAnchor struct {
+	attrs map[string]string
+	text  string
+}
+
+func parsePyPIAnchors(body io.Reader) ([]pypiAnchor, error) {
+	doc, err := nethtml.Parse(body)
+	if err != nil {
+		return nil, err
+	}
+	var anchors []pypiAnchor
+	var walk func(*nethtml.Node)
+	walk = func(n *nethtml.Node) {
+		if n.Type == nethtml.ElementNode && strings.EqualFold(n.Data, "a") {
+			attrs := make(map[string]string)
+			for _, attr := range n.Attr {
+				attrs[strings.ToLower(attr.Key)] = attr.Val
+			}
+			anchors = append(anchors, pypiAnchor{
+				attrs: attrs,
+				text:  strings.TrimSpace(pypiNodeText(n)),
+			})
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	return anchors, nil
+}
+
+func pypiNodeText(n *nethtml.Node) string {
+	var sb strings.Builder
+	var walk func(*nethtml.Node)
+	walk = func(node *nethtml.Node) {
+		if node.Type == nethtml.TextNode {
+			sb.WriteString(node.Data)
+		}
+		for c := node.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(n)
+	return sb.String()
+}
+
+func pypiRemotePathFromHref(href string) (remotePath, downloadURL, fragment string) {
+	href = strings.TrimSpace(href)
+	if href == "" {
+		return "", "", ""
+	}
+	parsed, err := url.Parse(href)
+	if err != nil {
+		return "", "", ""
+	}
+	fragment = parsed.RawFragment
+	if fragment == "" {
+		fragment = parsed.Fragment
+	}
+	cleanURL := *parsed
+	cleanURL.Fragment = ""
+	cleanURL.RawFragment = ""
+	if parsed.IsAbs() {
+		downloadURL = cleanURL.String()
+	}
+	remotePath = cleanPyPIHrefPath(parsed.Path)
+	return remotePath, downloadURL, fragment
+}
+
+func cleanPyPIHrefPath(path string) string {
+	cleaned := strings.TrimPrefix(urlpath.Clean("/"+path), "/")
+	if cleaned == "." {
+		return ""
+	}
+	return cleaned
+}
+
+func wantsPyPISimpleJSON(accept string) bool {
+	if accept == "" || accept == "*/*" {
+		return false
+	}
+	bestQ := -1.0
+	bestWantsJSON := false
+	for _, part := range strings.Split(accept, ",") {
+		mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(part))
+		if err != nil {
+			continue
+		}
+		q := 1.0
+		if rawQ := params["q"]; rawQ != "" {
+			parsedQ, err := strconv.ParseFloat(rawQ, 64)
+			if err != nil {
+				continue
+			}
+			q = parsedQ
+		}
+		if q <= 0 || q <= bestQ {
+			continue
+		}
+		switch mediaType {
+		case "application/vnd.pypi.simple.v1+json", "application/vnd.pypi.simple+json", "application/json":
+			bestQ = q
+			bestWantsJSON = true
+		case "application/vnd.pypi.simple.v1+html", "application/vnd.pypi.simple+html", "text/html":
+			bestQ = q
+			bestWantsJSON = false
+		}
+	}
+	return bestWantsJSON
+}
+
+func pypiYankedValue(artifact *runtime.Artifact) string {
+	if artifact == nil || artifact.Attributes["yanked"] != "true" {
+		return ""
+	}
+	if reason := artifact.Attributes["yanked_reason"]; reason != "" {
+		return reason
+	}
+	return "true"
+}
+
+func extractPyPISHA256Fragment(fragment string) string {
+	values, err := url.ParseQuery(fragment)
+	if err != nil {
+		return ""
+	}
+	return values.Get("sha256")
 }

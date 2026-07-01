@@ -82,6 +82,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -327,10 +328,6 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 				"extension": sv.Extension,
 				"updated":   sv.Updated,
 			}
-			attrs := map[string]string{
-				"default_visible": "true",
-				"display_group":   snapshotDisplayGroup(sv.Value),
-			}
 			artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
 				Format:     "maven",
 				Kind:       runtime.KindArtifact,
@@ -342,7 +339,6 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 				RemotePath: basePath + "/" + filename,
 				Extension:  "." + strings.TrimPrefix(sv.Extension, "."),
 				Qualifiers: qualifiers,
-				Attributes: attrs,
 				Properties: props,
 			}))
 		}
@@ -356,14 +352,6 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 		"duration":     time.Since(start).Seconds(),
 	}).Debug("maven: fetchMetadata success")
 	return artifacts, nil
-}
-
-func snapshotDisplayGroup(value string) string {
-	parts := strings.Split(value, "-")
-	if len(parts) < 3 {
-		return value
-	}
-	return parts[len(parts)-2] + "-" + parts[len(parts)-1]
 }
 
 func mavenSnapshotFilename(artifact string, sv mavenSnapshotVersionXML) string {
@@ -583,6 +571,123 @@ type mavenSnapshotVersionXML struct {
 	Updated    string `xml:"updated"`
 }
 
+type snapshotFileInfo struct {
+	ext        string
+	classifier string
+	timestamp  string
+	buildNum   string
+}
+
+// parseSnapshotFileInfo 从 SNAPSHOT 文件名中解析 timestamp、buildNumber、extension、classifier。
+// 文件名格式: {artifactId}-{baseVersion}-{timestamp}-{buildNumber}[-classifier].{ext}
+// 例如: my-lib-1.0-20260603.120000-1.jar / my-lib-1.0-20260603.120000-1-sources.jar
+// artifact 为 artifactId，version 为完整 SNAPSHOT 版本（如 1.0-SNAPSHOT）。
+// 解析失败（文件名不符合 SNAPSHOT 时间戳格式）返回 ok=false。
+func parseSnapshotFileInfo(artifact, version, filename string) (info snapshotFileInfo, ok bool) {
+	if filename == "" || strings.Contains(filename, "maven-metadata") {
+		return snapshotFileInfo{}, false
+	}
+	baseVersion := strings.TrimSuffix(version, "-SNAPSHOT")
+	prefix := artifact + "-" + baseVersion + "-"
+	if !strings.HasPrefix(filename, prefix) {
+		return snapshotFileInfo{}, false
+	}
+	rest := strings.TrimPrefix(filename, prefix)
+	// rest: 20260603.033633-3.jar 或 20260603.033633-3-sources.jar
+	parts := strings.SplitN(rest, "-", 3)
+	if len(parts) < 2 {
+		return snapshotFileInfo{}, false
+	}
+	ts := parts[0]       // 20260603.033633
+	buildNum := parts[1] // 3 或 3.jar
+	// 去掉扩展名
+	if idx := strings.Index(buildNum, "."); idx >= 0 {
+		buildNum = buildNum[:idx]
+	}
+	if ts == "" || buildNum == "" {
+		return snapshotFileInfo{}, false
+	}
+
+	// 收集文件类型（jar, pom, sources, javadoc 等）
+	ext := filepath.Ext(filename)
+	base := strings.TrimSuffix(filename, ext)
+	classifier := ""
+	// 检查是否有 classifier: artifactId-version-timestamp-buildNum-classifier
+	classifierPrefix := prefix + ts + "-" + buildNum + "-"
+	if strings.HasPrefix(base, classifierPrefix) {
+		classifier = strings.TrimPrefix(base, classifierPrefix)
+	}
+	return snapshotFileInfo{
+		ext:        strings.TrimPrefix(ext, "."),
+		classifier: classifier,
+		timestamp:  ts,
+		buildNum:   buildNum,
+	}, true
+}
+
+// buildSnapshotMetadata 构建 SNAPSHOT metadata 的 <snapshot> 和 <snapshotVersions> 部分。
+// 从 artifacts 文件名中解析时间戳，选出最新一组（同 timestamp+buildNumber）产物，
+// 生成与路径A一致的 metadata 结构。lastUpdated 由调用方传入（14 位 YYYYMMDDHHmmss）。
+// 返回 (snapshotBlock, snapshotVersionsBlock)。若无法解析出任何有效时间戳，两者均为 nil。
+func buildSnapshotMetadata(artifact, version string, artifacts []*runtime.Artifact, lastUpdated string) (*mavenSnapshotXML, *mavenSnapshotVersXML) {
+	var latestTimestamp, latestBuildNum string
+	var snapshotFiles []snapshotFileInfo
+
+	for _, a := range artifacts {
+		info, ok := parseSnapshotFileInfo(artifact, version, a.Filename)
+		if !ok {
+			continue
+		}
+		if compareMavenSnapshotBuild(info.timestamp, info.buildNum, latestTimestamp, latestBuildNum) > 0 {
+			latestTimestamp = info.timestamp
+			latestBuildNum = info.buildNum
+		}
+		snapshotFiles = append(snapshotFiles, info)
+	}
+
+	if latestTimestamp == "" || latestBuildNum == "" {
+		return nil, nil
+	}
+
+	baseVersion := strings.TrimSuffix(version, "-SNAPSHOT")
+	value := baseVersion + "-" + latestTimestamp + "-" + latestBuildNum
+
+	snapBlock := &mavenSnapshotXML{
+		Timestamp:   latestTimestamp,
+		BuildNumber: latestBuildNum,
+	}
+
+	// 生成 snapshotVersions：只保留最新一组（同 timestamp+buildNumber），同 ext+classifier 去重
+	snapshotItems := make([]mavenSnapshotVersionXML, 0)
+	seenItems := make(map[string]struct{})
+	for _, info := range snapshotFiles {
+		if info.timestamp != latestTimestamp || info.buildNum != latestBuildNum {
+			continue
+		}
+		itemKey := info.ext + "/" + info.classifier
+		if _, seen := seenItems[itemKey]; seen {
+			continue
+		}
+		seenItems[itemKey] = struct{}{}
+		snapshotItems = append(snapshotItems, mavenSnapshotVersionXML{
+			Extension:  info.ext,
+			Classifier: info.classifier,
+			Value:      value,
+			Updated:    lastUpdated,
+		})
+	}
+	if len(snapshotItems) == 0 {
+		return snapBlock, nil
+	}
+	sort.Slice(snapshotItems, func(i, j int) bool {
+		if snapshotItems[i].Extension != snapshotItems[j].Extension {
+			return snapshotItems[i].Extension < snapshotItems[j].Extension
+		}
+		return snapshotItems[i].Classifier < snapshotItems[j].Classifier
+	})
+	return snapBlock, &mavenSnapshotVersXML{Items: snapshotItems}
+}
+
 type pomProject struct {
 	Licenses []pomLicense `xml:"licenses>license"`
 }
@@ -682,7 +787,8 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 		// For SNAPSHOT version metadata in local repos: aggregate from uploaded artifacts
 		// to generate dynamic metadata with correct timestamp and buildNumber.
 		if version != "" && strings.Contains(version, "-SNAPSHOT") {
-			// 查询所有已上传的 SNAPSHOT artifacts
+			// 查询所有已上传的 SNAPSHOT artifacts。该查询只用于 hosted/local
+			// 动态 metadata 聚合，不作为 proxy 回源入口。
 			snapQuery := runtime.ArtifactQuery{
 				RepositoryID: ctx.Repository.ID,
 				Format:       "maven",
@@ -705,60 +811,10 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 			if snapErr == nil && len(snapArtifacts) > 0 {
 				// 从文件名中提取 timestamp 和 buildNumber
 				// 格式: artifactId-version-timestamp-buildNumber.ext
-				baseVersion := strings.TrimSuffix(version, "-SNAPSHOT")
-				var latestTimestamp, latestBuildNum string
-				var latestTime time.Time
-				var snapshotFiles []struct{ ext, classifier string }
-
-				for _, a := range snapArtifacts {
-					filename := a.Filename
-					if filename == "" || strings.Contains(filename, "maven-metadata") {
-						continue
-					}
-					// 解析文件名: snapshot-lib-1.0-20260603.033633-3.jar
-					prefix := artifact + "-" + baseVersion + "-"
-					if !strings.HasPrefix(filename, prefix) {
-						continue
-					}
-					rest := strings.TrimPrefix(filename, prefix)
-					// rest: 20260603.033633-3.jar 或 20260603.033633-3-sources.jar
-					parts := strings.SplitN(rest, "-", 3)
-					if len(parts) < 2 {
-						continue
-					}
-					ts := parts[0]       // 20260603.033633
-					buildNum := parts[1] // 3 或 3.jar
-					// 去掉扩展名
-					if idx := strings.Index(buildNum, "."); idx >= 0 {
-						buildNum = buildNum[:idx]
-					}
-
-					// 比较时间，找出最新的
-					if a.UpdatedAt.After(latestTime) {
-						latestTime = a.UpdatedAt
-						latestTimestamp = ts
-						latestBuildNum = buildNum
-					}
-
-					// 收集文件类型（jar, pom, sources, javadoc 等）
-					ext := filepath.Ext(filename)
-					base := strings.TrimSuffix(filename, ext)
-					classifier := ""
-					// 检查是否有 classifier: artifactId-version-timestamp-buildNum-classifier
-					classifierPrefix := prefix + ts + "-" + buildNum + "-"
-					if strings.HasPrefix(base, classifierPrefix) {
-						classifier = strings.TrimPrefix(base, classifierPrefix)
-					}
-					snapshotFiles = append(snapshotFiles, struct{ ext, classifier string }{
-						ext:        strings.TrimPrefix(ext, "."),
-						classifier: classifier,
-					})
-				}
-
-				if latestTimestamp != "" && latestBuildNum != "" {
-					// 生成动态 SNAPSHOT metadata
-					// lastUpdated 格式: YYYYMMDDHHmmss（14 位）
-					lastUpdated := strings.ReplaceAll(latestTimestamp, ".", "")
+				snapBlock, snapVersionsBlock := buildSnapshotMetadata(artifact, version, snapArtifacts, "")
+				if snapBlock != nil {
+					// lastUpdated 格式: YYYYMMDDHHmmss（14 位），由 timestamp 去掉点号得到
+					lastUpdated := strings.ReplaceAll(snapBlock.Timestamp, ".", "")
 					meta := mavenMetadata{
 						Model:      "1.1.0",
 						GroupID:    group,
@@ -769,32 +825,10 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 							Release:  "",
 							Versions: mavenVersionsXML{Items: []string{version}},
 							LastU:    lastUpdated,
-							Snapshot: &mavenSnapshotXML{
-								Timestamp:   latestTimestamp,
-								BuildNumber: latestBuildNum,
-							},
+							Snapshot: snapBlock,
 						},
 					}
-
-					// 生成 snapshotVersions
-					snapshotItems := make([]mavenSnapshotVersionXML, 0)
-					for _, info := range snapshotFiles {
-						snapshotItems = append(snapshotItems, mavenSnapshotVersionXML{
-							Extension:  info.ext,
-							Classifier: info.classifier,
-							Value:      baseVersion + "-" + latestTimestamp + "-" + latestBuildNum,
-							Updated:    lastUpdated,
-						})
-					}
-					if len(snapshotItems) > 0 {
-						sort.Slice(snapshotItems, func(i, j int) bool {
-							if snapshotItems[i].Extension != snapshotItems[j].Extension {
-								return snapshotItems[i].Extension < snapshotItems[j].Extension
-							}
-							return snapshotItems[i].Classifier < snapshotItems[j].Classifier
-						})
-						meta.Versioning.SnapshotVersions = &mavenSnapshotVersXML{Items: snapshotItems}
-					}
+					meta.Versioning.SnapshotVersions = snapVersionsBlock
 
 					body, err := xml.MarshalIndent(meta, "", "  ")
 					if err != nil {
@@ -811,6 +845,8 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 		}
 
 		if !hasVersionArtifacts && version == "" {
+			// Hosted/local fallback: aggregate uploaded artifacts to render
+			// artifact-level metadata when no fetched version metadata exists.
 			artifactArts, qErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 				RepositoryID: ctx.Repository.ID,
 				Format:       "maven",
@@ -939,55 +975,12 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 		},
 	}
 	if version != "" && strings.Contains(version, "SNAPSHOT") {
-		var ts string
-		if len(lastUpdated) >= 14 {
-			ts = lastUpdated[:8] + "." + lastUpdated[8:14]
-		} else {
-			ts = lastUpdated
-		}
-		meta.Versioning.Snapshot = &mavenSnapshotXML{
-			Timestamp:   ts,
-			BuildNumber: "1",
-		}
-		snapshotItems := make([]mavenSnapshotVersionXML, 0)
-		for _, a := range artifacts {
-			v := a.Version
-			if !strings.HasPrefix(v, version) {
-				continue
-			}
-			ext := a.Properties["extension"]
-			if ext == "" {
-				ext = strings.TrimPrefix(filepath.Ext(a.Properties["filename"]), ".")
-			}
-			if ext == "" {
-				ext = strings.TrimPrefix(filepath.Ext(a.Filename), ".")
-			}
-			if ext == "" {
-				ext = "jar"
-			}
-			classifier := a.Properties["classifier"]
-			if classifier == "" {
-				classifier = a.Qualifiers["classifier"]
-			}
-			value := v
-			if value == "" {
-				value = version
-			}
-			snapshotItems = append(snapshotItems, mavenSnapshotVersionXML{
-				Extension:  ext,
-				Classifier: classifier,
-				Value:      value,
-				Updated:    lastUpdated,
-			})
-		}
-		if len(snapshotItems) > 0 {
-			sort.Slice(snapshotItems, func(i, j int) bool {
-				if snapshotItems[i].Extension != snapshotItems[j].Extension {
-					return snapshotItems[i].Extension < snapshotItems[j].Extension
-				}
-				return snapshotItems[i].Classifier < snapshotItems[j].Classifier
-			})
-			meta.Versioning.SnapshotVersions = &mavenSnapshotVersXML{Items: snapshotItems}
+		// 从 artifact 文件名中解析真实的 timestamp 和 buildNumber，
+		// 生成与 version 级 metadata 一致的 <snapshot> 和 <snapshotVersions>。
+		snapBlock, snapVersionsBlock := buildSnapshotMetadata(artifact, version, artifacts, lastUpdated)
+		if snapBlock != nil {
+			meta.Versioning.Snapshot = snapBlock
+			meta.Versioning.SnapshotVersions = snapVersionsBlock
 		}
 	}
 
@@ -1016,6 +1009,30 @@ func sortMavenVersions(versions []string) {
 	sort.Slice(versions, func(i, j int) bool {
 		return compareMavenVersion(versions[i], versions[j]) < 0
 	})
+}
+
+func compareMavenSnapshotBuild(tsA, buildA, tsB, buildB string) int {
+	if tsA != tsB {
+		if tsA < tsB {
+			return -1
+		}
+		return 1
+	}
+	numA, errA := strconv.Atoi(buildA)
+	numB, errB := strconv.Atoi(buildB)
+	if errA == nil && errB == nil && numA != numB {
+		if numA < numB {
+			return -1
+		}
+		return 1
+	}
+	if buildA < buildB {
+		return -1
+	}
+	if buildA > buildB {
+		return 1
+	}
+	return 0
 }
 
 func compareMavenVersion(a, b string) int {
@@ -1357,6 +1374,8 @@ func (p *MavenPlugin) buildDynamicMetadata(ctx *runtime.RequestContext, repoRunt
 	if group == "" || artifact == "" {
 		return nil
 	}
+	// Hosted/local fallback only: build metadata from uploaded artifacts after
+	// direct metadata lookup failed.
 	arts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "maven",
@@ -1482,11 +1501,6 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		}
 	}
 
-	// SNAPSHOT 版本标记为默认可见，前端只展示最新一组（同 extension+classifier）
-	if strings.Contains(key.Version, "-SNAPSHOT") {
-		attributes["default_visible"] = "true"
-	}
-
 	blobRef, err := session.PutBlob(ctx.Request.Context(), body)
 	if err != nil {
 		session.Abort(ctx.Request.Context())
@@ -1526,12 +1540,6 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		return nil
 	}
 
-	// SNAPSHOT 版本：清除同 extension+classifier 旧文件的 default_visible 标记
-	// 这样前端只展示最新一组，旧文件可通过"更多"展开
-	if strings.Contains(key.Version, "-SNAPSHOT") {
-		p.clearOldSnapshotDefaultVisible(ctx, repoRuntime, key)
-	}
-
 	// 创建返回 201，更新返回 200
 	if isUpdate {
 		ctx.Writer.WriteHeader(http.StatusOK)
@@ -1539,77 +1547,6 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		ctx.Writer.WriteHeader(http.StatusCreated)
 	}
 	return nil
-}
-
-// clearOldSnapshotDefaultVisible 清除同 extension+classifier 旧 SNAPSHOT 文件的 default_visible 标记。
-// 使用 BeginUpload + PutArtifact 走 upsert 路径，只更新 attributes，不删除文件、不动 blob。
-func (p *MavenPlugin) clearOldSnapshotDefaultVisible(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) {
-	oldArtifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
-		RepositoryID: ctx.Repository.ID,
-		Format:       "maven",
-		Kind:         runtime.KindArtifact,
-		Name:         key.Name,
-		Version:      key.Version,
-	})
-	if err != nil {
-		logrus.WithError(err).WithFields(logrus.Fields{
-			"name":    key.Name,
-			"version": key.Version,
-		}).Warn("maven: query old snapshot artifacts failed, skip clearing default_visible")
-		return
-	}
-
-	classifier := key.Qualifiers["classifier"]
-	var toUpdate []*runtime.Artifact
-	for _, old := range oldArtifacts {
-		// 跳过刚上传的新文件
-		if old.RemotePath == key.RemotePath {
-			continue
-		}
-		// 只处理同 extension + classifier 的
-		oldClassifier := old.Qualifiers["classifier"]
-		if old.Extension != key.Extension || oldClassifier != classifier {
-			continue
-		}
-		// 只处理带 default_visible 标记的
-		if _, has := old.Attributes["default_visible"]; !has {
-			continue
-		}
-		delete(old.Attributes, "default_visible")
-		toUpdate = append(toUpdate, old)
-	}
-
-	if len(toUpdate) == 0 {
-		return
-	}
-
-	updateSession, err := repoRuntime.BeginUpload(ctx.Request.Context(), runtime.UploadRequest{
-		RepositoryID: ctx.Repository.ID,
-		Format:       "maven",
-	})
-	if err != nil {
-		logrus.WithError(err).Warn("maven: begin upload session for clearing default_visible failed")
-		return
-	}
-
-	for _, a := range toUpdate {
-		if err := updateSession.PutArtifact(ctx.Request.Context(), a); err != nil {
-			logrus.WithError(err).Warn("maven: put artifact for clearing default_visible failed")
-			updateSession.Abort(ctx.Request.Context())
-			return
-		}
-	}
-
-	if err := updateSession.Commit(ctx.Request.Context()); err != nil {
-		logrus.WithError(err).Warn("maven: commit clearing default_visible failed")
-		return
-	}
-
-	logrus.WithFields(logrus.Fields{
-		"name":    key.Name,
-		"version": key.Version,
-		"cleared": len(toUpdate),
-	}).Debug("maven: cleared default_visible from old snapshot artifacts")
 }
 
 func (p *MavenPlugin) handleChecksumUpload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey, originalFile string, algo checksumAlgo) error {

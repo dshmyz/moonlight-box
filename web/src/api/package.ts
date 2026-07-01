@@ -51,6 +51,7 @@ export interface PackageFile {
 export interface PackageVersion {
   id: number
   package_id: number
+  repository_id?: number
   version: string
   name?: string
   namespace?: string
@@ -88,6 +89,21 @@ export interface VersionListResponse {
 }
 
 type PackageDeleteTarget = Pick<Package, 'id' | 'name'> & Partial<Pick<Package, 'type' | 'package_type' | 'format' | 'repository_id'>>
+export interface PackageVersionTarget {
+  type: string
+  name: string
+  version: string
+  repository_id?: number
+}
+
+function packageVersionTargetPayload(target: PackageVersionTarget, extra?: Record<string, unknown>) {
+  return {
+    repository_id: target.repository_id,
+    name: target.name,
+    version: target.version,
+    ...extra,
+  }
+}
 
 export const packageApi = {
   search(params: { q?: string; type?: string; name?: string; version?: string; repository?: string; sort?: string; page?: number; page_size?: number }) {
@@ -102,23 +118,45 @@ export const packageApi = {
     return request.post(`/packages/versions/${versionId}/deprecate`, { reason })
   },
 
+  deprecatePackageVersion(target: PackageVersionTarget, reason: string) {
+    return request.post(`/packages/${target.type}/versions/deprecate`, packageVersionTargetPayload(target, { reason }))
+  },
+
   restoreVersion(versionId: number) {
     return request.post(`/packages/versions/${versionId}/restore`)
+  },
+
+  restorePackageVersion(target: PackageVersionTarget) {
+    return request.post(`/packages/${target.type}/versions/restore`, packageVersionTargetPayload(target))
   },
 
   yankVersion(versionId: number) {
     return request.post(`/packages/versions/${versionId}/yank`)
   },
 
+  yankPackageVersion(target: PackageVersionTarget) {
+    return request.post(`/packages/${target.type}/versions/yank`, packageVersionTargetPayload(target))
+  },
+
   deleteVersion(versionId: number) {
     return request.delete(`/packages/versions/${versionId}`)
   },
 
+  deletePackageVersion(target: PackageVersionTarget) {
+    return request.delete(`/packages/${target.type}/versions`, {
+      params: {
+        repository_id: target.repository_id,
+        name: target.name,
+        version: target.version,
+      },
+    })
+  },
+
   deletePackage(pkg: number | PackageDeleteTarget) {
     if (typeof pkg === 'number') {
-      return request.delete(`/packages/${pkg}`)
+      return request.delete(`/packages/by-id/${pkg}`)
     }
-    return request.delete(`/packages/${pkg.id || 0}`, {
+    return request.delete(`/packages/by-id/${pkg.id || 0}`, {
       params: {
         type: pkg.type || pkg.package_type || pkg.format,
         name: pkg.name,

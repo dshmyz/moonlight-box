@@ -68,7 +68,7 @@ CREATE TABLE `artifacts` (
   `version` VARCHAR(255) DEFAULT NULL,
   `path` TEXT DEFAULT NULL,
   `filename` VARCHAR(1024) DEFAULT NULL,
-  `remote_path` TEXT DEFAULT NULL,
+  `remote_path` VARCHAR(1024) DEFAULT NULL,
   `download_url` TEXT DEFAULT NULL,
   `extension` VARCHAR(64) DEFAULT NULL,
   `content_type` VARCHAR(255) DEFAULT NULL,
@@ -85,9 +85,12 @@ CREATE TABLE `artifacts` (
   INDEX `idx_artifact_name` (`name`),
   INDEX `idx_artifact_namespace` (`namespace`),
   INDEX `idx_artifact_version` (`version`),
-  INDEX `idx_artifact_filename` (`filename`),
+  INDEX `idx_artifact_filename` (`filename`(512)),
   INDEX `idx_artifacts_repo_format_name` (`repository_id`, `format`, `name`),
   INDEX `idx_artifacts_repo_format_name_version` (`repository_id`, `format`, `name`, `version`),
+  INDEX `idx_artifacts_repo_format_remote_path` (`repository_id`, `format`, `remote_path`(512)),
+  INDEX `idx_artifacts_repo_format_filename` (`repository_id`, `format`, `filename`(512)),
+  INDEX `idx_artifacts_repo_format_kind_name_version` (`repository_id`, `format`, `kind`, `name`, `version`),
   INDEX `idx_artifacts_created_at` (`created_at`),
   INDEX `idx_artifacts_updated_at` (`updated_at`),
   INDEX `idx_artifacts_repo_format_created` (`repository_id`, `format`, `created_at`),
@@ -104,6 +107,33 @@ CREATE TABLE `artifact_blobs` (
   FOREIGN KEY (`artifact_id`) REFERENCES `artifacts` (`id`) ON DELETE CASCADE,
   FOREIGN KEY (`blob_id`) REFERENCES `blobs` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='制品与Blob关联表';
+
+-- PackageVersion 表 - 版本级聚合索引（可从 artifacts 重建）
+CREATE TABLE `package_versions` (
+  `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `repository_id` INT UNSIGNED NOT NULL,
+  `format` VARCHAR(64) NOT NULL,
+  `package_name` VARCHAR(512) NOT NULL,
+  `namespace` VARCHAR(512) DEFAULT '',
+  `version` VARCHAR(255) NOT NULL,
+  `status` VARCHAR(32) NOT NULL DEFAULT 'published',
+  `published_at` TIMESTAMP NULL DEFAULT NULL,
+  `latest_artifact_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `file_count` INT NOT NULL DEFAULT 0,
+  `files_downloaded` TINYINT(1) NOT NULL DEFAULT 0,
+  `size_bytes` BIGINT NOT NULL DEFAULT 0,
+  `download_count` BIGINT NOT NULL DEFAULT 0,
+  `license` VARCHAR(128) DEFAULT '',
+  `checksum_sha256` VARCHAR(128) DEFAULT '',
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY `idx_pkg_ver_repo_format_name_version` (`repository_id`, `format`, `package_name`, `version`),
+  INDEX `idx_pkg_ver_repo_format_name_updated` (`repository_id`, `format`, `package_name`, `latest_artifact_at`),
+  INDEX `idx_pkg_ver_repo_format_name_published` (`repository_id`, `format`, `package_name`, `published_at`),
+  INDEX `idx_package_version_status` (`status`),
+  INDEX `idx_package_version_version` (`version`),
+  INDEX `idx_package_version_namespace` (`namespace`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='包版本聚合索引表';
 
 -- ========================================
 -- 用户权限相关表

@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/database/dialect"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"gorm.io/gorm"
 )
@@ -349,7 +350,7 @@ func (s *MetadataStore) Query(ctx context.Context, query runtime.ArtifactQuery) 
 		db = db.Where("remote_path LIKE ?", query.RemotePathPrefix+"%")
 	}
 	for k, v := range query.Qualifiers {
-		db = db.Where(jsonTextExpr(s.db, "qualifiers", k)+" = ?", v)
+		db = db.Where(dialect.JSONTextExpr(s.db.Dialector.Name(), "qualifiers", k)+" = ?", v)
 	}
 
 	if query.Limit > 0 {
@@ -512,17 +513,6 @@ func jsonbToStringMap(src model.JSONB) map[string]string {
 		}
 	}
 	return dst
-}
-
-func jsonTextExpr(db *gorm.DB, column, key string) string {
-	switch db.Dialector.Name() {
-	case "postgres":
-		return column + "->>'" + key + "'"
-	case "mysql":
-		return "JSON_UNQUOTE(JSON_EXTRACT(" + column + ", '$." + key + "'))"
-	default:
-		return "JSON_EXTRACT(" + column + ", '$." + key + "')"
-	}
 }
 
 func stringMapToJSONB(src map[string]string) model.JSONB {

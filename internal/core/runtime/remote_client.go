@@ -69,6 +69,7 @@ func (c *HTTPRemoteClient) fetchMetadataWithMethod(ctx context.Context, method, 
 	}
 	if digest := resp.Header.Get("ETag"); digest != "" {
 		digest = strings.Trim(digest, `"`)
+		meta.ETag = digest
 		meta.Digest = digest
 	}
 	if modTime, err := http.ParseTime(resp.Header.Get("Last-Modified")); err == nil {

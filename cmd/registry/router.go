@@ -497,6 +497,7 @@ func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.Reposi
 	repoGroup := r.Group("/repository/:repoName")
 	{
 		repoGroup.GET("/*path", repoHandler)
+		repoGroup.HEAD("/*path", repoHandler)
 		repoGroup.PUT("/*path", npmAuthBypass, authMw, permMw("package", "write"), repoHandler)
 		repoGroup.POST("/*path", npmAuthBypass, authMw, permMw("package", "write"), repoHandler)
 		repoGroup.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
@@ -506,6 +507,7 @@ func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.Reposi
 	nexus2Group := r.Group("/content/repositories/:repoName")
 	{
 		nexus2Group.GET("/*path", repoHandler)
+		nexus2Group.HEAD("/*path", repoHandler)
 		nexus2Group.PUT("/*path", npmAuthBypass, authMw, permMw("package", "write"), repoHandler)
 		nexus2Group.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
 	}
@@ -514,6 +516,7 @@ func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.Reposi
 	groupGroup := r.Group("/content/groups/:groupName")
 	{
 		groupGroup.GET("/*path", repoHandler)
+		groupGroup.HEAD("/*path", repoHandler)
 		groupGroup.PUT("/*path", npmAuthBypass, authMw, permMw("package", "write"), repoHandler)
 		groupGroup.DELETE("/*path", authMw, permMw("package", "delete"), repoHandler)
 	}
@@ -601,12 +604,17 @@ func (ctx *RouterContext) setupPackageRoutes(protected *gin.RouterGroup) {
 		packageWrite.POST("/versions/:id/deprecate", ctx.Handlers.PackageVersion.DeprecateVersion)
 		packageWrite.POST("/versions/:id/restore", ctx.Handlers.PackageVersion.RestoreVersion)
 		packageWrite.POST("/versions/:id/yank", ctx.Handlers.PackageVersion.YankVersion)
+		packageWrite.POST("/:type/versions/deprecate", ctx.Handlers.PackageVersion.DeprecatePackageVersion)
+		packageWrite.POST("/:type/versions/restore", ctx.Handlers.PackageVersion.RestorePackageVersion)
+		packageWrite.POST("/:type/versions/yank", ctx.Handlers.PackageVersion.YankPackageVersion)
 	}
 
 	packageDelete := protected.Group("/packages")
 	packageDelete.Use(ctx.requirePermission("package", "delete"))
 	{
 		packageDelete.DELETE("/versions/:id", ctx.Handlers.PackageVersion.DeleteVersion)
-		packageDelete.DELETE("/:id", ctx.Handlers.PackageVersion.DeletePackage)
+		packageDelete.DELETE("/:type/versions", ctx.Handlers.PackageVersion.DeletePackageVersion)
+		packageDelete.DELETE("/:type", ctx.Handlers.PackageVersion.DeletePackage)
+		packageDelete.DELETE("/by-id/:id", ctx.Handlers.PackageVersion.DeletePackage)
 	}
 }

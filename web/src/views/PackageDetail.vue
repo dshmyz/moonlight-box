@@ -53,13 +53,20 @@ import PackageUsageGuide from '@/components/package-detail/PackageUsageGuide.vue
 import VersionTable from '@/components/package-detail/VersionTable.vue'
 import PackageInfoSidebar from '@/components/package-detail/PackageInfoSidebar.vue'
 import { ElMessage } from 'element-plus'
-import { packageApi, type Package, type PackageVersion } from '@/api/package'
+import { packageApi, type Package, type PackageVersion, type PackageVersionTarget } from '@/api/package'
 
 // 包详情缓存
 interface PackageCache {
   pkg: Package & { repository?: string }
   versions: PackageVersion[]
   timestamp: number
+}
+
+interface VersionActionData {
+  id: number
+  version: string
+  name?: string
+  repository_id?: number
 }
 
 const CACHE_TTL = 5 * 60 * 1000 // 缓存 5 分钟
@@ -292,13 +299,21 @@ onMounted(() => {
   }
 })
 
-async function handleDeprecate(data: { id: number; version: string; reason: string }) {
+function toVersionTarget(data: VersionActionData): PackageVersionTarget {
+  return {
+    type: route.params.type as string,
+    name: data.name || (route.params.name as string),
+    version: data.version,
+    repository_id: data.repository_id || pkg.value?.repository_id,
+  }
+}
+
+async function handleDeprecate(data: VersionActionData & { reason: string }) {
   try {
-    await packageApi.deprecateVersion(data.id, data.reason)
-    const target = versions.value.find((v) => v.id === data.id)
-    if (target) target.status = 'deprecated'
+    await packageApi.deprecatePackageVersion(toVersionTarget(data), data.reason)
+    updateLocalVersionStatus(data.version, 'deprecated')
     // 更新缓存
-    updateCacheVersionStatus(data.id, 'deprecated')
+    updateCacheVersionStatus(data.version, 'deprecated')
     ElMessage.success(`版本 ${data.version} 已废弃`)
   } catch (error) {
     ElMessage.error('废弃版本失败')
@@ -306,13 +321,12 @@ async function handleDeprecate(data: { id: number; version: string; reason: stri
   }
 }
 
-async function handleRestore(data: { id: number; version: string }) {
+async function handleRestore(data: VersionActionData) {
   try {
-    await packageApi.restoreVersion(data.id)
-    const target = versions.value.find((v) => v.id === data.id)
-    if (target) target.status = 'published'
+    await packageApi.restorePackageVersion(toVersionTarget(data))
+    updateLocalVersionStatus(data.version, 'published')
     // 更新缓存
-    updateCacheVersionStatus(data.id, 'published')
+    updateCacheVersionStatus(data.version, 'published')
     ElMessage.success(`版本 ${data.version} 已恢复`)
   } catch (error) {
     ElMessage.error('恢复版本失败')
@@ -320,13 +334,12 @@ async function handleRestore(data: { id: number; version: string }) {
   }
 }
 
-async function handleYank(data: { id: number; version: string }) {
+async function handleYank(data: VersionActionData) {
   try {
-    await packageApi.yankVersion(data.id)
-    const target = versions.value.find((v) => v.id === data.id)
-    if (target) target.status = 'yanked'
+    await packageApi.yankPackageVersion(toVersionTarget(data))
+    updateLocalVersionStatus(data.version, 'yanked')
     // 更新缓存
-    updateCacheVersionStatus(data.id, 'yanked')
+    updateCacheVersionStatus(data.version, 'yanked')
     ElMessage.success(`版本 ${data.version} 已撤回`)
   } catch (error) {
     ElMessage.error('撤回版本失败')
@@ -334,13 +347,13 @@ async function handleYank(data: { id: number; version: string }) {
   }
 }
 
-async function handleDelete(data: { id: number; version: string }) {
+async function handleDelete(data: VersionActionData) {
   try {
-    await packageApi.deleteVersion(data.id)
-    const index = versions.value.findIndex((v) => v.id === data.id)
+    await packageApi.deletePackageVersion(toVersionTarget(data))
+    const index = versions.value.findIndex((v) => v.version === data.version)
     if (index !== -1) versions.value.splice(index, 1)
     // 从缓存中移除
-    removeVersionFromCache(data.id)
+    removeVersionFromCache(data.version)
     ElMessage.success(`版本 ${data.version} 已删除`)
   } catch (error) {
     ElMessage.error('删除版本失败')
@@ -348,23 +361,34 @@ async function handleDelete(data: { id: number; version: string }) {
   }
 }
 
+function updateLocalVersionStatus(version: string, status: string) {
+  versions.value
+    .filter((v) => v.version === version)
+    .forEach((target) => {
+      target.status = status
+    })
+}
+
 // 更新缓存中的版本状态
-function updateCacheVersionStatus(versionId: number, status: string) {
+function updateCacheVersionStatus(version: string, status: string) {
   const cacheKey = getCacheKey(route.params.type as string, route.params.name as string)
   const cached = packageCache.get(cacheKey)
   if (cached) {
-    const target = cached.versions.find((v) => v.id === versionId)
-    if (target) target.status = status
+    cached.versions
+      .filter((v) => v.version === version)
+      .forEach((target) => {
+        target.status = status
+      })
     cached.timestamp = Date.now() // 更新缓存时间
   }
 }
 
 // 从缓存中移除版本
-function removeVersionFromCache(versionId: number) {
+function removeVersionFromCache(version: string) {
   const cacheKey = getCacheKey(route.params.type as string, route.params.name as string)
   const cached = packageCache.get(cacheKey)
   if (cached) {
-    const index = cached.versions.findIndex((v) => v.id === versionId)
+    const index = cached.versions.findIndex((v) => v.version === version)
     if (index !== -1) cached.versions.splice(index, 1)
     cached.timestamp = Date.now()
   }

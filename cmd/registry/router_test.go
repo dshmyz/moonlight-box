@@ -52,3 +52,31 @@ func TestPackageVersionsRouteIsPublic(t *testing.T) {
 		t.Fatalf("expected public versions route status 200, got %d body %s", w.Code, w.Body.String())
 	}
 }
+
+func TestPackageDeleteKeepsLegacyIDRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := &RouterContext{}
+	ctx.Handlers.PackageVersion = handler.NewPackageVersionHandler(nil)
+
+	r := gin.New()
+	api := r.Group("/api/v1")
+	ctx.setupPackageRoutes(api)
+
+	routes := r.Routes()
+	hasLegacyDeleteURL := false
+	hasNewDelete := false
+	for _, route := range routes {
+		if route.Method == http.MethodDelete && route.Path == "/api/v1/packages/:type" {
+			hasLegacyDeleteURL = true
+		}
+		if route.Method == http.MethodDelete && route.Path == "/api/v1/packages/by-id/:id" {
+			hasNewDelete = true
+		}
+	}
+	if !hasLegacyDeleteURL {
+		t.Fatalf("legacy DELETE /api/v1/packages/{id} URL route is missing")
+	}
+	if !hasNewDelete {
+		t.Fatalf("DELETE /api/v1/packages/by-id/:id route is missing")
+	}
+}

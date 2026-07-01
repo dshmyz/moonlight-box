@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"encoding/json"
 	stdhttp "net/http"
 	"net/http/httptest"
@@ -207,6 +208,431 @@ func TestListVersionsUsesArtifactChecksumWhenBlobMissing(t *testing.T) {
 	}
 }
 
+func TestListVersionsUsesPackageVersionSummaryWhenAvailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.PackageVersion{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	repo := model.Repository{Name: "maven-local", PackageType: "maven", Type: "hosted"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	artifact := model.Artifact{
+		RepositoryID: repo.ID,
+		Format:       "maven",
+		Kind:         "artifact",
+		Namespace:    "com.example",
+		Name:         "com.example:lib",
+		Version:      "1.0.0",
+		Path:         "com/example/lib/1.0.0",
+		Filename:     "lib-1.0.0.jar",
+		RemotePath:   "com/example/lib/1.0.0/lib-1.0.0.jar",
+		Attributes:   model.JSONB{"license": "artifact-license", "published_at": "2020-01-01T00:00:00Z"},
+		SizeBytes:    10,
+	}
+	if err := db.Create(&artifact).Error; err != nil {
+		t.Fatalf("create artifact: %v", err)
+	}
+	artifactWithoutSummary := model.Artifact{
+		RepositoryID: repo.ID,
+		Format:       "maven",
+		Kind:         "artifact",
+		Namespace:    "com.example",
+		Name:         "com.example:lib",
+		Version:      "2.0.0",
+		Path:         "com/example/lib/2.0.0",
+		Filename:     "lib-2.0.0.jar",
+		RemotePath:   "com/example/lib/2.0.0/lib-2.0.0.jar",
+		Attributes:   model.JSONB{"license": "artifact-license"},
+		SizeBytes:    20,
+	}
+	if err := db.Create(&artifactWithoutSummary).Error; err != nil {
+		t.Fatalf("create artifact without summary: %v", err)
+	}
+	publishedAt := time.Date(2026, 6, 30, 8, 9, 10, 0, time.UTC)
+	if err := db.Create(&model.PackageVersion{
+		RepositoryID:     repo.ID,
+		Format:           "maven",
+		PackageName:      "com.example:lib",
+		Namespace:        "com.example",
+		Version:          "1.0.0",
+		Status:           "deprecated",
+		PublishedAt:      &publishedAt,
+		LatestArtifactAt: publishedAt,
+		FileCount:        1,
+		FilesDownloaded:  false,
+		SizeBytes:        456,
+		DownloadCount:    7,
+		License:          "summary-license",
+		ChecksumSHA256:   "summary-sha",
+	}).Error; err != nil {
+		t.Fatalf("create package version: %v", err)
+	}
+
+	handler := NewPackageVersionHandler(db)
+	router := gin.New()
+	router.GET("/api/packages/:type/versions", handler.ListVersions)
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "/api/packages/maven/versions?name=com.example:lib&repository_id=1", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			Versions []struct {
+				ID             uint   `json:"id"`
+				RepositoryID   uint   `json:"repository_id"`
+				Version        string `json:"version"`
+				Status         string `json:"status"`
+				PublishedAt    string `json:"published_at"`
+				SizeBytes      int64  `json:"size_bytes"`
+				ChecksumSHA256 string `json:"checksum_sha256"`
+				License        string `json:"license"`
+				DownloadCount  int64  `json:"download_count"`
+				Files          []struct {
+					Filename string `json:"filename"`
+				} `json:"files"`
+			} `json:"versions"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Data.Versions) != 2 {
+		t.Fatalf("expected artifacts source of truth to return 2 versions, got %d", len(resp.Data.Versions))
+	}
+	var version *struct {
+		ID             uint   `json:"id"`
+		RepositoryID   uint   `json:"repository_id"`
+		Version        string `json:"version"`
+		Status         string `json:"status"`
+		PublishedAt    string `json:"published_at"`
+		SizeBytes      int64  `json:"size_bytes"`
+		ChecksumSHA256 string `json:"checksum_sha256"`
+		License        string `json:"license"`
+		DownloadCount  int64  `json:"download_count"`
+		Files          []struct {
+			Filename string `json:"filename"`
+		} `json:"files"`
+	}
+	var foundUnsummarized bool
+	for i := range resp.Data.Versions {
+		if resp.Data.Versions[i].Version == "1.0.0" {
+			version = &resp.Data.Versions[i]
+		}
+		if resp.Data.Versions[i].Version == "2.0.0" {
+			foundUnsummarized = true
+		}
+	}
+	if version == nil {
+		t.Fatalf("summarized version 1.0.0 missing from response: %+v", resp.Data.Versions)
+	}
+	if !foundUnsummarized {
+		t.Fatalf("unsummarized artifact version 2.0.0 missing from response: %+v", resp.Data.Versions)
+	}
+	if version.Version != "1.0.0" {
+		t.Fatalf("version = %q, want 1.0.0", version.Version)
+	}
+	if version.ID != artifact.ID {
+		t.Fatalf("id = %d, want artifact id %d", version.ID, artifact.ID)
+	}
+	if version.RepositoryID != repo.ID {
+		t.Fatalf("repository_id = %d, want %d", version.RepositoryID, repo.ID)
+	}
+	if version.Status != "deprecated" {
+		t.Fatalf("status = %q, want deprecated", version.Status)
+	}
+	if version.PublishedAt != "2026-06-30T08:09:10Z" {
+		t.Fatalf("published_at = %q, want 2026-06-30T08:09:10Z", version.PublishedAt)
+	}
+	if version.SizeBytes != 456 {
+		t.Fatalf("size_bytes = %d, want 456", version.SizeBytes)
+	}
+	if version.ChecksumSHA256 != "summary-sha" {
+		t.Fatalf("checksum_sha256 = %q, want summary-sha", version.ChecksumSHA256)
+	}
+	if version.License != "summary-license" {
+		t.Fatalf("license = %q, want summary-license", version.License)
+	}
+	if version.DownloadCount != 7 {
+		t.Fatalf("download_count = %d, want 7", version.DownloadCount)
+	}
+	if len(version.Files) != 1 || version.Files[0].Filename != "lib-1.0.0.jar" {
+		t.Fatalf("files = %#v, want lib-1.0.0.jar", version.Files)
+	}
+}
+
+func TestDeprecateVersionSyncsPackageVersionSummaryStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	artifact := model.Artifact{
+		RepositoryID: 1,
+		Format:       "maven",
+		Kind:         "artifact",
+		Name:         "com.example:lib",
+		Version:      "1.0.0",
+		Path:         "com/example/lib/1.0.0",
+		Filename:     "lib-1.0.0.jar",
+		RemotePath:   "com/example/lib/1.0.0/lib-1.0.0.jar",
+	}
+	if err := db.Create(&artifact).Error; err != nil {
+		t.Fatalf("create artifact: %v", err)
+	}
+	if err := db.Create(&model.PackageVersion{
+		RepositoryID:     1,
+		Format:           "maven",
+		PackageName:      "com.example:lib",
+		Version:          "1.0.0",
+		Status:           "published",
+		LatestArtifactAt: artifact.UpdatedAt,
+		FileCount:        1,
+	}).Error; err != nil {
+		t.Fatalf("create package version: %v", err)
+	}
+
+	handler := NewPackageVersionHandler(db)
+	router := gin.New()
+	router.POST("/api/packages/versions/:id/deprecate", handler.DeprecateVersion)
+
+	req := httptest.NewRequest(stdhttp.MethodPost, "/api/packages/versions/"+strconv.Itoa(int(artifact.ID))+"/deprecate", bytes.NewBufferString(`{"reason":"bad release"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var summary model.PackageVersion
+	if err := db.Where("repository_id = ? AND format = ? AND package_name = ? AND version = ?", 1, "maven", "com.example:lib", "1.0.0").
+		First(&summary).Error; err != nil {
+		t.Fatalf("query package version: %v", err)
+	}
+	if summary.Status != "deprecated" {
+		t.Fatalf("summary status = %q, want deprecated", summary.Status)
+	}
+}
+
+func TestDeprecatePackageVersionByCoordinateUpdatesAllArtifacts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	artifacts := []model.Artifact{
+		{RepositoryID: 1, Format: "maven", Kind: "artifact", Name: "com.example:lib", Version: "1.0.0", Filename: "lib-1.0.0.jar", RemotePath: "com/example/lib/1.0.0/lib-1.0.0.jar"},
+		{RepositoryID: 1, Format: "maven", Kind: "artifact", Name: "com.example:lib", Version: "1.0.0", Filename: "lib-1.0.0.pom", RemotePath: "com/example/lib/1.0.0/lib-1.0.0.pom"},
+	}
+	if err := db.Create(&artifacts).Error; err != nil {
+		t.Fatalf("create artifacts: %v", err)
+	}
+
+	handler := NewPackageVersionHandler(db)
+	router := gin.New()
+	router.POST("/api/packages/:type/versions/deprecate", handler.DeprecatePackageVersion)
+
+	reqBody := `{"repository_id":1,"name":"com.example:lib","version":"1.0.0","reason":"bad release"}`
+	req := httptest.NewRequest(stdhttp.MethodPost, "/api/packages/maven/versions/deprecate", bytes.NewBufferString(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	var updated []model.Artifact
+	if err := db.Where("repository_id = ? AND format = ? AND name = ? AND version = ?", 1, "maven", "com.example:lib", "1.0.0").
+		Order("filename").Find(&updated).Error; err != nil {
+		t.Fatalf("query artifacts: %v", err)
+	}
+	if len(updated) != 2 {
+		t.Fatalf("expected 2 artifacts, got %d", len(updated))
+	}
+	for _, artifact := range updated {
+		if artifact.Metadata["status"] != "deprecated" {
+			t.Fatalf("%s status = %#v, want deprecated", artifact.Filename, artifact.Metadata["status"])
+		}
+	}
+}
+
+func TestLegacyDeprecateVersionUpdatesWholeVersion(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	jar := model.Artifact{RepositoryID: 1, Format: "maven", Kind: "artifact", Name: "com.example:lib", Version: "1.0.0", Filename: "lib-1.0.0.jar", RemotePath: "com/example/lib/1.0.0/lib-1.0.0.jar"}
+	pom := model.Artifact{RepositoryID: 1, Format: "maven", Kind: "artifact", Name: "com.example:lib", Version: "1.0.0", Filename: "lib-1.0.0.pom", RemotePath: "com/example/lib/1.0.0/lib-1.0.0.pom"}
+	if err := db.Create(&jar).Error; err != nil {
+		t.Fatalf("create jar: %v", err)
+	}
+	if err := db.Create(&pom).Error; err != nil {
+		t.Fatalf("create pom: %v", err)
+	}
+
+	handler := NewPackageVersionHandler(db)
+	router := gin.New()
+	router.POST("/api/packages/versions/:id/deprecate", handler.DeprecateVersion)
+
+	req := httptest.NewRequest(stdhttp.MethodPost, "/api/packages/versions/"+strconv.Itoa(int(jar.ID))+"/deprecate", bytes.NewBufferString(`{"reason":"bad release"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	var updatedPom model.Artifact
+	if err := db.First(&updatedPom, pom.ID).Error; err != nil {
+		t.Fatalf("load pom: %v", err)
+	}
+	if updatedPom.Metadata["status"] != "deprecated" {
+		t.Fatalf("pom status = %#v, want deprecated", updatedPom.Metadata["status"])
+	}
+}
+
+func TestListVersionsDecoratesMavenSnapshotDefaultVisibleFromFilenames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	repo := model.Repository{Name: "maven-snapshots", PackageType: "maven", Type: "hosted"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+
+	artifacts := []model.Artifact{
+		{
+			RepositoryID: repo.ID,
+			Format:       "maven",
+			Kind:         "artifact",
+			Namespace:    "com.example",
+			Name:         "com.example:lib",
+			Version:      "1.0-SNAPSHOT",
+			Path:         "com/example/lib/1.0-SNAPSHOT",
+			Filename:     "lib-1.0-20230101.120000-1.jar",
+			RemotePath:   "com/example/lib/1.0-SNAPSHOT/lib-1.0-20230101.120000-1.jar",
+			Qualifiers:   model.JSONB{"group": "com.example", "artifact": "lib"},
+			Attributes:   model.JSONB{"default_visible": "true", "display_group": "stale"},
+		},
+		{
+			RepositoryID: repo.ID,
+			Format:       "maven",
+			Kind:         "artifact",
+			Namespace:    "com.example",
+			Name:         "com.example:lib",
+			Version:      "1.0-SNAPSHOT",
+			Path:         "com/example/lib/1.0-SNAPSHOT",
+			Filename:     "lib-1.0-20230102.120000-2.jar",
+			RemotePath:   "com/example/lib/1.0-SNAPSHOT/lib-1.0-20230102.120000-2.jar",
+			Qualifiers:   model.JSONB{"group": "com.example", "artifact": "lib"},
+		},
+		{
+			RepositoryID: repo.ID,
+			Format:       "maven",
+			Kind:         "artifact",
+			Namespace:    "com.example",
+			Name:         "com.example:lib",
+			Version:      "1.0-SNAPSHOT",
+			Path:         "com/example/lib/1.0-SNAPSHOT",
+			Filename:     "lib-1.0-20230101.120000-1-sources.jar",
+			RemotePath:   "com/example/lib/1.0-SNAPSHOT/lib-1.0-20230101.120000-1-sources.jar",
+			Qualifiers:   model.JSONB{"group": "com.example", "artifact": "lib", "classifier": "sources"},
+		},
+	}
+	if err := db.Create(&artifacts).Error; err != nil {
+		t.Fatalf("create artifacts: %v", err)
+	}
+
+	handler := NewPackageVersionHandler(db)
+	router := gin.New()
+	router.GET("/api/packages/:type/versions", handler.ListVersions)
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "/api/packages/maven/versions?name=com.example:lib&repository_id=1", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Data struct {
+			Versions []struct {
+				Files []struct {
+					Filename   string                 `json:"filename"`
+					Attributes map[string]interface{} `json:"attributes"`
+				} `json:"files"`
+			} `json:"versions"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Data.Versions) != 1 {
+		t.Fatalf("expected 1 version, got %d", len(resp.Data.Versions))
+	}
+
+	files := map[string]map[string]interface{}{}
+	for _, file := range resp.Data.Versions[0].Files {
+		files[file.Filename] = file.Attributes
+	}
+
+	assertAttr := func(filename, key string, want interface{}) {
+		t.Helper()
+		if got := files[filename][key]; got != want {
+			t.Fatalf("%s attributes[%s] = %#v, want %#v", filename, key, got, want)
+		}
+	}
+	assertMissingAttr := func(filename, key string) {
+		t.Helper()
+		if _, ok := files[filename][key]; ok {
+			t.Fatalf("%s attributes[%s] is present: %#v", filename, key, files[filename][key])
+		}
+	}
+
+	assertMissingAttr("lib-1.0-20230101.120000-1.jar", "default_visible")
+	assertMissingAttr("lib-1.0-20230101.120000-1.jar", "display_group")
+	assertAttr("lib-1.0-20230102.120000-2.jar", "default_visible", "true")
+	assertAttr("lib-1.0-20230102.120000-2.jar", "display_group", "20230102.120000-2")
+	assertAttr("lib-1.0-20230101.120000-1-sources.jar", "default_visible", "true")
+	assertAttr("lib-1.0-20230101.120000-1-sources.jar", "display_group", "20230101.120000-1")
+}
+
 func TestDeletePackageUsesPackageAggregateID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -268,6 +694,55 @@ func TestDeletePackageUsesPackageAggregateID(t *testing.T) {
 	}
 	if otherCount != 1 {
 		t.Fatalf("expected unrelated artifact preserved, got %d", otherCount)
+	}
+}
+
+func TestDeletePackageAcceptsLegacyRouteWildcardName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Package{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	pkg := model.Package{RepositoryID: 7, Format: "npm", Name: "left-pad"}
+	if err := db.Create(&pkg).Error; err != nil {
+		t.Fatalf("create package: %v", err)
+	}
+	artifact := model.Artifact{
+		RepositoryID: 7,
+		Format:       "npm",
+		Kind:         "tarball",
+		Name:         "left-pad",
+		Version:      "1.0.0",
+		Filename:     "left-pad-1.0.0.tgz",
+		RemotePath:   "left-pad/-/left-pad-1.0.0.tgz",
+	}
+	if err := db.Create(&artifact).Error; err != nil {
+		t.Fatalf("create artifact: %v", err)
+	}
+
+	handler := NewPackageVersionHandler(db)
+	router := gin.New()
+	router.DELETE("/api/packages/:type", handler.DeletePackage)
+
+	req := httptest.NewRequest(stdhttp.MethodDelete, "/api/packages/"+strconv.Itoa(int(pkg.ID)), nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	var remaining int64
+	if err := db.Model(&model.Artifact{}).Where("repository_id = ? AND format = ? AND name = ?", 7, "npm", "left-pad").Count(&remaining).Error; err != nil {
+		t.Fatalf("count artifacts: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("expected package artifacts deleted, got %d remaining", remaining)
 	}
 }
 

@@ -74,5 +74,8 @@ docs/superpower/
 .trae/
 .superpower/
 
+# Codegraph daemon
+.codegraph/
+
 # Brainstorming visual companion files
 .superpowers/

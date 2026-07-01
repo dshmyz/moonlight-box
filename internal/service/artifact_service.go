@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/database/dialect"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
@@ -21,8 +23,10 @@ import (
 //	所有需要写入 artifacts 表的地方（metadata_store、migration executor 等）
 //	都应通过此服务操作，而非直接操作 DB。
 type ArtifactService struct {
-	db             *gorm.DB
-	onCacheInvalid func() // 可选：packages 表变更后清除搜索缓存的回调
+	db                       *gorm.DB
+	onCacheInvalid           func() // 可选：packages 表变更后清除搜索缓存的回调
+	packageVersionTableOnce  sync.Once
+	packageVersionTableReady bool
 }
 
 func NewArtifactService(db *gorm.DB) *ArtifactService {
@@ -84,6 +88,9 @@ func (s *ArtifactService) Save(ctx context.Context, artifact *runtime.Artifact) 
 			return syncErr
 		}
 		if shouldAggregatePackageArtifact(modelArtifact, hasBlobRefs) {
+			if err := s.recalcPackageVersionSummary(tx, modelArtifact.RepositoryID, modelArtifact.Format, modelArtifact.Name, modelArtifact.Version); err != nil {
+				return err
+			}
 			if err := s.recalcPackageVersions(tx, map[string]bool{
 				packageKey(modelArtifact.RepositoryID, modelArtifact.Format, modelArtifact.Name): true,
 			}); err != nil {
@@ -113,6 +120,7 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		seenPackages := make(map[string]bool) // 用于批量更新 packages 去重
+		seenPackageVersions := make(map[string]bool)
 
 		// 批量查询已有记录，避免逐条 SELECT
 		modelArtifacts := make([]*model.Artifact, len(artifacts))
@@ -179,10 +187,13 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 				scanUint(artifacts[ia.index].RepositoryID, &scanRepoID)
 				pkgKey := packageKey(scanRepoID, artifacts[ia.index].Format, artifacts[ia.index].Name)
 				hasBlobRefs := hasUsableBlobRefs(artifacts[ia.index].BlobRefs)
-				if shouldAggregatePackageArtifact(ia.model, hasBlobRefs) && !seenPackages[pkgKey] {
-					seenPackages[pkgKey] = true
-					if syncErr := s.syncPackageAfterSave(tx, ia.model, true, hasBlobRefs); syncErr != nil {
-						return syncErr
+				if shouldAggregatePackageArtifact(ia.model, hasBlobRefs) {
+					seenPackageVersions[packageVersionKey(scanRepoID, artifacts[ia.index].Format, artifacts[ia.index].Name, artifacts[ia.index].Version)] = true
+					if !seenPackages[pkgKey] {
+						seenPackages[pkgKey] = true
+						if syncErr := s.syncPackageAfterSave(tx, ia.model, true, hasBlobRefs); syncErr != nil {
+							return syncErr
+						}
 					}
 				}
 			}
@@ -201,14 +212,20 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 			scanUint(artifacts[ia.index].RepositoryID, &scanRepoID)
 			pkgKey := packageKey(scanRepoID, artifacts[ia.index].Format, artifacts[ia.index].Name)
 			hasBlobRefs := hasUsableBlobRefs(artifacts[ia.index].BlobRefs)
-			if shouldAggregatePackageArtifact(ia.model, hasBlobRefs) && !seenPackages[pkgKey] {
-				seenPackages[pkgKey] = true
-				if syncErr := s.syncPackageAfterSave(tx, ia.model, false, hasBlobRefs); syncErr != nil {
-					return syncErr
+			if shouldAggregatePackageArtifact(ia.model, hasBlobRefs) {
+				seenPackageVersions[packageVersionKey(scanRepoID, artifacts[ia.index].Format, artifacts[ia.index].Name, artifacts[ia.index].Version)] = true
+				if !seenPackages[pkgKey] {
+					seenPackages[pkgKey] = true
+					if syncErr := s.syncPackageAfterSave(tx, ia.model, false, hasBlobRefs); syncErr != nil {
+						return syncErr
+					}
 				}
 			}
 		}
 
+		if err := s.recalcPackageVersionSummaries(tx, seenPackageVersions); err != nil {
+			return err
+		}
 		// 批量结束后，精确更新所有涉及 packages 的 version_count
 		return s.recalcPackageVersions(tx, seenPackages)
 	})
@@ -267,6 +284,12 @@ func (s *ArtifactService) Delete(ctx context.Context, key runtime.ArtifactKey) e
 			return err
 		}
 
+		if shouldAggregatePackageArtifactForDelete(&artifact) {
+			if err := s.recalcPackageVersionSummary(tx, artifact.RepositoryID, artifact.Format, artifact.Name, artifact.Version); err != nil {
+				return err
+			}
+		}
+
 		// 同步 packages 聚合表
 		return s.syncPackageAfterDelete(tx, &artifact)
 	})
@@ -293,6 +316,53 @@ func (s *ArtifactService) DeletePackageByCoordinates(ctx context.Context, repoID
 	return s.deletePackageWhere(ctx, "format = ? AND name = ?", format, name)
 }
 
+func (s *ArtifactService) DeletePackageVersionByCoordinates(ctx context.Context, repoID uint, format, name, version string) error {
+	if format == "" || name == "" || version == "" {
+		return runtime.ErrNotFound
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		artifacts, err := findPackageVersionArtifacts(tx, repoID, format, name, version)
+		if err != nil {
+			return err
+		}
+		if len(artifacts) == 0 {
+			return runtime.ErrNotFound
+		}
+
+		artifactIDs := make([]uint, 0, len(artifacts))
+		representatives := make(map[string]model.Artifact)
+		for _, artifact := range artifacts {
+			artifactIDs = append(artifactIDs, artifact.ID)
+			key := packageKey(artifact.RepositoryID, artifact.Format, artifact.Name)
+			if _, ok := representatives[key]; !ok {
+				representatives[key] = artifact
+			}
+		}
+
+		if err := tx.Where("artifact_id IN ?", artifactIDs).Delete(&model.ArtifactBlob{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("id IN ?", artifactIDs).Delete(&model.Artifact{}).Error; err != nil {
+			return err
+		}
+
+		for _, artifact := range representatives {
+			if err := s.recalcPackageVersionSummary(tx, artifact.RepositoryID, artifact.Format, artifact.Name, artifact.Version); err != nil {
+				return err
+			}
+			if err := s.syncPackageAfterDelete(tx, &artifact); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err == nil {
+		s.notifyCacheInvalidation()
+	}
+	return err
+}
+
 func (s *ArtifactService) deletePackageWhere(ctx context.Context, where string, args ...interface{}) error {
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var artifactIDs []uint
@@ -306,6 +376,11 @@ func (s *ArtifactService) deletePackageWhere(ctx context.Context, where string, 
 				return err
 			}
 			if err := tx.Where("id IN ?", artifactIDs).Delete(&model.Artifact{}).Error; err != nil {
+				return err
+			}
+		}
+		if s.hasPackageVersionTable(tx) {
+			if err := deletePackageVersionsMatchingPackageWhere(tx, where, args...); err != nil {
 				return err
 			}
 		}
@@ -332,8 +407,8 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 		return nil
 	}
 
-	licenseExpr := jsonTextExpr(s.db, "a3.attributes", "license")
-	descriptionExpr := jsonTextExpr(s.db, "a4.attributes", "description")
+	licenseExpr := dialect.JSONTextExpr(s.db.Dialector.Name(), "a3.attributes", "license")
+	descriptionExpr := dialect.JSONTextExpr(s.db.Dialector.Name(), "a4.attributes", "description")
 
 	// 聚合 artifacts 数据
 	query := `
@@ -426,6 +501,111 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 	}).Info("Packages table rebuilt successfully")
 
 	return nil
+}
+
+// RebuildPackageVersions 重建整个 package_versions 表（从 artifacts 表全量聚合）。
+// package_versions 是可重建 read model，artifacts 仍是 source of truth。
+func (s *ArtifactService) RebuildPackageVersions(ctx context.Context) error {
+	util.WithFields(logrus.Fields{
+		util.LogKeyModule: "artifact-service",
+	}).Info("Starting to rebuild package_versions table")
+
+	if !s.db.Migrator().HasTable(&model.PackageVersion{}) {
+		util.WithFields(logrus.Fields{
+			util.LogKeyModule: "artifact-service",
+		}).Info("Package versions table does not exist, skipping rebuild")
+		return nil
+	}
+
+	type versionKeyRow struct {
+		RepositoryID uint
+		Format       string
+		Name         string
+		Version      string
+	}
+	var rows []versionKeyRow
+	if err := s.db.WithContext(ctx).Model(&model.Artifact{}).
+		Select("repository_id, format, name, version").
+		Where("name != ''").
+		Where("version != ''").
+		Where("(kind IS NULL OR kind NOT IN ?)", catalogExcludedKinds()).
+		Where("(format != ? OR kind = ? OR EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = artifacts.id))", "go", runtime.KindVersion).
+		Where("NOT (format = ? AND (remote_path LIKE ? OR remote_path LIKE ? OR path = ? OR path LIKE ? OR filename = ?))",
+			"yum", "repodata/%", "%/repodata/%", "repodata", "%/repodata", "repomd.xml").
+		Group("repository_id, format, name, version").
+		Find(&rows).Error; err != nil {
+		return err
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("DELETE FROM package_versions").Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if err := s.recalcPackageVersionSummary(tx, row.RepositoryID, row.Format, row.Name, row.Version); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	util.WithFields(logrus.Fields{
+		util.LogKeyModule: "artifact-service",
+	}).Info("Package versions table rebuilt successfully")
+
+	return nil
+}
+
+func (s *ArtifactService) RefreshPackageVersionSummary(ctx context.Context, repoID uint, format, name, version string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return s.recalcPackageVersionSummary(tx, repoID, format, name, version)
+	})
+}
+
+func (s *ArtifactService) UpdatePackageVersionStatus(ctx context.Context, repoID uint, format, name, version, status, reason string) error {
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch status {
+	case "published", "deprecated", "yanked":
+	default:
+		return fmt.Errorf("unsupported package version status %q", status)
+	}
+	if format == "" || name == "" || version == "" {
+		return runtime.ErrNotFound
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		artifacts, err := findPackageVersionArtifacts(tx, repoID, format, name, version)
+		if err != nil {
+			return err
+		}
+		if len(artifacts) == 0 {
+			return runtime.ErrNotFound
+		}
+
+		seenRepos := make(map[uint]bool)
+		for i := range artifacts {
+			artifact := artifacts[i]
+			applyArtifactVersionStatus(&artifact, status, reason)
+			if err := tx.Model(&model.Artifact{}).Where("id = ?", artifact.ID).Update("metadata", artifact.Metadata).Error; err != nil {
+				return err
+			}
+			seenRepos[artifact.RepositoryID] = true
+		}
+
+		for artifactRepoID := range seenRepos {
+			if err := s.recalcPackageVersionSummary(tx, artifactRepoID, format, name, version); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err == nil {
+		s.notifyCacheInvalidation()
+	}
+	return err
 }
 
 // ========== 内部辅助方法 ==========
@@ -524,6 +704,141 @@ func (s *ArtifactService) syncPackageAfterDelete(tx *gorm.DB, artifact *model.Ar
 	}
 
 	return tx.Delete(pkg).Error
+}
+
+func (s *ArtifactService) recalcPackageVersionSummaries(tx *gorm.DB, seenVersions map[string]bool) error {
+	for key := range seenVersions {
+		parts := strings.SplitN(key, "|", 4)
+		if len(parts) != 4 {
+			continue
+		}
+		var repoID uint
+		scanUint(parts[0], &repoID)
+		if err := s.recalcPackageVersionSummary(tx, repoID, parts[1], parts[2], parts[3]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *ArtifactService) recalcPackageVersionSummary(tx *gorm.DB, repoID uint, format, name, version string) error {
+	if repoID == 0 || format == "" || name == "" || version == "" {
+		return nil
+	}
+	if !s.hasPackageVersionTable(tx) {
+		return nil
+	}
+
+	var artifacts []model.Artifact
+	if err := tx.Model(&model.Artifact{}).
+		Where("repository_id = ? AND format = ?", repoID, format).
+		Where("name = ? AND version = ?", name, version).
+		Where("(kind IS NULL OR kind NOT IN ?)", catalogExcludedKinds()).
+		Where("(format != ? OR kind = ? OR EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = artifacts.id))", "go", runtime.KindVersion).
+		Where("NOT (format = ? AND (remote_path LIKE ? OR remote_path LIKE ? OR path = ? OR path LIKE ? OR filename = ?))",
+			"yum", "repodata/%", "%/repodata/%", "repodata", "%/repodata", "repomd.xml").
+		Order("updated_at DESC").
+		Find(&artifacts).Error; err != nil {
+		return err
+	}
+	if len(artifacts) == 0 {
+		return tx.Where("repository_id = ? AND format = ? AND package_name = ? AND version = ?", repoID, format, name, version).
+			Delete(&model.PackageVersion{}).Error
+	}
+
+	artifactIDs := make([]uint, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		artifactIDs = append(artifactIDs, artifact.ID)
+	}
+	blobSizes := make(map[uint]int64)
+	hasDownloadedFiles := false
+	if len(artifactIDs) > 0 {
+		var blobRows []struct {
+			ArtifactID uint
+			Size       int64
+		}
+		if err := tx.Table("artifact_blobs AS ab").
+			Select("ab.artifact_id, b.size").
+			Joins("JOIN blobs b ON b.id = ab.blob_id").
+			Where("ab.artifact_id IN ?", artifactIDs).
+			Scan(&blobRows).Error; err != nil {
+			return err
+		}
+		for _, row := range blobRows {
+			hasDownloadedFiles = true
+			blobSizes[row.ArtifactID] += row.Size
+		}
+	}
+
+	summary := model.PackageVersion{
+		RepositoryID: repoID,
+		Format:       format,
+		PackageName:  name,
+		Version:      version,
+		Status:       packageVersionStatus(artifacts),
+		FileCount:    len(artifacts),
+	}
+	for _, artifact := range artifacts {
+		if summary.Namespace == "" {
+			summary.Namespace = artifact.Namespace
+		}
+		if artifact.CreatedAt.Before(summary.CreatedAt) || summary.CreatedAt.IsZero() {
+			summary.CreatedAt = artifact.CreatedAt
+		}
+		if artifact.UpdatedAt.After(summary.LatestArtifactAt) {
+			summary.LatestArtifactAt = artifact.UpdatedAt
+		}
+		summary.SizeBytes += firstNonZeroInt64(blobSizes[artifact.ID], artifact.SizeBytes)
+		if summary.ChecksumSHA256 == "" {
+			summary.ChecksumSHA256 = extractJSONBString(artifact.Checksums, "sha256")
+		}
+		if summary.License == "" {
+			summary.License = extractJSONBString(artifact.Attributes, "license")
+		}
+		if summary.PublishedAt == nil {
+			if published := parseRFC3339Ptr(extractJSONBString(artifact.Attributes, "published_at")); published != nil {
+				summary.PublishedAt = published
+			}
+		}
+	}
+	if summary.CreatedAt.IsZero() {
+		summary.CreatedAt = time.Now()
+	}
+	if summary.LatestArtifactAt.IsZero() {
+		summary.LatestArtifactAt = time.Now()
+	}
+	summary.UpdatedAt = summary.LatestArtifactAt
+	summary.FilesDownloaded = hasDownloadedFiles
+
+	var existing model.PackageVersion
+	err := tx.Where("repository_id = ? AND format = ? AND package_name = ? AND version = ?", repoID, format, name, version).
+		First(&existing).Error
+	if err == gorm.ErrRecordNotFound {
+		return tx.Create(&summary).Error
+	}
+	if err != nil {
+		return err
+	}
+
+	return tx.Model(&existing).Updates(map[string]interface{}{
+		"namespace":          summary.Namespace,
+		"status":             summary.Status,
+		"published_at":       summary.PublishedAt,
+		"latest_artifact_at": summary.LatestArtifactAt,
+		"file_count":         summary.FileCount,
+		"files_downloaded":   summary.FilesDownloaded,
+		"size_bytes":         summary.SizeBytes,
+		"license":            summary.License,
+		"checksum_sha256":    summary.ChecksumSHA256,
+		"updated_at":         summary.UpdatedAt,
+	}).Error
+}
+
+func (s *ArtifactService) hasPackageVersionTable(tx *gorm.DB) bool {
+	s.packageVersionTableOnce.Do(func() {
+		s.packageVersionTableReady = tx.Migrator().HasTable(&model.PackageVersion{})
+	})
+	return s.packageVersionTableReady
 }
 
 // syncBlobRefs 同步 artifact 与 blob 的关联关系。
@@ -718,19 +1033,102 @@ func isYumRepodataArtifact(format, artifactPath, filename, remotePath string) bo
 		filename == "repomd.xml"
 }
 
-func jsonTextExpr(db *gorm.DB, column, key string) string {
-	switch db.Dialector.Name() {
-	case "postgres":
-		return column + "->>'" + key + "'"
-	case "mysql":
-		return "JSON_UNQUOTE(JSON_EXTRACT(" + column + ", '$." + key + "'))"
+func findPackageVersionArtifacts(tx *gorm.DB, repoID uint, format, name, version string) ([]model.Artifact, error) {
+	db := tx.Model(&model.Artifact{}).
+		Where("format = ?", format).
+		Where("name = ? AND version = ?", name, version).
+		Where("(kind IS NULL OR kind NOT IN ?)", catalogExcludedKinds()).
+		Where("(format != ? OR kind = ? OR EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = artifacts.id))", "go", runtime.KindVersion).
+		Where("NOT (format = ? AND (remote_path LIKE ? OR remote_path LIKE ? OR path = ? OR path LIKE ? OR filename = ?))",
+			"yum", "repodata/%", "%/repodata/%", "repodata", "%/repodata", "repomd.xml").
+		Order("updated_at DESC")
+	if repoID > 0 {
+		db = db.Where("repository_id = ?", repoID)
+	}
+	var artifacts []model.Artifact
+	return artifacts, db.Find(&artifacts).Error
+}
+
+func applyArtifactVersionStatus(artifact *model.Artifact, status, reason string) {
+	if artifact.Metadata == nil {
+		artifact.Metadata = make(model.JSONB)
+	}
+	artifact.Metadata["status"] = status
+	switch status {
+	case "deprecated":
+		artifact.Metadata["deprecation_reason"] = reason
+		delete(artifact.Metadata, "yank_reason")
+	case "yanked":
+		artifact.Metadata["yank_reason"] = reason
+		delete(artifact.Metadata, "deprecation_reason")
+	case "published":
+		delete(artifact.Metadata, "deprecation_reason")
+		delete(artifact.Metadata, "yank_reason")
+	}
+}
+
+func packageVersionStatus(artifacts []model.Artifact) string {
+	status := "published"
+	for _, artifact := range artifacts {
+		switch artifactStatus(artifact) {
+		case "yanked":
+			return "yanked"
+		case "deprecated":
+			status = "deprecated"
+		}
+	}
+	return status
+}
+
+func artifactStatus(artifact model.Artifact) string {
+	status := extractJSONBString(artifact.Metadata, "status")
+	if status == "" {
+		status = extractJSONBString(artifact.Attributes, "status")
+	}
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "yanked":
+		return "yanked"
+	case "deprecated":
+		return "deprecated"
 	default:
-		return "JSON_EXTRACT(" + column + ", '$." + key + "')"
+		return "published"
 	}
 }
 
 func packageKey(repoID uint, format, name string) string {
 	return fmt.Sprintf("%d|%s|%s", repoID, format, name)
+}
+
+func packageVersionKey(repoID uint, format, name, version string) string {
+	if version == "" {
+		return ""
+	}
+	return fmt.Sprintf("%d|%s|%s|%s", repoID, format, name, version)
+}
+
+func deletePackageVersionsMatchingPackageWhere(tx *gorm.DB, where string, args ...interface{}) error {
+	where = strings.ReplaceAll(where, "name", "package_name")
+	return tx.Where(where, args...).Delete(&model.PackageVersion{}).Error
+}
+
+func firstNonZeroInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func parseRFC3339Ptr(value string) *time.Time {
+	if value == "" {
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil
+	}
+	return &parsed
 }
 
 func scanUint(s string, v *uint) {

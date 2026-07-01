@@ -508,11 +508,11 @@ func TestFetchRemote_Metadata_SNAPSHOT_VersionPathIncludesSnapshotFiles(t *testi
 		if file.Version != "1.0-SNAPSHOT" {
 			t.Fatalf("%s version = %q, want 1.0-SNAPSHOT", filename, file.Version)
 		}
-		if file.Attributes["default_visible"] != "true" {
-			t.Fatalf("%s default_visible = %q, want true", filename, file.Attributes["default_visible"])
+		if _, ok := file.Attributes["default_visible"]; ok {
+			t.Fatalf("%s should not persist default_visible, got %q", filename, file.Attributes["default_visible"])
 		}
-		if file.Attributes["display_group"] != "20230101.120000-1" {
-			t.Fatalf("%s display_group = %q, want 20230101.120000-1", filename, file.Attributes["display_group"])
+		if _, ok := file.Attributes["display_group"]; ok {
+			t.Fatalf("%s should not persist display_group, got %q", filename, file.Attributes["display_group"])
 		}
 	}
 	if files["lib-1.0-20230101.120000-1-sources.jar"].Qualifiers["classifier"] != "sources" {
@@ -901,6 +901,24 @@ func TestHandle_HostedSnapshotMetadataGeneratedFromUploadedArtifact(t *testing.T
 	if uploadW.Code != http.StatusCreated {
 		t.Fatalf("expected upload 201, got %d", uploadW.Code)
 	}
+	arts, err := rt.QueryArtifacts(context.Background(), runtime.ArtifactQuery{
+		RepositoryID: "1",
+		Format:       "maven",
+		Name:         "com.example:app",
+		Version:      "1.0-SNAPSHOT",
+	})
+	if err != nil {
+		t.Fatalf("query uploaded snapshot artifact: %v", err)
+	}
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 uploaded snapshot artifact, got %d", len(arts))
+	}
+	if _, ok := arts[0].Attributes["default_visible"]; ok {
+		t.Fatalf("snapshot upload should not persist default_visible, got %q", arts[0].Attributes["default_visible"])
+	}
+	if _, ok := arts[0].Attributes["display_group"]; ok {
+		t.Fatalf("snapshot upload should not persist display_group, got %q", arts[0].Attributes["display_group"])
+	}
 
 	ctx, w := newCtx("GET", "com/example/app/1.0-SNAPSHOT/maven-metadata.xml", nil)
 	if err := p.Handle(ctx, rt); err != nil {
@@ -1193,6 +1211,61 @@ func TestHandle_Metadata_SNAPSHOT(t *testing.T) {
 	}
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 for SNAPSHOT metadata, got %d", w.Code)
+	}
+}
+
+func TestHandle_Metadata_SNAPSHOT_PathBAggregatesTimestampFromArtifactFilenames(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	// 模拟 proxy 回源 fetchMetadata 后的场景：
+	// - 1 个 KindVersion 记录（version=1.0-SNAPSHOT，无 Filename）
+	// - 2 个 KindArtifact 记录（Filename 为时间戳文件名，模拟两次构建）
+	// 路径B应从文件名解析最新 timestamp+buildNumber，生成正确的 <value>。
+	// 修复前路径B用 a.Version 作为 <value>（即 1.0-SNAPSHOT），导致客户端无法下载时间戳文件。
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("maven", runtime.KindVersion, map[string]string{
+			"group":       "com.example",
+			"artifact":    "app",
+			"version":     "1.0-SNAPSHOT",
+			"remote_path": "com/example/app/1.0-SNAPSHOT/maven-metadata.xml",
+		}, ""),
+		testhelper.NewArtifact("maven", runtime.KindArtifact, map[string]string{
+			"group":       "com.example",
+			"artifact":    "app",
+			"version":     "1.0-SNAPSHOT",
+			"filename":    "app-1.0-20260609.100000-1.jar",
+			"remote_path": "com/example/app/1.0-SNAPSHOT/maven-metadata.xml",
+		}, ""),
+		testhelper.NewArtifact("maven", runtime.KindArtifact, map[string]string{
+			"group":       "com.example",
+			"artifact":    "app",
+			"version":     "1.0-SNAPSHOT",
+			"filename":    "app-1.0-20260609.120000-2.jar",
+			"remote_path": "com/example/app/1.0-SNAPSHOT/maven-metadata.xml",
+		}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "com/example/app/1.0-SNAPSHOT/maven-metadata.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	// 应选最新构建 20260609.120000-2
+	for _, want := range []string{
+		"<timestamp>20260609.120000</timestamp>",
+		"<buildNumber>2</buildNumber>",
+		"<value>1.0-20260609.120000-2</value>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metadata missing %s: %s", want, body)
+		}
+	}
+	// 不应出现用 1.0-SNAPSHOT 作为 value 的旧 bug
+	if strings.Contains(body, "<value>1.0-SNAPSHOT</value>") {
+		t.Fatalf("metadata should not use base version as value: %s", body)
 	}
 }
 

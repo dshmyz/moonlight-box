@@ -6,7 +6,7 @@ server:
   write_timeout: 0s
 
 database:
-  driver: sqlite  # sqlite / postgres
+  driver: sqlite  # sqlite / postgres / mysql
   dsn: "./data/registry.db"
   # postgres:
   #   host: localhost
@@ -14,6 +14,8 @@ database:
   #   database: moonlight
   #   username: registry
   #   password: your-password
+  # mysql:
+  #   dsn: "registry:password@tcp(localhost:3306)/moonlight?charset=utf8mb4&parseTime=True&loc=Local"
 
 storage:
   backend: local  # local / s3

@@ -171,6 +171,32 @@ func TestServeArtifactContent_SetsETagAndLastModified(t *testing.T) {
 	}
 }
 
+func TestServeArtifactContent_UsesRemoteETagWhenBlobRefMissing(t *testing.T) {
+	updatedAt := time.Date(2026, 6, 9, 10, 11, 12, 0, time.UTC)
+	artifact := NewArtifact(ArtifactSpec{
+		Format:     "generic",
+		Kind:       KindFile,
+		Name:       "readme.txt",
+		Filename:   "readme.txt",
+		Properties: map[string]string{"remote_etag": `"upstream-etag"`},
+		Content:    io.NopCloser(strings.NewReader("hello world")),
+	})
+	artifact.UpdatedAt = updatedAt
+	req := httptest.NewRequest(http.MethodGet, "/repository/test/readme.txt", nil)
+	w := httptest.NewRecorder()
+
+	if err := ServeArtifactContent(w, req, artifact, "readme.txt", "text/plain", "inline"); err != nil {
+		t.Fatalf("ServeArtifactContent failed: %v", err)
+	}
+
+	if got := w.Header().Get("ETag"); got != `"upstream-etag"` {
+		t.Fatalf("expected remote ETag fallback, got %q", got)
+	}
+	if got := w.Header().Get("Last-Modified"); got != updatedAt.Format(http.TimeFormat) {
+		t.Fatalf("expected Last-Modified %q, got %q", updatedAt.Format(http.TimeFormat), got)
+	}
+}
+
 func TestServeArtifactContent_IfNoneMatchReturnsNotModifiedWithoutBody(t *testing.T) {
 	artifact := NewArtifact(ArtifactSpec{
 		Format:   "generic",
@@ -182,6 +208,31 @@ func TestServeArtifactContent_IfNoneMatchReturnsNotModifiedWithoutBody(t *testin
 	})
 	req := httptest.NewRequest(http.MethodGet, "/repository/test/readme.txt", nil)
 	req.Header.Set("If-None-Match", `"sha256:abc123"`)
+	w := httptest.NewRecorder()
+
+	if err := ServeArtifactContent(w, req, artifact, "readme.txt", "text/plain", "inline"); err != nil {
+		t.Fatalf("ServeArtifactContent failed: %v", err)
+	}
+
+	if w.Code != http.StatusNotModified {
+		t.Fatalf("expected 304, got %d", w.Code)
+	}
+	if got := w.Body.String(); got != "" {
+		t.Fatalf("expected empty body for 304, got %q", got)
+	}
+}
+
+func TestServeArtifactContent_IfNoneMatchUsesRemoteETagWhenBlobRefMissing(t *testing.T) {
+	artifact := NewArtifact(ArtifactSpec{
+		Format:     "generic",
+		Kind:       KindFile,
+		Name:       "readme.txt",
+		Filename:   "readme.txt",
+		Properties: map[string]string{"remote_etag": "upstream-etag"},
+		Content:    io.NopCloser(strings.NewReader("hello world")),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/repository/test/readme.txt", nil)
+	req.Header.Set("If-None-Match", `"upstream-etag"`)
 	w := httptest.NewRecorder()
 
 	if err := ServeArtifactContent(w, req, artifact, "readme.txt", "text/plain", "inline"); err != nil {

@@ -430,6 +430,7 @@ func joinArtifactPath(dir, file string) string {
 
 type RemoteMetadata struct {
 	Exists     bool
+	ETag       string
 	Digest     string
 	Size       int64
 	ModifiedAt time.Time

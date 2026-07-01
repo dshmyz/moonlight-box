@@ -178,10 +178,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   select: [version: string]
-  deprecate: [data: { id: number; version: string; reason: string }]
-  restore: [data: { id: number; version: string }]
-  yank: [data: { id: number; version: string }]
-  delete: [data: { id: number; version: string }]
+  deprecate: [data: { id: number; version: string; name?: string; repository_id?: number; reason: string }]
+  restore: [data: { id: number; version: string; name?: string; repository_id?: number }]
+  yank: [data: { id: number; version: string; name?: string; repository_id?: number }]
+  delete: [data: { id: number; version: string; name?: string; repository_id?: number }]
 }>()
 
 const pageSize = 10
@@ -272,7 +272,7 @@ function handleDeprecate(row: PackageVersion) {
     inputPattern: /.+/,
     inputErrorMessage: '废弃原因不能为空',
   }).then(({ value }) => {
-    emit('deprecate', { id: row.id, version: row.version, reason: value })
+    emit('deprecate', { id: row.id, version: row.version, name: row.name, repository_id: row.repository_id, reason: value })
   }).catch(() => {})
 }
 
@@ -282,7 +282,7 @@ function handleRestore(row: PackageVersion) {
     cancelButtonText: '取消',
     type: 'warning',
   }).then(() => {
-    emit('restore', { id: row.id, version: row.version })
+    emit('restore', { id: row.id, version: row.version, name: row.name, repository_id: row.repository_id })
   }).catch(() => {})
 }
 
@@ -292,7 +292,7 @@ function handleYank(row: PackageVersion) {
     cancelButtonText: '取消',
     type: 'warning',
   }).then(() => {
-    emit('yank', { id: row.id, version: row.version })
+    emit('yank', { id: row.id, version: row.version, name: row.name, repository_id: row.repository_id })
   }).catch(() => {})
 }
 
@@ -302,7 +302,7 @@ function handleDelete(row: PackageVersion) {
     cancelButtonText: '取消',
     type: 'error',
   }).then(() => {
-    emit('delete', { id: row.id, version: row.version })
+    emit('delete', { id: row.id, version: row.version, name: row.name, repository_id: row.repository_id })
   }).catch(() => {})
 }
 

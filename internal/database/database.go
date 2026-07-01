@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/database/dialect"
 	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
+	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -20,31 +22,14 @@ import (
 var DB *gorm.DB
 
 func Initialize(cfg *config.Config) error {
-	var dialector gorm.Dialector
-
 	util.WithFields(logrus.Fields{
 		util.LogKeyModule: "database",
 		"driver":          cfg.Database.Driver,
 	}).Info("Initializing database connection")
 
-	switch cfg.Database.Driver {
-	case "postgres":
-		dsn := cfg.Database.DSN
-		dialector = postgres.Open(dsn)
-	case "sqlite":
-		fallthrough
-	default:
-		dsn := cfg.Database.DSN
-		if err := ensureDataDirectory(dsn); err != nil {
-			return fmt.Errorf("failed to create data directory: %w", err)
-		}
-		connParams := "_journal_mode=WAL&_busy_timeout=30000&_txlock=immediate"
-		if strings.Contains(dsn, "?") {
-			dsn = dsn + "&" + connParams
-		} else {
-			dsn = dsn + "?" + connParams
-		}
-		dialector = sqlite.Open(dsn)
+	dialector, err := dialectorForConfig(cfg)
+	if err != nil {
+		return err
 	}
 
 	gormConfig := &gorm.Config{
@@ -107,6 +92,27 @@ func Initialize(cfg *config.Config) error {
 	}).Info("Database connection established")
 
 	return nil
+}
+
+func dialectorForConfig(cfg *config.Config) (gorm.Dialector, error) {
+	switch cfg.Database.Driver {
+	case "mysql":
+		return mysql.Open(cfg.Database.DSN), nil
+	case "postgres":
+		return postgres.Open(cfg.Database.DSN), nil
+	case "sqlite":
+		fallthrough
+	default:
+		dsn := cfg.Database.DSN
+		if err := ensureDataDirectory(dsn); err != nil {
+			return nil, fmt.Errorf("failed to create data directory: %w", err)
+		}
+		dsn, err := dialect.SQLiteDSNWithPragmas(dsn)
+		if err != nil {
+			return nil, err
+		}
+		return sqlite.Open(dsn), nil
+	}
 }
 
 func ensureDataDirectory(dsn string) error {

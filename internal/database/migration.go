@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/database/dialect"
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/domain"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/util"
@@ -38,6 +39,7 @@ func AutoMigrate() error {
 		&model.Backup{},
 		&model.DownloadLog{},
 		&model.Package{},
+		&model.PackageVersion{},
 		&domain.MigrationPlan{},
 		&domain.MigrationJob{},
 		&domain.MigrationItem{},
@@ -72,44 +74,20 @@ func cleanupLegacyArtifactColumns() error {
 		"column":          columnName,
 	}).Warn("Dropping legacy artifact column")
 
-	switch DB.Dialector.Name() {
-	case "sqlite":
-		return DB.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", tableName, columnName)).Error
-	case "postgres":
-		return DB.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS %s", tableName, columnName)).Error
-	case "mysql":
-		return DB.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", tableName, columnName)).Error
-	default:
+	query, err := dialect.DropColumnSQL(DB.Dialector.Name(), tableName, columnName)
+	if err != nil {
 		return fmt.Errorf("unsupported database dialect for legacy artifact cleanup: %s", DB.Dialector.Name())
 	}
+	return DB.Exec(query).Error
 }
 
 func legacyColumnExists(tableName, columnName string) (bool, error) {
 	var count int64
-	var err error
-
-	switch DB.Dialector.Name() {
-	case "sqlite":
-		err = DB.Raw("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", tableName, columnName).Scan(&count).Error
-	case "postgres":
-		err = DB.Raw(`
-			SELECT COUNT(*)
-			FROM information_schema.columns
-			WHERE table_schema = current_schema()
-			  AND table_name = ?
-			  AND column_name = ?
-		`, tableName, columnName).Scan(&count).Error
-	case "mysql":
-		err = DB.Raw(`
-			SELECT COUNT(*)
-			FROM information_schema.columns
-			WHERE table_schema = DATABASE()
-			  AND table_name = ?
-			  AND column_name = ?
-		`, tableName, columnName).Scan(&count).Error
-	default:
+	query, args, err := dialect.ColumnExistsQuery(DB.Dialector.Name(), tableName, columnName)
+	if err != nil {
 		return false, fmt.Errorf("unsupported database dialect for legacy artifact cleanup: %s", DB.Dialector.Name())
 	}
+	err = DB.Raw(query, args...).Scan(&count).Error
 	if err != nil {
 		return false, err
 	}

@@ -68,6 +68,44 @@ func TestProxyRuntimeDeletesStaleMetadataWhenRemoteMissing(t *testing.T) {
 	}
 }
 
+func TestProxyRuntimeRefreshStaleMetadataPreservesRemoteValidators(t *testing.T) {
+	ctx := context.Background()
+	modified := time.Date(2026, 6, 9, 10, 11, 12, 0, time.UTC)
+	key := ArtifactKey{RepositoryID: "repo", Format: "npm", Filename: "pkg.tgz", RemotePath: "pkg/-/pkg.tgz"}
+	store := newFakeMetadataStore()
+	artifact := &Artifact{
+		ID:           "cached",
+		RepositoryID: "repo",
+		Format:       "npm",
+		Filename:     "pkg.tgz",
+		RemotePath:   "pkg/-/pkg.tgz",
+		Properties:   map[string]string{"remote_digest": "old", "remote_size": "1"},
+		UpdatedAt:    time.Now().Add(-2 * time.Hour),
+	}
+	runtime := &ProxyRuntime{
+		MetadataStore: store,
+		RemoteClient: &fakeRemoteClient{metadata: &RemoteMetadata{
+			Exists:     true,
+			ETag:       "fresh-etag",
+			Digest:     "fresh-digest",
+			Size:       42,
+			ModifiedAt: modified,
+		}},
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
+	}
+
+	if err := runtime.refreshStaleMetadata(ctx, artifact, key); err != nil {
+		t.Fatalf("refreshStaleMetadata failed: %v", err)
+	}
+	if got := store.artifact.Properties["remote_etag"]; got != "fresh-etag" {
+		t.Fatalf("remote_etag = %q, want fresh-etag", got)
+	}
+	if !store.artifact.UpdatedAt.Equal(modified) {
+		t.Fatalf("UpdatedAt = %s, want upstream Last-Modified %s", store.artifact.UpdatedAt, modified)
+	}
+}
+
 func TestProxyRuntimeCachesMetadataStoreHit(t *testing.T) {
 	ctx := context.Background()
 	key := ArtifactKey{RepositoryID: "repo", Format: "npm", Filename: "pkg"}
@@ -95,6 +133,50 @@ func TestProxyRuntimeCachesMetadataStoreHit(t *testing.T) {
 	}
 	if store.getCalls != 1 {
 		t.Fatalf("expected one metadata store get, got %d", store.getCalls)
+	}
+}
+
+func TestProxyRuntimePreservesRemoteCacheValidatorsOnFetch(t *testing.T) {
+	ctx := context.Background()
+	modified := time.Date(2026, 6, 9, 10, 11, 12, 0, time.UTC)
+	store := newFakeMetadataStore()
+	rt := &ProxyRuntime{
+		MetadataStore: store,
+		BlobStore:     &capturingBlobStore{},
+		RemoteClient: &fakeRemoteClient{
+			metadata: &RemoteMetadata{
+				Exists:     true,
+				ETag:       "upstream-etag",
+				Digest:     "legacy-digest",
+				Size:       int64(len("stream-content")),
+				ModifiedAt: modified,
+			},
+			blob: io.NopCloser(strings.NewReader("stream-content")),
+		},
+		RemoteBaseURL: "https://example.test",
+		RepositoryID:  "repo",
+		Format:        "npm",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
+	}
+	key := ArtifactKey{
+		Format:     "npm",
+		Name:       "left-pad",
+		Filename:   "left-pad-1.0.0.tgz",
+		RemotePath: "left-pad/-/left-pad-1.0.0.tgz",
+	}
+
+	artifact, err := rt.GetArtifact(ctx, key)
+	if err != nil {
+		t.Fatalf("GetArtifact failed: %v", err)
+	}
+	if got := artifact.Properties["remote_etag"]; got != "upstream-etag" {
+		t.Fatalf("remote_etag = %q, want upstream-etag", got)
+	}
+	if got := store.artifact.Properties["remote_etag"]; got != "upstream-etag" {
+		t.Fatalf("stored remote_etag = %q, want upstream-etag", got)
+	}
+	if !store.artifact.UpdatedAt.Equal(modified) {
+		t.Fatalf("stored UpdatedAt = %s, want upstream Last-Modified %s", store.artifact.UpdatedAt, modified)
 	}
 }
 
@@ -403,6 +485,27 @@ func TestEnsureArtifactBlobUsesContextAwareBlobStore(t *testing.T) {
 	}
 }
 
+func TestEnsureArtifactBlobBackfillsSHA256Checksum(t *testing.T) {
+	ctx := context.Background()
+	artifact := &Artifact{ID: "stream", RepositoryID: "repo", Format: "pypi", Name: "requests"}
+	store := newFakeMetadataStore()
+	rt := &ProxyRuntime{
+		MetadataStore: store,
+		BlobStore:     &capturingBlobStore{},
+		RemoteClient:  &fakeRemoteClient{blob: io.NopCloser(strings.NewReader("stream-content"))},
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute, MaxBlobSize: 0},
+	}
+	key := ArtifactKey{RepositoryID: "repo", Format: "pypi", Filename: "requests-2.28.0.tar.gz", RemotePath: "packages/ab/cd/requests-2.28.0.tar.gz"}
+
+	if err := rt.ensureArtifactBlob(ctx, artifact, key); err != nil {
+		t.Fatalf("ensureArtifactBlob failed: %v", err)
+	}
+	if got := store.artifact.Checksums["sha256"]; got != "streamed" {
+		t.Fatalf("stored sha256 checksum = %q, want streamed", got)
+	}
+}
+
 type markerReadCloser struct {
 	*strings.Reader
 }
@@ -706,6 +809,44 @@ func TestProxyRuntimeQueryArtifactsReturnsBatchPutError(t *testing.T) {
 	})
 	if !errors.Is(err, storeErr) {
 		t.Fatalf("expected BatchPut error to be returned, got %v", err)
+	}
+}
+
+func TestProxyRuntimeQueryArtifactsDoesNotFetchPerArtifactHeaders(t *testing.T) {
+	ctx := context.Background()
+	remote := &fakeRemoteClient{metadata: &RemoteMetadata{Exists: true, ETag: "etag"}}
+	fetcher := &fakeFetcher{
+		fn: func() ([]*Artifact, error) {
+			return []*Artifact{{
+				Format:     "npm",
+				Kind:       KindArtifact,
+				Name:       "left-pad",
+				Version:    "1.0.0",
+				Filename:   "left-pad-1.0.0.tgz",
+				RemotePath: "left-pad/-/left-pad-1.0.0.tgz",
+			}}, nil
+		},
+	}
+	runtime := &ProxyRuntime{
+		MetadataStore: newFakeMetadataStore(),
+		RemoteClient:  remote,
+		RemoteBaseURL: "https://example.test",
+		Fetcher:       fetcher,
+		Format:        "npm",
+	}
+
+	artifacts, err := runtime.QueryArtifacts(ctx, ArtifactQuery{
+		Format:     "npm",
+		RemotePath: "left-pad",
+	})
+	if err != nil {
+		t.Fatalf("QueryArtifacts failed: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 fetched artifact, got %d", len(artifacts))
+	}
+	if remote.metadataCalls != 0 {
+		t.Fatalf("QueryArtifacts made %d per-artifact metadata requests, want 0", remote.metadataCalls)
 	}
 }
 

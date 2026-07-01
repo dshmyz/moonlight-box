@@ -5,14 +5,17 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/util"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+	"gorm.io/gorm/schema"
 )
 
 func TestGormLoggerTraceDoesNotLogRecordNotFoundAsExecutionFailure(t *testing.T) {
@@ -103,11 +106,73 @@ func TestInitializeSQLiteUsesConcurrentReadConnection(t *testing.T) {
 	}
 }
 
+func TestArtifactAutoMigrateCreatesLookupIndexes(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}); err != nil {
+		t.Fatalf("auto migrate artifacts: %v", err)
+	}
+
+	for _, indexName := range []string{
+		"idx_artifacts_repo_format_remote_path",
+		"idx_artifacts_repo_format_name",
+		"idx_artifacts_repo_format_name_version",
+		"idx_artifacts_repo_format_filename",
+		"idx_artifacts_repo_format_kind_name_version",
+	} {
+		if !sqliteIndexExists(t, db, indexName) {
+			t.Fatalf("expected SQLite index %s to exist", indexName)
+		}
+	}
+}
+
+func TestArtifactRemotePathUsesBoundedVarcharForMySQLIndexes(t *testing.T) {
+	parsed, err := schema.Parse(&model.Artifact{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatalf("parse artifact schema: %v", err)
+	}
+	field := parsed.LookUpField("RemotePath")
+	if field == nil {
+		t.Fatal("RemotePath field not found")
+	}
+	if got := field.TagSettings["TYPE"]; got != "varchar(1024)" {
+		t.Fatalf("RemotePath TYPE = %q, want varchar(1024)", got)
+	}
+	if got := field.TagSettings["INDEX"]; !strings.Contains(got, "length:512") {
+		t.Fatalf("RemotePath INDEX tag = %q, want prefix length 512", got)
+	}
+}
+
+func TestDialectorForConfigSupportsMySQLDriver(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Database.Driver = "mysql"
+	cfg.Database.DSN = "registry:secret@tcp(127.0.0.1:3306)/moonlight?parseTime=true"
+
+	dialector, err := dialectorForConfig(cfg)
+	if err != nil {
+		t.Fatalf("build mysql dialector: %v", err)
+	}
+	if got := dialector.Name(); got != "mysql" {
+		t.Fatalf("dialector = %q, want mysql", got)
+	}
+}
+
 func sqliteColumnExists(t *testing.T, db *gorm.DB, table, column string) bool {
 	t.Helper()
 	var count int
 	if err := db.Raw("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", table, column).Scan(&count).Error; err != nil {
 		t.Fatalf("check sqlite column: %v", err)
+	}
+	return count > 0
+}
+
+func sqliteIndexExists(t *testing.T, db *gorm.DB, indexName string) bool {
+	t.Helper()
+	var count int
+	if err := db.Raw("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", indexName).Scan(&count).Error; err != nil {
+		t.Fatalf("check sqlite index: %v", err)
 	}
 	return count > 0
 }

@@ -1,9 +1,14 @@
 package pypi
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -169,6 +174,48 @@ func TestHandle_SimpleIndexJSON(t *testing.T) {
 	}
 }
 
+func TestHandle_SimpleIndexHonorsExplicitHTMLAccept(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "requests", "package": "requests"}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "simple/", nil)
+	ctx.Request.Header.Set("Accept", "application/vnd.pypi.simple.v1+html")
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	if ct := w.Header().Get("Content-Type"); strings.Contains(ct, "json") {
+		t.Fatalf("expected HTML content type, got %s", ct)
+	}
+	if !strings.Contains(w.Body.String(), "<html") {
+		t.Fatalf("expected HTML response, got %s", w.Body.String())
+	}
+}
+
+func TestHandle_SimpleIndexHonorsAcceptQualityWeights(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "requests", "package": "requests"}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "simple/", nil)
+	ctx.Request.Header.Set("Accept", "application/vnd.pypi.simple.v1+json;q=0.1, application/vnd.pypi.simple.v1+html;q=0.9")
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	if ct := w.Header().Get("Content-Type"); strings.Contains(ct, "json") {
+		t.Fatalf("expected HTML content type from higher q weight, got %s", ct)
+	}
+	if got := w.Header().Get("Vary"); got != "Accept" {
+		t.Fatalf("Vary = %q, want Accept", got)
+	}
+}
+
 func TestHandle_PackageList(t *testing.T) {
 	p := NewPyPIPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{
@@ -195,6 +242,71 @@ func TestHandle_PackageList(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, "requests-2.28.0.tar.gz") {
 		t.Errorf("expected filename in HTML, got: %s", body)
+	}
+}
+
+func TestHandle_PackageListRedirectsToCanonicalSlashURL(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	ctx, w := newCtx("GET", "simple/My_Pkg", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusMovedPermanently {
+		t.Fatalf("expected 301, got %d body=%q", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Location"); got != "/repository/pypi-test/simple/my-pkg/" {
+		t.Fatalf("Location = %q, want /repository/pypi-test/simple/my-pkg/", got)
+	}
+	if len(rt.QueryCalls) != 0 {
+		t.Fatalf("expected redirect before querying runtime, got %d queries", len(rt.QueryCalls))
+	}
+}
+
+func TestHandle_PackageListRedirectsNormalizedNameWithExistingSlash(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	ctx, w := newCtx("GET", "simple/My_Pkg/", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusMovedPermanently {
+		t.Fatalf("expected 301, got %d body=%q", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Location"); got != "/repository/pypi-test/simple/my-pkg/" {
+		t.Fatalf("Location = %q, want /repository/pypi-test/simple/my-pkg/", got)
+	}
+	if len(rt.QueryCalls) != 0 {
+		t.Fatalf("expected redirect before querying runtime, got %d queries", len(rt.QueryCalls))
+	}
+}
+
+func TestHandle_PackageListHeadReturnsHeadersWithoutBody(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	art := testhelper.NewArtifact("pypi", "package-file", map[string]string{
+		"name":        "requests",
+		"package":     "requests",
+		"version":     "2.28.0",
+		"filename":    "requests-2.28.0.tar.gz",
+		"remote_path": "simple/requests/",
+	}, "")
+	art.Properties = map[string]string{"remote_path": "packages/ab/cd/requests-2.28.0.tar.gz"}
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("HEAD", "simple/requests/", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("expected empty HEAD body, got %q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("expected text/html, got %q", ct)
 	}
 }
 
@@ -569,6 +681,37 @@ func TestHandle_QueryRemotePath(t *testing.T) {
 	}
 }
 
+func TestHandle_SimpleMetadataQueriesPackageListRemotePath(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	art := &runtime.Artifact{
+		Format:     "pypi",
+		Kind:       "package-file",
+		Name:       "requests",
+		Version:    "2.28.0",
+		Filename:   "requests-2.28.0.tar.gz",
+		RemotePath: "packages/ab/cd/requests-2.28.0.tar.gz",
+		Attributes: map[string]string{"metadata": "Metadata-Version: 2.1\nName: requests\n"},
+	}
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "simple/requests/requests-2.28.0.tar.gz.metadata", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.QueryCalls) == 0 {
+		t.Fatalf("expected QueryArtifacts call")
+	}
+	if got := rt.QueryCalls[0].RemotePath; got != "simple/requests/" {
+		t.Fatalf("RemotePath = %q, want simple/requests/", got)
+	}
+	if got := rt.QueryCalls[0].Filename; got != "requests-2.28.0.tar.gz" {
+		t.Fatalf("Filename = %q, want requests-2.28.0.tar.gz", got)
+	}
+}
+
 func TestFetchRemote_SimpleIndex(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html><body>
@@ -667,6 +810,146 @@ func TestHandle_PackageList_JSON(t *testing.T) {
 	if !strings.Contains(body, "requests-2.28.0.tar.gz") {
 		t.Errorf("expected filename in JSON response, got: %s", body)
 	}
+	var data struct {
+		Files []struct {
+			Hashes map[string]string `json:"hashes"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+		t.Fatalf("expected valid JSON response: %v", err)
+	}
+	if len(data.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(data.Files))
+	}
+	if data.Files[0].Hashes == nil {
+		t.Fatalf("expected hashes field to be present for uv compatibility")
+	}
+}
+
+func TestHandle_PackageList_JSONIncludesSHA256Hash(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	art := &runtime.Artifact{
+		Format:     "pypi",
+		Kind:       "package-file",
+		Name:       "requests",
+		Version:    "2.28.0",
+		Path:       "packages/ab/cd",
+		Filename:   "requests-2.28.0.tar.gz",
+		RemotePath: "simple/requests/",
+		Checksums:  map[string]string{"sha256": "abc123"},
+		Properties: map[string]string{"remote_path": "packages/ab/cd/requests-2.28.0.tar.gz"},
+	}
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "simple/requests/", nil)
+	ctx.Request.Header.Set("Accept", "application/vnd.pypi.simple.v1+json")
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var data struct {
+		Files []struct {
+			Hashes map[string]string `json:"hashes"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+		t.Fatalf("expected valid JSON response: %v", err)
+	}
+	if len(data.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(data.Files))
+	}
+	if got := data.Files[0].Hashes["sha256"]; got != "abc123" {
+		t.Fatalf("hashes.sha256 = %q, want abc123", got)
+	}
+}
+
+func TestHandle_PackageList_JSONIncludesProjectAndInstallerMetadata(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	art := &runtime.Artifact{
+		Format:     "pypi",
+		Kind:       "package-file",
+		Name:       "requests",
+		Version:    "2.28.0",
+		Path:       "packages/ab/cd",
+		Filename:   "requests-2.28.0.tar.gz",
+		RemotePath: "simple/requests/",
+		Checksums:  map[string]string{"sha256": "abc123"},
+		Attributes: map[string]string{
+			"requires_python": ">=3.8",
+			"yanked":          "true",
+			"yanked_reason":   "bad release",
+		},
+		Properties: map[string]string{"remote_path": "packages/ab/cd/requests-2.28.0.tar.gz"},
+	}
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "simple/requests/", nil)
+	ctx.Request.Header.Set("Accept", "application/vnd.pypi.simple.v1+json")
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var data struct {
+		Name  string `json:"name"`
+		Files []struct {
+			RequiresPython string `json:"requires-python"`
+			Yanked         string `json:"yanked"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+		t.Fatalf("expected valid JSON response: %v", err)
+	}
+	if data.Name != "requests" {
+		t.Fatalf("name = %q, want requests", data.Name)
+	}
+	if len(data.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(data.Files))
+	}
+	if got := data.Files[0].RequiresPython; got != ">=3.8" {
+		t.Fatalf("requires-python = %q, want >=3.8", got)
+	}
+	if got := data.Files[0].Yanked; got != "bad release" {
+		t.Fatalf("yanked = %q, want bad release", got)
+	}
+}
+
+func TestHandle_PackageList_HTMLIncludesInstallerMetadata(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	art := &runtime.Artifact{
+		Format:     "pypi",
+		Kind:       "package-file",
+		Name:       "requests",
+		Version:    "2.28.0",
+		Path:       "packages/ab/cd",
+		Filename:   "requests-2.28.0.tar.gz",
+		RemotePath: "simple/requests/",
+		Attributes: map[string]string{
+			"requires_python": ">=3.8",
+			"yanked":          "true",
+			"yanked_reason":   "bad release",
+		},
+		Properties: map[string]string{"remote_path": "packages/ab/cd/requests-2.28.0.tar.gz"},
+	}
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "simple/requests/", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, `data-requires-python="&gt;=3.8"`) {
+		t.Fatalf("expected data-requires-python attribute, got %s", body)
+	}
+	if !strings.Contains(body, `data-yanked="bad release"`) {
+		t.Fatalf("expected data-yanked attribute, got %s", body)
+	}
 }
 
 func TestHandle_PackageListUsesStoredChecksumWithoutBlobRef(t *testing.T) {
@@ -693,6 +976,183 @@ func TestHandle_PackageListUsesStoredChecksumWithoutBlobRef(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "#sha256=abc123") {
 		t.Fatalf("expected stored checksum in package link, got: %s", w.Body.String())
+	}
+}
+
+func TestHandle_PackageListJSONIncludesSimpleAPI11Metadata(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	art := &runtime.Artifact{
+		Format:     "pypi",
+		Kind:       "package-file",
+		Name:       "requests",
+		Version:    "2.28.0",
+		Path:       "packages/ab/cd",
+		Filename:   "requests-2.28.0.tar.gz",
+		RemotePath: "simple/requests/",
+		SizeBytes:  12345,
+		Checksums:  map[string]string{"sha256": "abc123"},
+		Attributes: map[string]string{
+			"published_at":    "2024-01-02T03:04:05Z",
+			"requires_python": ">=3.8",
+			"metadata":        "Metadata-Version: 2.1",
+		},
+		Properties: map[string]string{"remote_path": "packages/ab/cd/requests-2.28.0.tar.gz"},
+	}
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "simple/requests/", nil)
+	ctx.Request.Header.Set("Accept", "application/vnd.pypi.simple.v1+json")
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	var data struct {
+		Meta     map[string]string `json:"meta"`
+		Versions []string          `json:"versions"`
+		Files    []struct {
+			Size         int64             `json:"size"`
+			UploadTime   string            `json:"upload-time"`
+			CoreMetadata map[string]string `json:"core-metadata"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+		t.Fatalf("expected valid JSON response: %v", err)
+	}
+	if got := data.Meta["api-version"]; got != "1.1" {
+		t.Fatalf("api-version = %q, want 1.1", got)
+	}
+	if len(data.Versions) != 1 || data.Versions[0] != "2.28.0" {
+		t.Fatalf("versions = %#v, want [2.28.0]", data.Versions)
+	}
+	if len(data.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(data.Files))
+	}
+	if got := data.Files[0].Size; got != 12345 {
+		t.Fatalf("size = %d, want 12345", got)
+	}
+	if got := data.Files[0].UploadTime; got != "2024-01-02T03:04:05Z" {
+		t.Fatalf("upload-time = %q, want 2024-01-02T03:04:05Z", got)
+	}
+	if got := data.Files[0].CoreMetadata["sha256"]; got != "abc123" {
+		t.Fatalf("core-metadata.sha256 = %q, want abc123", got)
+	}
+}
+
+func TestHandle_PackageMetadataServesStandardFileURLMetadata(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	art := &runtime.Artifact{
+		Format:     "pypi",
+		Kind:       "package-file",
+		Name:       "requests",
+		Version:    "2.28.0",
+		Path:       "packages/ab/cd",
+		Filename:   "requests-2.28.0.tar.gz",
+		RemotePath: "packages/ab/cd/requests-2.28.0.tar.gz",
+		Attributes: map[string]string{"metadata": "Metadata-Version: 2.1\nName: requests\n"},
+		Properties: map[string]string{"remote_path": "packages/ab/cd/requests-2.28.0.tar.gz"},
+	}
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "packages/ab/cd/requests-2.28.0.tar.gz.metadata", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); !strings.Contains(body, "Name: requests") {
+		t.Fatalf("unexpected metadata body: %q", body)
+	}
+	if len(rt.QueryCalls) != 1 || rt.QueryCalls[0].RemotePath != "packages/ab/cd/requests-2.28.0.tar.gz" {
+		t.Fatalf("expected query by file RemotePath, got %#v", rt.QueryCalls)
+	}
+}
+
+func TestHandle_LegacyUploadStoresTwineMultipartPackage(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField(":action", "file_upload")
+	_ = writer.WriteField("name", "Requests")
+	_ = writer.WriteField("version", "2.28.0")
+	_ = writer.WriteField("filetype", "sdist")
+	_ = writer.WriteField("pyversion", "source")
+	content := []byte("package-content")
+	sum := sha256.Sum256(content)
+	digest := fmt.Sprintf("%x", sum[:])
+	_ = writer.WriteField("sha256_digest", digest)
+	part, err := writer.CreateFormFile("content", "requests-2.28.0.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write(content)
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, w := newCtx("POST", "legacy/", &body)
+	ctx.Request.Header.Set("Content-Type", writer.FormDataContentType())
+	ctx.Request.ContentLength = int64(body.Len())
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.UploadCalls) != 1 {
+		t.Fatalf("expected one upload session, got %d", len(rt.UploadCalls))
+	}
+	if len(rt.UploadedArts) != 1 {
+		t.Fatalf("expected one uploaded artifact, got %d", len(rt.UploadedArts))
+	}
+	art := rt.UploadedArts[0]
+	if art.Name != "requests" || art.Version != "2.28.0" || art.Filename != "requests-2.28.0.tar.gz" {
+		t.Fatalf("unexpected artifact coordinates: name=%q version=%q filename=%q", art.Name, art.Version, art.Filename)
+	}
+	if art.Kind != runtime.KindArtifact {
+		t.Fatalf("artifact kind = %q, want %q", art.Kind, runtime.KindArtifact)
+	}
+	if !strings.HasPrefix(art.RemotePath, "packages/") {
+		t.Fatalf("RemotePath = %q, want packages/...", art.RemotePath)
+	}
+	if got := art.Checksums["sha256"]; got != digest {
+		t.Fatalf("sha256 = %q, want %s", got, digest)
+	}
+	if got := art.Attributes["filetype"]; got != "sdist" {
+		t.Fatalf("filetype = %q, want sdist", got)
+	}
+}
+
+func TestHandle_LegacyUploadRejectsMismatchedSHA256Digest(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField(":action", "file_upload")
+	_ = writer.WriteField("name", "requests")
+	_ = writer.WriteField("version", "2.28.0")
+	_ = writer.WriteField("sha256_digest", "deadbeef")
+	part, err := writer.CreateFormFile("content", "requests-2.28.0.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("package-content"))
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, w := newCtx("POST", "legacy/", &body)
+	ctx.Request.Header.Set("Content-Type", writer.FormDataContentType())
+	ctx.Request.ContentLength = int64(body.Len())
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.UploadCalls) != 0 || len(rt.UploadedArts) != 0 {
+		t.Fatalf("expected no upload on digest mismatch, calls=%d artifacts=%d", len(rt.UploadCalls), len(rt.UploadedArts))
 	}
 }
 
@@ -849,6 +1309,39 @@ func TestHandle_JsonAPI_WithVersion(t *testing.T) {
 	}
 	if !strings.Contains(body, "2.28.0") {
 		t.Errorf("expected version 2.28.0 in response, got: %s", body)
+	}
+}
+
+func TestHandle_JsonAPIUsesDigestsField(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	art := &runtime.Artifact{
+		Format:     "pypi",
+		Kind:       "package-file",
+		Name:       "requests",
+		Version:    "2.28.0",
+		Path:       "packages/ab/cd",
+		Filename:   "requests-2.28.0.tar.gz",
+		RemotePath: "simple/requests/",
+		Checksums:  map[string]string{"sha256": "abc123"},
+		Properties: map[string]string{"remote_path": "packages/ab/cd/requests-2.28.0.tar.gz"},
+	}
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "pypi/requests/json", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	var data struct {
+		Releases map[string][]struct {
+			Digests map[string]string `json:"digests"`
+		} `json:"releases"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+		t.Fatalf("expected valid JSON response: %v", err)
+	}
+	if got := data.Releases["2.28.0"][0].Digests["sha256"]; got != "abc123" {
+		t.Fatalf("digests.sha256 = %q, want abc123", got)
 	}
 }
 
@@ -1028,6 +1521,36 @@ func TestBuildArtifactsFromJSONAPIPreservesDigestAndSize(t *testing.T) {
 	}
 }
 
+func TestBuildArtifactsFromJSONAPIPreservesInstallerMetadata(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	arts := p.buildArtifactsFromJSONAPI("demo", map[string]interface{}{
+		"info": map[string]interface{}{"summary": "Demo package"},
+		"releases": map[string]interface{}{
+			"1.0.0": []interface{}{
+				map[string]interface{}{
+					"filename":        "demo-1.0.0.tar.gz",
+					"url":             "https://files.pythonhosted.org/packages/ab/cd/demo-1.0.0.tar.gz",
+					"requires_python": ">=3.8",
+					"yanked":          true,
+					"yanked_reason":   "bad release",
+				},
+			},
+		},
+	})
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+	if got := arts[0].Attributes["requires_python"]; got != ">=3.8" {
+		t.Fatalf("requires_python = %q, want >=3.8", got)
+	}
+	if got := arts[0].Attributes["yanked"]; got != "true" {
+		t.Fatalf("yanked = %q, want true", got)
+	}
+	if got := arts[0].Attributes["yanked_reason"]; got != "bad release" {
+		t.Fatalf("yanked_reason = %q, want bad release", got)
+	}
+}
+
 func TestFetchRemote_FallbackToSimpleIndex(t *testing.T) {
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1088,6 +1611,96 @@ func TestParsePackageListDoesNotStoreRelativeDownloadURL(t *testing.T) {
 	}
 	if got := arts[0].Properties["remote_path"]; got != "packages/ab/cd/requests-2.28.0.tar.gz" {
 		t.Fatalf("remote_path = %q", got)
+	}
+	if got := arts[0].Properties["download_url"]; got != "" {
+		t.Fatalf("relative link should not be stored as download_url, got %q", got)
+	}
+}
+
+func TestParsePackageListExtractsSHA256Fragment(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	arts, err := p.parsePackageList("requests", strings.NewReader(`
+<html><body>
+<a href="../../packages/ab/cd/requests-2.28.0.tar.gz#sha256=abc123">requests-2.28.0.tar.gz</a><br>
+</body></html>`))
+	if err != nil {
+		t.Fatalf("parsePackageList failed: %v", err)
+	}
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+	if got := arts[0].Checksums["sha256"]; got != "abc123" {
+		t.Fatalf("sha256 = %q, want abc123", got)
+	}
+}
+
+func TestParsePackageListExtractsInstallerMetadataAttributes(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	arts, err := p.parsePackageList("requests", strings.NewReader(`
+<html><body>
+<a href="../../packages/ab/cd/requests-2.28.0.tar.gz#sha256=abc123" data-requires-python="&gt;=3.8" data-yanked="bad release">requests-2.28.0.tar.gz</a><br>
+</body></html>`))
+	if err != nil {
+		t.Fatalf("parsePackageList failed: %v", err)
+	}
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+	if got := arts[0].Attributes["requires_python"]; got != ">=3.8" {
+		t.Fatalf("requires_python = %q, want >=3.8", got)
+	}
+	if got := arts[0].Attributes["yanked"]; got != "true" {
+		t.Fatalf("yanked = %q, want true", got)
+	}
+	if got := arts[0].Attributes["yanked_reason"]; got != "bad release" {
+		t.Fatalf("yanked_reason = %q, want bad release", got)
+	}
+}
+
+func TestParseSimpleIndexHandlesSingleQuotedLinksAndAttributeOrder(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	arts, err := p.parseSimpleIndex(strings.NewReader(`
+<html><body>
+<a data-extra="1" href='Requests/'>Requests</a>
+<a href="flask/">Flask</a>
+</body></html>`))
+	if err != nil {
+		t.Fatalf("parseSimpleIndex failed: %v", err)
+	}
+	if len(arts) != 2 {
+		t.Fatalf("expected 2 packages, got %d", len(arts))
+	}
+	if arts[0].Name != "requests" || arts[1].Name != "flask" {
+		t.Fatalf("unexpected package names: %q, %q", arts[0].Name, arts[1].Name)
+	}
+}
+
+func TestParsePackageListHandlesArbitraryRelativeLinksAndEmptyYanked(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	arts, err := p.parsePackageList("requests", strings.NewReader(`
+<html><body>
+<a data-yanked="" data-requires-python="&gt;=3.8" href='../files/requests-2.28.0.tar.gz#sha256=abc123'>requests-2.28.0.tar.gz</a>
+</body></html>`))
+	if err != nil {
+		t.Fatalf("parsePackageList failed: %v", err)
+	}
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+	if got := arts[0].RemotePath; got != "files/requests-2.28.0.tar.gz" {
+		t.Fatalf("RemotePath = %q, want files/requests-2.28.0.tar.gz", got)
+	}
+	if got := arts[0].Checksums["sha256"]; got != "abc123" {
+		t.Fatalf("sha256 = %q, want abc123", got)
+	}
+	if got := arts[0].Attributes["requires_python"]; got != ">=3.8" {
+		t.Fatalf("requires_python = %q, want >=3.8", got)
+	}
+	if got := arts[0].Attributes["yanked"]; got != "true" {
+		t.Fatalf("yanked = %q, want true", got)
+	}
+	if got := arts[0].Attributes["yanked_reason"]; got != "" {
+		t.Fatalf("yanked_reason = %q, want empty reason", got)
 	}
 	if got := arts[0].Properties["download_url"]; got != "" {
 		t.Fatalf("relative link should not be stored as download_url, got %q", got)
