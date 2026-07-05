@@ -154,7 +154,7 @@ echo "════════════════════════�
 
 if [ -d "dist" ] && [ "$(ls -A dist 2>/dev/null)" ]; then
     if command -v twine &> /dev/null; then
-        if twine upload --repository-url "$BASE_URL/pypi/upload" \
+        if twine upload --repository-url "$BASE_URL/repository/pypi-local/legacy/" \
             -u "$ADMIN_USER" -p "$ADMIN_PASS" dist/* > /dev/null 2>&1; then
             pass "Python 包上传成功"
             

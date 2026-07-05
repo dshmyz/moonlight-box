@@ -709,17 +709,19 @@ func TestHandle_Metadata_PrefersOriginalCachedContent(t *testing.T) {
 </metadata>`
 	arts := []*runtime.Artifact{
 		testhelper.NewArtifact("maven", runtime.KindMetadata, map[string]string{
-			"name":     "com.google.guava:guava",
-			"path":     "com/google/guava/guava",
-			"filename": "maven-metadata.xml",
-			"group":    "com.google.guava",
-			"artifact": "guava",
+			"name":        "com.google.guava:guava",
+			"path":        "com/google/guava/guava",
+			"filename":    "maven-metadata.xml",
+			"group":       "com.google.guava",
+			"artifact":    "guava",
+			"remote_path": "com/google/guava/guava/maven-metadata.xml",
 		}, original),
 		testhelper.NewArtifact("maven", runtime.KindVersion, map[string]string{
-			"name":     "com.google.guava:guava",
-			"group":    "com.google.guava",
-			"artifact": "guava",
-			"version":  "31.1-jre",
+			"name":        "com.google.guava:guava",
+			"group":       "com.google.guava",
+			"artifact":    "guava",
+			"version":     "31.1-jre",
+			"remote_path": "com/google/guava/guava/maven-metadata.xml",
 		}, ""),
 	}
 	rt := &testhelper.MockRuntime{Artifacts: arts}
@@ -887,6 +889,42 @@ func TestHandle_HostedReleaseMetadataGeneratedFromUploadedArtifact(t *testing.T)
 		if !strings.Contains(body, want) {
 			t.Fatalf("metadata missing %s: %s", want, body)
 		}
+	}
+}
+
+func TestHandle_HostedReleaseMetadataIgnoresUploadedMetadataWhenArtifactsExist(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	rt := newHostedMavenRuntime(t)
+
+	metaCtx, metaW := newCtx("PUT", "com/example/app/maven-metadata.xml", strings.NewReader("<metadata><stale>true</stale></metadata>"))
+	if err := p.Handle(metaCtx, rt); err != nil {
+		t.Fatalf("metadata upload Handle failed: %v", err)
+	}
+	if metaW.Code != http.StatusCreated {
+		t.Fatalf("expected metadata upload 201, got %d body=%q", metaW.Code, metaW.Body.String())
+	}
+
+	uploadCtx, uploadW := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", bytes.NewReader([]byte("jar-content")))
+	if err := p.Handle(uploadCtx, rt); err != nil {
+		t.Fatalf("artifact upload Handle failed: %v", err)
+	}
+	if uploadW.Code != http.StatusCreated {
+		t.Fatalf("expected artifact upload 201, got %d body=%q", uploadW.Code, uploadW.Body.String())
+	}
+
+	ctx, w := newCtx("GET", "com/example/app/maven-metadata.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("metadata Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected metadata 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "<stale>true</stale>") {
+		t.Fatalf("expected hosted metadata projection, got uploaded metadata: %s", body)
+	}
+	if !strings.Contains(body, "<version>1.0.0</version>") {
+		t.Fatalf("expected generated metadata to include uploaded version, got: %s", body)
 	}
 }
 

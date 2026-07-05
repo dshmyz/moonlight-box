@@ -234,6 +234,7 @@ if [ "$HTTP_CODE" = "404" ]; then
     LOGS_JSON=$(curl -s "$BASE_URL/api/v1/download-logs/logs?page=1&page_size=10" \
         -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo '{}')
 
+    # 检查最近 10 条日志中，是否有路径包含 "nonexistent" 的记录被误记为 status_code=200
     BAD_COUNT=$(echo "$LOGS_JSON" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
@@ -243,16 +244,20 @@ if not isinstance(items, list):
 count = 0
 for item in items:
     sc = item.get('status_code')
-    if str(sc) == '200':
+    # 检查 PackageName / Filename / RemoteURL 中是否包含 nonexistent（刚请求的 404 路径特征）
+    fields = [item.get('package_name', ''), item.get('filename', ''), item.get('remote_url', '')]
+    is_nonexistent = any('nonexistent' in str(f).lower() for f in fields)
+    if str(sc) == '200' and is_nonexistent:
         count += 1
-# 检查是否有 status_code=200 的记录——如果有且时间很近，说明 404 被错误记录为 200
 print(count)
 " 2>/dev/null || echo "-1")
 
     if [ "$BAD_COUNT" = "-1" ]; then
         warn "无法解析日志 JSON，跳过日志准确性验证"
+    elif [ "$BAD_COUNT" = "0" ]; then
+        pass "404 请求未被记为成功下载"
     else
-        warn "当前日志中 status_code=200 的记录数: $BAD_COUNT"
+        fail "发现 $BAD_COUNT 条 nonexistent 路径的记录被误记为 status_code=200"
     fi
 else
     fail "不存在的包返回 HTTP $HTTP_CODE (expected 404)"

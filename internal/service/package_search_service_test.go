@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -829,5 +830,118 @@ func TestSearchFromArtifactsCharClassDoesNotTruncateBeforeMatching(t *testing.T)
 	}
 	if got.Total != 2 || got.RawCount != 50001 {
 		t.Fatalf("total=%d raw=%d, want total=2 raw=50001", got.Total, got.RawCount)
+	}
+}
+
+func TestListFallsBackToVersionMatchAndGroupsPackages(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	repo := model.Repository{Name: "npm-proxy", Type: model.RepoTypeProxy, PackageType: "npm"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repository: %v", err)
+	}
+
+	now := time.Now()
+	artifacts := []model.Artifact{
+		{RepositoryID: repo.ID, Format: "npm", Kind: "version", Name: "alpha", Version: "1.2.0", UpdatedAt: now},
+		{RepositoryID: repo.ID, Format: "npm", Kind: "version", Name: "alpha", Version: "1.2.1", UpdatedAt: now.Add(time.Second)},
+		{RepositoryID: repo.ID, Format: "npm", Kind: "version", Name: "beta", Version: "1.2.0", UpdatedAt: now.Add(2 * time.Second)},
+		{RepositoryID: repo.ID, Format: "npm", Kind: "version", Name: "gamma", Version: "3.0.0", UpdatedAt: now.Add(3 * time.Second)},
+	}
+	if err := db.Create(&artifacts).Error; err != nil {
+		t.Fatalf("create artifacts: %v", err)
+	}
+
+	svc := NewPackageSearchService(db)
+	got, err := svc.List(context.Background(), &ListRequest{
+		Query:    "1.2",
+		Type:     "npm",
+		Page:     1,
+		PageSize: 20,
+	})
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if got.Total != 2 || len(got.Packages) != 2 {
+		t.Fatalf("expected two version-matched packages, got total=%d packages=%#v", got.Total, got.Packages)
+	}
+	expectedUpdatedAt := map[string]time.Time{
+		"alpha": now.Add(time.Second),
+		"beta":  now.Add(2 * time.Second),
+	}
+	for _, pkg := range got.Packages {
+		if pkg.Name == "gamma" {
+			t.Fatalf("unexpected non-matching package in result: %#v", got.Packages)
+		}
+		if !pkg.UpdatedAt.Equal(expectedUpdatedAt[pkg.Name]) {
+			t.Fatalf("%s UpdatedAt = %s, want %s", pkg.Name, pkg.UpdatedAt, expectedUpdatedAt[pkg.Name])
+		}
+		if len(pkg.Versions) == 0 {
+			t.Fatalf("expected matched versions for package %#v", pkg)
+		}
+		for _, version := range pkg.Versions {
+			if !strings.Contains(version.Version, "1.2") {
+				t.Fatalf("unexpected version %q in package %#v", version.Version, pkg)
+			}
+		}
+	}
+}
+
+func TestListArtifactsFallbackReportsFilesDownloaded(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	repo := model.Repository{Name: "npm-proxy", Type: model.RepoTypeProxy, PackageType: "npm"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repository: %v", err)
+	}
+	artifact := model.Artifact{
+		RepositoryID: repo.ID,
+		Format:       "npm",
+		Kind:         "artifact",
+		Name:         "alpha",
+		Version:      "1.2.0",
+		Filename:     "alpha-1.2.0.tgz",
+		RemotePath:   "alpha/-/alpha-1.2.0.tgz",
+		UpdatedAt:    time.Now(),
+	}
+	if err := db.Create(&artifact).Error; err != nil {
+		t.Fatalf("create artifact: %v", err)
+	}
+	blob := model.Blob{Algorithm: "sha256", Digest: "blob-digest", Size: 123, StoragePath: "blobs/blob-digest"}
+	if err := db.Create(&blob).Error; err != nil {
+		t.Fatalf("create blob: %v", err)
+	}
+	if err := db.Create(&model.ArtifactBlob{ArtifactID: artifact.ID, BlobID: blob.ID}).Error; err != nil {
+		t.Fatalf("create artifact blob: %v", err)
+	}
+
+	svc := NewPackageSearchService(db)
+	got, err := svc.List(context.Background(), &ListRequest{
+		Query:           "1.2",
+		Type:            "npm",
+		FilesDownloaded: nil,
+		Page:            1,
+		PageSize:        20,
+	})
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(got.Packages) != 1 || len(got.Packages[0].Versions) != 1 {
+		t.Fatalf("expected one package version, got %#v", got.Packages)
+	}
+	if !got.Packages[0].Versions[0].FilesDownloaded {
+		t.Fatalf("FilesDownloaded = false, want true for artifact with blob")
 	}
 }

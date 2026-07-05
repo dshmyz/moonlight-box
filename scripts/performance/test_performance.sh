@@ -106,10 +106,10 @@ if check_ab; then
         -H "Authorization: Bearer $TOKEN" \
         "$BASE_URL/repository/maven-local/com/test/perf-test/1.0.0/perf-test-1.0.0.txt" 2>&1)
     
-    if echo "$AB_OUTPUT" | grep -q "Failed requests: 0"; then
+    if echo "$AB_OUTPUT" | grep -qE "Failed requests:\s+0"; then
         pass "基准测试 - 无失败请求"
     else
-        FAILED=$(echo "$AB_OUTPUT" | grep "Failed requests:" | awk '{print $3}')
+        FAILED=$(echo "$AB_OUTPUT" | grep "Failed requests:" | awk '{print $NF}')
         warn "基准测试 - $FAILED 个失败请求"
     fi
     

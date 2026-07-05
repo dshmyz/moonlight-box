@@ -144,8 +144,8 @@ if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then
         if [ "$AFTER_LOGS" -gt "$BEFORE_LOGS" ] 2>/dev/null; then
             log_pass "代理日志有新增 (before=$BEFORE_LOGS, after=$AFTER_LOGS)"
         else
-            log_warn "代理日志计数未变化 (可能是批量写入延迟，等待 2s 后重试)"
-            sleep 2
+            log_warn "代理日志计数未变化 (可能是批量写入延迟，等待 6s 后重试)"
+            sleep 6
             AFTER_LOGS=$(get_log_count)
             if [ "$AFTER_LOGS" -gt "$BEFORE_LOGS" ] 2>/dev/null; then
                 log_pass "代理日志有新增 (延迟写入, before=$BEFORE_LOGS, after=$AFTER_LOGS)"
@@ -353,22 +353,39 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
     "$BASE_URL/repository/npm-proxy-cn/lodash" 2>/dev/null || echo "000")
 
 if [ "$HTTP_CODE" = "200" ]; then
-    log_info "npm 代理下载成功，等待元数据写入..."
-    sleep 3
+    log_info "npm 代理下载成功，轮询等待元数据写入 (最多 15s, 每 3s 查询一次)..."
 
-    # 查询包版本 API
-    VERSIONS_JSON=$(curl -s "$BASE_URL/api/v1/packages/npm/versions?name=lodash" \
-        -H "Authorization: Bearer $TOKEN" 2>/dev/null)
+    # 轮询查询包版本 API，直到返回版本数据或超时
+    VERSION_COUNT=0
+    VERSIONS_JSON=""
+    MAX_WAIT=15
+    POLL_INTERVAL=3
+    ELAPSED=0
 
-    # 检查是否有版本数据
-    VERSION_COUNT=$(echo "$VERSIONS_JSON" | python3 -c "
+    while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
+        sleep "$POLL_INTERVAL"
+        ELAPSED=$((ELAPSED + POLL_INTERVAL))
+
+        # 查询包版本 API
+        VERSIONS_JSON=$(curl -s "$BASE_URL/api/v1/packages/npm/versions?name=lodash" \
+            -H "Authorization: Bearer $TOKEN" 2>/dev/null)
+
+        # 检查是否有版本数据
+        VERSION_COUNT=$(echo "$VERSIONS_JSON" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-items = d.get('data', {}).get('items', d.get('data', []))
+items = d.get('data', {}).get('versions', [])
 if not isinstance(items, list):
     items = []
 print(len(items))
 " 2>/dev/null || echo "0")
+
+        if [ "$VERSION_COUNT" -gt 0 ]; then
+            log_info "元数据已写入 (等待 ${ELAPSED}s)"
+            break
+        fi
+        log_info "等待元数据写入... (${ELAPSED}s/${MAX_WAIT}s)"
+    done
 
     if [ "$VERSION_COUNT" -gt 0 ]; then
         log_pass "包版本 API 返回 $VERSION_COUNT 个版本"
@@ -377,7 +394,7 @@ print(len(items))
         LICENSE_COUNT=$(echo "$VERSIONS_JSON" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-items = d.get('data', {}).get('items', d.get('data', []))
+items = d.get('data', {}).get('versions', [])
 if not isinstance(items, list):
     items = []
 count = 0
@@ -398,7 +415,7 @@ print(count)
         PUB_TIME_COUNT=$(echo "$VERSIONS_JSON" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-items = d.get('data', {}).get('items', d.get('data', []))
+items = d.get('data', {}).get('versions', [])
 if not isinstance(items, list):
     items = []
 count = 0
@@ -419,7 +436,7 @@ print(count)
         TRIGGER_IP_COUNT=$(echo "$VERSIONS_JSON" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-items = d.get('data', {}).get('items', d.get('data', []))
+items = d.get('data', {}).get('versions', [])
 if not isinstance(items, list):
     items = []
 count = 0

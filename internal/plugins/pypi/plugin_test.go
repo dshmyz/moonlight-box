@@ -292,6 +292,7 @@ func TestHandle_PackageListHeadReturnsHeadersWithoutBody(t *testing.T) {
 		"filename":    "requests-2.28.0.tar.gz",
 		"remote_path": "simple/requests/",
 	}, "")
+	art.RemotePath = "simple/requests/"
 	art.Properties = map[string]string{"remote_path": "packages/ab/cd/requests-2.28.0.tar.gz"}
 	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
 
@@ -678,6 +679,81 @@ func TestHandle_QueryRemotePath(t *testing.T) {
 	}
 	if rt.QueryCalls[0].RemotePath != "simple/requests/" {
 		t.Errorf("unexpected RemotePath: %q", rt.QueryCalls[0].RemotePath)
+	}
+}
+
+func TestHandle_HostedPackageListFallsBackToLocalPackageFiles(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	rt := newHostedPyPIRuntime(t)
+
+	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: "1",
+		Format:       "pypi",
+		Kind:         "package-file",
+		Name:         "requests",
+		Version:      "2.28.0",
+		Filename:     "requests-2.28.0.tar.gz",
+		RemotePath:   "packages/requests/requests-2.28.0.tar.gz",
+		BlobRefs:     []runtime.BlobRef{{Algorithm: "sha256", Digest: "aaaa", Size: 100}},
+	})
+	sess, err := rt.BeginUpload(context.Background(), runtime.UploadRequest{RepositoryID: "1", Format: "pypi", Filename: artifact.Filename, Size: 100})
+	if err != nil {
+		t.Fatalf("upload session failed: %v", err)
+	}
+	if err := sess.PutArtifact(context.Background(), artifact); err != nil {
+		t.Fatalf("put artifact: %v", err)
+	}
+	if err := sess.Commit(context.Background()); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	ctx, w := newCtx("GET", "simple/requests/", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "requests-2.28.0.tar.gz") {
+		t.Fatalf("expected hosted simple page to include uploaded file, got %s", w.Body.String())
+	}
+}
+
+func TestHandle_GroupHostedPackageListUsesRuntimeProjectionMapping(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	rt := newHostedPyPIRuntime(t)
+
+	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: "1",
+		Format:       "pypi",
+		Kind:         "package-file",
+		Name:         "requests",
+		Version:      "2.28.0",
+		Filename:     "requests-2.28.0.tar.gz",
+		RemotePath:   "packages/requests/requests-2.28.0.tar.gz",
+		BlobRefs:     []runtime.BlobRef{{Algorithm: "sha256", Digest: "bbbb", Size: 100}},
+	})
+	sess, err := rt.BeginUpload(context.Background(), runtime.UploadRequest{RepositoryID: "1", Format: "pypi", Filename: artifact.Filename, Size: 100})
+	if err != nil {
+		t.Fatalf("upload session failed: %v", err)
+	}
+	if err := sess.PutArtifact(context.Background(), artifact); err != nil {
+		t.Fatalf("put artifact: %v", err)
+	}
+	if err := sess.Commit(context.Background()); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	group := &runtime.GroupRuntime{Members: []runtime.RepositoryNode{rt}}
+	ctx, w := newCtx("GET", "simple/requests/", nil)
+	if err := p.Handle(ctx, group); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "requests-2.28.0.tar.gz") {
+		t.Fatalf("expected group hosted simple page to include uploaded file, got %s", w.Body.String())
 	}
 }
 

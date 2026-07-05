@@ -468,7 +468,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 			}
 		}
 		if time.Since(oldest) > n.CachePolicy.MetadataTTL {
-			if n.Fetcher != nil && n.RemoteBaseURL != "" {
+			if n.Fetcher != nil && n.RemoteBaseURL != "" && query.RemotePath != "" {
 				if n.tryRefreshPath(query.RemotePath) {
 					go func() {
 						defer n.doneRefreshPath(query.RemotePath)
@@ -525,7 +525,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		}).Debug("proxy: cache has only artifact records, fetching from remote for complete metadata")
 	}
 	// 本地缓存为空,通过 RemoteFetcher 回源
-	if n.Fetcher != nil && n.RemoteBaseURL != "" {
+	if n.Fetcher != nil && n.RemoteBaseURL != "" && query.RemotePath != "" {
 		logrus.WithFields(logrus.Fields{
 			"remoteBaseURL": n.RemoteBaseURL,
 			"remotePath":    query.RemotePath,
@@ -533,11 +533,39 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 
 		fetchStart := time.Now()
 		sgKey := n.RepositoryID + ":" + query.RemotePath
+		// 将 FetchRemote + stampTriggerIP + BatchPut + clearNegativeCache 全部放入 singleflight 闭包，
+		// 确保对同一 remotePath 的并发请求只执行一次副作用，避免多个 goroutine 并发写同一批
+		// artifact 的 Properties map（fatal error: concurrent map writes）。
+		type queryResult struct {
+			fetched []*Artifact
+			err     error
+		}
 		sgResult, sgErr, _ := n.fetchGroup.Do(sgKey, func() (interface{}, error) {
-			return n.Fetcher.FetchRemote(ctx, n.RemoteBaseURL, query.RemotePath)
+			fetched, fetchErr := n.Fetcher.FetchRemote(ctx, n.RemoteBaseURL, query.RemotePath)
+			if fetchErr != nil {
+				return queryResult{err: fetchErr}, nil
+			}
+			for _, a := range fetched {
+				a.RepositoryID = n.RepositoryID
+				n.stampTriggerIP(ctx, a)
+			}
+			if err := n.MetadataStore.BatchPut(ctx, fetched); err != nil {
+				return queryResult{err: err}, nil
+			}
+			for _, a := range fetched {
+				n.clearNegativeCacheForArtifact(a)
+			}
+			return queryResult{fetched: fetched}, nil
 		})
-		fetched, fetchErr := sgResult.([]*Artifact), sgErr
 		fetchDuration := time.Since(fetchStart).Seconds()
+
+		res, _ := sgResult.(queryResult)
+		fetchErr := sgErr
+		if fetchErr == nil && res.err != nil {
+			fetchErr = res.err
+		}
+		fetched := res.fetched
+
 		if fetchErr != nil {
 			metrics.RecordProxyFetch(n.Format, "error", fetchDuration)
 			logrus.WithFields(logrus.Fields{
@@ -558,29 +586,12 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		logrus.WithFields(logrus.Fields{
 			"fetchedCount": len(fetched),
 		}).Debug("proxy: FetchRemote success")
-		// 使用 BatchPut 批量缓存回源结果
-		for _, a := range fetched {
-			a.RepositoryID = n.RepositoryID
-			n.stampTriggerIP(ctx, a)
-		}
-		if err := n.MetadataStore.BatchPut(ctx, fetched); err != nil {
-			logrus.WithFields(logrus.Fields{
-				"remoteBaseURL": n.RemoteBaseURL,
-				"remotePath":    query.RemotePath,
-				"error":         err.Error(),
-			}).Error("proxy: BatchPut fetched artifacts failed")
-			return nil, err
-		}
-		// FetchRemote 成功后，清除已缓存 artifacts 对应的负缓存，
-		// 使后续 GetArtifact 能命中 store 中的新记录。
-		for _, a := range fetched {
-			n.clearNegativeCacheForArtifact(a)
-		}
 		return n.filterBlockedArtifacts(fetched), nil
 	}
 	logrus.WithFields(logrus.Fields{
 		"hasFetcher":    n.Fetcher != nil,
 		"remoteBaseURL": n.RemoteBaseURL,
+		"remotePath":    query.RemotePath,
 	}).Warn("proxy: no fetcher or remote URL, returning empty result")
 	return n.filterBlockedArtifacts(artifacts), nil
 }

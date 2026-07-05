@@ -115,3 +115,55 @@ func TestArtifactAutoMigrateCreatesFormatIndex(t *testing.T) {
 		t.Fatal("expected artifacts.format index")
 	}
 }
+
+// TestBatchPutHandlesManyIdentityKeys 验证当 identity_key 数量超过 SQLite
+// 参数上限时，BatchPut 通过分块查询避免 "too many SQL variables" 错误。
+func TestBatchPutHandlesManyIdentityKeys(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	store := NewMetadataStore(db)
+
+	// 构造超过 existingQueryChunkSize (500) 且超过 SQLite 默认变量上限 (999) 的批量写入。
+	// 这里用 1200 个 artifact，确保即使不分块也会触发 "too many SQL variables"。
+	const count = 1200
+	artifacts := make([]*runtime.Artifact, count)
+	for i := 0; i < count; i++ {
+		artifacts[i] = &runtime.Artifact{
+			RepositoryID: "1",
+			Format:       "pypi",
+			Kind:         runtime.KindArtifact,
+			IdentityKey:  fmt.Sprintf("pypi:pkg-%04d", i),
+			Name:         fmt.Sprintf("pkg-%04d", i),
+			Version:      "1.0.0",
+			Filename:     fmt.Sprintf("pkg_%04d-1.0.0-py3-none-any.whl", i),
+			Path:         fmt.Sprintf("packages/pkg-%04d/1.0.0", i),
+		}
+	}
+
+	if err := store.BatchPut(context.Background(), artifacts); err != nil {
+		t.Fatalf("BatchPut with %d identity keys failed: %v", count, err)
+	}
+
+	// 验证写入数量正确
+	got, err := store.Query(context.Background(), runtime.ArtifactQuery{
+		RepositoryID: "1",
+		Format:       "pypi",
+	})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(got) != count {
+		t.Fatalf("expected %d artifacts, got %d", count, len(got))
+	}
+
+	// 再次 BatchPut（全部命中 existing，走 UPDATE 分支）也应成功
+	if err := store.BatchPut(context.Background(), artifacts); err != nil {
+		t.Fatalf("BatchPut (update path) with %d identity keys failed: %v", count, err)
+	}
+}

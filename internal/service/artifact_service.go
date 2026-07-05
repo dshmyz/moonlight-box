@@ -15,6 +15,11 @@ import (
 	"gorm.io/gorm"
 )
 
+// existingQueryChunkSize 限制单条 SELECT 语句中 IN 子句的参数数量，
+// 避免 SQLite "too many SQL variables" 错误（SQLite 默认上限 999/32766）。
+// 500 留出足够余量给 repository_id 等其它绑定参数。
+const existingQueryChunkSize = 500
+
 // ArtifactService 统一的制品管理服务，封装 artifact 与 blob 关联的创建/更新/删除，
 // 并自动同步 packages 聚合表，确保所有写入入口的一致性。
 //
@@ -143,13 +148,16 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 			for id := range repoIDSet {
 				repoIDs = append(repoIDs, id)
 			}
-			var existing []model.Artifact
-			if err := tx.Where("repository_id IN ? AND identity_key IN ?", repoIDs, identityKeys).
-				Find(&existing).Error; err != nil {
-				return err
-			}
-			for _, e := range existing {
-				existingMap[e.IdentityKey] = e
+			// 分块查询，避免 SQLite "too many SQL variables" 错误
+			for _, chunk := range chunkStrings(identityKeys, existingQueryChunkSize) {
+				var existing []model.Artifact
+				if err := tx.Where("repository_id IN ? AND identity_key IN ?", repoIDs, chunk).
+					Find(&existing).Error; err != nil {
+					return err
+				}
+				for _, e := range existing {
+					existingMap[e.IdentityKey] = e
+				}
 			}
 		}
 
@@ -1147,4 +1155,20 @@ func stringMapToJSONB(src map[string]string) model.JSONB {
 		dst[k] = v
 	}
 	return dst
+}
+
+// chunkStrings 将切片按 size 分块，用于限制 SQL IN 子句的参数数量。
+func chunkStrings(s []string, size int) [][]string {
+	if size <= 0 || len(s) == 0 {
+		return [][]string{s}
+	}
+	var chunks [][]string
+	for i := 0; i < len(s); i += size {
+		end := i + size
+		if end > len(s) {
+			end = len(s)
+		}
+		chunks = append(chunks, s[i:end])
+	}
+	return chunks
 }

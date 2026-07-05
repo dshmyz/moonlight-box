@@ -120,7 +120,16 @@ echo "════════════════════════�
 
 NPM_REGISTRY="$BASE_URL/repository/npm-local"
 
-if npm set registry "$NPM_REGISTRY" > /dev/null 2>&1; then
+# 提取 host:port 用于认证配置
+REGISTRY_HOST=$(echo "$BASE_URL" | sed 's|https\?://||')
+
+# 创建项目级 .npmrc，避免修改全局 ~/.npmrc（可能因权限问题导致 EPERM）
+cat > .npmrc <<EOF
+registry=$NPM_REGISTRY
+//$REGISTRY_HOST/repository/npm-local/:_authToken=$TOKEN
+EOF
+
+if [ -f ".npmrc" ]; then
     pass "npm registry 配置成功"
 else
     warn "npm registry 配置失败"
@@ -200,7 +209,7 @@ EOF
 
 cat > .npmrc <<EOF
 registry=$NPM_REGISTRY
-//localhost:9081/repository/npm-local/:_authToken=$TOKEN
+//$REGISTRY_HOST/repository/npm-local/:_authToken=$TOKEN
 EOF
 
 if npm install > /dev/null 2>&1; then
@@ -260,8 +269,6 @@ echo "════════════════════════�
 
 cd /
 rm -rf "$TEST_DIR" "$INSTALL_DIR" "$PROXY_INSTALL_DIR"
-
-npm set registry "https://registry.npmjs.org" > /dev/null 2>&1 || true
 
 if [ ! -d "$TEST_DIR" ] && [ ! -d "$INSTALL_DIR" ] && [ ! -d "$PROXY_INSTALL_DIR" ]; then
     pass "测试文件清理成功"

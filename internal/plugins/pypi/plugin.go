@@ -463,12 +463,13 @@ func (p *PyPIPlugin) handlePackageList(ctx *runtime.RequestContext, repoRuntime 
 		Name:         packageName,
 		RemotePath:   path,
 	})
-	if err != nil {
-		if errors.Is(err, runtime.ErrNotFound) {
-			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-			return nil
-		}
+	if err != nil && !errors.Is(err, runtime.ErrNotFound) {
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		return nil
+	}
+
+	if len(artifacts) == 0 {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
 

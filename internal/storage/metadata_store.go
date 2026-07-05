@@ -18,6 +18,11 @@ type MetadataStore struct {
 
 const maxMetadataStoreListItems = 1000
 
+// existingQueryChunkSize 限制单条 SELECT 语句中 IN 子句的参数数量，
+// 避免 SQLite "too many SQL variables" 错误（SQLite 默认上限 999/32766）。
+// 500 留出足够余量给 repository_id 等其它绑定参数。
+const existingQueryChunkSize = 500
+
 // ArtifactServiceAdapter 适配 service.ArtifactService，使 MetadataStore 能调用它。
 // 使用接口避免循环依赖。
 type ArtifactServiceAdapter interface {
@@ -151,20 +156,22 @@ func (s *MetadataStore) BatchPut(ctx context.Context, artifacts []*runtime.Artif
 			repoIDSet[ma.RepositoryID] = true
 		}
 
-		// 批量查询已有记录
+		// 分块查询已有记录，避免 SQLite "too many SQL variables" 错误
 		existingMap := make(map[string]model.Artifact) // key: identity_key
 		if len(identityKeys) > 0 {
 			repoIDs := make([]uint, 0, len(repoIDSet))
 			for id := range repoIDSet {
 				repoIDs = append(repoIDs, id)
 			}
-			var existing []model.Artifact
-			if err := tx.Where("repository_id IN ? AND identity_key IN ?", repoIDs, identityKeys).
-				Find(&existing).Error; err != nil {
-				return err
-			}
-			for _, e := range existing {
-				existingMap[e.IdentityKey] = e
+			for _, chunk := range chunkStrings(identityKeys, existingQueryChunkSize) {
+				var existing []model.Artifact
+				if err := tx.Where("repository_id IN ? AND identity_key IN ?", repoIDs, chunk).
+					Find(&existing).Error; err != nil {
+					return err
+				}
+				for _, e := range existing {
+					existingMap[e.IdentityKey] = e
+				}
 			}
 		}
 
@@ -524,4 +531,20 @@ func stringMapToJSONB(src map[string]string) model.JSONB {
 		dst[k] = v
 	}
 	return dst
+}
+
+// chunkStrings 将切片按 size 分块，用于限制 SQL IN 子句的参数数量。
+func chunkStrings(s []string, size int) [][]string {
+	if size <= 0 || len(s) == 0 {
+		return [][]string{s}
+	}
+	var chunks [][]string
+	for i := 0; i < len(s); i += size {
+		end := i + size
+		if end > len(s) {
+			end = len(s)
+		}
+		chunks = append(chunks, s[i:end])
+	}
+	return chunks
 }

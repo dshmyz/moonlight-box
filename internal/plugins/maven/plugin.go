@@ -723,6 +723,12 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 
 	ctx.PackageName = group + ":" + artifact
 
+	// 注意：不在此处提前调用 GetArtifact 短路返回。
+	// GetArtifact 会将 metadata.xml 作为普通文件缓存（kind=artifact），但不解析
+	// version 列表，导致 packages 表的 version_count=0，搜索不到该包。
+	// 统一走下方的 QueryArtifacts 路径，由 FetchRemote 解析 XML 并写入 version
+	// artifacts，确保搜索数据一致性。若 QueryArtifacts 未返回 version 记录，
+	// 下方 !hasVersionArtifacts 分支仍有 GetArtifact 作为 fallback。
 	metaKey := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "maven",
@@ -737,16 +743,6 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 			"group":    group,
 			"artifact": artifact,
 		},
-	}
-	if metaArtifact, metaErr := repoRuntime.GetArtifact(ctx.Request.Context(), metaKey); metaErr == nil && metaArtifact.Content != nil {
-		defer metaArtifact.Content.Close()
-		ctx.FromCache = metaArtifact.FromCache
-		ctx.RemoteURL = metaArtifact.RemoteURL
-		ctx.SizeBytes = metaArtifact.SizeBytes
-		if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, metaArtifact, metaKey.Filename, "application/xml", "inline"); err != nil {
-			logrus.WithError(err).Warn("failed to write maven metadata content to client")
-		}
-		return nil
 	}
 
 	query := runtime.ArtifactQuery{
@@ -780,6 +776,22 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 		if a.Kind == "version" {
 			hasVersionArtifacts = true
 			break
+		}
+	}
+
+	if hasVersionArtifacts {
+		// QueryArtifacts above keeps the derived version index fresh. If the
+		// runtime also has the original metadata document, serve it verbatim so
+		// proxy responses preserve upstream Maven semantics.
+		if metaArtifact, metaErr := repoRuntime.GetArtifact(ctx.Request.Context(), metaKey); metaErr == nil && metaArtifact.Content != nil {
+			defer metaArtifact.Content.Close()
+			ctx.FromCache = metaArtifact.FromCache
+			ctx.RemoteURL = metaArtifact.RemoteURL
+			ctx.SizeBytes = metaArtifact.SizeBytes
+			if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, metaArtifact, "", "application/xml", "inline"); err != nil {
+				logrus.WithError(err).Warn("failed to write maven metadata content to client")
+			}
+			return nil
 		}
 	}
 
@@ -901,27 +913,14 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 
 		// For proxy repos: try fetching maven-metadata.xml as a cached artifact.
 		// GetArtifact on ProxyRuntime fetches from remote and caches locally.
-		metaKey := runtime.ArtifactKey{
-			RepositoryID: ctx.Repository.ID,
-			Format:       "maven",
-			Kind:         runtime.KindMetadata,
-			Namespace:    group,
-			Name:         group + ":" + artifact,
-			Version:      version,
-			Path:         strings.TrimSuffix(strings.Trim(path, "/"), "/maven-metadata.xml"),
-			Filename:     "maven-metadata.xml",
-			RemotePath:   strings.Trim(path, "/"),
-			Qualifiers: map[string]string{
-				"group":    group,
-				"artifact": artifact,
-			},
-		}
 		if metaArtifact, metaErr := repoRuntime.GetArtifact(ctx.Request.Context(), metaKey); metaErr == nil && metaArtifact.Content != nil {
 			defer metaArtifact.Content.Close()
-			body, _ := io.ReadAll(metaArtifact.Content)
-			ctx.Writer.Header().Set("Content-Type", "application/xml")
-			ctx.Writer.WriteHeader(http.StatusOK)
-			_, _ = ctx.Writer.Write(body)
+			ctx.FromCache = metaArtifact.FromCache
+			ctx.RemoteURL = metaArtifact.RemoteURL
+			ctx.SizeBytes = metaArtifact.SizeBytes
+			if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, metaArtifact, "", "application/xml", "inline"); err != nil {
+				logrus.WithError(err).Warn("failed to write maven metadata content to client")
+			}
 			return nil
 		}
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)

@@ -143,7 +143,11 @@ func createRuntimeForRepo(
 			}
 		}
 		if remoteBaseURL == "" {
-			db.Raw("SELECT remote_url FROM repositories WHERE id = ?", repo.ID).Scan(&remoteBaseURL)
+			logrus.WithFields(logrus.Fields{
+				"repo":   repo.Name,
+				"repoID": repo.ID,
+				"format": repo.PackageType,
+			}).Warn("proxy repository remote URL is empty")
 		}
 		pr := &runtime.ProxyRuntime{
 			MetadataStore: metadataStore,
@@ -241,7 +245,12 @@ func createGroupRuntime(
 					remoteBaseURL = memberRepo.Config.RemoteURL
 				}
 				if remoteBaseURL == "" {
-					db.Raw("SELECT remote_url FROM repositories WHERE id = ?", memberRepo.ID).Scan(&remoteBaseURL)
+					logrus.WithFields(logrus.Fields{
+						"repo":   memberRepo.Name,
+						"repoID": memberRepo.ID,
+						"format": memberRepo.PackageType,
+						"group":  repo.Name,
+					}).Warn("proxy member repository remote URL is empty")
 				}
 				n := &runtime.ProxyRuntime{
 					MetadataStore: memberMeta,

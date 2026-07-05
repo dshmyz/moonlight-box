@@ -126,6 +126,7 @@ func (ctx *RouterContext) setupAPIRoutes(r *gin.Engine) {
 
 func (ctx *RouterContext) setupPackagePublicRoutes(api *gin.RouterGroup) {
 	api.GET("/packages/search", ctx.Handlers.Search.Search)
+	api.GET("/packages/list", ctx.Handlers.Search.List)
 	api.GET("/packages/:type/versions", ctx.Handlers.PackageVersion.ListVersions)
 	api.GET("/packages/:type/versions/files", ctx.Handlers.PackageVersion.ListVersionFiles)
 	api.GET("/public/repo/:name", ctx.Handlers.PublicRepo.GetRepoConfig)

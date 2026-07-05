@@ -707,3 +707,599 @@ func versionToSQLCondition(column string, pattern string) (string, []interface{}
 	}
 	return column + " LIKE ? ESCAPE '\\'", []interface{}{b.String()}
 }
+
+// ========== List: 关键字 → 包信息 + 版本列表 ==========
+
+// ListRequest 关键字查询请求，一次返回包概要 + 完整版本列表。
+type ListRequest struct {
+	Query           string // 关键字：先子串匹配包名，未命中再子串匹配版本号
+	Type            string // 包格式过滤（可选）
+	Repository      string // 仓库名过滤（可选）
+	Version         string // 版本号过滤（可选，支持 glob 通配符）
+	FilesDownloaded *bool  // 版本级过滤：只返回 files_downloaded 匹配的版本；nil 表示不过滤
+	Page            int
+	PageSize        int
+}
+
+// ListVersionEntry 版本条目，字段对齐 PackageVersionHandler 返回的版本结构。
+type ListVersionEntry struct {
+	ID              uint       `json:"id"`
+	RepositoryID    uint       `json:"repository_id"`
+	Version         string     `json:"version"`
+	Name            string     `json:"name"`
+	Namespace       string     `json:"namespace,omitempty"`
+	IdentityKey     string     `json:"identity_key,omitempty"`
+	Status          string     `json:"status"`
+	PublishedAt     *time.Time `json:"published_at,omitempty"`
+	SizeBytes       int64      `json:"size_bytes"`
+	ChecksumSHA256  string     `json:"checksum_sha256,omitempty"`
+	FileCount       int        `json:"file_count"`
+	FilesDownloaded bool       `json:"files_downloaded"`
+	DownloadCount   int64      `json:"download_count"`
+	License         string     `json:"license,omitempty"`
+}
+
+// ListPackageEntry 包条目，内嵌完整版本列表。
+type ListPackageEntry struct {
+	ID             uint               `json:"id"`
+	RepositoryID   uint               `json:"repository_id"`
+	Format         string             `json:"format"`
+	Namespace      string             `json:"namespace,omitempty"`
+	Name           string             `json:"name"`
+	DisplayName    string             `json:"display_name,omitempty"`
+	Description    string             `json:"description,omitempty"`
+	LatestVersion  string             `json:"latest_version,omitempty"`
+	VersionCount   int                `json:"version_count"`
+	DownloadCount  int64              `json:"download_count"`
+	RepositoryName string             `json:"repository_name,omitempty"`
+	License        string             `json:"license,omitempty"`
+	UpdatedAt      time.Time          `json:"updated_at"`
+	Versions       []ListVersionEntry `json:"versions"`
+}
+
+// ListResult List 响应。
+type ListResult struct {
+	Packages     []ListPackageEntry `json:"packages"`
+	Total        int64              `json:"total"`
+	Page         int                `json:"page"`
+	PageSize     int                `json:"page_size"`
+	SearchTimeMs int64              `json:"search_time_ms"`
+}
+
+// List 根据关键字一次性返回包信息 + 版本列表。
+//
+// 匹配策略（方案 X）：
+//  1. 先用 q 子串匹配包名，命中的包返回全部版本（再按 version 参数过滤）。
+//  2. 包名未命中时，用 q 子串匹配版本号，命中的包只返回匹配版本。
+//  3. 同一个包只出现一次（包名命中优先，版本列表完整）。
+//
+// 查询策略（批量查询，避免 N+1）：
+//   - 包名匹配：Search 拿包列表（1 次 SQL）→ 批量查所有命中包的版本（1 次 SQL）
+//   - 版本号匹配：查匹配版本的包标识（1 次 SQL）→ 批量查这些包的匹配版本（1 次 SQL）
+func (s *PackageSearchService) List(ctx context.Context, req *ListRequest) (*ListResult, error) {
+	start := time.Now()
+
+	if req.Page < 1 {
+		req.Page = 1
+	}
+	if req.PageSize < 1 || req.PageSize > 100 {
+		req.PageSize = 20
+	}
+
+	// 第一步：按包名子串匹配
+	nameSearchReq := &SearchRequest{
+		Query:      req.Query,
+		Type:       req.Type,
+		Repository: req.Repository,
+		Sort:       "updated_at",
+		Page:       req.Page,
+		PageSize:   req.PageSize,
+	}
+	nameResult, nameErr := s.Search(ctx, nameSearchReq)
+
+	// 组装包名匹配结果 + 批量加载版本列表
+	packages := make([]ListPackageEntry, 0)
+	var total int64
+
+	if nameErr == nil && nameResult != nil && len(nameResult.List) > 0 {
+		total += nameResult.Total
+
+		// 批量加载所有命中包的版本列表（1 次 SQL 替代 N 次）
+		pkgKeys := make([]packageKeyTuple, 0, len(nameResult.List))
+		for _, entry := range nameResult.List {
+			pkgKeys = append(pkgKeys, packageKeyTuple{
+				RepositoryID: entry.RepositoryID,
+				Format:       entry.Format,
+				Name:         entry.Name,
+			})
+		}
+		versionMap, err := s.batchLoadVersions(ctx, pkgKeys, req.Version, req.FilesDownloaded)
+		if err != nil {
+			return nil, fmt.Errorf("batch load versions: %w", err)
+		}
+
+		for _, entry := range nameResult.List {
+			key := fmt.Sprintf("%d|%s|%s", entry.RepositoryID, entry.Format, entry.Name)
+			pkgEntry := ListPackageEntry{
+				ID:             entry.ID,
+				RepositoryID:   entry.RepositoryID,
+				Format:         entry.Format,
+				Namespace:      entry.Namespace,
+				Name:           entry.Name,
+				DisplayName:    entry.DisplayName,
+				Description:    entry.Description,
+				LatestVersion:  entry.LatestVersion,
+				VersionCount:   entry.VersionCount,
+				DownloadCount:  entry.DownloadCount,
+				RepositoryName: entry.RepositoryName,
+				License:        entry.License,
+				UpdatedAt:      entry.UpdatedAt,
+				Versions:       versionMap[key],
+			}
+			packages = append(packages, pkgEntry)
+		}
+	}
+
+	// 第二步：按版本号子串匹配（包名匹配未命中或出错时）
+	if nameErr != nil || nameResult == nil || nameResult.Total == 0 {
+		versionMatchedPackages, versionMatchTotal, err := s.listByVersionMatch(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+
+		// 合并版本号匹配的结果（去重：包名匹配已经包含的包不再重复加入）
+		if len(versionMatchedPackages) > 0 {
+			seen := make(map[string]bool)
+			for _, p := range packages {
+				seen[fmt.Sprintf("%d|%s|%s", p.RepositoryID, p.Format, p.Name)] = true
+			}
+			for _, p := range versionMatchedPackages {
+				key := fmt.Sprintf("%d|%s|%s", p.RepositoryID, p.Format, p.Name)
+				if !seen[key] {
+					packages = append(packages, p)
+					seen[key] = true
+				}
+			}
+			total += versionMatchTotal
+		}
+	}
+
+	// 如果两步都没有命中，返回空结果
+	if len(packages) == 0 {
+		return &ListResult{
+			Packages:     []ListPackageEntry{},
+			Total:        0,
+			Page:         req.Page,
+			PageSize:     req.PageSize,
+			SearchTimeMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
+
+	return &ListResult{
+		Packages:     packages,
+		Total:        total,
+		Page:         req.Page,
+		PageSize:     req.PageSize,
+		SearchTimeMs: time.Since(start).Milliseconds(),
+	}, nil
+}
+
+// packageKeyTuple 标识一个包（仓库 + 格式 + 名字）。
+type packageKeyTuple struct {
+	RepositoryID uint
+	Format       string
+	Name         string
+	LatestAt     string `gorm:"column:latest_at"`
+}
+
+// lookupByVersionMatch 用 q 子串匹配版本号，返回命中版本的包列表。
+// 仅在包名匹配未命中时调用。使用批量查询，避免 N+1。
+func (s *PackageSearchService) listByVersionMatch(ctx context.Context, req *ListRequest) ([]ListPackageEntry, int64, error) {
+	if req.Query == "" {
+		return nil, 0, nil
+	}
+
+	// 查找版本号子串匹配 q 的包（去重）
+	baseConditions, baseArgs := artifactSearchConditions(&SearchRequest{
+		Type:       req.Type,
+		Repository: req.Repository,
+	})
+	baseConditions = append(baseConditions, searchableArtifactSQL("artifacts"))
+	baseConditions = append(baseConditions, "version != ''")
+	baseConditions = append(baseConditions, "LOWER(version) LIKE ?")
+	baseArgs = append(baseArgs, "%"+strings.ToLower(req.Query)+"%")
+
+	// 如果指定了 version glob 过滤，叠加条件
+	if req.Version != "" && !strings.Contains(req.Version, "[") {
+		verCond, verArgs := versionToSQLCondition("version", req.Version)
+		if verCond != "" {
+			baseConditions = append(baseConditions, verCond)
+			baseArgs = append(baseArgs, verArgs...)
+		}
+	}
+
+	whereClause := " WHERE " + strings.Join(baseConditions, " AND ")
+
+	groupedQuery := "SELECT repository_id, format, name, MAX(updated_at) AS latest_at FROM artifacts" +
+		whereClause + " GROUP BY repository_id, format, name"
+
+	// 先查总数（去重后的包数）
+	countQuery := "SELECT COUNT(*) FROM (" + groupedQuery + ") grouped_packages"
+	var total int64
+	if err := s.db.WithContext(ctx).Raw(countQuery, baseArgs...).Scan(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return nil, 0, nil
+	}
+
+	// 分页查去重后的包标识
+	offset := (req.Page - 1) * req.PageSize
+	pageQuery := "SELECT repository_id, format, name, latest_at FROM (" + groupedQuery + ") grouped_packages ORDER BY latest_at DESC LIMIT ? OFFSET ?"
+	pageArgs := append(append([]interface{}{}, baseArgs...), req.PageSize, offset)
+
+	var pkgRows []packageKeyTuple
+	if err := s.db.WithContext(ctx).Raw(pageQuery, pageArgs...).Scan(&pkgRows).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// 批量查仓库名
+	repoIDs := make(map[uint]bool)
+	for _, r := range pkgRows {
+		repoIDs[r.RepositoryID] = true
+	}
+	repoNameMap := s.batchRepoNames(ctx, repoIDs)
+
+	// 批量加载这些包的版本列表（1 次 SQL），再在内存按 q 子串过滤版本号
+	versionMap, err := s.batchLoadVersions(ctx, pkgRows, req.Version, req.FilesDownloaded)
+	if err != nil {
+		return nil, 0, fmt.Errorf("batch load versions: %w", err)
+	}
+
+	// 组装结果：只保留版本号子串匹配 q 的版本
+	packages := make([]ListPackageEntry, 0, len(pkgRows))
+	qLower := strings.ToLower(req.Query)
+	for _, r := range pkgRows {
+		key := fmt.Sprintf("%d|%s|%s", r.RepositoryID, r.Format, r.Name)
+		allVersions := versionMap[key]
+		filtered := make([]ListVersionEntry, 0, len(allVersions))
+		for _, v := range allVersions {
+			if strings.Contains(strings.ToLower(v.Version), qLower) {
+				filtered = append(filtered, v)
+			}
+		}
+		if len(filtered) == 0 {
+			continue
+		}
+
+		pkgEntry := ListPackageEntry{
+			RepositoryID:   r.RepositoryID,
+			Format:         r.Format,
+			Name:           r.Name,
+			RepositoryName: repoNameMap[r.RepositoryID],
+			Versions:       filtered,
+			VersionCount:   len(filtered),
+			UpdatedAt:      parseSQLTime(r.LatestAt),
+		}
+		if len(filtered) > 0 {
+			pkgEntry.LatestVersion = filtered[0].Version
+		}
+		packages = append(packages, pkgEntry)
+	}
+
+	return packages, total, nil
+}
+
+// batchLoadVersions 批量加载多个包的版本列表，返回按 "repoID|format|name" 索引的 map。
+// 优先从 package_versions 读模型表查询，回退到 artifacts 聚合。
+// versionFilter 支持空字符串（不过滤）或 glob 通配符。
+// filesDownloaded 非 nil 时只返回 files_downloaded 匹配的版本。
+func (s *PackageSearchService) batchLoadVersions(ctx context.Context, keys []packageKeyTuple, versionFilter string, filesDownloaded *bool) (map[string][]ListVersionEntry, error) {
+	if len(keys) == 0 {
+		return make(map[string][]ListVersionEntry), nil
+	}
+	if s.hasPackageVersionsTable() {
+		return s.batchLoadVersionsFromReadModel(ctx, keys, versionFilter, filesDownloaded)
+	}
+	return s.batchLoadVersionsFromArtifacts(ctx, keys, versionFilter, filesDownloaded)
+}
+
+func (s *PackageSearchService) hasPackageVersionsTable() bool {
+	return s.db.Migrator().HasTable(&model.PackageVersion{})
+}
+
+// batchLoadVersionsFromReadModel 从 package_versions 表批量查询版本列表。
+// 使用 OR 组合多个 (repository_id, format, package_name) 条件，1 次 SQL 拿全。
+func (s *PackageSearchService) batchLoadVersionsFromReadModel(ctx context.Context, keys []packageKeyTuple, versionFilter string, filesDownloaded *bool) (map[string][]ListVersionEntry, error) {
+	result := make(map[string][]ListVersionEntry)
+	if len(keys) == 0 {
+		return result, nil
+	}
+
+	db := s.db.WithContext(ctx).Model(&model.PackageVersion{})
+	// 用 OR 组合多个包标识条件
+	orConditions := make([]string, 0, len(keys))
+	orArgs := make([]interface{}, 0, len(keys)*3)
+	for _, k := range keys {
+		orConditions = append(orConditions, "(repository_id = ? AND format = ? AND package_name = ?)")
+		orArgs = append(orArgs, k.RepositoryID, k.Format, k.Name)
+	}
+	db = db.Where(strings.Join(orConditions, " OR "), orArgs...)
+
+	// 版本过滤：含 [ 的 glob 退化为内存过滤
+	if versionFilter != "" && !strings.Contains(versionFilter, "[") {
+		verCond, verArgs := versionToSQLCondition("version", versionFilter)
+		if verCond != "" {
+			db = db.Where(verCond, verArgs...)
+		}
+	}
+	// files_downloaded 过滤（SQL 层，走索引更高效）
+	if filesDownloaded != nil {
+		db = db.Where("files_downloaded = ?", *filesDownloaded)
+	}
+
+	var summaries []model.PackageVersion
+	if err := db.Order("latest_artifact_at DESC").Find(&summaries).Error; err != nil {
+		return nil, err
+	}
+
+	for _, s := range summaries {
+		key := fmt.Sprintf("%d|%s|%s", s.RepositoryID, s.Format, s.PackageName)
+		// 含 [ 的 glob 在内存过滤
+		if versionFilter != "" && strings.Contains(versionFilter, "[") {
+			matched, _ := filepath.Match(versionFilter, s.Version)
+			if !matched {
+				continue
+			}
+		}
+		entry := ListVersionEntry{
+			ID:              s.ID,
+			RepositoryID:    s.RepositoryID,
+			Version:         s.Version,
+			Name:            s.PackageName,
+			Namespace:       s.Namespace,
+			Status:          s.Status,
+			PublishedAt:     s.PublishedAt,
+			SizeBytes:       s.SizeBytes,
+			ChecksumSHA256:  s.ChecksumSHA256,
+			FileCount:       s.FileCount,
+			FilesDownloaded: s.FilesDownloaded,
+			DownloadCount:   s.DownloadCount,
+			License:         s.License,
+		}
+		if entry.Status == "" {
+			entry.Status = "published"
+		}
+		result[key] = append(result[key], entry)
+	}
+	return result, nil
+}
+
+// batchLoadVersionsFromArtifacts 从 artifacts 表批量聚合版本列表（回退路径）。
+func (s *PackageSearchService) batchLoadVersionsFromArtifacts(ctx context.Context, keys []packageKeyTuple, versionFilter string, filesDownloaded *bool) (map[string][]ListVersionEntry, error) {
+	result := make(map[string][]ListVersionEntry)
+	if len(keys) == 0 {
+		return result, nil
+	}
+
+	db := s.db.WithContext(ctx).Model(&model.Artifact{}).
+		Where("version != ''").
+		Where("(kind IS NULL OR kind NOT IN ?)", []string{"metadata", "checksum", "directory"}).
+		Where("(format != 'go' OR kind = 'version' OR EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = artifacts.id))").
+		Where("NOT (format = 'yum' AND (remote_path LIKE 'repodata/%' OR remote_path LIKE '%/repodata/%' OR path = 'repodata' OR path LIKE '%/repodata' OR filename = 'repomd.xml'))")
+
+	// 用 OR 组合多个包标识条件
+	orConditions := make([]string, 0, len(keys))
+	orArgs := make([]interface{}, 0, len(keys)*3)
+	for _, k := range keys {
+		orConditions = append(orConditions, "(repository_id = ? AND format = ? AND name = ?)")
+		orArgs = append(orArgs, k.RepositoryID, k.Format, k.Name)
+	}
+	db = db.Where(strings.Join(orConditions, " OR "), orArgs...)
+
+	// 版本过滤：含 [ 的 glob 退化为内存过滤
+	if versionFilter != "" && !strings.Contains(versionFilter, "[") {
+		verCond, verArgs := versionToSQLCondition("version", versionFilter)
+		if verCond != "" {
+			db = db.Where(verCond, verArgs...)
+		}
+	}
+	// files_downloaded 过滤：true 要求有 blob，false 要求无 blob
+	if filesDownloaded != nil {
+		if *filesDownloaded {
+			db = db.Where("EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = artifacts.id)")
+		} else {
+			db = db.Where("NOT EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = artifacts.id)")
+		}
+	}
+
+	var artifacts []model.Artifact
+	if err := db.Order("updated_at DESC").Find(&artifacts).Error; err != nil {
+		return nil, err
+	}
+	downloadedArtifactIDs := make(map[uint]bool)
+	if len(artifacts) > 0 {
+		artifactIDs := make([]uint, 0, len(artifacts))
+		for _, a := range artifacts {
+			artifactIDs = append(artifactIDs, a.ID)
+		}
+		var downloadedRows []struct {
+			ArtifactID uint
+		}
+		if err := s.db.WithContext(ctx).Model(&model.ArtifactBlob{}).
+			Select("DISTINCT artifact_id").
+			Where("artifact_id IN ?", artifactIDs).
+			Find(&downloadedRows).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range downloadedRows {
+			downloadedArtifactIDs[row.ArtifactID] = true
+		}
+	}
+
+	// 按 "repoID|format|name|version" 分组聚合
+	type versionGroup struct {
+		id              uint
+		latestAt        time.Time
+		publishedAtStr  string
+		name            string
+		namespace       string
+		identityKey     string
+		sizeBytes       int64
+		sha256          string
+		fileCount       int
+		repoID          uint
+		license         string
+		filesDownloaded bool
+	}
+	verGroups := make(map[string]*versionGroup)
+	var verOrder []string
+	for _, a := range artifacts {
+		// 含 [ 的 glob 在内存过滤
+		if versionFilter != "" && strings.Contains(versionFilter, "[") {
+			matched, _ := filepath.Match(versionFilter, a.Version)
+			if !matched {
+				continue
+			}
+		}
+
+		groupKey := fmt.Sprintf("%d|%s|%s|%s", a.RepositoryID, a.Format, a.Name, a.Version)
+		vp, ok := verGroups[groupKey]
+		if !ok {
+			vp = &versionGroup{repoID: a.RepositoryID}
+			verGroups[groupKey] = vp
+			verOrder = append(verOrder, groupKey)
+		}
+		if vp.id == 0 {
+			vp.id = a.ID
+		}
+		if a.CreatedAt.After(vp.latestAt) {
+			vp.latestAt = a.CreatedAt
+			vp.id = a.ID
+		}
+		if vp.sizeBytes == 0 && a.SizeBytes > 0 {
+			vp.sizeBytes = a.SizeBytes
+		}
+		if vp.sha256 == "" {
+			vp.sha256 = jsonbString(a.Checksums, "sha256")
+		}
+		if vp.name == "" {
+			vp.name = a.Name
+		}
+		if vp.namespace == "" {
+			vp.namespace = a.Namespace
+		}
+		if vp.identityKey == "" {
+			vp.identityKey = a.IdentityKey
+		}
+		if vp.publishedAtStr == "" {
+			vp.publishedAtStr = jsonbString(a.Attributes, "published_at")
+		}
+		if vp.license == "" {
+			vp.license = jsonbString(a.Attributes, "license")
+		}
+		if downloadedArtifactIDs[a.ID] {
+			vp.filesDownloaded = true
+		}
+		vp.fileCount++
+	}
+
+	// 按 groupKey 输出，拆出包级 key 和 version
+	for _, groupKey := range verOrder {
+		vp := verGroups[groupKey]
+		// groupKey 格式: "repoID|format|name|version"，拆出包级 key 和 version
+		lastSep := strings.LastIndex(groupKey, "|")
+		if lastSep < 0 {
+			continue
+		}
+		pkgKey := groupKey[:lastSep]
+		version := groupKey[lastSep+1:]
+
+		publishedAt := vp.latestAt
+		if vp.publishedAtStr != "" {
+			if t, err := time.Parse(time.RFC3339, vp.publishedAtStr); err == nil {
+				publishedAt = t
+			}
+		}
+		if publishedAt.IsZero() {
+			publishedAt = time.Now()
+		}
+
+		result[pkgKey] = append(result[pkgKey], ListVersionEntry{
+			ID:              vp.id,
+			RepositoryID:    vp.repoID,
+			Version:         version,
+			Name:            vp.name,
+			Namespace:       vp.namespace,
+			IdentityKey:     vp.identityKey,
+			Status:          "published",
+			PublishedAt:     &publishedAt,
+			SizeBytes:       vp.sizeBytes,
+			ChecksumSHA256:  vp.sha256,
+			FileCount:       vp.fileCount,
+			FilesDownloaded: vp.filesDownloaded,
+			License:         vp.license,
+		})
+	}
+	return result, nil
+}
+
+// batchRepoNames 批量查询仓库名称。
+func (s *PackageSearchService) batchRepoNames(ctx context.Context, repoIDs map[uint]bool) map[uint]string {
+	result := make(map[uint]string)
+	if len(repoIDs) == 0 {
+		return result
+	}
+	ids := make([]uint, 0, len(repoIDs))
+	for id := range repoIDs {
+		ids = append(ids, id)
+	}
+	type repoRow struct {
+		ID   uint
+		Name string
+	}
+	var rows []repoRow
+	if err := s.db.WithContext(ctx).Model(&model.Repository{}).Select("id, name").Where("id IN ?", ids).Find(&rows).Error; err != nil {
+		return result
+	}
+	for _, r := range rows {
+		result[r.ID] = r.Name
+	}
+	return result
+}
+
+// jsonbString 从 model.JSONB 中提取字符串字段。
+func jsonbString(data model.JSONB, key string) string {
+	if data == nil {
+		return ""
+	}
+	value, ok := data[key]
+	if !ok {
+		return ""
+	}
+	s, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return s
+}
+
+func parseSQLTime(value string) time.Time {
+	if value == "" {
+		return time.Time{}
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05-07:00",
+		"2006-01-02 15:04:05",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}

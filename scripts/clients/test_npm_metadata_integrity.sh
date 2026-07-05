@@ -217,9 +217,9 @@ if npm install 2>/tmp/npm-install-semver.log; then
     if [ -f "node_modules/.bin/semver" ]; then
         pass "node_modules/.bin/semver 可执行文件存在"
 
-        # 验证可执行（非关键，某些包可能需要特殊环境）
-        if node_modules/.bin/semver --version &>/dev/null; then
-            pass "semver 可执行文件正常运行: $(node_modules/.bin/semver --version)"
+        # 验证可执行（semver CLI 不支持 --version，用 -h 验证可执行性）
+        if node_modules/.bin/semver -h &>/dev/null; then
+            pass "semver 可执行文件正常运行"
         else
             warn "semver 可执行文件运行失败（可能需要特殊环境，不影响 bin 字段验证）"
         fi
@@ -406,9 +406,7 @@ cat > package.json <<'EOF'
     "build": "echo build",
     "test": "echo test"
   },
-  "dependencies": {
-    "lodash": "^4.17.21"
-  },
+  "dependencies": {},
   "engines": {
     "node": ">=16.0.0"
   },
@@ -640,7 +638,7 @@ if [ -f /tmp/npm-semver-meta.json ]; then
     # 获取官方 registry 的 semver 元数据
     OFFICIAL_HTTP=$(curl -s -o /tmp/npm-semver-official.json -w "%{http_code}" \
         "https://registry.npmjs.org/semver" \
-        --connect-timeout 10 --max-time 30)
+        --connect-timeout 10 --max-time 30) || OFFICIAL_HTTP="000"
 
     if [ "$OFFICIAL_HTTP" = "200" ]; then
         LATEST_VER=$(jq -r '."dist-tags".latest' /tmp/npm-semver-meta.json 2>/dev/null)
@@ -682,7 +680,7 @@ if [ -f /tmp/npm-eslint-meta.json ]; then
         fi
 
         # 验证 tarball 可以下载
-        TARBALL_HTTP=$(curl -s -o /dev/null -w "%{http_code}" "$TARBALL")
+        TARBALL_HTTP=$(curl -s -o /dev/null -w "%{http_code}" "$TARBALL") || TARBALL_HTTP="000"
         if [ "$TARBALL_HTTP" = "200" ]; then
             pass "eslint tarball 可下载 (HTTP 200)"
         else

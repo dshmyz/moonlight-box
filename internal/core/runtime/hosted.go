@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"io"
+	"strings"
 )
 
 type HostedRuntime struct {
@@ -40,7 +41,23 @@ func (n *HostedRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Arti
 
 func (n *HostedRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
 	query.RepositoryID = n.RepositoryID
-	return n.MetadataStore.Query(ctx, query)
+	artifacts, err := n.MetadataStore.Query(ctx, query)
+	if err != nil || len(artifacts) > 0 {
+		return artifacts, err
+	}
+	if isPyPIPackageListProjection(query) {
+		query.RemotePath = ""
+		query.RemotePathPrefix = ""
+		return n.MetadataStore.Query(ctx, query)
+	}
+	return artifacts, nil
+}
+
+func isPyPIPackageListProjection(query ArtifactQuery) bool {
+	if query.Format != "pypi" || query.Name == "" || query.RemotePath == "" {
+		return false
+	}
+	return strings.Trim(query.RemotePath, "/") == "simple/"+query.Name
 }
 
 func (n *HostedRuntime) RenderProjection(ctx context.Context, query ProjectionQuery) (*ProjectionResult, error) {

@@ -782,6 +782,36 @@ func TestProxyRuntimeQueryArtifactsReturnsCachedArtifactsWhenFetchRemoteFails(t 
 	}
 }
 
+func TestProxyRuntimeQueryArtifactsDoesNotFetchRemoteWithoutRemotePath(t *testing.T) {
+	ctx := context.Background()
+	fetcher := &fakeFetcher{fn: func() ([]*Artifact, error) {
+		return []*Artifact{NewArtifact(ArtifactSpec{
+			Format:  "pypi",
+			Kind:    KindVersion,
+			Name:    "requests",
+			Version: "2.28.0",
+		})}, nil
+	}}
+	runtime := &ProxyRuntime{
+		MetadataStore: newFakeMetadataStore(),
+		RemoteBaseURL: "https://example.test",
+		Fetcher:       fetcher,
+		Format:        "pypi",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
+	}
+
+	artifacts, err := runtime.QueryArtifacts(ctx, ArtifactQuery{Format: "pypi", Name: "requests"})
+	if err != nil {
+		t.Fatalf("QueryArtifacts failed: %v", err)
+	}
+	if len(artifacts) != 0 {
+		t.Fatalf("expected no artifacts without RemotePath fetch, got %#v", artifacts)
+	}
+	if fetcher.wasCalled() {
+		t.Fatal("FetchRemote should not be called for structured queries without RemotePath")
+	}
+}
+
 func TestProxyRuntimeQueryArtifactsReturnsBatchPutError(t *testing.T) {
 	ctx := context.Background()
 	storeErr := errors.New("store failed")
