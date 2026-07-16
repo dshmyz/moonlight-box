@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
 	"github.com/sirupsen/logrus"
@@ -22,11 +23,17 @@ type cachedWildcardRule struct {
 	versionCompiled *regexp.Regexp // 版本正则（Version=="*" 时为 nil）
 }
 
+type cachedRangeRule struct {
+	rule       *model.BlockRule
+	constraint *semver.Constraints
+}
+
 // cachedConditionalRule 条件规则缓存，带预编译的包名正则，用于第二层匹配前先检查包名+版本
 type cachedConditionalRule struct {
-	rule            *model.BlockRule
-	pkgCompiled     *regexp.Regexp // 包名正则（exact 时为精确匹配，wildcard 时为通配符）
-	versionCompiled *regexp.Regexp // 版本正则（Version=="*" 时为 nil）
+	rule              *model.BlockRule
+	pkgCompiled       *regexp.Regexp // 包名正则（exact/range 时为精确匹配，wildcard 时为通配符）
+	versionCompiled   *regexp.Regexp // 版本正则（Version=="*" 时为 nil）
+	versionConstraint *semver.Constraints
 }
 
 type BlockRuleService struct {
@@ -38,6 +45,7 @@ type BlockRuleService struct {
 	cacheTTL         time.Duration
 	exactRulesCache  map[string][]*model.BlockRule
 	wildcardRules    map[string][]cachedWildcardRule
+	rangeRules       map[string][]cachedRangeRule
 	conditionalRules map[string][]cachedConditionalRule // 按 PackageType 分组的条件规则（第二层匹配）
 }
 
@@ -48,6 +56,7 @@ func NewBlockRuleService(repo *repository.BlockRuleRepository, auditSvc *AuditSe
 		cacheTTL:         1 * time.Minute,
 		exactRulesCache:  make(map[string][]*model.BlockRule),
 		wildcardRules:    make(map[string][]cachedWildcardRule),
+		rangeRules:       make(map[string][]cachedRangeRule),
 		conditionalRules: make(map[string][]cachedConditionalRule),
 	}
 	return svc
@@ -80,8 +89,13 @@ func (s *BlockRuleService) ValidateRule(rule *model.BlockRule) error {
 	if rule.MatchType == "" {
 		rule.MatchType = model.BlockMatchExact
 	}
-	if rule.MatchType != model.BlockMatchExact && rule.MatchType != model.BlockMatchWildcard {
-		return invalidBlockRule("match_type must be 'exact' or 'wildcard'")
+	if rule.MatchType != model.BlockMatchExact && rule.MatchType != model.BlockMatchWildcard && rule.MatchType != model.BlockMatchRange {
+		return invalidBlockRule("match_type must be 'exact', 'wildcard' or 'range'")
+	}
+	if rule.MatchType == model.BlockMatchRange {
+		if _, err := parseVersionConstraint(rule.Version); err != nil {
+			return invalidBlockRule("version must be a valid semantic version range: %v", err)
+		}
 	}
 
 	hasConditionType := rule.ConditionType != ""
@@ -201,6 +215,7 @@ func (s *BlockRuleService) IsBlocked(pkgType, pkgName, version string) (*BlockRe
 	exactKey := pkgType + ":" + pkgName + ":" + version
 	exactRules, ok := s.exactRulesCache[exactKey]
 	wildcardRules, ok2 := s.wildcardRules[pkgType]
+	rangeRules := append([]cachedRangeRule(nil), s.rangeRules[pkgType]...)
 	s.cacheMu.RUnlock()
 
 	if ok && len(exactRules) > 0 {
@@ -220,6 +235,12 @@ func (s *BlockRuleService) IsBlocked(pkgType, pkgName, version string) (*BlockRe
 			if s.matchCachedWildcard(&cached, pkgName, version) {
 				return &BlockResult{Blocked: true, Rule: cached.rule}, nil
 			}
+		}
+	}
+
+	for i := range rangeRules {
+		if s.matchCachedRange(&rangeRules[i], pkgName, version) {
+			return &BlockResult{Blocked: true, Rule: rangeRules[i].rule}, nil
 		}
 	}
 
@@ -351,6 +372,24 @@ func compileVersionRegex(version string) *regexp.Regexp {
 	return compiled
 }
 
+func parseVersionConstraint(version string) (*semver.Constraints, error) {
+	if version == "*" {
+		return nil, nil
+	}
+	return semver.NewConstraint(version)
+}
+
+func versionMatchesConstraint(constraint *semver.Constraints, version string) bool {
+	if constraint == nil {
+		return true
+	}
+	semverVersion, err := semver.NewVersion(version)
+	if err != nil {
+		return false
+	}
+	return constraint.Check(semverVersion)
+}
+
 func (s *BlockRuleService) refreshCache() error {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
@@ -365,6 +404,11 @@ func (s *BlockRuleService) refreshCache() error {
 	}
 
 	wildcardRules, err := s.repo.FindAllEnabledWildcardRules()
+	if err != nil {
+		return err
+	}
+
+	rangeRules, err := s.repo.FindAllEnabledRangeRules()
 	if err != nil {
 		return err
 	}
@@ -397,6 +441,19 @@ func (s *BlockRuleService) refreshCache() error {
 		})
 	}
 
+	newRangeCache := make(map[string][]cachedRangeRule)
+	for i := range rangeRules {
+		rule := &rangeRules[i]
+		constraint, err := parseVersionConstraint(rule.Version)
+		if err != nil {
+			continue
+		}
+		newRangeCache[rule.PackageType] = append(newRangeCache[rule.PackageType], cachedRangeRule{
+			rule:       rule,
+			constraint: constraint,
+		})
+	}
+
 	// 按 PackageType 分组构建条件规则缓存，预编译包名正则
 	newConditionalCache := make(map[string][]cachedConditionalRule)
 	for i := range conditionalRules {
@@ -412,15 +469,25 @@ func (s *BlockRuleService) refreshCache() error {
 			}
 		}
 		versionCompiled := compileVersionRegex(rule.Version)
+		var versionConstraint *semver.Constraints
+		if rule.MatchType == model.BlockMatchRange {
+			versionConstraint, err = parseVersionConstraint(rule.Version)
+			if err != nil {
+				continue
+			}
+			versionCompiled = nil
+		}
 		newConditionalCache[rule.PackageType] = append(newConditionalCache[rule.PackageType], cachedConditionalRule{
-			rule:            rule,
-			pkgCompiled:     compiled,
-			versionCompiled: versionCompiled,
+			rule:              rule,
+			pkgCompiled:       compiled,
+			versionCompiled:   versionCompiled,
+			versionConstraint: versionConstraint,
 		})
 	}
 
 	s.exactRulesCache = newExactCache
 	s.wildcardRules = newWildcardCache
+	s.rangeRules = newRangeCache
 	s.conditionalRules = newConditionalCache
 	s.cachedAt = time.Now()
 
@@ -429,7 +496,7 @@ func (s *BlockRuleService) refreshCache() error {
 
 // matchPkgNameVersion 检查请求的包名和版本是否匹配条件规则的包名和版本约束。
 // 快速路径：PackageName=* + Version=* 时直接返回 true，不编译/使用正则。
-// exact 规则精确匹配包名；wildcard 规则用预编译正则匹配包名。
+// exact/range 规则精确匹配包名；wildcard 规则用预编译正则匹配包名。
 func (s *BlockRuleService) matchPkgNameVersion(cached *cachedConditionalRule, pkgName, version string) bool {
 	// 快速路径：PackageName=* + Version=* 直接放行
 	if cached.rule.PackageName == "*" && cached.rule.Version == "*" {
@@ -441,6 +508,10 @@ func (s *BlockRuleService) matchPkgNameVersion(cached *cachedConditionalRule, pk
 		if cached.rule.PackageName != pkgName {
 			return false
 		}
+	} else if cached.rule.MatchType == model.BlockMatchRange {
+		if cached.rule.PackageName != "*" && cached.rule.PackageName != pkgName {
+			return false
+		}
 	} else {
 		// wildcard：用预编译正则匹配（PackageName=* 时 pkgCompiled 为 nil，但上面已快速路径返回）
 		if cached.pkgCompiled != nil && !cached.pkgCompiled.MatchString(pkgName) {
@@ -450,7 +521,7 @@ func (s *BlockRuleService) matchPkgNameVersion(cached *cachedConditionalRule, pk
 
 	// 版本匹配
 	if cached.rule.Version == "*" || cached.versionCompiled == nil {
-		return true
+		return versionMatchesConstraint(cached.versionConstraint, version)
 	}
 	return cached.versionCompiled.MatchString(version)
 }
@@ -463,6 +534,13 @@ func (s *BlockRuleService) matchCachedWildcard(cached *cachedWildcardRule, pkgNa
 		return true
 	}
 	return cached.versionCompiled.MatchString(version)
+}
+
+func (s *BlockRuleService) matchCachedRange(cached *cachedRangeRule, pkgName, version string) bool {
+	if cached.rule.PackageName != "*" && cached.rule.PackageName != pkgName {
+		return false
+	}
+	return versionMatchesConstraint(cached.constraint, version)
 }
 
 func (s *BlockRuleService) LogBlock(ctx context.Context, pkgName, version string, rule *model.BlockRule, ipAddress, userAgent string) error {

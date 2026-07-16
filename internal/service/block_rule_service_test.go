@@ -530,6 +530,106 @@ func TestIsBlockedWithArtifact_AllPackageTypes(t *testing.T) {
 	}
 }
 
+func TestIsBlocked_RangeMatchTypeMatchesSemanticVersionRange(t *testing.T) {
+	svc, _ := setupBlockRuleService(t)
+
+	rule := model.BlockRule{
+		PackageName: "lodash",
+		Version:     ">=4.17.0 <5.0.0",
+		MatchType:   model.BlockMatchRange,
+		PackageType: "npm",
+		Enabled:     true,
+	}
+	if err := svc.Create(&rule); err != nil {
+		t.Fatalf("create range rule: %v", err)
+	}
+
+	result, err := svc.IsBlocked("npm", "lodash", "4.17.21")
+	if err != nil {
+		t.Fatalf("IsBlocked in range: %v", err)
+	}
+	if !result.Blocked {
+		t.Fatalf("期望 lodash@4.17.21 命中 >=4.17.0 <5.0.0，实际 blocked=false")
+	}
+
+	result, err = svc.IsBlocked("npm", "lodash", "5.0.0")
+	if err != nil {
+		t.Fatalf("IsBlocked outside range: %v", err)
+	}
+	if result.Blocked {
+		t.Fatalf("期望 lodash@5.0.0 不命中 >=4.17.0 <5.0.0，实际 blocked=true")
+	}
+
+	result, err = svc.IsBlocked("npm", "lodash", "4.x")
+	if err != nil {
+		t.Fatalf("IsBlocked non-semver version: %v", err)
+	}
+	if result.Blocked {
+		t.Fatalf("非 SemVer 版本不应命中 range 规则，实际 blocked=true")
+	}
+}
+
+func TestIsBlockedWithArtifact_RangeMatchTypeSupportsConditionalRules(t *testing.T) {
+	svc, _ := setupBlockRuleService(t)
+
+	rule := model.BlockRule{
+		PackageName:    "express",
+		Version:        "^4.18.0",
+		MatchType:      model.BlockMatchRange,
+		PackageType:    "npm",
+		Enabled:        true,
+		ConditionType:  model.ConditionTypeLicense,
+		ConditionOp:    model.ConditionOpEquals,
+		ConditionValue: "GPL-3.0",
+	}
+	if err := svc.Create(&rule); err != nil {
+		t.Fatalf("create conditional range rule: %v", err)
+	}
+
+	result, err := svc.IsBlockedWithArtifact("npm", "express", "4.18.2", map[string]interface{}{
+		"license": "GPL-3.0",
+	})
+	if err != nil {
+		t.Fatalf("IsBlockedWithArtifact in range: %v", err)
+	}
+	if !result.Blocked {
+		t.Fatalf("期望 express@4.18.2 + GPL-3.0 命中 ^4.18.0 条件规则，实际 blocked=false")
+	}
+
+	result, err = svc.IsBlockedWithArtifact("npm", "express", "5.0.0", map[string]interface{}{
+		"license": "GPL-3.0",
+	})
+	if err != nil {
+		t.Fatalf("IsBlockedWithArtifact outside range: %v", err)
+	}
+	if result.Blocked {
+		t.Fatalf("期望 express@5.0.0 不命中 ^4.18.0，实际 blocked=true")
+	}
+}
+
+func TestCreateRejectsInvalidRangeRule(t *testing.T) {
+	svc, db := setupBlockRuleService(t)
+
+	rule := model.BlockRule{
+		PackageName: "lodash",
+		Version:     "not a range",
+		MatchType:   model.BlockMatchRange,
+		PackageType: "npm",
+		Enabled:     true,
+	}
+	if err := svc.Create(&rule); err == nil {
+		t.Fatalf("期望非法 range 表达式被拒绝，实际创建成功")
+	}
+
+	var count int64
+	if err := db.Model(&model.BlockRule{}).Count(&count).Error; err != nil {
+		t.Fatalf("count rules: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("非法 range 规则不应落库，实际落库 %d 条", count)
+	}
+}
+
 func TestCreateRejectsInvalidConditionCombination(t *testing.T) {
 	svc, db := setupBlockRuleService(t)
 

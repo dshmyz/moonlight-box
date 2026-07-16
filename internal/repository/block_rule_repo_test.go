@@ -211,6 +211,50 @@ func TestFindAllEnabledWildcardRulesExcludesConditional(t *testing.T) {
 	}
 }
 
+func TestFindAllEnabledRangeRulesExcludesConditional(t *testing.T) {
+	db := setupTestBlockRuleDB(t)
+	repo := NewBlockRuleRepository(db)
+
+	plainRange := model.BlockRule{
+		PackageName: "lodash",
+		Version:     ">=4.17.0 <5.0.0",
+		MatchType:   model.BlockMatchRange,
+		PackageType: "npm",
+		Enabled:     true,
+	}
+	if err := repo.Create(&plainRange); err != nil {
+		t.Fatalf("create plain range rule: %v", err)
+	}
+
+	condRange := model.BlockRule{
+		PackageName:    "express",
+		Version:        "^4.18.0",
+		MatchType:      model.BlockMatchRange,
+		PackageType:    "npm",
+		Enabled:        true,
+		ConditionType:  model.ConditionTypeLicense,
+		ConditionOp:    model.ConditionOpEquals,
+		ConditionValue: "GPL-3.0",
+	}
+	if err := repo.Create(&condRange); err != nil {
+		t.Fatalf("create conditional range rule: %v", err)
+	}
+
+	got, err := repo.FindAllEnabledRangeRules()
+	if err != nil {
+		t.Fatalf("FindAllEnabledRangeRules failed: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d range rules, want 1 (conditional rule should be excluded)", len(got))
+	}
+	if got[0].ID != plainRange.ID {
+		t.Fatalf("got rule id=%d, want id=%d (plain range rule)", got[0].ID, plainRange.ID)
+	}
+	if got[0].ConditionType != "" {
+		t.Fatalf("returned rule id=%d has ConditionType=%q, should be empty", got[0].ID, got[0].ConditionType)
+	}
+}
+
 // TestFindAllEnabledConditionalRulesOnlyEnabled 验证 FindAllEnabledConditionalRules
 // 不返回禁用的条件规则。
 func TestFindAllEnabledConditionalRulesOnlyEnabled(t *testing.T) {

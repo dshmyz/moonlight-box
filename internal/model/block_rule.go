@@ -7,6 +7,7 @@ type BlockMatchType string
 const (
 	BlockMatchExact    BlockMatchType = "exact"
 	BlockMatchWildcard BlockMatchType = "wildcard"
+	BlockMatchRange    BlockMatchType = "range"
 )
 
 // ConditionType 条件阻断类型

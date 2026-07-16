@@ -5,9 +5,12 @@
     </el-form-item>
 
     <el-form-item label="版本" prop="version">
-      <el-input v-model="form.version" placeholder="4.17.20 或 4.*" />
+      <el-input v-model="form.version" :placeholder="versionPlaceholder" />
       <div v-if="form.match_type === 'wildcard'" class="form-tip">
         支持 * 通配符，如 4.* 匹配所有 4.x 版本
+      </div>
+      <div v-else-if="form.match_type === 'range'" class="form-tip">
+        支持 SemVer 范围，如 &gt;=1.2.0 &lt;2.0.0、^1.2.0、~1.2.0
       </div>
     </el-form-item>
 
@@ -15,6 +18,7 @@
       <el-select v-model="form.match_type" style="width: 100%">
         <el-option label="精确匹配" value="exact" />
         <el-option label="通配符匹配" value="wildcard" />
+        <el-option label="版本范围" value="range" />
       </el-select>
     </el-form-item>
 
@@ -162,6 +166,17 @@ const operatorOptions = computed(() => {
       ]
     default:
       return []
+  }
+})
+
+const versionPlaceholder = computed(() => {
+  switch (form.value.match_type) {
+    case 'wildcard':
+      return '4.*'
+    case 'range':
+      return '>=1.2.0 <2.0.0 或 ^1.2.0'
+    default:
+      return '4.17.20'
   }
 })
 

@@ -233,7 +233,7 @@ func (h *BlockRuleHandler) BatchImport(c *gin.Context) {
 }
 
 func (h *BlockRuleHandler) DownloadTemplate(c *gin.Context) {
-	csvContent := "\xEF\xBB\xBF包名\t版本\t包类型\t匹配类型\t阻断原因\nlodash\t4.17.20\tnpm\texact\t存在安全漏洞\nfastjson\t1.*\tmaven\twildcard\t严重漏洞\n"
+	csvContent := "\xEF\xBB\xBF包名\t版本\t包类型\t匹配类型\t阻断原因\nlodash\t4.17.20\tnpm\texact\t存在安全漏洞\nfastjson\t1.*\tmaven\twildcard\t严重漏洞\nexpress\t>=4.18.0 <5.0.0\tnpm\trange\t版本范围阻断\n"
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", url.QueryEscape("block_rule_template.csv")))
 	c.Header("Content-Transfer-Encoding", "binary")

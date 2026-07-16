@@ -117,6 +117,15 @@ func (r *BlockRuleRepository) FindAllEnabledWildcardRules() ([]model.BlockRule, 
 	return rules, err
 }
 
+// FindAllEnabledRangeRules 查询所有启用的版本范围匹配规则，排除带条件的规则
+// （ConditionType 为空或 NULL 的才算无条件规则）
+func (r *BlockRuleRepository) FindAllEnabledRangeRules() ([]model.BlockRule, error) {
+	var rules []model.BlockRule
+	err := r.db.Where("enabled = ? AND match_type = ? AND (condition_type = '' OR condition_type IS NULL)",
+		true, model.BlockMatchRange).Find(&rules).Error
+	return rules, err
+}
+
 // FindAllEnabledConditionalRules 查询所有启用且带条件（ConditionType != ""）的规则
 func (r *BlockRuleRepository) FindAllEnabledConditionalRules() ([]model.BlockRule, error) {
 	var rules []model.BlockRule
