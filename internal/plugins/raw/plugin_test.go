@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -374,5 +375,21 @@ func TestHandle_JSONContentType(t *testing.T) {
 	}
 	if result["key"] != "value" {
 		t.Errorf("expected key=value, got %v", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ErrBlocked 透传：runtime 返回 ErrBlocked 时，plugin.Handle 必须 return ErrBlocked，
+// 让 router 统一处理 403 响应 + 审计日志。不能被插件吞成 500/404 后 return nil。
+// ---------------------------------------------------------------------------
+
+func TestHandle_DownloadGetBlockedPropagatesErrBlocked(t *testing.T) {
+	p := NewGenericPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{GetErr: runtime.ErrBlocked}
+
+	ctx, _ := newCtx("GET", "docs/readme.txt", nil)
+	err := p.Handle(ctx, rt)
+	if !errors.Is(err, runtime.ErrBlocked) {
+		t.Fatalf("Handle err = %v, want ErrBlocked (must propagate to router for audit log)", err)
 	}
 }

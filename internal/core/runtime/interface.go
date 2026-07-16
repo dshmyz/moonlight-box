@@ -192,6 +192,7 @@ type AuditEntry struct {
 	IPAddress      string
 	UserAgent      string
 	ResponseStatus int
+	Reason         string
 }
 
 type RequestContext struct {

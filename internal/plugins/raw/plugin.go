@@ -96,6 +96,9 @@ func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, runtime.ErrNotFound
+		}
 		logrus.WithFields(logrus.Fields{
 			"fullURL":    fullURL,
 			"statusCode": resp.StatusCode,
@@ -325,10 +328,10 @@ func (p *GenericPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime 
 	if err != nil {
 		if errors.Is(err, runtime.ErrNotFound) {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-		} else {
-			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			return nil
 		}
-		return nil
+		// 其他错误（含 ErrBlocked）交给 router 处理
+		return err
 	}
 	if artifact.Content == nil {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)

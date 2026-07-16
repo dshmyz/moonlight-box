@@ -109,3 +109,38 @@ func TestRepositoryRouterReturnsRuntimeBlockReason(t *testing.T) {
 		t.Fatalf("body = %q, want runtime block reason", body)
 	}
 }
+
+// 阻断审计日志必须包含 reason，否则用户无法从日志看到为什么被阻断。
+func TestRepositoryRouterLogsBlockReasonForEarlyRuleMatch(t *testing.T) {
+	audit := &recordingAuditLogger{}
+	router := newRouterForTest(routerAlwaysBlocker{}, audit, nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/repository/npm/left-pad", nil))
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", response.Code)
+	}
+	if len(audit.entries) != 1 {
+		t.Fatalf("entries = %#v, want one block entry", audit.entries)
+	}
+	if audit.entries[0].Reason != "blocked" {
+		t.Fatalf("Reason = %q, want %q (must record blocker.BlockReason)", audit.entries[0].Reason, "blocked")
+	}
+}
+
+func TestRepositoryRouterLogsBlockReasonForRuntimeRejection(t *testing.T) {
+	audit := &recordingAuditLogger{}
+	router := newRouterForTest(nil, audit, errBlockedWithReasonPlugin{})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/repository/npm/left-pad", nil))
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", response.Code)
+	}
+	if len(audit.entries) != 1 {
+		t.Fatalf("entries = %#v, want one block entry", audit.entries)
+	}
+	if audit.entries[0].Reason != "检测到严重安全漏洞" {
+		t.Fatalf("Reason = %q, want %q (must propagate BlockedError.Reason)", audit.entries[0].Reason, "检测到严重安全漏洞")
+	}
+}

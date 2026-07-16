@@ -128,7 +128,7 @@ type RepositoryRouter struct {
 	ProxyLog      DownloadLogger
 }
 
-func (r *RepositoryRouter) logBlock(ctx context.Context, format, name, ip, userAgent string) {
+func (r *RepositoryRouter) logBlock(ctx context.Context, format, name, ip, userAgent, reason string) {
 	if r.AuditLog == nil {
 		return
 	}
@@ -139,6 +139,7 @@ func (r *RepositoryRouter) logBlock(ctx context.Context, format, name, ip, userA
 		IPAddress:      ip,
 		UserAgent:      userAgent,
 		ResponseStatus: http.StatusForbidden,
+		Reason:         reason,
 	})
 }
 
@@ -235,7 +236,7 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	if r.Blocker != nil && r.Blocker.IsBlocked(repo.Format, blockPath, "*") {
 		reason := r.Blocker.BlockReason(repo.Format, blockPath, "*")
-		r.logBlock(req.Context(), repo.Format, blockPath, getRealClientIP(req), req.UserAgent())
+		r.logBlock(req.Context(), repo.Format, blockPath, getRealClientIP(req), req.UserAgent(), reason)
 		http.Error(w, "Blocked: "+reason, http.StatusForbidden)
 		return
 	}
@@ -358,7 +359,7 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 			if reason == "" {
 				reason = "package is blocked by rule"
 			}
-			r.logBlock(ctx.Request.Context(), ctx.Repository.Format, packageName, getRealClientIP(ctx.Request), ctx.Request.UserAgent())
+			r.logBlock(ctx.Request.Context(), ctx.Repository.Format, packageName, getRealClientIP(ctx.Request), ctx.Request.UserAgent(), reason)
 			ctx.StatusCode = http.StatusForbidden
 			http.Error(ctx.Writer, "Blocked: "+reason, http.StatusForbidden)
 			return

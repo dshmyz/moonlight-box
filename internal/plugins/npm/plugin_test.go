@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -626,8 +627,8 @@ func TestFetchRemote_ErrorStatus(t *testing.T) {
 	if arts != nil {
 		t.Fatalf("expected nil artifacts on error, got %d", len(arts))
 	}
-	if !strings.Contains(err.Error(), "status 404") {
-		t.Errorf("expected error to contain 'status 404', got %v", err)
+	if !errors.Is(err, runtime.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for upstream 404, got %v", err)
 	}
 }
 

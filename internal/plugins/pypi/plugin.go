@@ -64,7 +64,6 @@ import (
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
-	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 	nethtml "golang.org/x/net/html"
 )
@@ -118,6 +117,9 @@ func (p *PyPIPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, runtime.ErrNotFound
+		}
 		logrus.WithFields(logrus.Fields{
 			"fullURL":    fullURL,
 			"statusCode": resp.StatusCode,
@@ -346,8 +348,8 @@ func (p *PyPIPlugin) handleSimpleIndex(ctx *runtime.RequestContext, repoRuntime 
 		RemotePath:   path,
 	})
 	if err != nil && !errors.Is(err, runtime.ErrNotFound) {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
-		return nil
+		// 其他错误（含 ErrBlocked）交给 router 处理
+		return err
 	}
 
 	// 对 hosted 仓库：RemotePath 查询可能无结果（本地上传的包没有 RemotePath="simple/"），
@@ -464,8 +466,8 @@ func (p *PyPIPlugin) handlePackageList(ctx *runtime.RequestContext, repoRuntime 
 		RemotePath:   path,
 	})
 	if err != nil && !errors.Is(err, runtime.ErrNotFound) {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
-		return nil
+		// 其他错误（含 ErrBlocked）交给 router 处理
+		return err
 	}
 
 	if len(artifacts) == 0 {
@@ -670,25 +672,35 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 	case http.MethodGet, http.MethodHead:
 		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 		if err != nil {
-			if errors.Is(err, runtime.ErrNotFound) {
-				artifacts, queryErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
-					RepositoryID: ctx.Repository.ID,
-					Format:       "pypi",
-					RemotePath:   path,
-				})
-				if queryErr == nil && len(artifacts) > 0 {
-					artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
-				}
+			if !errors.Is(err, runtime.ErrNotFound) {
+				// 其他错误（含 ErrBlocked）交给 router 处理
+				return err
 			}
-		}
-		if err != nil {
-			util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
-				"path":  path,
-				"key":   key.String(),
-				"error": err.Error(),
-			}).Warn("pypi: handlePackagesDownload GetArtifact failed")
-			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-			return nil
+			// ErrNotFound: 尝试 QueryArtifacts 回源后再 GetArtifact
+			artifacts, queryErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+				RepositoryID: ctx.Repository.ID,
+				Format:       "pypi",
+				RemotePath:   path,
+			})
+			if queryErr != nil {
+				if errors.Is(queryErr, runtime.ErrNotFound) {
+					http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+					return nil
+				}
+				return queryErr
+			}
+			if len(artifacts) == 0 {
+				http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+				return nil
+			}
+			artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
+			if err != nil {
+				if errors.Is(err, runtime.ErrNotFound) {
+					http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+					return nil
+				}
+				return err
+			}
 		}
 		if artifact.Content == nil {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
@@ -837,10 +849,10 @@ func (p *PyPIPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime run
 	if err != nil {
 		if errors.Is(err, runtime.ErrNotFound) {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-		} else {
-			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			return nil
 		}
-		return nil
+		// 其他错误（含 ErrBlocked）交给 router 处理
+		return err
 	}
 
 	if len(artifact.BlobRefs) == 0 {
