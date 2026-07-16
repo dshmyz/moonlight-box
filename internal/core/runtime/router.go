@@ -348,7 +348,7 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 		if err == ErrBlocked {
 			packageName := ctx.PackageName
 			if packageName == "" {
-				packageName = ctx.RepositoryPath
+				packageName = strings.TrimPrefix(ctx.RepositoryPath, "/")
 			}
 			r.logBlock(ctx.Request.Context(), ctx.Repository.Format, packageName, getRealClientIP(ctx.Request), ctx.Request.UserAgent())
 			ctx.StatusCode = http.StatusForbidden

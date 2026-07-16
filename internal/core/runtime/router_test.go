@@ -68,6 +68,9 @@ func TestRepositoryRouterLogsBlockForEarlyRuleMatch(t *testing.T) {
 	if len(audit.entries) != 1 || audit.entries[0].Action != "block" || audit.entries[0].ResponseStatus != http.StatusForbidden {
 		t.Fatalf("entries = %#v, want one 403 block entry", audit.entries)
 	}
+	if audit.entries[0].ResourceName != "left-pad" {
+		t.Fatalf("resource name = %q, want %q", audit.entries[0].ResourceName, "left-pad")
+	}
 }
 
 func TestRepositoryRouterLogsBlockForRuntimeRejection(t *testing.T) {
@@ -81,5 +84,8 @@ func TestRepositoryRouterLogsBlockForRuntimeRejection(t *testing.T) {
 	}
 	if len(audit.entries) != 1 || audit.entries[0].Action != "block" || audit.entries[0].ResponseStatus != http.StatusForbidden {
 		t.Fatalf("entries = %#v, want one 403 block entry", audit.entries)
+	}
+	if audit.entries[0].ResourceName != "left-pad" {
+		t.Fatalf("resource name = %q, want %q", audit.entries[0].ResourceName, "left-pad")
 	}
 }
