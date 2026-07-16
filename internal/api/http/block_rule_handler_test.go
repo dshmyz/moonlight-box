@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/dshmyz/moonlight-box/internal/database"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
 	"github.com/dshmyz/moonlight-box/internal/service"
@@ -69,6 +70,69 @@ func doBatchImportBlockRules(t *testing.T, handler *BlockRuleHandler, body strin
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	return w
+}
+
+func TestBlockRuleLogsAndStatsIncludeOnlyBlockActions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.AuditLog{}); err != nil {
+		t.Fatalf("migrate audit logs: %v", err)
+	}
+	previousDB := database.DB
+	database.DB = db
+	defer func() { database.DB = previousDB }()
+	auditSvc := service.NewAuditService()
+	defer auditSvc.Shutdown()
+	handler := NewBlockRuleHandler(nil, auditSvc, repository.NewAuditRepository(db))
+	logs := []model.AuditLog{
+		{Action: model.ActionBlock, ResourceType: "npm", ResourceName: "left-pad", ResponseStatus: 403},
+		{Action: model.ActionPackageDownload, ResourceType: "npm", ResourceName: "left-pad", ResponseStatus: 200},
+	}
+	if err := db.Create(&logs).Error; err != nil {
+		t.Fatalf("seed audit logs: %v", err)
+	}
+
+	router := gin.New()
+	router.GET("/api/block-rules/logs", handler.ListBlockLogs)
+	router.GET("/api/block-rules/stats", handler.GetBlockStats)
+
+	logsResponse := httptest.NewRecorder()
+	router.ServeHTTP(logsResponse, httptest.NewRequest(stdhttp.MethodGet, "/api/block-rules/logs", nil))
+	if logsResponse.Code != stdhttp.StatusOK {
+		t.Fatalf("logs status = %d, body=%s", logsResponse.Code, logsResponse.Body.String())
+	}
+	var listed struct {
+		Data struct {
+			Items      []model.AuditLog `json:"items"`
+			Pagination struct {
+				Total int64 `json:"total"`
+			} `json:"pagination"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(logsResponse.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode logs response: %v", err)
+	}
+	if listed.Data.Pagination.Total != 1 || len(listed.Data.Items) != 1 || listed.Data.Items[0].Action != model.ActionBlock || listed.Data.Items[0].ResponseStatus != 403 {
+		t.Fatalf("listed logs = %#v, want only one 403 block log", listed.Data)
+	}
+
+	statsResponse := httptest.NewRecorder()
+	router.ServeHTTP(statsResponse, httptest.NewRequest(stdhttp.MethodGet, "/api/block-rules/stats", nil))
+	if statsResponse.Code != stdhttp.StatusOK {
+		t.Fatalf("stats status = %d, body=%s", statsResponse.Code, statsResponse.Body.String())
+	}
+	var stats struct {
+		Data repository.BlockStats `json:"data"`
+	}
+	if err := json.Unmarshal(statsResponse.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("decode stats response: %v", err)
+	}
+	if stats.Data.TotalBlocks != 1 {
+		t.Fatalf("total blocks = %d, want 1", stats.Data.TotalBlocks)
+	}
 }
 
 // TestCreateBlockRule_WithCondition 验证带条件字段的创建请求能正常返回 201，
