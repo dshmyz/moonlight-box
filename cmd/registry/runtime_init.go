@@ -359,6 +359,24 @@ func (b *blockRuleBlocker) BlockReason(packageType, packageName, version string)
 	return result.Rule.Reason
 }
 
+// IsBlockedByPath URL 路由层早阻断：只评估按路径形态匹配的通配符规则。
+// 精确/版本范围规则需真包名+版本，由 Plugin 解析后在 runtime 权威评估。
+func (b *blockRuleBlocker) IsBlockedByPath(packageType, path string) bool {
+	result, err := b.svc.IsBlockedByPath(packageType, path)
+	if err != nil {
+		return false
+	}
+	return result.Blocked
+}
+
+func (b *blockRuleBlocker) BlockReasonByPath(packageType, path string) string {
+	result, err := b.svc.IsBlockedByPath(packageType, path)
+	if err != nil || result.Rule == nil {
+		return "blocked"
+	}
+	return result.Rule.Reason
+}
+
 // IsBlockedWithAttrs 带元数据的第二层阻断检查。
 // 调用 BlockRuleService.IsBlockedWithArtifact 做包名+版本 + 条件两层匹配，
 // 未阻断返回 (false, "")；命中则返回 (true, reason)。

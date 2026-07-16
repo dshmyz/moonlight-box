@@ -24,6 +24,9 @@ func (m *mockBlockerWithAttrs) IsBlockedWithAttrs(packageType, packageName, vers
 	return m.blocked, m.reason
 }
 
+func (m *mockBlockerWithAttrs) IsBlockedByPath(string, string) bool     { return false }
+func (m *mockBlockerWithAttrs) BlockReasonByPath(string, string) string { return "" }
+
 // TestPackageBlockerInterface_HasIsBlockedWithAttrs 验证：
 // 实现了 IsBlocked + BlockReason + IsBlockedWithAttrs 三个方法的对象，
 // 必须能被赋值给 PackageBlocker 接口变量。

@@ -14,6 +14,8 @@ func (alwaysBlocker) BlockReason(string, string, string) string { return "blocke
 func (alwaysBlocker) IsBlockedWithAttrs(string, string, string, map[string]interface{}) (bool, string) {
 	return false, ""
 }
+func (alwaysBlocker) IsBlockedByPath(string, string) bool     { return true }
+func (alwaysBlocker) BlockReasonByPath(string, string) string { return "blocked" }
 
 func TestHostedRuntimeGetArtifactBlocksMatchingPackage(t *testing.T) {
 	hosted := &HostedRuntime{RepositoryID: "repo", Format: "npm", Blocker: alwaysBlocker{}}
@@ -66,6 +68,8 @@ func (licenseBlocker) BlockReason(string, string, string) string { return "" }
 func (licenseBlocker) IsBlockedWithAttrs(_ string, _ string, _ string, attrs map[string]interface{}) (bool, string) {
 	return attrs["license"] == "GPL-3.0", "license"
 }
+func (licenseBlocker) IsBlockedByPath(string, string) bool     { return false }
+func (licenseBlocker) BlockReasonByPath(string, string) string { return "" }
 
 func TestHostedRuntimeGetArtifactBlocksConditionalLocalArtifactBeforeOpeningBlob(t *testing.T) {
 	store := &hostedTestMetadataStore{artifact: &Artifact{
@@ -109,6 +113,8 @@ func (requiredLicenseBlocker) BlockReason(string, string, string) string { retur
 func (requiredLicenseBlocker) IsBlockedWithAttrs(string, string, string, map[string]interface{}) (bool, string) {
 	return false, ""
 }
+func (requiredLicenseBlocker) IsBlockedByPath(string, string) bool     { return false }
+func (requiredLicenseBlocker) BlockReasonByPath(string, string) string { return "" }
 func (requiredLicenseBlocker) RequiredAttributes(string, string, string) []ConditionRequirement {
 	return []ConditionRequirement{{RuleID: 42, Attribute: "license"}}
 }
@@ -168,6 +174,8 @@ func (noRequirementLicenseBlocker) BlockReason(string, string, string) string { 
 func (noRequirementLicenseBlocker) IsBlockedWithAttrs(_ string, _ string, _ string, attrs map[string]interface{}) (bool, string) {
 	return attrs["license"] == "GPL-3.0", "license"
 }
+func (noRequirementLicenseBlocker) IsBlockedByPath(string, string) bool     { return false }
+func (noRequirementLicenseBlocker) BlockReasonByPath(string, string) string { return "" }
 func (noRequirementLicenseBlocker) RequiredAttributes(string, string, string) []ConditionRequirement {
 	return nil
 }

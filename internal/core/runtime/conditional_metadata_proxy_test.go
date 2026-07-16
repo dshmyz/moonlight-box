@@ -12,6 +12,8 @@ func (requirementBlocker) BlockReason(string, string, string) string { return ""
 func (requirementBlocker) IsBlockedWithAttrs(_ string, _ string, _ string, attrs map[string]interface{}) (bool, string) {
 	return attrs["license"] == "GPL-3.0", "license"
 }
+func (requirementBlocker) IsBlockedByPath(string, string) bool     { return false }
+func (requirementBlocker) BlockReasonByPath(string, string) string { return "" }
 func (requirementBlocker) RequiredAttributes(string, string, string) []ConditionRequirement {
 	return []ConditionRequirement{{RuleID: 7, Attribute: "license"}}
 }

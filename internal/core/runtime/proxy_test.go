@@ -1580,6 +1580,9 @@ func (m *mockConditionBlocker) IsBlockedWithAttrs(packageType, packageName, vers
 	return false, ""
 }
 
+func (m *mockConditionBlocker) IsBlockedByPath(string, string) bool     { return false }
+func (m *mockConditionBlocker) BlockReasonByPath(string, string) string { return "" }
+
 // TestGetArtifact_PostBlockCheck_LicenseBlocked 验证：artifact 的 Attributes 中
 // license=GPL-3.0 时，GetArtifact 应返回 ErrBlocked（第二层检查命中）。
 func TestGetArtifact_PostBlockCheck_LicenseBlocked(t *testing.T) {

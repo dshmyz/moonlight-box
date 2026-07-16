@@ -249,7 +249,36 @@ func (s *BlockRuleService) IsBlocked(pkgType, pkgName, version string) (*BlockRe
 	return &BlockResult{Blocked: false}, nil
 }
 
-// IsBlockedWithArtifact 两层规则匹配：
+// IsBlockedByPath URL 路由层早阻断：只评估按路径形态匹配的通配符规则。
+//
+// router 在 Plugin 解析出包名/版本前调用，只能拿到剩余 URL 路径（pkgName 参数即该路径），
+// 故仅跑 wildcard 包名正则匹配（version 视为 "*"）。不查 exact、不查 range、不走
+// version="*" 回退——这些需要真包名+版本，由 runtime 的 checkBlocked 权威评估。
+// 调用方为 router；其余需要真包名/版本的调用方继续用 IsBlocked。
+func (s *BlockRuleService) IsBlockedByPath(pkgType, path string) (*BlockResult, error) {
+	s.cacheMu.RLock()
+	cacheValid := time.Since(s.cachedAt) < s.cacheTTL
+	s.cacheMu.RUnlock()
+
+	if !cacheValid {
+		if err := s.refreshCache(); err != nil {
+			return nil, err
+		}
+	}
+
+	s.cacheMu.RLock()
+	wildcardRules, ok := s.wildcardRules[pkgType]
+	s.cacheMu.RUnlock()
+
+	if ok {
+		for _, cached := range wildcardRules {
+			if s.matchCachedWildcard(&cached, path, "*") {
+				return &BlockResult{Blocked: true, Rule: cached.rule}, nil
+			}
+		}
+	}
+	return &BlockResult{Blocked: false}, nil
+}
 // 第一层调用 IsBlocked（包名+版本）；未命中时进入第二层条件匹配，
 // 遍历条件规则，按 ConditionType 从 attrs 取值并按 ConditionOp 匹配。
 // attrs 中缺少对应 key 时放行（元数据缺失不阻断）。
