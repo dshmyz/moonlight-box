@@ -70,7 +70,7 @@ func TestCreateRuntimeForLocalRepoInjectsBlocker(t *testing.T) {
 		Type:        model.RepoTypeLocal,
 		PackageType: "npm",
 	}
-	blocker := testRuntimeBlocker{}
+	blocker := &testRuntimeBlocker{}
 
 	repoRuntime, err := createRuntimeForRepo(repo, nil, nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nil, blocker, nil, nil)
 	if err != nil {
@@ -85,6 +85,9 @@ func TestCreateRuntimeForLocalRepoInjectsBlocker(t *testing.T) {
 	}
 	if hostedRuntime.Format != repo.PackageType {
 		t.Fatalf("format = %q, want %q", hostedRuntime.Format, repo.PackageType)
+	}
+	if hostedRuntime.ConditionAudit != blocker {
+		t.Fatalf("condition audit = %#v, want supplied blocker", hostedRuntime.ConditionAudit)
 	}
 }
 
@@ -152,7 +155,7 @@ func TestCreateGroupRuntimeInjectsBlockerIntoLocalMember(t *testing.T) {
 	if err := db.Create(&model.RepositoryMember{RepositoryID: group.ID, MemberID: member.ID}).Error; err != nil {
 		t.Fatalf("create membership: %v", err)
 	}
-	blocker := testRuntimeBlocker{}
+	blocker := &testRuntimeBlocker{}
 
 	repoRuntime, err := createGroupRuntime(&group, repository.NewRepositoryRepository(db), nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nil, blocker, nil, nil)
 	if err != nil {
@@ -172,6 +175,9 @@ func TestCreateGroupRuntimeInjectsBlockerIntoLocalMember(t *testing.T) {
 	if hostedMember.Format != member.PackageType {
 		t.Fatalf("format = %q, want %q", hostedMember.Format, member.PackageType)
 	}
+	if hostedMember.ConditionAudit != blocker {
+		t.Fatalf("condition audit = %#v, want supplied blocker", hostedMember.ConditionAudit)
+	}
 }
 
 type fakeStorageBackend struct{}
@@ -182,6 +188,8 @@ func (testRuntimeBlocker) IsBlocked(string, string, string) bool     { return fa
 func (testRuntimeBlocker) BlockReason(string, string, string) string { return "" }
 func (testRuntimeBlocker) IsBlockedWithAttrs(string, string, string, map[string]interface{}) (bool, string) {
 	return false, ""
+}
+func (*testRuntimeBlocker) LogConditionUnverified(context.Context, runtime.ConditionUnverifiedEntry) {
 }
 
 func (fakeStorageBackend) Name() string               { return "fake" }

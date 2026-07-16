@@ -124,13 +124,17 @@ func createRuntimeForRepo(
 
 	switch repo.Type {
 	case model.RepoTypeLocal:
-		return &runtime.HostedRuntime{
+		hosted := &runtime.HostedRuntime{
 			MetadataStore: metadataStore,
 			BlobStore:     blobStore,
 			RepositoryID:  fmt.Sprintf("%d", repo.ID),
 			Blocker:       blocker,
 			Format:        repo.PackageType,
-		}, nil
+		}
+		if audit, ok := blocker.(runtime.ConditionAuditLogger); ok {
+			hosted.ConditionAudit = audit
+		}
+		return hosted, nil
 
 	case model.RepoTypeProxy:
 		cachePolicy := cachePolicyForRepo(repo)
@@ -237,6 +241,9 @@ func createGroupRuntime(
 					RepositoryID:  memberID,
 					Blocker:       blocker,
 					Format:        memberRepo.PackageType,
+				}
+				if audit, ok := blocker.(runtime.ConditionAuditLogger); ok {
+					n.ConditionAudit = audit
 				}
 				node = n
 				if writable == nil {

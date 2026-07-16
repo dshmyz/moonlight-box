@@ -76,6 +76,82 @@ func TestHostedRuntimeQueryArtifactsFiltersConditionalLocalArtifacts(t *testing.
 	}
 }
 
+type requiredLicenseBlocker struct{}
+
+func (requiredLicenseBlocker) IsBlocked(string, string, string) bool     { return false }
+func (requiredLicenseBlocker) BlockReason(string, string, string) string { return "" }
+func (requiredLicenseBlocker) IsBlockedWithAttrs(string, string, string, map[string]interface{}) (bool, string) {
+	return false, ""
+}
+func (requiredLicenseBlocker) RequiredAttributes(string, string, string) []ConditionRequirement {
+	return []ConditionRequirement{{RuleID: 42, Attribute: "license"}}
+}
+
+type hostedRecordingConditionAudit struct{ entries []ConditionUnverifiedEntry }
+
+func (a *hostedRecordingConditionAudit) LogConditionUnverified(_ context.Context, entry ConditionUnverifiedEntry) {
+	a.entries = append(a.entries, entry)
+}
+
+func TestHostedRuntimeGetArtifactAllowsAndAuditsMissingConditionalAttribute(t *testing.T) {
+	store := &hostedTestMetadataStore{artifact: &Artifact{Name: "pkg", Version: "1.0.0"}}
+	audit := &hostedRecordingConditionAudit{}
+	hosted := &HostedRuntime{
+		MetadataStore:  store,
+		RepositoryID:   "repo",
+		Format:         "npm",
+		Blocker:        requiredLicenseBlocker{},
+		ConditionAudit: audit,
+	}
+
+	artifact, err := hosted.GetArtifact(context.Background(), ArtifactKey{Name: "pkg", Version: "1.0.0"})
+	if err != nil {
+		t.Fatalf("get artifact: %v", err)
+	}
+	if artifact == nil {
+		t.Fatal("artifact = nil, want allowed local artifact")
+	}
+	assertHostedConditionUnverified(t, audit.entries)
+}
+
+func TestHostedRuntimeQueryArtifactsAllowsAndAuditsMissingConditionalAttribute(t *testing.T) {
+	store := &hostedTestMetadataStore{artifacts: []*Artifact{{Name: "pkg", Version: "1.0.0"}}}
+	audit := &hostedRecordingConditionAudit{}
+	hosted := &HostedRuntime{
+		MetadataStore:  store,
+		RepositoryID:   "repo",
+		Format:         "npm",
+		Blocker:        requiredLicenseBlocker{},
+		ConditionAudit: audit,
+	}
+
+	artifacts, err := hosted.QueryArtifacts(context.Background(), ArtifactQuery{})
+	if err != nil {
+		t.Fatalf("query artifacts: %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Name != "pkg" {
+		t.Fatalf("artifacts = %#v, want allowed local artifact", artifacts)
+	}
+	assertHostedConditionUnverified(t, audit.entries)
+}
+
+func assertHostedConditionUnverified(t *testing.T, entries []ConditionUnverifiedEntry) {
+	t.Helper()
+	if len(entries) != 1 {
+		t.Fatalf("audit entries = %#v, want one entry", entries)
+	}
+	entry := entries[0]
+	if entry.RepositoryID != "repo" || entry.Format != "npm" || entry.Name != "pkg" || entry.Version != "1.0.0" {
+		t.Fatalf("audit entry = %#v, want repo/npm/pkg@1.0.0", entry)
+	}
+	if len(entry.RuleIDs) != 1 || entry.RuleIDs[0] != 42 {
+		t.Fatalf("rule IDs = %#v, want [42]", entry.RuleIDs)
+	}
+	if len(entry.MissingAttributes) != 1 || entry.MissingAttributes[0] != "license" {
+		t.Fatalf("missing attributes = %#v, want [license]", entry.MissingAttributes)
+	}
+}
+
 type hostedTestMetadataStore struct {
 	artifact  *Artifact
 	artifacts []*Artifact
