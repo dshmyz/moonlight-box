@@ -397,7 +397,11 @@ type auditLoggerAdapter struct {
 }
 
 func (a *auditLoggerAdapter) Log(ctx context.Context, entry runtime.AuditEntry) {
-	_ = a.svc.LogWithRequestAndStatus(ctx, &entry.UserID, model.ActionPackageDownload, entry.ResourceType, nil, entry.ResourceName, "", entry.IPAddress, entry.UserAgent, entry.ResponseStatus, 0)
+	action := model.ActionPackageDownload
+	if entry.Action == "block" {
+		action = model.ActionBlock
+	}
+	_ = a.svc.LogWithRequestAndStatus(ctx, &entry.UserID, action, entry.ResourceType, nil, entry.ResourceName, "", entry.IPAddress, entry.UserAgent, entry.ResponseStatus, 0)
 }
 
 // downloadCountAdapter 将 DownloadCountBatcher 适配为 runtime.DownloadCounter
