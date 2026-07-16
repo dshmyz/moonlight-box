@@ -471,6 +471,21 @@ func (p *PyPIPlugin) handlePackageList(ctx *runtime.RequestContext, repoRuntime 
 	}
 
 	if len(artifacts) == 0 {
+		// Hosted/local 回退：本地上传的包文件其 RemotePath 形如 packages/<hash>/<file>，
+		// 不等于 simple/<name>/，故首查（按 RemotePath 精确匹配）为空。
+		// 由插件（而非 Runtime）发起按 Name 聚合的二次查询，避免协议路径知识泄漏到 Runtime 层。
+		arts, qErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+			RepositoryID: ctx.Repository.ID,
+			Format:       "pypi",
+			Name:         packageName,
+		})
+		if qErr != nil && !errors.Is(qErr, runtime.ErrNotFound) {
+			return qErr
+		}
+		artifacts = arts
+	}
+
+	if len(artifacts) == 0 {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}

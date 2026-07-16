@@ -245,6 +245,49 @@ func TestHandle_PackageList(t *testing.T) {
 	}
 }
 
+// TestHandle_PackageListFallsBackToNameQueryWhenRemotePathMisses 覆盖协议逻辑下沉到插件后的
+// 二次查询回退：本地上传的包文件其 RemotePath 形如 packages/<hash>/<file>，不等于
+// simple/<name>/，故首查（按 RemotePath 精确匹配）为空，插件须再发一次清空 RemotePath、
+// 按 Name 聚合的查询。断言共 2 次查询、第二次 RemotePath 为空，且渲染出文件名。
+func TestHandle_PackageListFallsBackToNameQueryWhenRemotePathMisses(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("pypi", "package-file", map[string]string{
+			"name":     "requests",
+			"package":  "requests",
+			"version":  "2.28.0",
+			"filename": "requests-2.28.0.tar.gz",
+		}, ""),
+	}
+	// 存储的 RemotePath 是包文件路径，而非 simple/<name>/，故首查不命中。
+	arts[0].RemotePath = "packages/ab/cd/requests-2.28.0.tar.gz"
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "simple/requests/", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.QueryCalls) != 2 {
+		t.Fatalf("expected 2 query calls (path then name fallback), got %d", len(rt.QueryCalls))
+	}
+	if got := rt.QueryCalls[0].RemotePath; got != "simple/requests/" {
+		t.Fatalf("first query RemotePath = %q, want simple/requests/", got)
+	}
+	if got := rt.QueryCalls[1].RemotePath; got != "" {
+		t.Fatalf("fallback query RemotePath = %q, want empty (Name-only aggregation)", got)
+	}
+	if rt.QueryCalls[1].Name != "requests" {
+		t.Fatalf("fallback query Name = %q, want requests", rt.QueryCalls[1].Name)
+	}
+	if !strings.Contains(w.Body.String(), "requests-2.28.0.tar.gz") {
+		t.Errorf("expected filename in HTML, got: %s", w.Body.String())
+	}
+}
+
 func TestHandle_PackageListRedirectsToCanonicalSlashURL(t *testing.T) {
 	p := NewPyPIPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
@@ -674,11 +717,15 @@ func TestHandle_QueryRemotePath(t *testing.T) {
 	ctx, _ := newCtx("GET", "simple/requests/", nil)
 	p.Handle(ctx, rt)
 
-	if len(rt.QueryCalls) != 1 {
-		t.Fatalf("expected 1 query call, got %d", len(rt.QueryCalls))
+	// 首查按 RemotePath=simple/requests/ 精确匹配；空结果触发按 Name 聚合的二次回退查询。
+	if len(rt.QueryCalls) != 2 {
+		t.Fatalf("expected 2 query calls (path then name fallback), got %d", len(rt.QueryCalls))
 	}
 	if rt.QueryCalls[0].RemotePath != "simple/requests/" {
-		t.Errorf("unexpected RemotePath: %q", rt.QueryCalls[0].RemotePath)
+		t.Errorf("unexpected first RemotePath: %q", rt.QueryCalls[0].RemotePath)
+	}
+	if rt.QueryCalls[1].RemotePath != "" || rt.QueryCalls[1].Name != "requests" {
+		t.Errorf("unexpected fallback query: %#v", rt.QueryCalls[1])
 	}
 }
 
