@@ -17,7 +17,7 @@ type HostedRuntime struct {
 
 func (n *HostedRuntime) checkBlocked(name, version string) error {
 	if n.Blocker != nil && name != "" && n.Blocker.IsBlocked(n.Format, name, version) {
-		return ErrBlocked
+		return NewBlockedError(n.Blocker.BlockReason(n.Format, name, version))
 	}
 	return nil
 }
@@ -30,9 +30,9 @@ func (n *HostedRuntime) checkBlockedWithAttrs(key ArtifactKey, artifact *Artifac
 	for name, value := range artifact.Attributes {
 		attrs[name] = value
 	}
-	blocked, _ := n.Blocker.IsBlockedWithAttrs(n.Format, key.Name, key.Version, attrs)
+	blocked, reason := n.Blocker.IsBlockedWithAttrs(n.Format, key.Name, key.Version, attrs)
 	if blocked {
-		return ErrBlocked
+		return NewBlockedError(reason)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -345,14 +346,21 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 	}).Debug("router: calling plugin.Handle")
 
 	if err := plugin.Handle(ctx, runtime); err != nil {
-		if err == ErrBlocked {
+		if errors.Is(err, ErrBlocked) {
 			packageName := ctx.PackageName
 			if packageName == "" {
 				packageName = strings.TrimPrefix(ctx.RepositoryPath, "/")
 			}
+			reason := BlockReason(err)
+			if reason == "" && r.Blocker != nil {
+				reason = r.Blocker.BlockReason(ctx.Repository.Format, packageName, ctx.Version)
+			}
+			if reason == "" {
+				reason = "package is blocked by rule"
+			}
 			r.logBlock(ctx.Request.Context(), ctx.Repository.Format, packageName, getRealClientIP(ctx.Request), ctx.Request.UserAgent())
 			ctx.StatusCode = http.StatusForbidden
-			http.Error(ctx.Writer, "Blocked: package is blocked by rule", http.StatusForbidden)
+			http.Error(ctx.Writer, "Blocked: "+reason, http.StatusForbidden)
 			return
 		}
 		if err == ErrNotFound {

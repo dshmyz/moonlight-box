@@ -28,6 +28,13 @@ func (errBlockedPlugin) Handle(*RequestContext, RepositoryRuntime) error {
 	return ErrBlocked
 }
 
+type errBlockedWithReasonPlugin struct{}
+
+func (errBlockedWithReasonPlugin) Name() string { return "npm" }
+func (errBlockedWithReasonPlugin) Handle(*RequestContext, RepositoryRuntime) error {
+	return NewBlockedError("检测到严重安全漏洞")
+}
+
 type routerTestRuntime struct{}
 
 func (routerTestRuntime) GetArtifact(context.Context, ArtifactKey) (*Artifact, error) {
@@ -87,5 +94,18 @@ func TestRepositoryRouterLogsBlockForRuntimeRejection(t *testing.T) {
 	}
 	if audit.entries[0].ResourceName != "left-pad" {
 		t.Fatalf("resource name = %q, want %q", audit.entries[0].ResourceName, "left-pad")
+	}
+}
+
+func TestRepositoryRouterReturnsRuntimeBlockReason(t *testing.T) {
+	router := newRouterForTest(nil, nil, errBlockedWithReasonPlugin{})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/repository/npm/left-pad", nil))
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", response.Code)
+	}
+	if body := response.Body.String(); body != "Blocked: 检测到严重安全漏洞\n" {
+		t.Fatalf("body = %q, want runtime block reason", body)
 	}
 }
