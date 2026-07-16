@@ -788,3 +788,85 @@ func TestUpdateRejectsInvalidConditionalTransition(t *testing.T) {
 		t.Fatalf("非法更新不应落库，实际 condition_op=%q condition_value=%q", stored.ConditionOp, stored.ConditionValue)
 	}
 }
+
+// TestIsBlockedByPath_WildcardMatchesPath 验证 URL 路由层早阻断：
+// 通配符规则的包名正则对剩余 URL 路径串匹配命中时阻断。
+func TestIsBlockedByPath_WildcardMatchesPath(t *testing.T) {
+	svc, _ := setupBlockRuleService(t)
+
+	rule := model.BlockRule{
+		PackageName: "lodash/*",
+		Version:     "*",
+		MatchType:   model.BlockMatchWildcard,
+		PackageType: "npm",
+		Enabled:     true,
+	}
+	if err := svc.Create(&rule); err != nil {
+		t.Fatalf("create wildcard rule: %v", err)
+	}
+
+	result, err := svc.IsBlockedByPath("npm", "lodash/-/lodash-4.17.21.tgz")
+	if err != nil {
+		t.Fatalf("IsBlockedByPath: %v", err)
+	}
+	if !result.Blocked {
+		t.Fatalf("期望 wildcard 路径规则命中剩余路径，实际 blocked=false")
+	}
+
+	// 不匹配的路径应放行
+	result, err = svc.IsBlockedByPath("npm", "express/-/express-4.18.0.tgz")
+	if err != nil {
+		t.Fatalf("IsBlockedByPath: %v", err)
+	}
+	if result.Blocked {
+		t.Fatalf("期望不匹配的路径放行，实际 blocked=true")
+	}
+}
+
+// TestIsBlockedByPath_DoesNotMatchExactOrRange 验证 URL 路由层不假装拦精确/范围规则：
+// exact 版本规则与 range 规则在 IsBlockedByPath 中均不命中（需真包名+版本，
+// 由 runtime 的 checkBlocked 权威评估）。
+func TestIsBlockedByPath_DoesNotMatchExactOrRange(t *testing.T) {
+	svc, _ := setupBlockRuleService(t)
+
+	exact := model.BlockRule{
+		PackageName: "lodash",
+		Version:     "4.17.21",
+		MatchType:   model.BlockMatchExact,
+		PackageType: "npm",
+		Enabled:     true,
+		Reason:      "exact-block",
+	}
+	if err := svc.Create(&exact); err != nil {
+		t.Fatalf("create exact rule: %v", err)
+	}
+
+	rng := model.BlockRule{
+		PackageName: "lodash",
+		Version:     ">=4.17.0 <5.0.0",
+		MatchType:   model.BlockMatchRange,
+		PackageType: "npm",
+		Enabled:     true,
+	}
+	if err := svc.Create(&rng); err != nil {
+		t.Fatalf("create range rule: %v", err)
+	}
+
+	// URL 层只看到剩余路径，exact/range 都不应命中
+	result, err := svc.IsBlockedByPath("npm", "lodash/-/lodash-4.17.21.tgz")
+	if err != nil {
+		t.Fatalf("IsBlockedByPath: %v", err)
+	}
+	if result.Blocked {
+		t.Fatalf("期望 URL 层不拦 exact/range 规则，实际 blocked=true rule=%v", result.Rule)
+	}
+
+	// 同样的规则经 IsBlocked（runtime 路径，用真包名+版本）应命中 exact
+	result, err = svc.IsBlocked("npm", "lodash", "4.17.21")
+	if err != nil {
+		t.Fatalf("IsBlocked: %v", err)
+	}
+	if !result.Blocked || result.Rule == nil || result.Rule.Reason != "exact-block" {
+		t.Fatalf("期望 runtime 路径用真包名+版本命中 exact 规则，实际 blocked=%v rule=%v", result.Blocked, result.Rule)
+	}
+}

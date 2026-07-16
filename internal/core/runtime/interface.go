@@ -176,6 +176,14 @@ type PackageBlocker interface {
 	// 在包名+版本第一层未命中时，结合 attrs（license/published_at 等元数据）做条件匹配。
 	// 返回是否阻断及原因；未阻断时 reason 为空字符串。
 	IsBlockedWithAttrs(packageType, packageName, version string, attrs map[string]interface{}) (blocked bool, reason string)
+	// IsBlockedByPath URL 路由层的早阻断检查。
+	//
+	// 在请求进入 Plugin 解析出包名/版本之前，router 只能看到剩余 URL 路径（非包名），
+	// 故只能评估按路径形态匹配的通配符规则。精确/版本范围/阻断整包(Version=*)规则
+	// 需要真包名+版本，由 Plugin 解析后在 runtime 的 checkBlocked/checkBlockedWithAttrs
+	// 中权威评估——本方法不负责这些规则类型。
+	IsBlockedByPath(packageType, path string) bool
+	BlockReasonByPath(packageType, path string) string
 }
 
 // AuditLogger 审计日志记录器。

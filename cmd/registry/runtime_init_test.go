@@ -11,6 +11,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/dshmyz/moonlight-box/internal/storage"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -189,7 +190,71 @@ func (testRuntimeBlocker) BlockReason(string, string, string) string { return ""
 func (testRuntimeBlocker) IsBlockedWithAttrs(string, string, string, map[string]interface{}) (bool, string) {
 	return false, ""
 }
+func (testRuntimeBlocker) IsBlockedByPath(string, string) bool     { return false }
+func (testRuntimeBlocker) BlockReasonByPath(string, string) string { return "" }
 func (*testRuntimeBlocker) LogConditionUnverified(context.Context, runtime.ConditionUnverifiedEntry) {
+}
+
+// TestBlockRuleBlocker_SplitsURLPathAndRuntimeChecks 验证 #14 的架构拆分：
+// blockRuleBlocker 在 URL 层（IsBlockedByPath）只评估按路径匹配的通配符规则，
+// exact 版本规则不在此层命中；exact 规则经 runtime 路径（IsBlocked，用真包名+版本）命中。
+func TestBlockRuleBlocker_SplitsURLPathAndRuntimeChecks(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.BlockRule{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	pathRule := model.BlockRule{
+		PackageName: "lodash/*",
+		Version:     "*",
+		MatchType:   model.BlockMatchWildcard,
+		PackageType: "npm",
+		Enabled:     true,
+		Reason:      "path-wildcard",
+	}
+	if err := db.Create(&pathRule).Error; err != nil {
+		t.Fatalf("create wildcard rule: %v", err)
+	}
+	exactRule := model.BlockRule{
+		PackageName: "lodash",
+		Version:     "4.17.21",
+		MatchType:   model.BlockMatchExact,
+		PackageType: "npm",
+		Enabled:     true,
+		Reason:      "exact-version",
+	}
+	if err := db.Create(&exactRule).Error; err != nil {
+		t.Fatalf("create exact rule: %v", err)
+	}
+
+	blocker := &blockRuleBlocker{svc: newBlockRuleServiceForTest(db)}
+
+	// URL 层：剩余路径命中 wildcard 路径规则 → 阻断
+	if !blocker.IsBlockedByPath("npm", "lodash/-/lodash-4.17.21.tgz") {
+		t.Fatalf("IsBlockedByPath: 期望 wildcard 路径规则命中")
+	}
+	if got := blocker.BlockReasonByPath("npm", "lodash/-/lodash-4.17.21.tgz"); got != "path-wildcard" {
+		t.Fatalf("BlockReasonByPath = %q, want path-wildcard", got)
+	}
+	// URL 层：不匹配的路径放行
+	if blocker.IsBlockedByPath("npm", "express/-/express-4.18.0.tgz") {
+		t.Fatalf("IsBlockedByPath: 期望不匹配路径放行")
+	}
+
+	// runtime 层：exact 版本规则用真包名+版本命中
+	if !blocker.IsBlocked("npm", "lodash", "4.17.21") {
+		t.Fatalf("IsBlocked: 期望 exact 版本规则经 runtime 路径命中")
+	}
+	if got := blocker.BlockReason("npm", "lodash", "4.17.21"); got != "exact-version" {
+		t.Fatalf("BlockReason = %q, want exact-version", got)
+	}
+}
+
+func newBlockRuleServiceForTest(db *gorm.DB) *service.BlockRuleService {
+	return service.NewBlockRuleService(repository.NewBlockRuleRepository(db), nil)
 }
 
 func (fakeStorageBackend) Name() string               { return "fake" }

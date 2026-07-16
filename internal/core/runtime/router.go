@@ -229,13 +229,16 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		"remainingPath": resolved.RemainingPath,
 	}).Debug("router: request resolved")
 
-	// Block rule check — URL 路径匹配，去除前导 /
+	// Block rule check — URL 路径早阻断。
+	// router 在 Plugin 解析出包名/版本前只拿到剩余路径（非包名），故只评估按路径
+	// 形态匹配的通配符规则；精确/版本范围规则由 Plugin 解析后在 runtime 的
+	// checkBlocked/checkBlockedWithAttrs 中权威评估。
 	blockPath := resolved.RemainingPath
 	if len(blockPath) > 0 && blockPath[0] == '/' {
 		blockPath = blockPath[1:]
 	}
-	if r.Blocker != nil && r.Blocker.IsBlocked(repo.Format, blockPath, "*") {
-		reason := r.Blocker.BlockReason(repo.Format, blockPath, "*")
+	if r.Blocker != nil && r.Blocker.IsBlockedByPath(repo.Format, blockPath) {
+		reason := r.Blocker.BlockReasonByPath(repo.Format, blockPath)
 		r.logBlock(req.Context(), repo.Format, blockPath, getRealClientIP(req), req.UserAgent(), reason)
 		http.Error(w, "Blocked: "+reason, http.StatusForbidden)
 		return

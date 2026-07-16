@@ -14,6 +14,8 @@ func (routerAlwaysBlocker) BlockReason(string, string, string) string { return "
 func (routerAlwaysBlocker) IsBlockedWithAttrs(string, string, string, map[string]interface{}) (bool, string) {
 	return false, ""
 }
+func (routerAlwaysBlocker) IsBlockedByPath(string, string) bool     { return true }
+func (routerAlwaysBlocker) BlockReasonByPath(string, string) string { return "blocked" }
 
 type recordingAuditLogger struct{ entries []AuditEntry }
 
