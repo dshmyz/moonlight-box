@@ -72,7 +72,7 @@ func doBatchImportBlockRules(t *testing.T, handler *BlockRuleHandler, body strin
 	return w
 }
 
-func TestBlockRuleLogsAndStatsIncludeOnlyBlockActions(t *testing.T) {
+func TestBlockLogsAndStatsIncludeOnlyBlockActions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {

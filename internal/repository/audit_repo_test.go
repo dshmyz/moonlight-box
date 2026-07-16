@@ -8,7 +8,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestAuditRepositoryBlockQueriesExcludePackageDownloads(t *testing.T) {
+func TestAuditRepositoryBlockLogsAndStatsExcludePackageDownloads(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
