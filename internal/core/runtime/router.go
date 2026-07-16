@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -126,6 +128,21 @@ type RepositoryRouter struct {
 	ProxyLog      DownloadLogger
 }
 
+func (r *RepositoryRouter) logBlock(ctx context.Context, format, name, ip, userAgent, reason string) {
+	if r.AuditLog == nil {
+		return
+	}
+	r.AuditLog.Log(ctx, AuditEntry{
+		Action:         "block",
+		ResourceType:   format,
+		ResourceName:   name,
+		IPAddress:      ip,
+		UserAgent:      userAgent,
+		ResponseStatus: http.StatusForbidden,
+		Reason:         reason,
+	})
+}
+
 // DownloadCounter 下载计数器接口
 type DownloadCounter interface {
 	IncrementDownload(repoID uint, format, name, version string)
@@ -219,17 +236,7 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	if r.Blocker != nil && r.Blocker.IsBlocked(repo.Format, blockPath, "*") {
 		reason := r.Blocker.BlockReason(repo.Format, blockPath, "*")
-		// 审计日志：被阻断的请求
-		if r.AuditLog != nil {
-			r.AuditLog.Log(req.Context(), AuditEntry{
-				Action:         "download_blocked",
-				ResourceType:   repo.Format,
-				ResourceName:   blockPath,
-				IPAddress:      getRealClientIP(req),
-				UserAgent:      req.UserAgent(),
-				ResponseStatus: http.StatusForbidden,
-			})
-		}
+		r.logBlock(req.Context(), repo.Format, blockPath, getRealClientIP(req), req.UserAgent(), reason)
 		http.Error(w, "Blocked: "+reason, http.StatusForbidden)
 		return
 	}
@@ -340,9 +347,21 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 	}).Debug("router: calling plugin.Handle")
 
 	if err := plugin.Handle(ctx, runtime); err != nil {
-		if err == ErrBlocked {
+		if errors.Is(err, ErrBlocked) {
+			packageName := ctx.PackageName
+			if packageName == "" {
+				packageName = strings.TrimPrefix(ctx.RepositoryPath, "/")
+			}
+			reason := BlockReason(err)
+			if reason == "" && r.Blocker != nil {
+				reason = r.Blocker.BlockReason(ctx.Repository.Format, packageName, ctx.Version)
+			}
+			if reason == "" {
+				reason = "package is blocked by rule"
+			}
+			r.logBlock(ctx.Request.Context(), ctx.Repository.Format, packageName, getRealClientIP(ctx.Request), ctx.Request.UserAgent(), reason)
 			ctx.StatusCode = http.StatusForbidden
-			http.Error(ctx.Writer, "Blocked: package is blocked by rule", http.StatusForbidden)
+			http.Error(ctx.Writer, "Blocked: "+reason, http.StatusForbidden)
 			return
 		}
 		if err == ErrNotFound {

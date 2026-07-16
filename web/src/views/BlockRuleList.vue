@@ -68,8 +68,8 @@
               <el-table-column prop="version" label="版本" min-width="100" align="center" />
               <el-table-column prop="match_type" label="匹配类型" min-width="90" align="center">
                 <template #default="{ row }">
-                  <el-tag :class="['match-tag', row.match_type === 'exact' ? 'match-tag--exact' : 'match-tag--wildcard']" size="small">
-                    {{ row.match_type === 'exact' ? '精确' : '通配符' }}
+                  <el-tag :class="['match-tag', matchTypeClass(row.match_type)]" size="small">
+                    {{ matchTypeLabel(row.match_type) }}
                   </el-tag>
                 </template>
               </el-table-column>
@@ -200,6 +200,20 @@ const OPERATOR_LABELS: Record<string, string> = {
 const CONDITION_TYPE_LABELS: Record<string, string> = {
   license: 'License',
   publish_time: '发布时间',
+}
+
+const MATCH_TYPE_LABELS: Record<string, string> = {
+  exact: '精确',
+  wildcard: '通配符',
+  range: '版本范围',
+}
+
+const matchTypeLabel = (matchType: string) => MATCH_TYPE_LABELS[matchType] || matchType
+
+const matchTypeClass = (matchType: string) => {
+  if (matchType === 'range') return 'match-tag--range'
+  if (matchType === 'wildcard') return 'match-tag--wildcard'
+  return 'match-tag--exact'
 }
 
 // 生成条件摘要文案，如 "License 等于 GPL-3.0"
@@ -569,6 +583,11 @@ onMounted(loadRules)
 .match-tag--wildcard {
   background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
   color: #d97706;
+}
+
+.match-tag--range {
+  background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+  color: #16a34a;
 }
 
 .pkg-type {

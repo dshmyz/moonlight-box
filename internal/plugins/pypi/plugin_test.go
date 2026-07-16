@@ -1816,6 +1816,33 @@ func TestExtractPackageFromFilename(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// ErrBlocked 透传：runtime 返回 ErrBlocked 时，plugin.Handle 必须 return ErrBlocked，
+// 让 router 统一处理 403 响应 + 审计日志。不能被插件吞成 500/404 后 return nil。
+// ---------------------------------------------------------------------------
+
+func TestHandle_PackagesDownloadGetBlockedPropagatesErrBlocked(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{GetErr: runtime.ErrBlocked}
+
+	ctx, _ := newCtx("GET", "packages/62/35/lodash-4.17.21-py3-none-any.whl", nil)
+	err := p.Handle(ctx, rt)
+	if !errors.Is(err, runtime.ErrBlocked) {
+		t.Fatalf("Handle err = %v, want ErrBlocked (must propagate to router for audit log)", err)
+	}
+}
+
+func TestHandle_SimpleIndexQueryBlockedPropagatesErrBlocked(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{QueryErr: runtime.ErrBlocked}
+
+	ctx, _ := newCtx("GET", "simple/lodash/", nil)
+	err := p.Handle(ctx, rt)
+	if !errors.Is(err, runtime.ErrBlocked) {
+		t.Fatalf("Handle err = %v, want ErrBlocked (must propagate to router for audit log)", err)
+	}
+}
+
 func TestExtractVersionFromFilename_EdgeCases(t *testing.T) {
 	p := NewPyPIPlugin(http.DefaultClient)
 	tests := []struct {

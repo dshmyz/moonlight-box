@@ -27,7 +27,7 @@
           <p>从 Excel / Google Sheets 复制表格后直接粘贴到下方：</p>
           <el-alert type="info" :closable="false" show-icon>
             <template #title>
-              表头顺序：包名 | 版本 | 包类型(npm/maven) | 匹配类型(exact/wildcard) | 阻断原因
+              表头顺序：包名 | 版本 | 包类型(npm/maven) | 匹配类型(exact/wildcard/range) | 阻断原因
             </template>
           </el-alert>
         </div>
@@ -58,7 +58,7 @@
           </div>
           <el-alert type="info" :closable="false" show-icon style="margin-top: 8px">
             <template #title>
-              表格第一行为表头，列顺序：包名 | 版本 | 包类型(npm/maven) | 匹配类型(exact/wildcard) | 阻断原因
+              表格第一行为表头，列顺序：包名 | 版本 | 包类型(npm/maven) | 匹配类型(exact/wildcard/range) | 阻断原因
             </template>
           </el-alert>
         </div>
@@ -103,6 +103,7 @@ import { ElMessage } from 'element-plus'
 import * as XLSX from 'xlsx'
 import type { UploadFile } from 'element-plus'
 import { blockRuleApi, type BlockRuleCreateParams } from '@/api/blockRule'
+import type { BlockMatchType } from '@/api/blockRule'
 
 const props = defineProps<{
   visible: boolean
@@ -136,11 +137,12 @@ const parseRowToRule = (cells: string[]): BlockRuleCreateParams | null => {
   const pt = (packageType || 'npm').trim().toLowerCase()
   if (!['npm', 'maven'].includes(pt)) return null
   const mt = (matchType || 'exact').trim().toLowerCase()
+  const normalizedMatchType: BlockMatchType = ['wildcard', 'range'].includes(mt) ? (mt as BlockMatchType) : 'exact'
   return {
     package_name: packageName.trim(),
     version: version.trim(),
     package_type: pt,
-    match_type: mt === 'wildcard' ? 'wildcard' : 'exact',
+    match_type: normalizedMatchType,
     reason: (reason || '').trim(),
     enabled: true,
   }

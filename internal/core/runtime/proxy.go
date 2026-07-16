@@ -68,7 +68,7 @@ func (n *ProxyRuntime) checkBlocked(key ArtifactKey) error {
 	name := key.Name
 	ver := key.Version
 	if name != "" && n.Blocker.IsBlocked(n.Format, name, ver) {
-		return ErrBlocked
+		return NewBlockedError(n.Blocker.BlockReason(n.Format, name, ver))
 	}
 	return nil
 }
@@ -89,9 +89,9 @@ func (n *ProxyRuntime) checkBlockedWithAttrs(key ArtifactKey, artifact *Artifact
 	for k, v := range artifact.Attributes {
 		attrs[k] = v
 	}
-	blocked, _ := n.Blocker.IsBlockedWithAttrs(n.Format, name, ver, attrs)
+	blocked, reason := n.Blocker.IsBlockedWithAttrs(n.Format, name, ver, attrs)
 	if blocked {
-		return ErrBlocked
+		return NewBlockedError(reason)
 	}
 	return nil
 }
@@ -436,7 +436,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		name := query.Name
 		version := query.Version
 		if name != "" && n.Blocker.IsBlocked(n.Format, name, version) {
-			return nil, ErrBlocked
+			return nil, NewBlockedError(n.Blocker.BlockReason(n.Format, name, version))
 		}
 	}
 	query.RepositoryID = n.RepositoryID

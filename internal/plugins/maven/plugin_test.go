@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1722,5 +1723,43 @@ func TestHandle_MethodNotAllowed(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "method not allowed") {
 		t.Errorf("expected 'method not allowed' error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ErrBlocked 透传：runtime 返回 ErrBlocked 时，plugin.Handle 必须 return ErrBlocked，
+// 让 router 统一处理 403 响应 + 审计日志。不能被插件吞成 500/404 后 return nil。
+// ---------------------------------------------------------------------------
+
+func TestHandle_ArtifactDownloadGetBlockedPropagatesErrBlocked(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{GetErr: runtime.ErrBlocked}
+
+	ctx, _ := newCtx("GET", "com/google/guava/guava/32.1.3-jre/guava-32.1.3-jre.jar", nil)
+	err := p.Handle(ctx, rt)
+	if !errors.Is(err, runtime.ErrBlocked) {
+		t.Fatalf("Handle err = %v, want ErrBlocked (must propagate to router for audit log)", err)
+	}
+}
+
+func TestHandle_MetadataGetBlockedPropagatesErrBlocked(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{QueryErr: runtime.ErrBlocked}
+
+	ctx, _ := newCtx("GET", "com/google/guava/guava/maven-metadata.xml", nil)
+	err := p.Handle(ctx, rt)
+	if !errors.Is(err, runtime.ErrBlocked) {
+		t.Fatalf("Handle err = %v, want ErrBlocked (must propagate to router for audit log)", err)
+	}
+}
+
+func TestHandle_ChecksumDownloadGetBlockedPropagatesErrBlocked(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{GetErr: runtime.ErrBlocked}
+
+	ctx, _ := newCtx("GET", "com/google/guava/guava/32.1.3-jre/guava-32.1.3-jre.jar.sha1", nil)
+	err := p.Handle(ctx, rt)
+	if !errors.Is(err, runtime.ErrBlocked) {
+		t.Fatalf("Handle err = %v, want ErrBlocked (must propagate to router for audit log)", err)
 	}
 }

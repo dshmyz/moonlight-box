@@ -1,10 +1,12 @@
 import request from './request'
 
+export type BlockMatchType = 'exact' | 'wildcard' | 'range'
+
 export interface BlockRule {
   id: number
   package_name: string
   version: string
-  match_type: 'exact' | 'wildcard'
+  match_type: BlockMatchType
   package_type: string
   reason: string
   enabled: boolean
@@ -19,7 +21,7 @@ export interface BlockRule {
 export interface BlockRuleCreateParams {
   package_name: string
   version: string
-  match_type: 'exact' | 'wildcard'
+  match_type: BlockMatchType
   package_type: string
   reason: string
   enabled?: boolean

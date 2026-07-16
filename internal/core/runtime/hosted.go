@@ -7,15 +7,104 @@ import (
 )
 
 type HostedRuntime struct {
-	MetadataStore MetadataStore
-	BlobStore     BlobStore
-	RepositoryID  string
+	MetadataStore  MetadataStore
+	BlobStore      BlobStore
+	RepositoryID   string
+	Blocker        PackageBlocker
+	Format         string
+	ConditionAudit ConditionAuditLogger
+}
+
+func (n *HostedRuntime) checkBlocked(name, version string) error {
+	if n.Blocker != nil && name != "" && n.Blocker.IsBlocked(n.Format, name, version) {
+		return NewBlockedError(n.Blocker.BlockReason(n.Format, name, version))
+	}
+	return nil
+}
+
+func (n *HostedRuntime) checkBlockedWithAttrs(key ArtifactKey, artifact *Artifact) error {
+	if n.Blocker == nil || artifact == nil || key.Name == "" {
+		return nil
+	}
+	attrs := make(map[string]interface{}, len(artifact.Attributes))
+	for name, value := range artifact.Attributes {
+		attrs[name] = value
+	}
+	blocked, reason := n.Blocker.IsBlockedWithAttrs(n.Format, key.Name, key.Version, attrs)
+	if blocked {
+		return NewBlockedError(reason)
+	}
+	return nil
+}
+
+func (n *HostedRuntime) evaluateConditionalAccess(ctx context.Context, key ArtifactKey, artifact *Artifact) error {
+	conditional, ok := n.Blocker.(ConditionalBlocker)
+	if !ok || key.Name == "" {
+		return n.checkBlockedWithAttrs(key, artifact)
+	}
+	requirements := conditional.RequiredAttributes(n.Format, key.Name, key.Version)
+	if len(requirements) == 0 {
+		return n.checkBlockedWithAttrs(key, artifact)
+	}
+	missing := missingConditionAttributes(artifact, requirements)
+	if len(missing) > 0 {
+		n.auditConditionUnverified(ctx, key, requirements, missing)
+		return nil
+	}
+	return n.checkBlockedWithAttrs(key, artifact)
+}
+
+func (n *HostedRuntime) auditConditionUnverified(ctx context.Context, key ArtifactKey, requirements []ConditionRequirement, missing []string) {
+	if n.ConditionAudit == nil {
+		return
+	}
+	ruleIDs := make([]uint, 0, len(requirements))
+	for _, requirement := range requirements {
+		ruleIDs = append(ruleIDs, requirement.RuleID)
+	}
+	n.ConditionAudit.LogConditionUnverified(ctx, ConditionUnverifiedEntry{
+		RepositoryID:      n.RepositoryID,
+		Format:            n.Format,
+		Name:              key.Name,
+		Version:           key.Version,
+		RemotePath:        key.RemotePath,
+		RuleIDs:           ruleIDs,
+		MissingAttributes: missing,
+		Reason:            "unavailable",
+	})
+}
+
+func (n *HostedRuntime) filterBlockedArtifacts(ctx context.Context, artifacts []*Artifact) []*Artifact {
+	if n.Blocker == nil || len(artifacts) == 0 {
+		return artifacts
+	}
+	result := make([]*Artifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact == nil || artifact.Name == "" {
+			result = append(result, artifact)
+			continue
+		}
+		if err := n.evaluateConditionalAccess(ctx, ArtifactKey{
+			Name:       artifact.Name,
+			Version:    artifact.Version,
+			RemotePath: artifact.RemotePath,
+		}, artifact); err == nil {
+			result = append(result, artifact)
+		}
+	}
+	return result
 }
 
 func (n *HostedRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artifact, error) {
+	if err := n.checkBlocked(key.Name, key.Version); err != nil {
+		return nil, err
+	}
 	key.RepositoryID = n.RepositoryID
 	artifact, err := n.MetadataStore.Get(ctx, key)
 	if err != nil {
+		return nil, err
+	}
+	if err := n.evaluateConditionalAccess(ctx, key, artifact); err != nil {
 		return nil, err
 	}
 	if len(artifact.BlobRefs) > 0 {
@@ -40,17 +129,27 @@ func (n *HostedRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Arti
 }
 
 func (n *HostedRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
+	if err := n.checkBlocked(query.Name, query.Version); err != nil {
+		return nil, err
+	}
 	query.RepositoryID = n.RepositoryID
 	artifacts, err := n.MetadataStore.Query(ctx, query)
-	if err != nil || len(artifacts) > 0 {
-		return artifacts, err
+	if err != nil {
+		return nil, err
+	}
+	if len(artifacts) > 0 {
+		return n.filterBlockedArtifacts(ctx, artifacts), nil
 	}
 	if isPyPIPackageListProjection(query) {
 		query.RemotePath = ""
 		query.RemotePathPrefix = ""
-		return n.MetadataStore.Query(ctx, query)
+		artifacts, err = n.MetadataStore.Query(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		return n.filterBlockedArtifacts(ctx, artifacts), nil
 	}
-	return artifacts, nil
+	return n.filterBlockedArtifacts(ctx, artifacts), nil
 }
 
 func isPyPIPackageListProjection(query ArtifactQuery) bool {

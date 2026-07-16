@@ -225,6 +225,9 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, runtime.ErrNotFound
+		}
 		logrus.WithFields(logrus.Fields{
 			"fullURL":    fullURL,
 			"statusCode": resp.StatusCode,
@@ -763,8 +766,8 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 			// 继续走下方的 hasVersionArtifacts 逻辑，尝试 GetArtifact 或返回 404
 			artifacts = nil
 		} else {
-			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
-			return nil
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
 		}
 	}
 
@@ -1335,7 +1338,8 @@ func (p *MavenPlugin) handleChecksumDownload(ctx *runtime.RequestContext, repoRu
 		if errors.Is(err, runtime.ErrNotFound) {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		} else {
-			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
 		}
 		return nil
 	}
@@ -1432,7 +1436,8 @@ func (p *MavenPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime ru
 		if errors.Is(err, runtime.ErrNotFound) {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		} else {
-			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
 		}
 		return nil
 	}

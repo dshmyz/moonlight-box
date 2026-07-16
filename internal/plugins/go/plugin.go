@@ -138,6 +138,9 @@ func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, runtime.ErrNotFound
+		}
 		logrus.WithFields(logrus.Fields{
 			"fullURL":    fullURL,
 			"statusCode": resp.StatusCode,
@@ -258,6 +261,9 @@ func (p *GoPlugin) fetchLatest(ctx context.Context, remoteURL, path string) ([]*
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, runtime.ErrNotFound
+		}
 		return nil, fmt.Errorf("go: fetch @latest from %s: status %d", fullURL, resp.StatusCode)
 	}
 
@@ -580,32 +586,43 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 
 	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 	if err != nil {
-		if errors.Is(err, runtime.ErrNotFound) {
-			artifacts, queryErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
-				RepositoryID: ctx.Repository.ID,
-				Format:       "go",
-				Name:         modulePath,
-				Version:      cleanVersion,
-				Path:         modulePath + "/@v",
-				Filename:     filename,
-				RemotePath:   path,
-				Qualifiers: map[string]string{
-					"module": modulePath,
-					"ext":    fileType,
-				},
-			})
-			if queryErr == nil && len(artifacts) > 0 {
-				artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
+		if !errors.Is(err, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
+		}
+		// ErrNotFound: 尝试 QueryArtifacts 回源后再 GetArtifact
+		artifacts, queryErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+			RepositoryID: ctx.Repository.ID,
+			Format:       "go",
+			Name:         modulePath,
+			Version:      cleanVersion,
+			Path:         modulePath + "/@v",
+			Filename:     filename,
+			RemotePath:   path,
+			Qualifiers: map[string]string{
+				"module": modulePath,
+				"ext":    fileType,
+			},
+		})
+		if queryErr != nil {
+			if errors.Is(queryErr, runtime.ErrNotFound) {
+				http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+				return nil
 			}
+			return queryErr
 		}
-	}
-	if err != nil {
-		if errors.Is(err, runtime.ErrNotFound) {
+		if len(artifacts) == 0 {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-		} else {
-			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			return nil
 		}
-		return nil
+		artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
+		if err != nil {
+			if errors.Is(err, runtime.ErrNotFound) {
+				http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+				return nil
+			}
+			return err
+		}
 	}
 	if artifact.Content == nil {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)

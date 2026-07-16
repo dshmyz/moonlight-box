@@ -3,6 +3,7 @@ package gomod
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -911,5 +912,21 @@ func TestFetchRemote_SemanticImportVersion(t *testing.T) {
 	}
 	if arts[0].Qualifiers["module"] != "github.com/labstack/echo/v4" {
 		t.Errorf("module = %q, want 'github.com/labstack/echo/v4'", arts[0].Qualifiers["module"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ErrBlocked 透传：runtime 返回 ErrBlocked 时，plugin.Handle 必须 return ErrBlocked，
+// 让 router 统一处理 403 响应 + 审计日志。不能被插件吞成 500/404 后 return nil。
+// ---------------------------------------------------------------------------
+
+func TestHandle_ModuleDownloadGetBlockedPropagatesErrBlocked(t *testing.T) {
+	p := NewGoPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{GetErr: runtime.ErrBlocked}
+
+	ctx, _ := newCtx("GET", "github.com/labstack/echo/v4/@v/v4.0.0.zip", nil)
+	err := p.Handle(ctx, rt)
+	if !errors.Is(err, runtime.ErrBlocked) {
+		t.Fatalf("Handle err = %v, want ErrBlocked (must propagate to router for audit log)", err)
 	}
 }

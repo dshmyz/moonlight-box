@@ -206,6 +206,9 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, runtime.ErrNotFound
+		}
 		logrus.WithFields(logrus.Fields{
 			"fullURL":    fullURL,
 			"statusCode": resp.StatusCode,
@@ -312,6 +315,9 @@ func (p *YumPlugin) fetchPrimaryIndexPackages(ctx context.Context, remoteURL str
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, runtime.ErrNotFound
+		}
 		return nil, fmt.Errorf("yum: fetch primary from %s: status %d", fullURL, resp.StatusCode)
 	}
 
@@ -506,7 +512,14 @@ func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtim
 		RemotePath:   path,
 	}
 
-	if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
+	artifact, getErr := repoRuntime.GetArtifact(ctx.Request.Context(), key)
+	if getErr != nil {
+		if !errors.Is(getErr, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return getErr
+		}
+		// ErrNotFound: 继续走缓存/回源 fallback
+	} else if artifact.Content != nil {
 		defer artifact.Content.Close()
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
@@ -535,7 +548,15 @@ func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtim
 		Format:       "yum",
 		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
 	})
-	if err != nil || len(artifacts) == 0 {
+	if err != nil {
+		if !errors.Is(err, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
+		}
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	if len(artifacts) == 0 {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
@@ -616,7 +637,14 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 		RemotePath:   path,
 	}
 
-	if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
+	artifact, getErr := repoRuntime.GetArtifact(ctx.Request.Context(), key)
+	if getErr != nil {
+		if !errors.Is(getErr, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return getErr
+		}
+		// ErrNotFound: 继续走缓存/回源 fallback
+	} else if artifact.Content != nil {
 		defer artifact.Content.Close()
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
@@ -648,25 +676,42 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 		Format:       "yum",
 		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
 	})
-	if err != nil || len(artifacts) == 0 {
+	if err != nil {
+		if !errors.Is(err, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
+		}
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	if len(artifacts) == 0 {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
 	if isCompressedYumMetadata(filename) {
-		if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
-			defer artifact.Content.Close()
-			ctx.FromCache = artifact.FromCache
-			ctx.RemoteURL = artifact.RemoteURL
-			ctx.SizeBytes = artifact.SizeBytes
-			ctx.Writer.Header().Set("Content-Type", contentTypeForFile(filename))
-			ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
-			ctx.Writer.WriteHeader(http.StatusOK)
-			if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
-				logrus.WithError(err).Warn("failed to write artifact content to client")
+		artifact, getErr := repoRuntime.GetArtifact(ctx.Request.Context(), key)
+		if getErr != nil {
+			if !errors.Is(getErr, runtime.ErrNotFound) {
+				// 其他错误（含 ErrBlocked）交给 router 处理
+				return getErr
 			}
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
 		}
-		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		if artifact.Content == nil {
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
+		defer artifact.Content.Close()
+		ctx.FromCache = artifact.FromCache
+		ctx.RemoteURL = artifact.RemoteURL
+		ctx.SizeBytes = artifact.SizeBytes
+		ctx.Writer.Header().Set("Content-Type", contentTypeForFile(filename))
+		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
+		ctx.Writer.WriteHeader(http.StatusOK)
+		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+			logrus.WithError(err).Warn("failed to write artifact content to client")
+		}
 		return nil
 	}
 	var b strings.Builder
@@ -741,7 +786,13 @@ func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime ru
 	switch ctx.Request.Method {
 	case http.MethodGet, http.MethodHead:
 		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
-		if err == nil && artifact.Content != nil {
+		if err != nil {
+			if !errors.Is(err, runtime.ErrNotFound) {
+				// 其他错误（含 ErrBlocked）交给 router 处理
+				return err
+			}
+			// ErrNotFound: 继续走回源 fallback
+		} else if artifact.Content != nil {
 			defer artifact.Content.Close()
 			ctx.FromCache = artifact.FromCache
 			ctx.RemoteURL = artifact.RemoteURL
@@ -758,14 +809,30 @@ func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime ru
 			Format:       "yum",
 			RemotePath:   path,
 		})
-		if err != nil || len(artifacts) == 0 {
+		if err != nil {
+			if !errors.Is(err, runtime.ErrNotFound) {
+				// 其他错误（含 ErrBlocked）交给 router 处理
+				return err
+			}
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
+		if len(artifacts) == 0 {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
 		}
 
 		// 回源成功后再次通过 GetArtifact 获取带 blob 的完整 artifact
 		artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
-		if err != nil || artifact.Content == nil {
+		if err != nil {
+			if !errors.Is(err, runtime.ErrNotFound) {
+				// 其他错误（含 ErrBlocked）交给 router 处理
+				return err
+			}
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
+		if artifact.Content == nil {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
 		}
@@ -805,7 +872,14 @@ func (p *YumPlugin) handleRepodataGeneric(ctx *runtime.RequestContext, repoRunti
 	}
 
 	// 尝试从本地缓存或 MetadataStore 获取
-	if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
+	artifact, getErr := repoRuntime.GetArtifact(ctx.Request.Context(), key)
+	if getErr != nil {
+		if !errors.Is(getErr, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return getErr
+		}
+		// ErrNotFound: 继续走回源 fallback
+	} else if artifact.Content != nil {
 		defer artifact.Content.Close()
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
@@ -825,14 +899,30 @@ func (p *YumPlugin) handleRepodataGeneric(ctx *runtime.RequestContext, repoRunti
 		Format:       "yum",
 		RemotePath:   path,
 	})
-	if err != nil || len(artifacts) == 0 {
+	if err != nil {
+		if !errors.Is(err, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
+		}
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	if len(artifacts) == 0 {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
 
 	// 回源成功后再次获取带 blob 的完整 artifact
-	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
-	if err != nil || artifact.Content == nil {
+	artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
+	if err != nil {
+		if !errors.Is(err, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
+		}
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	if artifact.Content == nil {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}

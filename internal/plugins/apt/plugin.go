@@ -213,6 +213,9 @@ func (p *AptPlugin) fetchPackagesIndex(ctx context.Context, remoteURL, path stri
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, runtime.ErrNotFound
+		}
 		logrus.WithFields(logrus.Fields{
 			"fullURL":    fullURL,
 			"statusCode": resp.StatusCode,
@@ -412,7 +415,13 @@ func (p *AptPlugin) handleInRelease(ctx *runtime.RequestContext, repoRuntime run
 	}
 
 	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
-	if err == nil && artifact.Content != nil {
+	if err != nil {
+		if !errors.Is(err, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
+		}
+		// ErrNotFound: 继续走回源 fallback
+	} else if artifact.Content != nil {
 		defer artifact.Content.Close()
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
@@ -429,14 +438,30 @@ func (p *AptPlugin) handleInRelease(ctx *runtime.RequestContext, repoRuntime run
 		Format:       "apt",
 		RemotePath:   path,
 	})
-	if err != nil || len(artifacts) == 0 {
+	if err != nil {
+		if !errors.Is(err, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
+		}
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	if len(artifacts) == 0 {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
 
 	// 回源成功后再次获取带 blob 的完整 artifact
 	artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
-	if err != nil || artifact.Content == nil {
+	if err != nil {
+		if !errors.Is(err, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
+		}
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	if artifact.Content == nil {
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
@@ -470,7 +495,14 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 		RemotePath:   path,
 	}
 
-	if artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key); err == nil && artifact.Content != nil {
+	artifact, getErr := repoRuntime.GetArtifact(ctx.Request.Context(), key)
+	if getErr != nil {
+		if !errors.Is(getErr, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return getErr
+		}
+		// ErrNotFound: 继续走缓存/回源 fallback
+	} else if artifact.Content != nil {
 		defer artifact.Content.Close()
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
@@ -491,13 +523,29 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 			Format:       "apt",
 			RemotePath:   path,
 		})
-		if err != nil || len(artifacts) == 0 {
+		if err != nil {
+			if !errors.Is(err, runtime.ErrNotFound) {
+				// 其他错误（含 ErrBlocked）交给 router 处理
+				return err
+			}
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
+		if len(artifacts) == 0 {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
 		}
 		// 回源成功后再次获取带 blob 的完整 artifact
 		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
-		if err != nil || artifact.Content == nil {
+		if err != nil {
+			if !errors.Is(err, runtime.ErrNotFound) {
+				// 其他错误（含 ErrBlocked）交给 router 处理
+				return err
+			}
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
+		if artifact.Content == nil {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
 		}
@@ -533,7 +581,11 @@ func (p *AptPlugin) handlePackages(ctx *runtime.RequestContext, repoRuntime runt
 		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		if !errors.Is(err, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
+		}
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
 	var b strings.Builder
@@ -599,7 +651,13 @@ func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime ru
 	switch ctx.Request.Method {
 	case http.MethodGet, http.MethodHead:
 		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
-		if err == nil && artifact.Content != nil {
+		if err != nil {
+			if !errors.Is(err, runtime.ErrNotFound) {
+				// 其他错误（含 ErrBlocked）交给 router 处理
+				return err
+			}
+			// ErrNotFound: 继续走回源 fallback
+		} else if artifact.Content != nil {
 			defer artifact.Content.Close()
 			ctx.FromCache = artifact.FromCache
 			ctx.RemoteURL = artifact.RemoteURL
@@ -616,14 +674,30 @@ func (p *AptPlugin) handleDebPackage(ctx *runtime.RequestContext, repoRuntime ru
 			Format:       "apt",
 			RemotePath:   path,
 		})
-		if err != nil || len(artifacts) == 0 {
+		if err != nil {
+			if !errors.Is(err, runtime.ErrNotFound) {
+				// 其他错误（含 ErrBlocked）交给 router 处理
+				return err
+			}
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
+		if len(artifacts) == 0 {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
 		}
 
 		// 回源成功后再次获取带 blob 的完整 artifact
 		artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
-		if err != nil || artifact.Content == nil {
+		if err != nil {
+			if !errors.Is(err, runtime.ErrNotFound) {
+				// 其他错误（含 ErrBlocked）交给 router 处理
+				return err
+			}
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
+		if artifact.Content == nil {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
 		}
