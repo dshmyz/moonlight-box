@@ -33,6 +33,32 @@ func TestHostedRuntimeQueryArtifactsBlocksMatchingPackage(t *testing.T) {
 	}
 }
 
+// TestHostedRuntimeQueryArtifactsDoesNotAutoFallbackForPyPIPath 确认 Runtime 层不再感知
+// PyPI 协议路径布局：对 simple/<name>/ 形态的查询查空时，Runtime 不会自动发起清空
+// RemotePath 的二次查询（该回退已下沉到 PyPI 插件）。
+func TestHostedRuntimeQueryArtifactsDoesNotAutoFallbackForPyPIPath(t *testing.T) {
+	store := &hostedTestMetadataStore{} // artifacts 为空
+	hosted := &HostedRuntime{RepositoryID: "repo", Format: "pypi", MetadataStore: store}
+
+	artifacts, err := hosted.QueryArtifacts(context.Background(), ArtifactQuery{
+		Format:     "pypi",
+		Name:       "requests",
+		RemotePath: "simple/requests/",
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(artifacts) != 0 {
+		t.Fatalf("expected empty result, got %d artifacts", len(artifacts))
+	}
+	if store.queryCalls != 1 {
+		t.Fatalf("expected exactly 1 query (no auto-fallback), got %d", store.queryCalls)
+	}
+	if got := store.lastQuery.RemotePath; got != "simple/requests/" {
+		t.Fatalf("query RemotePath = %q, want simple/requests/ (unmodified)", got)
+	}
+}
+
 type licenseBlocker struct{}
 
 func (licenseBlocker) IsBlocked(string, string, string) bool     { return false }
@@ -180,8 +206,10 @@ func assertHostedConditionUnverified(t *testing.T, entries []ConditionUnverified
 }
 
 type hostedTestMetadataStore struct {
-	artifact  *Artifact
-	artifacts []*Artifact
+	artifact    *Artifact
+	artifacts   []*Artifact
+	queryCalls  int
+	lastQuery   ArtifactQuery
 }
 
 func (s *hostedTestMetadataStore) Get(context.Context, ArtifactKey) (*Artifact, error) {
@@ -193,7 +221,9 @@ func (s *hostedTestMetadataStore) Get(context.Context, ArtifactKey) (*Artifact, 
 func (s *hostedTestMetadataStore) Put(context.Context, *Artifact) error        { return nil }
 func (s *hostedTestMetadataStore) BatchPut(context.Context, []*Artifact) error { return nil }
 func (s *hostedTestMetadataStore) Delete(context.Context, ArtifactKey) error   { return nil }
-func (s *hostedTestMetadataStore) Query(context.Context, ArtifactQuery) ([]*Artifact, error) {
+func (s *hostedTestMetadataStore) Query(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
+	s.queryCalls++
+	s.lastQuery = query
 	return s.artifacts, nil
 }
 

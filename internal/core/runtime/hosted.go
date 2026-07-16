@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"io"
-	"strings"
 )
 
 type HostedRuntime struct {
@@ -137,26 +136,9 @@ func (n *HostedRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery)
 	if err != nil {
 		return nil, err
 	}
-	if len(artifacts) > 0 {
-		return n.filterBlockedArtifacts(ctx, artifacts), nil
-	}
-	if isPyPIPackageListProjection(query) {
-		query.RemotePath = ""
-		query.RemotePathPrefix = ""
-		artifacts, err = n.MetadataStore.Query(ctx, query)
-		if err != nil {
-			return nil, err
-		}
-		return n.filterBlockedArtifacts(ctx, artifacts), nil
-	}
+	// Runtime 层不感知协议路径布局（如 PyPI 的 simple/<name>）；
+	// 包列表投影所需的按 Name 聚合回退由对应协议插件发起二次查询完成。
 	return n.filterBlockedArtifacts(ctx, artifacts), nil
-}
-
-func isPyPIPackageListProjection(query ArtifactQuery) bool {
-	if query.Format != "pypi" || query.Name == "" || query.RemotePath == "" {
-		return false
-	}
-	return strings.Trim(query.RemotePath, "/") == "simple/"+query.Name
 }
 
 func (n *HostedRuntime) RenderProjection(ctx context.Context, query ProjectionQuery) (*ProjectionResult, error) {
