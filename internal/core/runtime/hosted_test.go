@@ -135,6 +135,33 @@ func TestHostedRuntimeQueryArtifactsAllowsAndAuditsMissingConditionalAttribute(t
 	assertHostedConditionUnverified(t, audit.entries)
 }
 
+type noRequirementLicenseBlocker struct{}
+
+func (noRequirementLicenseBlocker) IsBlocked(string, string, string) bool     { return false }
+func (noRequirementLicenseBlocker) BlockReason(string, string, string) string { return "" }
+func (noRequirementLicenseBlocker) IsBlockedWithAttrs(_ string, _ string, _ string, attrs map[string]interface{}) (bool, string) {
+	return attrs["license"] == "GPL-3.0", "license"
+}
+func (noRequirementLicenseBlocker) RequiredAttributes(string, string, string) []ConditionRequirement {
+	return nil
+}
+
+func TestHostedRuntimeQueryArtifactsFiltersConditionalBlockerWithoutRequiredAttributes(t *testing.T) {
+	store := &hostedTestMetadataStore{artifacts: []*Artifact{
+		{Name: "copyleft", Version: "1.0.0", Attributes: map[string]string{"license": "GPL-3.0"}},
+		{Name: "permissive", Version: "1.0.0", Attributes: map[string]string{"license": "MIT"}},
+	}}
+	hosted := &HostedRuntime{MetadataStore: store, RepositoryID: "repo", Format: "npm", Blocker: noRequirementLicenseBlocker{}}
+
+	artifacts, err := hosted.QueryArtifacts(context.Background(), ArtifactQuery{})
+	if err != nil {
+		t.Fatalf("query artifacts: %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Name != "permissive" {
+		t.Fatalf("artifacts = %#v, want only permissive artifact", artifacts)
+	}
+}
+
 func assertHostedConditionUnverified(t *testing.T, entries []ConditionUnverifiedEntry) {
 	t.Helper()
 	if len(entries) != 1 {

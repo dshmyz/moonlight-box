@@ -44,7 +44,7 @@ func (n *HostedRuntime) evaluateConditionalAccess(ctx context.Context, key Artif
 	}
 	requirements := conditional.RequiredAttributes(n.Format, key.Name, key.Version)
 	if len(requirements) == 0 {
-		return nil
+		return n.checkBlockedWithAttrs(key, artifact)
 	}
 	missing := missingConditionAttributes(artifact, requirements)
 	if len(missing) > 0 {
