@@ -569,6 +569,64 @@ func TestIsBlocked_RangeMatchTypeMatchesSemanticVersionRange(t *testing.T) {
 	}
 }
 
+func TestIsBlocked_RangeMatchTypeSupportsHyphenVersionRange(t *testing.T) {
+	svc, _ := setupBlockRuleService(t)
+
+	rule := model.BlockRule{
+		PackageName: "commons-io",
+		Version:     "2.1.10-2.1.101",
+		MatchType:   model.BlockMatchRange,
+		PackageType: "maven",
+		Enabled:     true,
+	}
+	if err := svc.Create(&rule); err != nil {
+		t.Fatalf("create hyphen range rule: %v", err)
+	}
+
+	cases := []struct {
+		version string
+		blocked bool
+	}{
+		{version: "2.1.9", blocked: false},
+		{version: "2.1.10", blocked: true},
+		{version: "2.1.55", blocked: true},
+		{version: "2.1.101", blocked: true},
+		{version: "2.1.102", blocked: false},
+	}
+	for _, tc := range cases {
+		result, err := svc.IsBlocked("maven", "commons-io", tc.version)
+		if err != nil {
+			t.Fatalf("IsBlocked %s: %v", tc.version, err)
+		}
+		if result.Blocked != tc.blocked {
+			t.Fatalf("commons-io@%s blocked=%v, want %v", tc.version, result.Blocked, tc.blocked)
+		}
+	}
+}
+
+func TestCreateAllowsPrereleaseRangeWithoutTreatingItAsHyphenRange(t *testing.T) {
+	svc, _ := setupBlockRuleService(t)
+
+	rule := model.BlockRule{
+		PackageName: "next-pkg",
+		Version:     "1.0.0-beta",
+		MatchType:   model.BlockMatchRange,
+		PackageType: "npm",
+		Enabled:     true,
+	}
+	if err := svc.Create(&rule); err != nil {
+		t.Fatalf("create prerelease range rule: %v", err)
+	}
+
+	result, err := svc.IsBlocked("npm", "next-pkg", "1.0.0-beta")
+	if err != nil {
+		t.Fatalf("IsBlocked prerelease: %v", err)
+	}
+	if !result.Blocked {
+		t.Fatalf("期望 1.0.0-beta 按 SemVer 原生约束命中，实际 blocked=false")
+	}
+}
+
 func TestIsBlockedWithArtifact_RangeMatchTypeSupportsConditionalRules(t *testing.T) {
 	svc, _ := setupBlockRuleService(t)
 

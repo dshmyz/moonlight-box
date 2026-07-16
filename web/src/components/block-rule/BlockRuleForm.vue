@@ -10,7 +10,7 @@
         支持 * 通配符，如 4.* 匹配所有 4.x 版本
       </div>
       <div v-else-if="form.match_type === 'range'" class="form-tip">
-        支持 SemVer 范围，如 &gt;=1.2.0 &lt;2.0.0、^1.2.0、~1.2.0
+        支持 SemVer 范围，如 &gt;=1.2.0 &lt;2.0.0、^1.2.0、2.1.10-2.1.101
       </div>
     </el-form-item>
 
@@ -174,7 +174,7 @@ const versionPlaceholder = computed(() => {
     case 'wildcard':
       return '4.*'
     case 'range':
-      return '>=1.2.0 <2.0.0 或 ^1.2.0'
+      return '>=1.2.0 <2.0.0 或 2.1.10-2.1.101'
     default:
       return '4.17.20'
   }

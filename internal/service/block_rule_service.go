@@ -69,6 +69,8 @@ type BlockResult struct {
 
 var ErrInvalidBlockRule = errors.New("invalid block rule")
 
+var hyphenVersionRangePattern = regexp.MustCompile(`^\s*(\d+\.\d+\.\d+)\s*-\s*(\d+\.\d+\.\d+)\s*$`)
+
 func invalidBlockRule(format string, args ...interface{}) error {
 	return fmt.Errorf("%w: %s", ErrInvalidBlockRule, fmt.Sprintf(format, args...))
 }
@@ -376,7 +378,16 @@ func parseVersionConstraint(version string) (*semver.Constraints, error) {
 	if version == "*" {
 		return nil, nil
 	}
+	version = normalizeHyphenVersionRange(version)
 	return semver.NewConstraint(version)
+}
+
+func normalizeHyphenVersionRange(version string) string {
+	matches := hyphenVersionRangePattern.FindStringSubmatch(version)
+	if len(matches) != 3 {
+		return version
+	}
+	return fmt.Sprintf(">=%s <=%s", matches[1], matches[2])
 }
 
 func versionMatchesConstraint(constraint *semver.Constraints, version string) bool {
