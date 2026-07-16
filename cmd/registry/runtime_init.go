@@ -128,6 +128,8 @@ func createRuntimeForRepo(
 			MetadataStore: metadataStore,
 			BlobStore:     blobStore,
 			RepositoryID:  fmt.Sprintf("%d", repo.ID),
+			Blocker:       blocker,
+			Format:        repo.PackageType,
 		}, nil
 
 	case model.RepoTypeProxy:
@@ -233,6 +235,8 @@ func createGroupRuntime(
 					MetadataStore: memberMeta,
 					BlobStore:     memberBlob,
 					RepositoryID:  memberID,
+					Blocker:       blocker,
+					Format:        memberRepo.PackageType,
 				}
 				node = n
 				if writable == nil {

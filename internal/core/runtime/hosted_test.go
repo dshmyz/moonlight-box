@@ -1,0 +1,105 @@
+package runtime
+
+import (
+	"context"
+	"errors"
+	"io"
+	"testing"
+)
+
+type alwaysBlocker struct{}
+
+func (alwaysBlocker) IsBlocked(string, string, string) bool     { return true }
+func (alwaysBlocker) BlockReason(string, string, string) string { return "blocked" }
+func (alwaysBlocker) IsBlockedWithAttrs(string, string, string, map[string]interface{}) (bool, string) {
+	return false, ""
+}
+
+func TestHostedRuntimeGetArtifactBlocksMatchingPackage(t *testing.T) {
+	hosted := &HostedRuntime{RepositoryID: "repo", Format: "npm", Blocker: alwaysBlocker{}}
+
+	_, err := hosted.GetArtifact(context.Background(), ArtifactKey{Name: "left-pad", Version: "1.3.0"})
+	if !errors.Is(err, ErrBlocked) {
+		t.Fatalf("err = %v, want ErrBlocked", err)
+	}
+}
+
+func TestHostedRuntimeQueryArtifactsBlocksMatchingPackage(t *testing.T) {
+	hosted := &HostedRuntime{RepositoryID: "repo", Format: "npm", Blocker: alwaysBlocker{}}
+
+	_, err := hosted.QueryArtifacts(context.Background(), ArtifactQuery{Name: "left-pad", Version: "1.3.0"})
+	if !errors.Is(err, ErrBlocked) {
+		t.Fatalf("err = %v, want ErrBlocked", err)
+	}
+}
+
+type licenseBlocker struct{}
+
+func (licenseBlocker) IsBlocked(string, string, string) bool     { return false }
+func (licenseBlocker) BlockReason(string, string, string) string { return "" }
+func (licenseBlocker) IsBlockedWithAttrs(_ string, _ string, _ string, attrs map[string]interface{}) (bool, string) {
+	return attrs["license"] == "GPL-3.0", "license"
+}
+
+func TestHostedRuntimeGetArtifactBlocksConditionalLocalArtifactBeforeOpeningBlob(t *testing.T) {
+	store := &hostedTestMetadataStore{artifact: &Artifact{
+		Name:       "copyleft",
+		Version:    "1.0.0",
+		Attributes: map[string]string{"license": "GPL-3.0"},
+		BlobRefs:   []BlobRef{{Digest: "copyleft.tgz"}},
+	}}
+	blobs := &hostedTestBlobStore{}
+	hosted := &HostedRuntime{MetadataStore: store, BlobStore: blobs, RepositoryID: "repo", Format: "npm", Blocker: licenseBlocker{}}
+
+	_, err := hosted.GetArtifact(context.Background(), ArtifactKey{Name: "copyleft", Version: "1.0.0"})
+	if !errors.Is(err, ErrBlocked) {
+		t.Fatalf("err = %v, want ErrBlocked", err)
+	}
+	if blobs.openCalls != 0 {
+		t.Fatalf("blob open calls = %d, want 0", blobs.openCalls)
+	}
+}
+
+func TestHostedRuntimeQueryArtifactsFiltersConditionalLocalArtifacts(t *testing.T) {
+	store := &hostedTestMetadataStore{artifacts: []*Artifact{
+		{Name: "copyleft", Version: "1.0.0", Attributes: map[string]string{"license": "GPL-3.0"}},
+		{Name: "permissive", Version: "1.0.0", Attributes: map[string]string{"license": "MIT"}},
+	}}
+	hosted := &HostedRuntime{MetadataStore: store, RepositoryID: "repo", Format: "npm", Blocker: licenseBlocker{}}
+
+	artifacts, err := hosted.QueryArtifacts(context.Background(), ArtifactQuery{Name: "packages"})
+	if err != nil {
+		t.Fatalf("query artifacts: %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Name != "permissive" {
+		t.Fatalf("artifacts = %#v, want only MIT artifact", artifacts)
+	}
+}
+
+type hostedTestMetadataStore struct {
+	artifact  *Artifact
+	artifacts []*Artifact
+}
+
+func (s *hostedTestMetadataStore) Get(context.Context, ArtifactKey) (*Artifact, error) {
+	if s.artifact == nil {
+		return nil, ErrNotFound
+	}
+	return s.artifact, nil
+}
+func (s *hostedTestMetadataStore) Put(context.Context, *Artifact) error        { return nil }
+func (s *hostedTestMetadataStore) BatchPut(context.Context, []*Artifact) error { return nil }
+func (s *hostedTestMetadataStore) Delete(context.Context, ArtifactKey) error   { return nil }
+func (s *hostedTestMetadataStore) Query(context.Context, ArtifactQuery) ([]*Artifact, error) {
+	return s.artifacts, nil
+}
+
+type hostedTestBlobStore struct{ openCalls int }
+
+func (s *hostedTestBlobStore) Put(io.Reader) (BlobRef, error) { return BlobRef{}, nil }
+func (s *hostedTestBlobStore) Open(BlobRef) (io.ReadCloser, error) {
+	s.openCalls++
+	return io.NopCloser(nil), nil
+}
+func (*hostedTestBlobStore) Stat(BlobRef) (*BlobMetadata, error) { return nil, nil }
+func (*hostedTestBlobStore) Delete(BlobRef) error                { return nil }
