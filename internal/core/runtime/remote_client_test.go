@@ -33,6 +33,40 @@ func TestHTTPRemoteClientOpenPreservesStatusHeadersAndUnreadBody(t *testing.T) {
 	}
 }
 
+func TestHTTPRemoteClientOpenPreservesRedirectResponse(t *testing.T) {
+	redirectTargetReached := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/target" {
+			redirectTargetReached = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		w.Header().Set("Location", "/target")
+		w.Header().Set("X-Upstream", "redirect")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+
+	result, err := NewHTTPRemoteClient(srv.Client()).Open(context.Background(), RemoteRequest{
+		URL: srv.URL, Method: http.MethodGet,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Body.Close()
+
+	if result.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("status = %d, want %d", result.StatusCode, http.StatusTemporaryRedirect)
+	}
+	if result.Header.Get("Location") != "/target" || result.Header.Get("X-Upstream") != "redirect" {
+		t.Fatalf("headers = %#v, want upstream redirect headers", result.Header)
+	}
+	if redirectTargetReached {
+		t.Fatal("Open followed the upstream redirect")
+	}
+}
+
 func TestHTTPRemoteClientFetchMetadataFallsBackToGETWhenHEADUnsupported(t *testing.T) {
 	var sawHead, sawGet bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

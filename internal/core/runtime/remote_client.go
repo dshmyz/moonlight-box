@@ -35,7 +35,11 @@ func (c *HTTPRemoteClient) Open(ctx context.Context, request RemoteRequest) (*Re
 	}
 	req.Header = request.Headers.Clone()
 
-	resp, err := c.client.Do(req)
+	client := *c.client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("opening remote response: %w", err)
 	}
