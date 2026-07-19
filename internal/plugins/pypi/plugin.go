@@ -418,7 +418,7 @@ func (p *PyPIPlugin) writeRemoteSimpleIndex(ctx *runtime.RequestContext, respons
 	}
 	mergeVaryToken(ctx.Writer.Header(), "Accept")
 	ctx.Writer.WriteHeader(response.StatusCode)
-	if ctx.Request.Method == http.MethodGet && response.Body != nil {
+	if ctx.Request.Method == http.MethodGet && response.StatusCode != http.StatusNotModified && response.Body != nil {
 		if _, err := io.Copy(ctx.Writer, response.Body); err != nil {
 			logrus.WithError(err).Warn("pypi: stream remote simple index failed")
 		}

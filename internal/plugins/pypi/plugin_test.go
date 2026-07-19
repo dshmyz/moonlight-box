@@ -1051,6 +1051,68 @@ func TestHandle_SimpleIndexRemoteHEADForwardsStatusAndHeadersWithoutBody(t *test
 	}
 }
 
+func TestHandle_SimpleIndexRemote304DoesNotReadOrWriteBody(t *testing.T) {
+	body := &streamingOnlyBody{chunk: []byte("must not be written"), chunkCount: 1}
+	rt := &simpleIndexRemoteRuntime{
+		MockRuntime: &testhelper.MockRuntime{},
+		response: &runtime.RemoteResponse{
+			StatusCode: http.StatusNotModified,
+			Header:     http.Header{"ETag": {`"root-v1"`}},
+			Body:       body,
+		},
+	}
+	ctx, w := newCtx(http.MethodGet, "simple/", nil)
+
+	if err := NewPyPIPlugin(http.DefaultClient).Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	if w.Code != http.StatusNotModified {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusNotModified)
+	}
+	if body.writeToUsed {
+		t.Error("304 response body was read")
+	}
+	if w.Body.Len() != 0 {
+		t.Fatalf("304 body = %q, want empty", w.Body.String())
+	}
+	if !body.closed {
+		t.Error("remote body was not closed")
+	}
+}
+
+func TestHandle_SimpleIndexRemotePreservesContentTypeHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		remoteHeader http.Header
+		wantPresent  bool
+		wantValue    string
+	}{
+		{name: "absent", remoteHeader: http.Header{}, wantPresent: false},
+		{name: "charset free", remoteHeader: http.Header{"Content-Type": {"text/html"}}, wantPresent: true, wantValue: "text/html"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := &simpleIndexRemoteRuntime{
+				MockRuntime: &testhelper.MockRuntime{},
+				response:    &runtime.RemoteResponse{StatusCode: http.StatusNotModified, Header: tc.remoteHeader},
+			}
+			ctx, w := newCtx(http.MethodGet, "simple/", nil)
+
+			if err := NewPyPIPlugin(http.DefaultClient).Handle(ctx, rt); err != nil {
+				t.Fatalf("Handle failed: %v", err)
+			}
+
+			_, present := w.Header()["Content-Type"]
+			if present != tc.wantPresent {
+				t.Fatalf("Content-Type present = %t, want %t; headers=%v", present, tc.wantPresent, w.Header())
+			}
+			if got := w.Header().Get("Content-Type"); got != tc.wantValue {
+				t.Errorf("Content-Type = %q, want %q", got, tc.wantValue)
+			}
+		})
+	}
+}
+
 func TestHandle_SimpleIndexRemoteForwardsErrorStatuses(t *testing.T) {
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		for _, status := range []int{http.StatusNotFound, http.StatusServiceUnavailable} {

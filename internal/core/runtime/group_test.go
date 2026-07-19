@@ -39,6 +39,24 @@ func TestGroupRuntimeOpenRemoteReturnsUnsupportedWhenAllMembersDecline(t *testin
 	}
 }
 
+func TestGroupRuntimeOpenRemoteReturnsFirstNonUnsupportedErrorWithoutCallingLaterMembers(t *testing.T) {
+	errUpstream := errors.New("upstream unavailable")
+	first := &groupErrorNode{err: errUpstream}
+	later := &groupErrorNode{err: ErrRemoteUnsupported}
+	group := &GroupRuntime{Members: []RepositoryNode{&HostedRuntime{}, first, later}}
+
+	_, err := group.OpenRemote(context.Background(), RemoteOpenRequest{Path: "package.tgz", Method: http.MethodGet})
+	if !errors.Is(err, errUpstream) {
+		t.Fatalf("error = %v, want %v", err, errUpstream)
+	}
+	if first.openCalls != 1 {
+		t.Fatalf("first member OpenRemote calls = %d, want 1", first.openCalls)
+	}
+	if later.openCalls != 0 {
+		t.Fatalf("later member OpenRemote calls = %d, want 0", later.openCalls)
+	}
+}
+
 func TestGroupQueryArtifactsPropagatesBlocked(t *testing.T) {
 	group := &GroupRuntime{
 		Members: []RepositoryNode{
@@ -336,7 +354,8 @@ func (n *groupQueryNode) DeleteArtifact(ctx context.Context, key ArtifactKey) er
 
 // groupErrorNode 模拟查询失败的成员
 type groupErrorNode struct {
-	err error
+	err       error
+	openCalls int
 }
 
 func (n *groupErrorNode) GetArtifact(ctx context.Context, key ArtifactKey) (*Artifact, error) {
@@ -352,6 +371,7 @@ func (n *groupErrorNode) RenderProjection(ctx context.Context, query ProjectionQ
 }
 
 func (n *groupErrorNode) OpenRemote(context.Context, RemoteOpenRequest) (*RemoteResponse, error) {
+	n.openCalls++
 	return nil, n.err
 }
 
