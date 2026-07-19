@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -35,6 +36,13 @@ type errBlockedWithReasonPlugin struct{}
 func (errBlockedWithReasonPlugin) Name() string { return "npm" }
 func (errBlockedWithReasonPlugin) Handle(*RequestContext, RepositoryRuntime) error {
 	return NewBlockedError("检测到严重安全漏洞")
+}
+
+type errUpstreamUnavailablePlugin struct{}
+
+func (errUpstreamUnavailablePlugin) Name() string { return "npm" }
+func (errUpstreamUnavailablePlugin) Handle(*RequestContext, RepositoryRuntime) error {
+	return fmt.Errorf("open remote: %w", ErrUpstreamUnavailable)
 }
 
 type routerTestRuntime struct{}
@@ -112,6 +120,16 @@ func TestRepositoryRouterReturnsRuntimeBlockReason(t *testing.T) {
 	}
 	if body := response.Body.String(); body != "Blocked: 检测到严重安全漏洞\n" {
 		t.Fatalf("body = %q, want runtime block reason", body)
+	}
+}
+
+func TestRouterMapsUpstreamUnavailableToBadGateway(t *testing.T) {
+	router := newRouterForTest(nil, nil, errUpstreamUnavailablePlugin{})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/repository/npm/left-pad", nil))
+
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", response.Code)
 	}
 }
 

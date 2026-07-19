@@ -372,6 +372,11 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return
 		}
+		if errors.Is(err, ErrUpstreamUnavailable) {
+			ctx.StatusCode = http.StatusBadGateway
+			http.Error(ctx.Writer, "Bad Gateway", http.StatusBadGateway)
+			return
+		}
 		ctx.StatusCode = http.StatusInternalServerError
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 	}
