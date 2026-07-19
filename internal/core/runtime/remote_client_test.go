@@ -2,11 +2,36 @@ package runtime
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+func TestHTTPRemoteClientOpenPreservesStatusHeadersAndUnreadBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("retry later"))
+	}))
+	defer srv.Close()
+
+	result, err := NewHTTPRemoteClient(srv.Client()).Open(context.Background(), RemoteRequest{
+		URL: srv.URL, Method: http.MethodGet,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Body.Close()
+	if result.StatusCode != http.StatusServiceUnavailable || result.Header.Get("ETag") != `"v1"` {
+		t.Fatal("response lost")
+	}
+	body, _ := io.ReadAll(result.Body)
+	if string(body) != "retry later" {
+		t.Fatalf("body = %q", body)
+	}
+}
 
 func TestHTTPRemoteClientFetchMetadataFallsBackToGETWhenHEADUnsupported(t *testing.T) {
 	var sawHead, sawGet bool

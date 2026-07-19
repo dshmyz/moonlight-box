@@ -25,6 +25,28 @@ func NewHTTPRemoteClient(client *http.Client) *HTTPRemoteClient {
 	return &HTTPRemoteClient{client: client}
 }
 
+// Open sends a raw upstream request and preserves its response for the caller.
+// HTTP status codes are returned as responses; only request construction and
+// transport failures are returned as errors.
+func (c *HTTPRemoteClient) Open(ctx context.Context, request RemoteRequest) (*RemoteResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, request.Method, request.URL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header = request.Headers.Clone()
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("opening remote response: %w", err)
+	}
+
+	return &RemoteResponse{
+		StatusCode: resp.StatusCode,
+		Header:     resp.Header.Clone(),
+		Body:       resp.Body,
+	}, nil
+}
+
 func (c *HTTPRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (*RemoteMetadata, error) {
 	remoteURL := key.RemoteURL
 	if remoteURL == "" {

@@ -638,6 +638,10 @@ func (c *threadSafeRemoteClient) FetchBlob(ctx context.Context, key ArtifactKey)
 	return io.NopCloser(strings.NewReader(blob)), nil
 }
 
+func (c *threadSafeRemoteClient) Open(ctx context.Context, request RemoteRequest) (*RemoteResponse, error) {
+	return nil, ErrNotFound
+}
+
 func (c *threadSafeRemoteClient) metadataCallCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -885,6 +889,9 @@ type fakeRemoteClient struct {
 	metadataErr   error
 	metadataCalls int
 	blob          io.ReadCloser
+	openResponse  *RemoteResponse
+	openErr       error
+	openRequest   RemoteRequest
 }
 
 func (c *fakeRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (*RemoteMetadata, error) {
@@ -903,6 +910,14 @@ func (c *fakeRemoteClient) FetchBlob(ctx context.Context, key ArtifactKey) (io.R
 		return c.blob, nil
 	}
 	return io.NopCloser(nil), ErrNotFound
+}
+
+func (c *fakeRemoteClient) Open(ctx context.Context, request RemoteRequest) (*RemoteResponse, error) {
+	c.openRequest = request
+	if c.openErr != nil {
+		return nil, c.openErr
+	}
+	return c.openResponse, nil
 }
 
 type fakeBlobStore struct {

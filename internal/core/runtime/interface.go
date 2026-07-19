@@ -57,9 +57,22 @@ type ContextBlobDeleter interface {
 	DeleteContext(ctx context.Context, ref BlobRef) error
 }
 
+type RemoteRequest struct {
+	URL     string
+	Method  string
+	Headers http.Header
+}
+
+type RemoteResponse struct {
+	StatusCode int
+	Header     http.Header
+	Body       io.ReadCloser
+}
+
 type RemoteClient interface {
 	FetchMetadata(ctx context.Context, key ArtifactKey) (*RemoteMetadata, error)
 	FetchBlob(ctx context.Context, key ArtifactKey) (io.ReadCloser, error)
+	Open(ctx context.Context, request RemoteRequest) (*RemoteResponse, error)
 }
 
 type RepositoryManager interface {
