@@ -18,6 +18,7 @@ type RepositoryRuntime interface {
 	GetArtifact(ctx context.Context, key ArtifactKey) (*Artifact, error)
 	QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error)
 	RenderProjection(ctx context.Context, query ProjectionQuery) (*ProjectionResult, error)
+	OpenRemote(ctx context.Context, request RemoteOpenRequest) (*RemoteResponse, error)
 	BeginUpload(ctx context.Context, request UploadRequest) (UploadSession, error)
 	DeleteArtifact(ctx context.Context, key ArtifactKey) error
 }
@@ -26,6 +27,7 @@ type RepositoryNode interface {
 	GetArtifact(ctx context.Context, key ArtifactKey) (*Artifact, error)
 	QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error)
 	RenderProjection(ctx context.Context, query ProjectionQuery) (*ProjectionResult, error)
+	OpenRemote(ctx context.Context, request RemoteOpenRequest) (*RemoteResponse, error)
 	BeginUpload(ctx context.Context, request UploadRequest) (UploadSession, error)
 	DeleteArtifact(ctx context.Context, key ArtifactKey) error
 }
@@ -59,6 +61,12 @@ type ContextBlobDeleter interface {
 
 type RemoteRequest struct {
 	URL     string
+	Method  string
+	Headers http.Header
+}
+
+type RemoteOpenRequest struct {
+	Path    string
 	Method  string
 	Headers http.Header
 }

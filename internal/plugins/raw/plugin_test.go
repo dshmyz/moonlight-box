@@ -118,6 +118,10 @@ func (r *directoryListingRuntime) RenderProjection(ctx context.Context, query ru
 	return nil, runtime.ErrNotFound
 }
 
+func (r *directoryListingRuntime) OpenRemote(context.Context, runtime.RemoteOpenRequest) (*runtime.RemoteResponse, error) {
+	return nil, runtime.ErrRemoteUnsupported
+}
+
 func (r *directoryListingRuntime) BeginUpload(ctx context.Context, req runtime.UploadRequest) (runtime.UploadSession, error) {
 	return nil, runtime.ErrReadOnly
 }

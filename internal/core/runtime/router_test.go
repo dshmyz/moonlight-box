@@ -48,6 +48,9 @@ func (routerTestRuntime) QueryArtifacts(context.Context, ArtifactQuery) ([]*Arti
 func (routerTestRuntime) RenderProjection(context.Context, ProjectionQuery) (*ProjectionResult, error) {
 	return nil, ErrNotFound
 }
+func (routerTestRuntime) OpenRemote(context.Context, RemoteOpenRequest) (*RemoteResponse, error) {
+	return nil, ErrRemoteUnsupported
+}
 func (routerTestRuntime) BeginUpload(context.Context, UploadRequest) (UploadSession, error) {
 	return nil, ErrNotFound
 }

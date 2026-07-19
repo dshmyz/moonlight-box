@@ -12,6 +12,19 @@ type GroupRuntime struct {
 	Writable RepositoryNode
 }
 
+func (g *GroupRuntime) OpenRemote(ctx context.Context, request RemoteOpenRequest) (*RemoteResponse, error) {
+	for _, node := range g.Members {
+		response, err := node.OpenRemote(ctx, request)
+		if err == nil {
+			return response, nil
+		}
+		if !errors.Is(err, ErrRemoteUnsupported) {
+			return nil, err
+		}
+	}
+	return nil, ErrRemoteUnsupported
+}
+
 func (g *GroupRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artifact, error) {
 	var firstErr error
 	for i, node := range g.Members {

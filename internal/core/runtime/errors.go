@@ -3,12 +3,14 @@ package runtime
 import "errors"
 
 var (
-	ErrNotFound       = errors.New("not found")
-	ErrNotImplemented = errors.New("not implemented")
-	ErrReadOnly       = errors.New("read only")
-	ErrNotMatched     = errors.New("not matched")
-	ErrInvalidUpload  = errors.New("invalid upload session state")
-	ErrBlocked        = errors.New("blocked by rule")
+	ErrNotFound            = errors.New("not found")
+	ErrNotImplemented      = errors.New("not implemented")
+	ErrReadOnly            = errors.New("read only")
+	ErrNotMatched          = errors.New("not matched")
+	ErrInvalidUpload       = errors.New("invalid upload session state")
+	ErrBlocked             = errors.New("blocked by rule")
+	ErrRemoteUnsupported   = errors.New("remote open unsupported")
+	ErrUpstreamUnavailable = errors.New("upstream unavailable")
 )
 
 // BlockedError preserves a safe, user-facing rule reason while remaining

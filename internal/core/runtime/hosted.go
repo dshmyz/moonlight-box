@@ -5,6 +5,10 @@ import (
 	"io"
 )
 
+func (n *HostedRuntime) OpenRemote(context.Context, RemoteOpenRequest) (*RemoteResponse, error) {
+	return nil, ErrRemoteUnsupported
+}
+
 type HostedRuntime struct {
 	MetadataStore  MetadataStore
 	BlobStore      BlobStore

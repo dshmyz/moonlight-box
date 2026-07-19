@@ -713,6 +713,10 @@ func (r *goQueryThenGetRuntime) RenderProjection(ctx context.Context, query runt
 	return nil, runtime.ErrNotFound
 }
 
+func (r *goQueryThenGetRuntime) OpenRemote(context.Context, runtime.RemoteOpenRequest) (*runtime.RemoteResponse, error) {
+	return nil, runtime.ErrRemoteUnsupported
+}
+
 func (r *goQueryThenGetRuntime) BeginUpload(ctx context.Context, req runtime.UploadRequest) (runtime.UploadSession, error) {
 	return nil, runtime.ErrReadOnly
 }

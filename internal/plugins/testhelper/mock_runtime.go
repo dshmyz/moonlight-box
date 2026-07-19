@@ -68,6 +68,10 @@ func (m *MockRuntime) RenderProjection(ctx context.Context, query runtime.Projec
 	return nil, runtime.ErrNotFound
 }
 
+func (m *MockRuntime) OpenRemote(context.Context, runtime.RemoteOpenRequest) (*runtime.RemoteResponse, error) {
+	return nil, runtime.ErrRemoteUnsupported
+}
+
 func (m *MockRuntime) BeginUpload(ctx context.Context, req runtime.UploadRequest) (runtime.UploadSession, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

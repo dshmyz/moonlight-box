@@ -13,6 +13,67 @@ import (
 	"time"
 )
 
+func TestProxyRuntimeOpenRemoteForwardsSafeHeadersWithoutMetadataAccess(t *testing.T) {
+	store := newFakeMetadataStore()
+	remote := &fakeRemoteClient{openResponse: &RemoteResponse{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"ETag":       {"upstream-etag"},
+			"Connection": {"close"},
+		},
+		Body: io.NopCloser(strings.NewReader("upstream body")),
+	}}
+	runtime := &ProxyRuntime{
+		MetadataStore: store,
+		RemoteClient:  remote,
+		RemoteBaseURL: "https://upstream.example/base/",
+	}
+
+	response, err := runtime.OpenRemote(context.Background(), RemoteOpenRequest{
+		Path:   "packages/example.tgz",
+		Method: http.MethodGet,
+		Headers: http.Header{
+			"Accept":        {"application/octet-stream"},
+			"Authorization": {"Bearer secret"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("OpenRemote failed: %v", err)
+	}
+	defer response.Body.Close()
+
+	if got, want := remote.openRequest.URL, "https://upstream.example/base/packages/example.tgz"; got != want {
+		t.Fatalf("upstream URL = %q, want %q", got, want)
+	}
+	if got := remote.openRequest.Headers.Get("Accept"); got != "application/octet-stream" {
+		t.Fatalf("upstream Accept = %q", got)
+	}
+	if got := remote.openRequest.Headers.Get("Authorization"); got != "" {
+		t.Fatalf("upstream Authorization = %q, want empty", got)
+	}
+	if got := response.Header.Get("ETag"); got != "upstream-etag" {
+		t.Fatalf("response ETag = %q", got)
+	}
+	if got := response.Header.Get("Connection"); got != "" {
+		t.Fatalf("response Connection = %q, want empty", got)
+	}
+	if store.queryCalls != 0 || store.putCalls != 0 {
+		t.Fatalf("metadata store accessed: query=%d put=%d", store.queryCalls, store.putCalls)
+	}
+}
+
+func TestProxyRuntimeOpenRemoteWrapsTransportErrors(t *testing.T) {
+	runtime := &ProxyRuntime{
+		RemoteClient:  &fakeRemoteClient{openErr: errors.New("dial upstream")},
+		RemoteBaseURL: "https://upstream.example",
+	}
+
+	_, err := runtime.OpenRemote(context.Background(), RemoteOpenRequest{Path: "package.tgz", Method: http.MethodGet})
+	if !errors.Is(err, ErrUpstreamUnavailable) {
+		t.Fatalf("error = %v, want ErrUpstreamUnavailable", err)
+	}
+}
+
 func TestProxyRuntimeServesStaleMetadataWhenRefreshFails(t *testing.T) {
 	ctx := context.Background()
 	key := ArtifactKey{RepositoryID: "repo", Format: "npm", Filename: "pkg"}
@@ -274,11 +335,12 @@ func TestProxyRuntimeCachesRemoteMissingMetadata(t *testing.T) {
 }
 
 type fakeMetadataStore struct {
-	artifact *Artifact
-	getCalls int
-	putCalls int
-	deleted  bool
-	batchErr error
+	artifact   *Artifact
+	getCalls   int
+	putCalls   int
+	queryCalls int
+	deleted    bool
+	batchErr   error
 }
 
 func newFakeMetadataStore() *fakeMetadataStore {
@@ -319,6 +381,7 @@ func (s *fakeMetadataStore) Delete(ctx context.Context, key ArtifactKey) error {
 }
 
 func (s *fakeMetadataStore) Query(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
+	s.queryCalls++
 	if s.artifact == nil || s.deleted {
 		return nil, nil
 	}
@@ -1209,6 +1272,10 @@ func (f *fakeFetcher) wasCalled() bool {
 type fakeQueryNode struct {
 	artifacts []*Artifact
 	err       error
+}
+
+func (f *fakeQueryNode) OpenRemote(context.Context, RemoteOpenRequest) (*RemoteResponse, error) {
+	return nil, ErrRemoteUnsupported
 }
 
 func (f *fakeQueryNode) GetArtifact(ctx context.Context, key ArtifactKey) (*Artifact, error) {

@@ -3,8 +3,41 @@ package runtime
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 )
+
+func TestGroupRuntimeOpenRemoteSkipsHostedMember(t *testing.T) {
+	proxy := &ProxyRuntime{
+		RemoteBaseURL: "https://upstream.example",
+		RemoteClient: &fakeRemoteClient{openResponse: &RemoteResponse{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"ETag": {"upstream-etag"}},
+			Body:       io.NopCloser(strings.NewReader("body")),
+		}},
+	}
+	group := &GroupRuntime{Members: []RepositoryNode{&HostedRuntime{}, proxy}}
+
+	response, err := group.OpenRemote(context.Background(), RemoteOpenRequest{Path: "package.tgz", Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("OpenRemote failed: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+}
+
+func TestGroupRuntimeOpenRemoteReturnsUnsupportedWhenAllMembersDecline(t *testing.T) {
+	group := &GroupRuntime{Members: []RepositoryNode{&HostedRuntime{}, &HostedRuntime{}}}
+
+	_, err := group.OpenRemote(context.Background(), RemoteOpenRequest{Path: "package.tgz", Method: http.MethodGet})
+	if !errors.Is(err, ErrRemoteUnsupported) {
+		t.Fatalf("error = %v, want ErrRemoteUnsupported", err)
+	}
+}
 
 func TestGroupQueryArtifactsPropagatesBlocked(t *testing.T) {
 	group := &GroupRuntime{
@@ -289,6 +322,10 @@ func (n *groupQueryNode) RenderProjection(ctx context.Context, query ProjectionQ
 	return nil, ErrNotFound
 }
 
+func (n *groupQueryNode) OpenRemote(context.Context, RemoteOpenRequest) (*RemoteResponse, error) {
+	return nil, ErrRemoteUnsupported
+}
+
 func (n *groupQueryNode) BeginUpload(ctx context.Context, request UploadRequest) (UploadSession, error) {
 	return nil, ErrReadOnly
 }
@@ -314,6 +351,10 @@ func (n *groupErrorNode) RenderProjection(ctx context.Context, query ProjectionQ
 	return nil, n.err
 }
 
+func (n *groupErrorNode) OpenRemote(context.Context, RemoteOpenRequest) (*RemoteResponse, error) {
+	return nil, n.err
+}
+
 func (n *groupErrorNode) BeginUpload(ctx context.Context, request UploadRequest) (UploadSession, error) {
 	return nil, n.err
 }
@@ -336,6 +377,10 @@ func (n *groupArtifactNode) QueryArtifacts(ctx context.Context, query ArtifactQu
 
 func (n *groupArtifactNode) RenderProjection(ctx context.Context, query ProjectionQuery) (*ProjectionResult, error) {
 	return nil, ErrNotFound
+}
+
+func (n *groupArtifactNode) OpenRemote(context.Context, RemoteOpenRequest) (*RemoteResponse, error) {
+	return nil, ErrRemoteUnsupported
 }
 
 func (n *groupArtifactNode) BeginUpload(ctx context.Context, request UploadRequest) (UploadSession, error) {

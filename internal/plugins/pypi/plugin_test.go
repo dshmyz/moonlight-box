@@ -511,6 +511,10 @@ func (r *queryThenGetRuntime) RenderProjection(ctx context.Context, query runtim
 	return nil, runtime.ErrNotFound
 }
 
+func (r *queryThenGetRuntime) OpenRemote(context.Context, runtime.RemoteOpenRequest) (*runtime.RemoteResponse, error) {
+	return nil, runtime.ErrRemoteUnsupported
+}
+
 func (r *queryThenGetRuntime) BeginUpload(ctx context.Context, req runtime.UploadRequest) (runtime.UploadSession, error) {
 	return nil, errors.New("not implemented")
 }

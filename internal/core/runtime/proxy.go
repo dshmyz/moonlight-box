@@ -44,6 +44,70 @@ type ProxyRuntime struct {
 	metadataFailures  map[string]time.Time
 }
 
+var hopByHopHeaders = map[string]struct{}{
+	"Connection":          {},
+	"Keep-Alive":          {},
+	"Proxy-Authenticate":  {},
+	"Proxy-Authorization": {},
+	"TE":                  {},
+	"Trailer":             {},
+	"Transfer-Encoding":   {},
+	"Upgrade":             {},
+}
+
+func (n *ProxyRuntime) OpenRemote(ctx context.Context, request RemoteOpenRequest) (*RemoteResponse, error) {
+	method := strings.ToUpper(request.Method)
+	if method != http.MethodGet && method != http.MethodHead {
+		return nil, ErrRemoteUnsupported
+	}
+	if strings.TrimSpace(n.RemoteBaseURL) == "" {
+		return nil, ErrRemoteUnsupported
+	}
+	if n.RemoteClient == nil {
+		return nil, fmt.Errorf("%w: remote client is not configured", ErrUpstreamUnavailable)
+	}
+
+	headers := make(http.Header)
+	for _, name := range []string{"Accept", "If-None-Match", "If-Modified-Since"} {
+		if values := request.Headers.Values(name); len(values) > 0 {
+			headers[name] = append([]string(nil), values...)
+		}
+	}
+	headers.Set("User-Agent", "Moonlight-Registry/1.0")
+	remoteURL := strings.TrimRight(n.RemoteBaseURL, "/") + "/" + strings.TrimLeft(request.Path, "/")
+	start := time.Now()
+	response, err := n.RemoteClient.Open(ctx, RemoteRequest{URL: remoteURL, Method: method, Headers: headers})
+	if err != nil {
+		metrics.RecordProxyFetch(n.Format, "error", time.Since(start).Seconds())
+		return nil, fmt.Errorf("%w: %v", ErrUpstreamUnavailable, err)
+	}
+	if response == nil {
+		metrics.RecordProxyFetch(n.Format, "error", time.Since(start).Seconds())
+		return nil, fmt.Errorf("%w: empty upstream response", ErrUpstreamUnavailable)
+	}
+	metrics.RecordProxyFetch(n.Format, "success", time.Since(start).Seconds())
+	response.Header = filterHopByHopHeaders(response.Header)
+	return response, nil
+}
+
+func filterHopByHopHeaders(headers http.Header) http.Header {
+	filtered := make(http.Header, len(headers))
+	for name, values := range headers {
+		for _, value := range values {
+			filtered.Add(name, value)
+		}
+	}
+	for _, value := range headers.Values("Connection") {
+		for _, name := range strings.Split(value, ",") {
+			filtered.Del(strings.TrimSpace(name))
+		}
+	}
+	for name := range hopByHopHeaders {
+		filtered.Del(name)
+	}
+	return filtered
+}
+
 type cachedArtifact struct {
 	artifact  *Artifact
 	expiresAt time.Time

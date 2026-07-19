@@ -529,6 +529,10 @@ func (r *npmQueryThenGetRuntime) RenderProjection(ctx context.Context, query run
 	return nil, runtime.ErrNotFound
 }
 
+func (r *npmQueryThenGetRuntime) OpenRemote(context.Context, runtime.RemoteOpenRequest) (*runtime.RemoteResponse, error) {
+	return nil, runtime.ErrRemoteUnsupported
+}
+
 func (r *npmQueryThenGetRuntime) BeginUpload(ctx context.Context, req runtime.UploadRequest) (runtime.UploadSession, error) {
 	return nil, runtime.ErrReadOnly
 }
