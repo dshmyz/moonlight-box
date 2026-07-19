@@ -29,9 +29,13 @@ nor allowed for the opaque root-index stream.
 
 ## Interfaces
 
-`runtime.RemoteRequest` contains a relative repository path, HTTP method, and
-incoming headers. It deliberately has no upstream URL: Runtime owns that
-configuration.
+`runtime.RemoteOpenRequest` is the Plugin-facing request. It contains a
+relative repository path, HTTP method, and incoming headers, and deliberately
+has no upstream URL because Runtime owns that configuration.
+
+`runtime.RemoteRequest` is the Runtime-to-transport request. It contains the
+fully resolved upstream URL, HTTP method, and Runtime-selected headers. Plugins
+never construct or send this full-URL request.
 
 `runtime.RemoteResponse` contains the upstream status code, response headers,
 and an unread `io.ReadCloser`. The caller owns closing a non-nil body.
@@ -80,6 +84,13 @@ response is written directly: copy allowed headers, merge `Vary: Accept`, write
 the upstream status, and copy the body only for GET. For HEAD and 304, no body
 is written. Package-level simple paths remain semantic Runtime queries.
 
+For a streamed GET body whose upstream response has no `Content-Type`, the
+Plugin writes an explicit empty `Content-Type` response header before the
+status and body. This suppresses Go `net/http` MIME sniffing, so the downstream
+response still has no MIME value. It does not preserve literal wire-level
+header absence: the downstream header is present with an empty value. An
+upstream charset-free value such as `text/html` is forwarded unchanged.
+
 When `OpenRemote` returns `ErrRemoteUnsupported`, PyPI runs the existing local
 artifact query and renders the hosted HTML or JSON simple index. Other errors
 are returned for the Runtime router to map.
@@ -110,7 +121,9 @@ Plugin-local cache.
 - HEAD makes an upstream HEAD request and writes no body.
 - GET and HEAD forward matching upstream 404 and 503 statuses.
 - Network errors map to 502.
-- Missing or charset-free `Content-Type` is passed through unchanged.
+- A missing `Content-Type` on a streamed GET is represented downstream by an
+  explicit empty value to prevent MIME sniffing; charset-free values are
+  forwarded unchanged.
 - PyPI source has no `remote_url` access or direct HTTP in its `Handle` path.
 - Group root-index tests document that the response is browse/probe only, not a
   complete catalog; package-level paths retain semantic Runtime queries.

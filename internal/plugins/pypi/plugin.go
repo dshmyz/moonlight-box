@@ -411,6 +411,9 @@ func (p *PyPIPlugin) writeRemoteSimpleIndex(ctx *runtime.RequestContext, respons
 	if response.Body != nil {
 		defer response.Body.Close()
 	}
+	if _, present := response.Header["Content-Type"]; !present && ctx.Request.Method == http.MethodGet && response.StatusCode != http.StatusNotModified && response.Body != nil {
+		ctx.Writer.Header().Set("Content-Type", "")
+	}
 	for key, vals := range response.Header {
 		for _, v := range vals {
 			ctx.Writer.Header().Add(key, v)

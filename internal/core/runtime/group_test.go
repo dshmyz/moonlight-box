@@ -30,6 +30,37 @@ func TestGroupRuntimeOpenRemoteSkipsHostedMember(t *testing.T) {
 	}
 }
 
+func TestGroupRuntimeOpenRemoteReturnsFirstSuccessfulMemberWithoutCallingLaterSuccess(t *testing.T) {
+	firstBody := io.NopCloser(strings.NewReader("first"))
+	first := &groupOpenNode{response: &RemoteResponse{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"X-Member": {"first"}},
+		Body:       firstBody,
+	}}
+	later := &groupOpenNode{response: &RemoteResponse{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"X-Member": {"later"}},
+		Body:       io.NopCloser(strings.NewReader("later")),
+	}}
+	group := &GroupRuntime{Members: []RepositoryNode{&HostedRuntime{}, first, later}}
+
+	response, err := group.OpenRemote(context.Background(), RemoteOpenRequest{Path: "simple/", Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("OpenRemote failed: %v", err)
+	}
+	defer response.Body.Close()
+
+	if got := response.Header.Get("X-Member"); got != "first" {
+		t.Fatalf("X-Member = %q, want first", got)
+	}
+	if first.openCalls != 1 {
+		t.Fatalf("first successful member calls = %d, want 1", first.openCalls)
+	}
+	if later.openCalls != 0 {
+		t.Fatalf("later successful member calls = %d, want 0", later.openCalls)
+	}
+}
+
 func TestGroupRuntimeOpenRemoteReturnsUnsupportedWhenAllMembersDecline(t *testing.T) {
 	group := &GroupRuntime{Members: []RepositoryNode{&HostedRuntime{}, &HostedRuntime{}}}
 
@@ -326,6 +357,18 @@ func TestGroupQueryArtifactsAggregatesMavenMetadataAcrossMembers(t *testing.T) {
 
 type groupQueryNode struct {
 	artifacts []*Artifact
+}
+
+type groupOpenNode struct {
+	HostedRuntime
+	response  *RemoteResponse
+	err       error
+	openCalls int
+}
+
+func (n *groupOpenNode) OpenRemote(context.Context, RemoteOpenRequest) (*RemoteResponse, error) {
+	n.openCalls++
+	return n.response, n.err
 }
 
 func (n *groupQueryNode) GetArtifact(ctx context.Context, key ArtifactKey) (*Artifact, error) {

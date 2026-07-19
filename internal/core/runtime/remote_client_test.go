@@ -33,6 +33,27 @@ func TestHTTPRemoteClientOpenPreservesStatusHeadersAndUnreadBody(t *testing.T) {
 	}
 }
 
+func TestHTTPRemoteClientOpenPropagatesHEADMethod(t *testing.T) {
+	method := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	result, err := NewHTTPRemoteClient(srv.Client()).Open(context.Background(), RemoteRequest{
+		URL: srv.URL, Method: http.MethodHead,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Body.Close()
+
+	if method != http.MethodHead {
+		t.Fatalf("upstream method = %q, want HEAD", method)
+	}
+}
+
 func TestHTTPRemoteClientOpenPreservesRedirectResponse(t *testing.T) {
 	redirectTargetReached := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

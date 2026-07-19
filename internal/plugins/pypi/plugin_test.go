@@ -1113,6 +1113,87 @@ func TestHandle_SimpleIndexRemotePreservesContentTypeHeader(t *testing.T) {
 	}
 }
 
+func TestHandle_SimpleIndexRemoteGETPreservesContentTypeAtNetHTTPBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		upstream  http.Header
+		wantValue string
+	}{
+		{name: "missing is not MIME-sniffed", upstream: http.Header{}, wantValue: ""},
+		{name: "charset-free is unchanged", upstream: http.Header{"Content-Type": {"text/html"}}, wantValue: "text/html"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := &simpleIndexRemoteRuntime{
+				MockRuntime: &testhelper.MockRuntime{},
+				response: &runtime.RemoteResponse{
+					StatusCode: http.StatusOK,
+					Header:     tc.upstream,
+					Body:       io.NopCloser(strings.NewReader("<html><body>root index</body></html>")),
+				},
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				ctx := &runtime.RequestContext{
+					Writer:         w,
+					Request:        request,
+					Repository:     &runtime.Repository{ID: "1", Name: "pypi-group", Format: "pypi", Type: "group"},
+					RepositoryPath: "/simple/",
+				}
+				if err := NewPyPIPlugin(http.DefaultClient).Handle(ctx, rt); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+			}))
+			defer server.Close()
+
+			response, err := server.Client().Get(server.URL + "/repository/pypi-group/simple/")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if got := response.Header.Get("Content-Type"); got != tc.wantValue {
+				t.Fatalf("client Content-Type = %q, want %q; headers=%v", got, tc.wantValue, response.Header)
+			}
+		})
+	}
+}
+
+type pypiGroupPackageMember struct {
+	*testhelper.MockRuntime
+	openCalls int
+}
+
+func (m *pypiGroupPackageMember) OpenRemote(context.Context, runtime.RemoteOpenRequest) (*runtime.RemoteResponse, error) {
+	m.openCalls++
+	return nil, runtime.ErrRemoteUnsupported
+}
+
+func TestHandle_GroupPackageSimplePathUsesSemanticQueryNotRootOpenRemote(t *testing.T) {
+	artifact := testhelper.NewArtifact("pypi", "package-file", map[string]string{
+		"name":        "requests",
+		"version":     "2.28.0",
+		"filename":    "requests-2.28.0.tar.gz",
+		"remote_path": "simple/requests/",
+	}, "")
+	artifact.RemotePath = "simple/requests/"
+	member := &pypiGroupPackageMember{MockRuntime: &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{artifact}}}
+	group := &runtime.GroupRuntime{Members: []runtime.RepositoryNode{member}}
+	ctx, w := newCtx(http.MethodGet, "simple/requests/", nil)
+	ctx.Repository.Type = "group"
+
+	if err := NewPyPIPlugin(http.DefaultClient).Handle(ctx, group); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%q", w.Code, w.Body.String())
+	}
+	if member.openCalls != 0 {
+		t.Fatalf("package-level simple path called root OpenRemote %d times, want 0", member.openCalls)
+	}
+	if len(member.QueryCalls) != 1 || member.QueryCalls[0].RemotePath != "simple/requests/" {
+		t.Fatalf("semantic QueryArtifacts calls = %#v, want package-level RemotePath", member.QueryCalls)
+	}
+}
+
 func TestHandle_SimpleIndexRemoteForwardsErrorStatuses(t *testing.T) {
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		for _, status := range []int{http.StatusNotFound, http.StatusServiceUnavailable} {
