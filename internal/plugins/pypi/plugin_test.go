@@ -839,25 +839,298 @@ func TestHandle_SimpleMetadataQueriesPackageListRemotePath(t *testing.T) {
 	}
 }
 
-func TestFetchRemote_SimpleIndex(t *testing.T) {
+func TestFetchRemote_SimpleIndexReturnsMetadataUnsupported(t *testing.T) {
+	requestCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`<html><body>
-<a href="requests/">requests</a><br>
-<a href="flask/">flask</a><br>
-</body></html>`))
+		requestCount++
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(`<html><body><a href="requests/">requests</a></body></html>`))
 	}))
 	defer srv.Close()
 
 	p := NewPyPIPlugin(http.DefaultClient)
-	arts, err := p.FetchRemote(context.Background(), srv.URL, "simple")
-	if err != nil {
-		t.Fatalf("FetchRemote failed: %v", err)
+	_, err := p.FetchRemote(context.Background(), srv.URL, "simple/")
+	if !errors.Is(err, runtime.ErrMetadataUnsupported) {
+		t.Fatalf("FetchRemote error = %v, want ErrMetadataUnsupported", err)
 	}
-	if len(arts) != 2 {
-		t.Fatalf("expected 2 artifacts, got %d", len(arts))
+	if requestCount != 0 {
+		t.Fatalf("upstream requests = %d, want 0", requestCount)
 	}
-	if arts[0].Qualifiers["package"] != "requests" {
-		t.Errorf("expected 'requests', got %q", arts[0].Qualifiers["package"])
+}
+
+type simpleIndexRemoteRuntime struct {
+	*testhelper.MockRuntime
+	response  *runtime.RemoteResponse
+	err       error
+	openCalls []runtime.RemoteOpenRequest
+}
+
+func (r *simpleIndexRemoteRuntime) OpenRemote(_ context.Context, request runtime.RemoteOpenRequest) (*runtime.RemoteResponse, error) {
+	r.openCalls = append(r.openCalls, request)
+	return r.response, r.err
+}
+
+type streamingOnlyBody struct {
+	chunk       []byte
+	chunkCount  int
+	writeToUsed bool
+	closed      bool
+}
+
+func (b *streamingOnlyBody) Read([]byte) (int, error) {
+	return 0, errors.New("unexpected Read: remote response was buffered instead of streamed")
+}
+
+func (b *streamingOnlyBody) WriteTo(w io.Writer) (int64, error) {
+	b.writeToUsed = true
+	var total int64
+	for range b.chunkCount {
+		n, err := w.Write(b.chunk)
+		total += int64(n)
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
+}
+
+func (b *streamingOnlyBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+type closeTrackingBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *closeTrackingBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+func assertVaryTokens(t *testing.T, header http.Header, expected ...string) {
+	t.Helper()
+	counts := make(map[string]int)
+	for _, value := range header.Values("Vary") {
+		for _, token := range strings.Split(value, ",") {
+			token = strings.ToLower(strings.TrimSpace(token))
+			if token != "" {
+				counts[token]++
+			}
+		}
+	}
+	for _, token := range expected {
+		if counts[strings.ToLower(token)] != 1 {
+			t.Errorf("Vary token %q count = %d, want 1; header=%v", token, counts[strings.ToLower(token)], header.Values("Vary"))
+		}
+	}
+}
+
+func TestHandle_SimpleIndexRemoteGETStreamsResponse(t *testing.T) {
+	chunk := bytes.Repeat([]byte("stream-me-"), 4096)
+	body := &streamingOnlyBody{chunk: chunk, chunkCount: 64}
+	rt := &simpleIndexRemoteRuntime{
+		MockRuntime: &testhelper.MockRuntime{},
+		response: &runtime.RemoteResponse{
+			StatusCode: http.StatusPartialContent,
+			Header: http.Header{
+				"Content-Type":  {"text/html; charset=utf-8"},
+				"ETag":          {`"root-v1"`},
+				"Cache-Control": {"public, max-age=120"},
+				"Vary":          {"Origin, Accept-Encoding"},
+			},
+			Body: body,
+		},
+	}
+	ctx, w := newCtx(http.MethodGet, "simple/", nil)
+	ctx.Request.Header.Set("Accept", "application/vnd.pypi.simple.v1+json")
+
+	if err := NewPyPIPlugin(http.DefaultClient).Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusPartialContent)
+	}
+	if got := w.Header().Get("ETag"); got != `"root-v1"` {
+		t.Errorf("ETag = %q, want %q", got, `"root-v1"`)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "public, max-age=120" {
+		t.Errorf("Cache-Control = %q, want public, max-age=120", got)
+	}
+	assertVaryTokens(t, w.Header(), "Origin", "Accept-Encoding", "Accept")
+	if !body.writeToUsed {
+		t.Error("remote body WriterTo was not used; response was not streamed with io.Copy")
+	}
+	if !body.closed {
+		t.Error("remote body was not closed")
+	}
+	if got, want := w.Body.Len(), len(chunk)*body.chunkCount; got != want {
+		t.Fatalf("streamed body size = %d, want %d", got, want)
+	}
+	if len(rt.openCalls) != 1 {
+		t.Fatalf("OpenRemote calls = %d, want 1", len(rt.openCalls))
+	}
+	if got := rt.openCalls[0].Path; got != "simple/" {
+		t.Errorf("OpenRemote Path = %q, want simple/", got)
+	}
+	if got := rt.openCalls[0].Method; got != http.MethodGet {
+		t.Errorf("OpenRemote Method = %q, want GET", got)
+	}
+	if got := rt.openCalls[0].Headers.Get("Accept"); got != "application/vnd.pypi.simple.v1+json" {
+		t.Errorf("OpenRemote Accept = %q", got)
+	}
+	if len(rt.QueryCalls) != 0 {
+		t.Errorf("QueryArtifacts calls = %d, want 0", len(rt.QueryCalls))
+	}
+}
+
+func TestHandle_SimpleIndexCanonicalizesRemotePath(t *testing.T) {
+	rt := &simpleIndexRemoteRuntime{
+		MockRuntime: &testhelper.MockRuntime{},
+		response: &runtime.RemoteResponse{
+			StatusCode: http.StatusNoContent,
+		},
+	}
+	ctx, _ := newCtx(http.MethodGet, "simple", nil)
+
+	if err := NewPyPIPlugin(http.DefaultClient).Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if len(rt.openCalls) != 1 {
+		t.Fatalf("OpenRemote calls = %d, want 1", len(rt.openCalls))
+	}
+	if got := rt.openCalls[0].Path; got != "simple/" {
+		t.Errorf("OpenRemote Path = %q, want simple/", got)
+	}
+}
+
+func TestHandle_SimpleIndexRemoteHEADForwardsStatusAndHeadersWithoutBody(t *testing.T) {
+	body := &closeTrackingBody{Reader: strings.NewReader("must not be written")}
+	rt := &simpleIndexRemoteRuntime{
+		MockRuntime: &testhelper.MockRuntime{},
+		response: &runtime.RemoteResponse{
+			StatusCode: http.StatusPartialContent,
+			Header: http.Header{
+				"Content-Length": {"19"},
+				"ETag":           {`"head-v1"`},
+				"Cache-Control":  {"private, max-age=30"},
+				"Vary":           {"Origin, aCcEpT"},
+			},
+			Body: body,
+		},
+	}
+	ctx, w := newCtx(http.MethodHead, "simple/", nil)
+
+	if err := NewPyPIPlugin(http.DefaultClient).Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	if w.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusPartialContent)
+	}
+	if w.Body.Len() != 0 {
+		t.Fatalf("HEAD body = %q, want empty", w.Body.String())
+	}
+	if got := w.Header().Get("ETag"); got != `"head-v1"` {
+		t.Errorf("ETag = %q, want %q", got, `"head-v1"`)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "private, max-age=30" {
+		t.Errorf("Cache-Control = %q, want private, max-age=30", got)
+	}
+	assertVaryTokens(t, w.Header(), "Origin", "Accept")
+	if !body.closed {
+		t.Error("remote body was not closed")
+	}
+	if len(rt.openCalls) != 1 || rt.openCalls[0].Method != http.MethodHead {
+		t.Fatalf("OpenRemote calls = %#v, want one HEAD", rt.openCalls)
+	}
+	if len(rt.QueryCalls) != 0 {
+		t.Errorf("QueryArtifacts calls = %d, want 0", len(rt.QueryCalls))
+	}
+}
+
+func TestHandle_SimpleIndexRemoteForwardsErrorStatuses(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		for _, status := range []int{http.StatusNotFound, http.StatusServiceUnavailable} {
+			t.Run(fmt.Sprintf("%s_%d", method, status), func(t *testing.T) {
+				body := &closeTrackingBody{Reader: strings.NewReader(http.StatusText(status))}
+				rt := &simpleIndexRemoteRuntime{
+					MockRuntime: &testhelper.MockRuntime{},
+					response: &runtime.RemoteResponse{
+						StatusCode: status,
+						Header:     http.Header{"Cache-Control": {"no-cache"}},
+						Body:       body,
+					},
+				}
+				ctx, w := newCtx(method, "simple/", nil)
+
+				if err := NewPyPIPlugin(http.DefaultClient).Handle(ctx, rt); err != nil {
+					t.Fatalf("Handle failed: %v", err)
+				}
+				if w.Code != status {
+					t.Fatalf("status = %d, want %d", w.Code, status)
+				}
+				if method == http.MethodGet && w.Body.String() != http.StatusText(status) {
+					t.Errorf("GET body = %q, want %q", w.Body.String(), http.StatusText(status))
+				}
+				if method == http.MethodHead && w.Body.Len() != 0 {
+					t.Errorf("HEAD body = %q, want empty", w.Body.String())
+				}
+				if got := w.Header().Get("Cache-Control"); got != "no-cache" {
+					t.Errorf("Cache-Control = %q, want no-cache", got)
+				}
+				assertVaryTokens(t, w.Header(), "Accept")
+				if !body.closed {
+					t.Error("remote body was not closed")
+				}
+			})
+		}
+	}
+}
+
+func TestHandle_SimpleIndexRemoteUnsupportedFallsBackToHostedRenderer(t *testing.T) {
+	artifacts := []*runtime.Artifact{
+		testhelper.NewArtifact("pypi", runtime.KindMetadata, map[string]string{"name": "requests", "package": "requests"}, ""),
+	}
+	rt := &simpleIndexRemoteRuntime{
+		MockRuntime: &testhelper.MockRuntime{Artifacts: artifacts},
+		err:         runtime.ErrRemoteUnsupported,
+	}
+	ctx, w := newCtx(http.MethodGet, "simple/", nil)
+
+	if err := NewPyPIPlugin(http.DefaultClient).Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%q", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "requests") {
+		t.Fatalf("hosted index body = %q, want requests", w.Body.String())
+	}
+	assertVaryTokens(t, w.Header(), "Accept")
+	if len(rt.QueryCalls) == 0 {
+		t.Fatal("hosted fallback did not call QueryArtifacts")
+	}
+}
+
+func TestHandle_SimpleIndexUpstreamUnavailableEscapesToRouter(t *testing.T) {
+	rt := &simpleIndexRemoteRuntime{
+		MockRuntime: &testhelper.MockRuntime{},
+		err:         fmt.Errorf("open root index: %w", runtime.ErrUpstreamUnavailable),
+	}
+	ctx, w := newCtx(http.MethodGet, "simple/", nil)
+
+	err := NewPyPIPlugin(http.DefaultClient).Handle(ctx, rt)
+	if !errors.Is(err, runtime.ErrUpstreamUnavailable) {
+		t.Fatalf("Handle error = %v, want ErrUpstreamUnavailable", err)
+	}
+	if w.Body.Len() != 0 {
+		t.Fatalf("body = %q, want router to render the error", w.Body.String())
+	}
+	if len(rt.QueryCalls) != 0 {
+		t.Errorf("QueryArtifacts calls = %d, want 0", len(rt.QueryCalls))
 	}
 }
 

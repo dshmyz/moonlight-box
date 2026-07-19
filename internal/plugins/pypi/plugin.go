@@ -96,6 +96,10 @@ func (p *PyPIPlugin) Name() string {
 // FetchRemote 实现 RemoteFetcher 接口。
 // Runtime 在本地缓存为空时回调此方法，Plugin 负责远端协议交互。
 func (p *PyPIPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
+	if p.isSimpleIndexRequest(path) {
+		return nil, runtime.ErrMetadataUnsupported
+	}
+
 	start := time.Now()
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + path
 
@@ -129,9 +133,7 @@ func (p *PyPIPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([
 	}
 
 	var artifacts []*runtime.Artifact
-	if p.isSimpleIndexRequest(path) {
-		artifacts, err = p.parseSimpleIndex(resp.Body)
-	} else if p.isPackageListRequest(path) {
+	if p.isPackageListRequest(path) {
 		parts := strings.Split(strings.Trim(path, "/"), "/")
 		packageName := normalizePackageName(parts[1])
 		if info, fetchErr := p.fetchPyPIPackageInfo(ctx, remoteURL, packageName); fetchErr == nil {
@@ -342,6 +344,21 @@ func (p *PyPIPlugin) handleSimpleIndex(ctx *runtime.RequestContext, repoRuntime 
 		return errors.New("method not allowed")
 	}
 
+	response, err := repoRuntime.OpenRemote(ctx.Request.Context(), runtime.RemoteOpenRequest{
+		Path:    "simple/",
+		Method:  ctx.Request.Method,
+		Headers: ctx.Request.Header,
+	})
+	if err == nil {
+		return p.writeRemoteSimpleIndex(ctx, response)
+	}
+	if !errors.Is(err, runtime.ErrRemoteUnsupported) {
+		return err
+	}
+	return p.handleHostedSimpleIndex(ctx, repoRuntime, path)
+}
+
+func (p *PyPIPlugin) handleHostedSimpleIndex(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
@@ -385,6 +402,39 @@ func (p *PyPIPlugin) handleSimpleIndex(ctx *runtime.RequestContext, repoRuntime 
 		return p.writeSimpleIndexJSON(ctx, artifacts)
 	}
 	return p.writeSimpleIndexHTML(ctx, artifacts)
+}
+
+func (p *PyPIPlugin) writeRemoteSimpleIndex(ctx *runtime.RequestContext, response *runtime.RemoteResponse) error {
+	if response == nil {
+		return fmt.Errorf("%w: empty remote response", runtime.ErrUpstreamUnavailable)
+	}
+	if response.Body != nil {
+		defer response.Body.Close()
+	}
+	for key, vals := range response.Header {
+		for _, v := range vals {
+			ctx.Writer.Header().Add(key, v)
+		}
+	}
+	mergeVaryToken(ctx.Writer.Header(), "Accept")
+	ctx.Writer.WriteHeader(response.StatusCode)
+	if ctx.Request.Method == http.MethodGet && response.Body != nil {
+		if _, err := io.Copy(ctx.Writer, response.Body); err != nil {
+			logrus.WithError(err).Warn("pypi: stream remote simple index failed")
+		}
+	}
+	return nil
+}
+
+func mergeVaryToken(header http.Header, token string) {
+	for _, value := range header.Values("Vary") {
+		for _, existing := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(existing), token) {
+				return
+			}
+		}
+	}
+	header.Add("Vary", token)
 }
 
 func (p *PyPIPlugin) writeSimpleIndexHTML(ctx *runtime.RequestContext, artifacts []*runtime.Artifact) error {
