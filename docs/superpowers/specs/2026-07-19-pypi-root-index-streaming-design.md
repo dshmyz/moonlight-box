@@ -23,8 +23,9 @@ PyPIPlugin.Handle
 PyPIPlugin renders the protocol response
 ```
 
-`FetchRemote` remains the metadata-fetching seam. It parses protocol responses
-into artifacts for `QueryArtifacts`; it must not be used for the root index.
+`RemoteFetcher.FetchRemote` remains the metadata-fetching seam. It parses
+protocol responses into artifacts for `QueryArtifacts`; it is neither required
+nor allowed for the opaque root-index stream.
 
 ## Interfaces
 
@@ -39,8 +40,11 @@ and an unread `io.ReadCloser`. The caller owns closing a non-nil body.
 the request and returns all HTTP statuses as responses. Only request creation,
 network, and timeout failures return errors.
 
-`RepositoryRuntime.OpenRemote` is added to the existing runtime interface.
-It is the sole method a plugin calls to obtain a pass-through response.
+`RepositoryRuntime.OpenRemote` is an approved Runtime capability for opaque
+GET/HEAD upstream response streaming. It is the sole method a plugin calls to
+obtain a pass-through response. The plugin supplies only a relative repository
+path, method, and request headers; Runtime owns URL resolution, transport,
+header policy, caching, and failure policy.
 
 ## Runtime behavior
 
@@ -53,9 +57,12 @@ metadata store, or add an in-memory body cache.
 `HostedRuntime.OpenRemote` returns `ErrRemoteUnsupported`.
 
 `GroupRuntime.OpenRemote` tries members in priority order, skips
-`ErrRemoteUnsupported`, and returns the first supported result or the first
-non-unsupported failure. If all members are unsupported it returns
-`ErrRemoteUnsupported`.
+`ErrRemoteUnsupported`, and returns the first supported proxy response or the
+first non-unsupported failure. If all members are unsupported it returns
+`ErrRemoteUnsupported`. It intentionally does not merge opaque streams. For
+group PyPI `/simple/`, the returned root index is therefore a browse/probe
+response, not a complete package catalog. Package-level paths remain semantic
+Runtime queries and continue to use their existing merge policy.
 
 Response headers are filtered by Runtime to remove hop-by-hop headers. Runtime
 returns end-to-end headers such as `Content-Type`, `Content-Length`, `ETag`,
@@ -67,10 +74,11 @@ the Plugin for both GET and HEAD.
 
 ## PyPI behavior
 
-`handleSimpleIndex` first calls `OpenRemote` for every repository. A successful
+`handleSimpleIndex` may call `OpenRemote` for the opaque root `/simple/`
+request without inspecting repository configuration or type. A successful
 response is written directly: copy allowed headers, merge `Vary: Accept`, write
 the upstream status, and copy the body only for GET. For HEAD and 304, no body
-is written.
+is written. Package-level simple paths remain semantic Runtime queries.
 
 When `OpenRemote` returns `ErrRemoteUnsupported`, PyPI runs the existing local
 artifact query and renders the hosted HTML or JSON simple index. Other errors
@@ -96,10 +104,13 @@ Plugin-local cache.
 ## Verification
 
 - Proxy streaming bypasses `FetchRemote` and `MetadataStore`.
-- Hosted returns `ErrRemoteUnsupported`; group priority behavior is covered.
+- Hosted returns `ErrRemoteUnsupported`; group returns the first supported
+  proxy response by priority and does not merge root-index streams.
 - GET is truly streaming and preserves cache headers.
 - HEAD makes an upstream HEAD request and writes no body.
 - GET and HEAD forward matching upstream 404 and 503 statuses.
 - Network errors map to 502.
 - Missing or charset-free `Content-Type` is passed through unchanged.
 - PyPI source has no `remote_url` access or direct HTTP in its `Handle` path.
+- Group root-index tests document that the response is browse/probe only, not a
+  complete catalog; package-level paths retain semantic Runtime queries.

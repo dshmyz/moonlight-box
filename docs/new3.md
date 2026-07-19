@@ -546,6 +546,10 @@ type RepositoryRuntime interface {
         ctx context.Context,
         request UploadRequest,
     ) (UploadSession, error)
+    OpenRemote(
+        ctx context.Context,
+        request RemoteOpenRequest,
+    ) (*RemoteResponse, error)
 }
 
 ⸻
@@ -581,6 +585,21 @@ GroupRuntime
 * merge
 * shadowing
 * priority
+
+⸻
+
+不透明上游流（OpenRemote）
+
+`RepositoryRuntime.OpenRemote` 是 Runtime 对 Plugin 开放的受限能力，用于不适合归一化为 Artifact 的 GET/HEAD 上游响应流。
+
+Plugin 只提供仓库内相对路径、方法和请求头，不能读取仓库配置、判断 hosted/proxy/group、构造上游 URL 或自行执行 HTTP。Runtime 统一负责 URL 解析、传输、请求/响应头、缓存与失败策略；Plugin 只按协议写回 Runtime 返回的未读取响应流。
+
+它不替代 `RemoteFetcher`：
+
+* `RemoteFetcher`：Runtime 回调 Plugin 拉取并归一化远端 metadata 为 Artifact，供语义查询、缓存和 merge 使用。
+* `OpenRemote`：不解析、不写入 ArtifactGraph，适用于不透明流。
+
+Group 对不透明流按成员优先级返回第一个支持的 proxy 响应，不合并响应体。特别是 group 的 PyPI 根 `/simple/` 只是浏览/探测结果，不保证是完整包目录；`/simple/{package}/` 等包级路径仍走语义 Runtime 查询和既有 merge 策略。
 
 ⸻
 
@@ -790,6 +809,25 @@ Plugin render HTML
 ⸻
 
 返回客户端
+
+⸻
+
+PyPI 根索引不透明流（例外路径）
+
+请求：
+
+GET /repository/pypi/simple/
+
+Plugin 识别为根索引浏览请求后：
+
+```
+plugin.Handle()
+  → runtime.OpenRemote("simple/", GET, requestHeaders)
+  → ProxyRuntime 在 Runtime 内部解析上游 URL 并打开响应流
+  → Plugin 透传状态、端到端响应头和 body
+```
+
+这条路径不经过 `RemoteFetcher`、ArtifactGraph 或 metadata cache，也不在 Plugin 中执行 HTTP。对于 group，Runtime 按成员优先级选择第一个支持的 proxy 响应，不合并多个根索引；客户端不能将该响应视为完整 catalog。包级 simple 路径继续使用上文的语义查询/回源流程。
 
 ⸻
 
