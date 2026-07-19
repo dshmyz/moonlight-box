@@ -19,7 +19,8 @@ func TestProxyRuntimeOpenRemoteForwardsSafeHeadersWithoutMetadataAccess(t *testi
 		StatusCode: http.StatusOK,
 		Header: http.Header{
 			"ETag":       {"upstream-etag"},
-			"Connection": {"close"},
+			"connection": {"X-Foo"},
+			"X-Foo":      {"must-not-reach-client"},
 		},
 		Body: io.NopCloser(strings.NewReader("upstream body")),
 	}}
@@ -57,20 +58,27 @@ func TestProxyRuntimeOpenRemoteForwardsSafeHeadersWithoutMetadataAccess(t *testi
 	if got := response.Header.Get("Connection"); got != "" {
 		t.Fatalf("response Connection = %q, want empty", got)
 	}
+	if got := response.Header.Get("X-Foo"); got != "" {
+		t.Fatalf("response X-Foo = %q, want empty", got)
+	}
 	if store.queryCalls != 0 || store.putCalls != 0 {
 		t.Fatalf("metadata store accessed: query=%d put=%d", store.queryCalls, store.putCalls)
 	}
 }
 
 func TestProxyRuntimeOpenRemoteWrapsTransportErrors(t *testing.T) {
+	transportErr := errors.New("dial upstream")
 	runtime := &ProxyRuntime{
-		RemoteClient:  &fakeRemoteClient{openErr: errors.New("dial upstream")},
+		RemoteClient:  &fakeRemoteClient{openErr: transportErr},
 		RemoteBaseURL: "https://upstream.example",
 	}
 
 	_, err := runtime.OpenRemote(context.Background(), RemoteOpenRequest{Path: "package.tgz", Method: http.MethodGet})
 	if !errors.Is(err, ErrUpstreamUnavailable) {
 		t.Fatalf("error = %v, want ErrUpstreamUnavailable", err)
+	}
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("error = %v, want original transport error", err)
 	}
 }
 

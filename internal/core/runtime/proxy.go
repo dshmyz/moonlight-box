@@ -79,7 +79,7 @@ func (n *ProxyRuntime) OpenRemote(ctx context.Context, request RemoteOpenRequest
 	response, err := n.RemoteClient.Open(ctx, RemoteRequest{URL: remoteURL, Method: method, Headers: headers})
 	if err != nil {
 		metrics.RecordProxyFetch(n.Format, "error", time.Since(start).Seconds())
-		return nil, fmt.Errorf("%w: %v", ErrUpstreamUnavailable, err)
+		return nil, fmt.Errorf("%w: %w", ErrUpstreamUnavailable, err)
 	}
 	if response == nil {
 		metrics.RecordProxyFetch(n.Format, "error", time.Since(start).Seconds())
@@ -91,21 +91,40 @@ func (n *ProxyRuntime) OpenRemote(ctx context.Context, request RemoteOpenRequest
 }
 
 func filterHopByHopHeaders(headers http.Header) http.Header {
+	connectionHeaders := make(map[string]struct{})
+	for name, values := range headers {
+		if !strings.EqualFold(name, "Connection") {
+			continue
+		}
+		for _, value := range values {
+			for _, header := range strings.Split(value, ",") {
+				connectionHeaders[strings.ToLower(strings.TrimSpace(header))] = struct{}{}
+			}
+		}
+	}
+
 	filtered := make(http.Header, len(headers))
 	for name, values := range headers {
+		if isHopByHopHeader(name) {
+			continue
+		}
+		if _, ok := connectionHeaders[strings.ToLower(name)]; ok {
+			continue
+		}
 		for _, value := range values {
 			filtered.Add(name, value)
 		}
 	}
-	for _, value := range headers.Values("Connection") {
-		for _, name := range strings.Split(value, ",") {
-			filtered.Del(strings.TrimSpace(name))
+	return filtered
+}
+
+func isHopByHopHeader(name string) bool {
+	for hopByHopHeader := range hopByHopHeaders {
+		if strings.EqualFold(name, hopByHopHeader) {
+			return true
 		}
 	}
-	for name := range hopByHopHeaders {
-		filtered.Del(name)
-	}
-	return filtered
+	return false
 }
 
 type cachedArtifact struct {
