@@ -238,58 +238,6 @@ func GetLogger(logType LogType) *logrus.Logger {
 	return mainLogger
 }
 
-// SQL 日志专用方法
-func LogSQL(query string, args ...interface{}) {
-	if sqlLogger == nil {
-		return
-	}
-	sqlLogger.WithFields(logrus.Fields{
-		LogKeyModule: "gorm",
-		"query":      query,
-		"args":       args,
-	}).Debug("SQL executed")
-}
-
-// 错误日志专用方法
-func LogError(module, msg string, err error, fields ...logrus.Fields) {
-	l := errorLogger
-	if l == nil {
-		l = mainLogger
-	}
-	entry := l.WithFields(logrus.Fields{
-		LogKeyModule: module,
-		LogKeyError:  err,
-	})
-	for _, f := range fields {
-		entry = entry.WithFields(f)
-	}
-	entry.Error(msg)
-}
-
-// 访问日志专用方法
-func LogAccess(method, path, clientIP string, statusCode int, duration time.Duration, fields ...logrus.Fields) {
-	l := accessLogger
-	if l == nil {
-		l = mainLogger
-	}
-	entry := l.WithFields(logrus.Fields{
-		LogKeyModule:     "access",
-		"method":         method,
-		"path":           path,
-		"client_ip":      clientIP,
-		LogKeyStatusCode: statusCode,
-		LogKeyDuration:   duration.Milliseconds(),
-	})
-	for _, f := range fields {
-		entry = entry.WithFields(f)
-	}
-	if statusCode >= 400 {
-		entry.Warn("HTTP request completed")
-	} else {
-		entry.Info("HTTP request completed")
-	}
-}
-
 // 关闭所有日志文件
 func CloseLoggers() {
 	logFilesMu.Lock()

@@ -24,24 +24,12 @@ func NewRepositoryHandler(svc *service.RepositoryService) *RepositoryHandler {
 	}
 }
 
-// Service 返回 RepositoryService 实例
-func (h *RepositoryHandler) Service() *service.RepositoryService {
-	return h.svc
-}
-
 // fillRepositoryURL 为仓库填充访问URL
 func fillRepositoryURL(repo *model.Repository, scheme string, host string, prefix string) {
 	if repo == nil || repo.Name == "" {
 		return
 	}
 	repo.URL = fmt.Sprintf("%s://%s%s/repository/%s/", scheme, host, prefix, repo.Name)
-}
-
-// fillRepositoryURLs 为仓库列表填充访问URL
-func fillRepositoryURLs(repos []model.Repository, scheme string, host string, prefix string) {
-	for i := range repos {
-		fillRepositoryURL(&repos[i], scheme, host, prefix)
-	}
 }
 
 func fillRepositoryListURLs(repos []service.RepositoryListView, scheme string, host string, prefix string) {
@@ -263,29 +251,4 @@ func (h *RepositoryHandler) RemoveMember(c *gin.Context) {
 	response.Success(c, gin.H{"message": "Member removed"})
 }
 
-// RegisterRoutes 注册路由
-func (h *RepositoryHandler) RegisterRoutes(protected *gin.RouterGroup, roleRepo interface{}, permMw func(resource, action string) gin.HandlerFunc) {
-	// 仓库管理
-	repos := protected.Group("/repositories")
-	repos.Use(permMw("repositories", "read"))
-	{
-		repos.GET("", h.List)
-		repos.GET("/:name", h.Get)
-		repos.GET("/:name/members", h.GetMembers)
-	}
 
-	reposWrite := protected.Group("/repositories")
-	reposWrite.Use(permMw("repositories", "write"))
-	{
-		reposWrite.POST("", h.Create)
-		reposWrite.PUT("/:name", h.Update)
-		reposWrite.POST("/:name/members", h.AddMember)
-	}
-
-	reposDelete := protected.Group("/repositories")
-	reposDelete.Use(permMw("repositories", "delete"))
-	{
-		reposDelete.DELETE("/:name", h.Delete)
-		reposDelete.DELETE("/:name/members/:memberName", h.RemoveMember)
-	}
-}

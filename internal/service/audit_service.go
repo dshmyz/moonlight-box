@@ -76,34 +76,6 @@ func (s *AuditService) Shutdown() {
 	s.wg.Wait()
 }
 
-func (s *AuditService) Log(ctx context.Context, userID *uint, action model.AuditAction, resourceType string, resourceID *uint, resourceName string, details string) error {
-	return s.LogWithStatus(ctx, userID, action, resourceType, resourceID, resourceName, details, 0, 0)
-}
-
-func (s *AuditService) LogWithStatus(ctx context.Context, userID *uint, action model.AuditAction, resourceType string, resourceID *uint, resourceName string, details string, responseStatus int, durationMs int) error {
-	log := &model.AuditLog{
-		UserID:         userID,
-		Action:         action,
-		ResourceType:   resourceType,
-		ResourceID:     resourceID,
-		ResourceName:   resourceName,
-		Details:        details,
-		ResponseStatus: responseStatus,
-		DurationMs:     durationMs,
-		CreatedAt:      time.Now().UTC(),
-	}
-	select {
-	case s.logChan <- log:
-		return nil
-	default:
-		logrus.WithFields(logrus.Fields{
-			"module": "audit",
-			"action": action,
-		}).Warn("Audit log channel is full, dropping log")
-		return nil
-	}
-}
-
 func (s *AuditService) LogWithRequest(ctx context.Context, userID *uint, action model.AuditAction, resourceType string, resourceID *uint, resourceName string, details string, ipAddress string, userAgent string) error {
 	return s.LogWithRequestAndStatus(ctx, userID, action, resourceType, resourceID, resourceName, details, ipAddress, userAgent, 0, 0)
 }

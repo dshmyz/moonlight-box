@@ -583,19 +583,6 @@ func (s *BlockRuleService) matchCachedRange(cached *cachedRangeRule, pkgName, ve
 	return versionMatchesConstraint(cached.constraint, version)
 }
 
-func (s *BlockRuleService) LogBlock(ctx context.Context, pkgName, version string, rule *model.BlockRule, ipAddress, userAgent string) error {
-	details, _ := json.Marshal(map[string]interface{}{
-		"rule_id":    rule.ID,
-		"reason":     rule.Reason,
-		"match_type": rule.MatchType,
-		"version":    version,
-	})
-
-	return s.auditSvc.LogWithRequest(ctx, nil, model.ActionBlock, "package", nil,
-		fmt.Sprintf("%s@%s", pkgName, version),
-		string(details), ipAddress, userAgent)
-}
-
 // LogConditionUnverified records an allowed download whose applicable
 // conditional rule could not be evaluated because metadata was unavailable.
 func (s *BlockRuleService) LogConditionUnverified(ctx context.Context, repositoryID, format, pkgName, version, remotePath string, ruleIDs []uint, missing []string, reason string) error {

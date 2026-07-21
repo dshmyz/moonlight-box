@@ -181,13 +181,6 @@ func createRuntimeForRepo(
 	}
 }
 
-func remoteURLForRepo(repo model.Repository) string {
-	if repo.Config != nil && repo.Config.RemoteURL != "" {
-		return repo.Config.RemoteURL
-	}
-	return ""
-}
-
 func createGroupRuntime(
 	repo *model.Repository,
 	repoRepo *repository.RepositoryRepository,

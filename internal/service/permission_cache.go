@@ -59,10 +59,6 @@ func (s *PermissionCacheService) GetStats() map[string]interface{} {
 	return s.cache.Stats()
 }
 
-func (s *PermissionCacheService) GetTTL() time.Duration {
-	return s.ttl
-}
-
 func (s *PermissionCacheService) GetAllItems() map[string]*cache.Item {
 	return s.cache.GetAllItems()
 }

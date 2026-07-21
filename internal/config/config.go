@@ -121,14 +121,13 @@ type ServiceConfig struct {
 }
 
 type ProxyConfig struct {
-	DefaultTimeout        time.Duration     `mapstructure:"default_timeout"`
-	ConnectTimeout        time.Duration     `mapstructure:"connect_timeout"`
-	LargeFileThreshold    int64             `mapstructure:"large_file_threshold"`
-	LargeFileThresholdStr string            `mapstructure:"large_file_threshold_str"`
-	MaxRedirects          int               `mapstructure:"max_redirects"`
-	InsecureSkipVerify    bool              `mapstructure:"insecure_skip_verify"`
-	DNSMapping            map[string]string `mapstructure:"dns_mapping"`
-	HealthCheck           HealthCheckConfig `mapstructure:"health_check"`
+	DefaultTimeout     time.Duration     `mapstructure:"default_timeout"`
+	ConnectTimeout     time.Duration     `mapstructure:"connect_timeout"`
+	LargeFileThreshold int64             `mapstructure:"large_file_threshold"`
+	MaxRedirects       int               `mapstructure:"max_redirects"`
+	InsecureSkipVerify bool              `mapstructure:"insecure_skip_verify"`
+	DNSMapping         map[string]string `mapstructure:"dns_mapping"`
+	HealthCheck        HealthCheckConfig `mapstructure:"health_check"`
 }
 
 type HealthCheckConfig struct {

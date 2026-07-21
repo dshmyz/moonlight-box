@@ -158,6 +158,7 @@ func (ctx *RouterContext) setupProtectedRoutes(api *gin.RouterGroup) {
 		ctx.setupUserRoutes(protected)
 		ctx.setupAuditRoutes(protected)
 		ctx.setupBackupRoutes(protected)
+		ctx.setupCASAdminRoutes(protected)
 		ctx.setupWebhookRoutes(protected)
 		ctx.setupSystemRoutes(protected)
 		ctx.setupMigrationV2Routes(protected)
@@ -374,6 +375,16 @@ func (ctx *RouterContext) setupAuditRoutes(protected *gin.RouterGroup) {
 	downloadLogs.GET("/cleanup/config", ctx.requirePermission("system", "admin"), ctx.Handlers.LogCleanupConfig.GetConfig)
 	downloadLogs.PUT("/cleanup/config", ctx.requirePermission("system", "admin"), ctx.Handlers.LogCleanupConfig.UpdateConfig)
 	downloadLogs.POST("/cleanup/now", ctx.requirePermission("system", "admin"), ctx.Handlers.LogCleanupConfig.CleanupNow)
+}
+
+func (ctx *RouterContext) setupCASAdminRoutes(protected *gin.RouterGroup) {
+	casAdmin := protected.Group("/cas")
+	casAdmin.Use(ctx.requirePermission("system", "admin"))
+	{
+		casAdmin.GET("/config", ctx.Handlers.CAS.GetAdminConfig)
+		casAdmin.PUT("/config", ctx.Handlers.CAS.UpdateAdminConfig)
+		casAdmin.POST("/config/test", ctx.Handlers.CAS.TestConnection)
+	}
 }
 
 func (ctx *RouterContext) setupBackupRoutes(protected *gin.RouterGroup) {

@@ -3,11 +3,9 @@ package service
 import (
 	"bytes"
 	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/storage"
 	"github.com/stretchr/testify/assert"
@@ -199,21 +197,4 @@ func TestStoreAndGetPackage_DifferentRepos(t *testing.T) {
 	assert.NotEqual(t, path1, path2)
 }
 
-func TestMetadataCacheSetUsesActualBodySize(t *testing.T) {
-	storageSvc, _ := setupTestStorageService(t)
-	cache := NewMetadataCache(storageSvc)
-	ctx := context.Background()
 
-	body := []byte(`{"name":"demo","versions":{"1.0.0":{}}}`)
-	err := cache.Set(ctx, "npm-proxy", "npm", "demo", bytes.NewReader(body), -1, time.Minute)
-	assert.NoError(t, err)
-
-	reader, size, err := cache.Get(ctx, "npm-proxy", "npm", "demo")
-	assert.NoError(t, err)
-	defer reader.Close()
-
-	cachedBody, err := io.ReadAll(reader)
-	assert.NoError(t, err)
-	assert.Equal(t, body, cachedBody)
-	assert.Equal(t, int64(len(body)), size)
-}

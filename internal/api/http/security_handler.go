@@ -197,8 +197,6 @@ func (h *SecurityHandler) BlockByCVE(c *gin.Context) {
 	response.Success(c, gin.H{"message": "block rule created", "cve": cveID})
 }
 
-type securityHandlerKey struct{}
-
 func WithSecurityHandler(handler *SecurityHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Set("securityHandler", handler)

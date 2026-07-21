@@ -12,7 +12,7 @@ func setDefaults(v interface {
 	v.SetDefault("server.read_timeout", 30*time.Second)
 	v.SetDefault("server.write_timeout", 0*time.Second)
 	v.SetDefault("server.idle_timeout", 60*time.Second) // 空闲连接超时，减少服务器关闭时等待时间
-	v.SetDefault("server.static_dir", "./cmd/registry/dist")
+	v.SetDefault("server.static_dir", "./cmd/registry/front")
 	v.SetDefault("server.max_upload_size", 200*1024*1024) // 200MB
 
 	// Database
@@ -68,6 +68,9 @@ func setDefaults(v interface {
 	v.SetDefault("proxy.health_check.interval", 30*time.Second)
 	v.SetDefault("proxy.health_check.timeout", 5*time.Second)
 	v.SetDefault("proxy.health_check.failure_threshold", 3)
+
+	// AI
+	v.SetDefault("ai.timeout", 60*time.Second)
 
 	// Seed Data
 	v.SetDefault("seed.enabled", true)
