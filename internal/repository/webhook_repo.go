@@ -63,12 +63,6 @@ func (r *WebhookRepository) List(page, pageSize int) ([]model.Webhook, int64, er
 	return webhooks, total, err
 }
 
-func (r *WebhookRepository) ListActive() ([]model.Webhook, error) {
-	var webhooks []model.Webhook
-	err := r.db.Where("status = ?", model.WebhookStatusActive).Find(&webhooks).Error
-	return webhooks, err
-}
-
 func (r *WebhookRepository) ListByEvent(event model.WebhookEvent) ([]model.Webhook, error) {
 	var webhooks []model.Webhook
 	err := r.db.Where("status = ? AND events LIKE ?", model.WebhookStatusActive, "%"+string(event)+"%").Find(&webhooks).Error

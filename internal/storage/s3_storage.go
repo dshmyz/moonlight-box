@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -12,6 +15,22 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
+
+// s3HTTPClient 为 S3 操作提供连接/握手/响应头阶段超时，但不设整体 Timeout，
+// 避免切断大文件上传/下载的 body 传输；body 阶段靠调用方 ctx 兜底。
+var s3HTTPClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:    10 * time.Second,
+		ResponseHeaderTimeout:  30 * time.Second,
+		ExpectContinueTimeout:  1 * time.Second,
+		IdleConnTimeout:        90 * time.Second,
+		MaxIdleConnsPerHost:    50,
+	},
+}
 
 type S3Storage struct {
 	client   *s3.Client
@@ -38,6 +57,7 @@ func NewS3Storage(endpoint, region, accessKeyID, secretAccessKey, bucket, basePa
 	opts := []func(*s3.Options){
 		func(o *s3.Options) {
 			o.UsePathStyle = true
+			o.HTTPClient = s3HTTPClient
 		},
 	}
 

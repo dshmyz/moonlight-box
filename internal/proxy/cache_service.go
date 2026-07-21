@@ -98,22 +98,6 @@ func (c *CacheService) getShard(key string) *CacheShard {
 	return c.shards[shardIndex]
 }
 
-func (c *CacheService) SetLimits(maxItems int, maxBytes int64) {
-	c.maxItems = maxItems
-	c.maxBytes = maxBytes
-
-	shardMaxItems := maxItems / c.numShards
-	shardMaxBytes := maxBytes / int64(c.numShards)
-
-	for _, shard := range c.shards {
-		shard.mu.Lock()
-		shard.maxItems = shardMaxItems
-		shard.maxBytes = shardMaxBytes
-		shard.mu.Unlock()
-		shard.evictIfNeeded()
-	}
-}
-
 func (c *CacheService) Get(ctx context.Context, key string) (*CacheItem, error) {
 	shard := c.getShard(key)
 	return shard.get(key)
@@ -122,11 +106,6 @@ func (c *CacheService) Get(ctx context.Context, key string) (*CacheItem, error) 
 func (c *CacheService) Set(ctx context.Context, item *CacheItem, ttl time.Duration) error {
 	shard := c.getShard(item.Key)
 	return shard.set(item, ttl)
-}
-
-func (c *CacheService) SetNegative(ctx context.Context, key string, ttl time.Duration) error {
-	shard := c.getShard(key)
-	return shard.setNegative(key, ttl)
 }
 
 func (c *CacheService) Invalidate(ctx context.Context, pattern string) error {
@@ -210,21 +189,6 @@ func (c *CacheService) cleanupExpired() int {
 	totalExpired := 0
 	for _, shard := range c.shards {
 		totalExpired += shard.cleanupExpired()
-	}
-	return totalExpired
-}
-
-func (c *CacheService) GetExpiredCount() int {
-	totalExpired := 0
-	now := time.Now()
-	for _, shard := range c.shards {
-		shard.mu.RLock()
-		for _, entry := range shard.store {
-			if now.After(entry.expiry) {
-				totalExpired++
-			}
-		}
-		shard.mu.RUnlock()
 	}
 	return totalExpired
 }

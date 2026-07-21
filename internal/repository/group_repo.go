@@ -32,11 +32,6 @@ func (r *GroupRepository) RemoveMember(virtualRepoID, memberRepoID uint) error {
 		virtualRepoID, memberRepoID).Delete(&model.RepositoryMember{}).Error
 }
 
-// GetMembersByVirtualRepo 获取虚拟仓的所有成员
-func (r *GroupRepository) GetMembersByVirtualRepo(virtualRepoID uint) ([]model.RepositoryMember, error) {
-	return r.GetMembersByVirtualRepoContext(context.Background(), virtualRepoID)
-}
-
 // GetMembersByVirtualRepoContext 获取虚拟仓的所有成员
 func (r *GroupRepository) GetMembersByVirtualRepoContext(ctx context.Context, virtualRepoID uint) ([]model.RepositoryMember, error) {
 	var members []model.RepositoryMember
@@ -57,9 +52,4 @@ func (r *GroupRepository) GetParentVirtualRepos(memberRepoID uint) ([]model.Repo
 	return repos, err
 }
 
-// UpdatePosition 更新成员顺序
-func (r *GroupRepository) UpdatePosition(virtualRepoID, memberRepoID uint, position int) error {
-	return r.db.Model(&model.RepositoryMember{}).
-		Where("repository_id = ? AND member_id = ?", virtualRepoID, memberRepoID).
-		Update("position", position).Error
-}
+

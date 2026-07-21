@@ -532,15 +532,6 @@ func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime ru
 	return nil
 }
 
-func firstNonEmptyGo(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
 func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
 	parts := strings.Split(path, "/@v/")
 	if len(parts) != 2 {

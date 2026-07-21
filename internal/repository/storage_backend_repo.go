@@ -43,6 +43,15 @@ func (r *StorageBackendRepository) FindByName(name string) (*model.StorageBacken
 	return &backend, nil
 }
 
+func (r *StorageBackendRepository) Exists(name string) (bool, error) {
+	var count int64
+	err := r.db.Model(&model.StorageBackend{}).Where("name = ?", name).Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func (r *StorageBackendRepository) List() ([]model.StorageBackend, error) {
 	var backends []model.StorageBackend
 	err := r.db.Order("is_default DESC, created_at DESC").Find(&backends).Error
@@ -68,10 +77,4 @@ func (r *StorageBackendRepository) SetDefault(id uint) error {
 		}
 		return nil
 	})
-}
-
-func (r *StorageBackendRepository) Exists(name string) (bool, error) {
-	var count int64
-	err := r.db.Model(&model.StorageBackend{}).Where("name = ?", name).Count(&count).Error
-	return count > 0, err
 }

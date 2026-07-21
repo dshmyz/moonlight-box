@@ -369,31 +369,6 @@ func mavenSnapshotFilename(artifact string, sv mavenSnapshotVersionXML) string {
 	return name + "." + ext
 }
 
-func (p *MavenPlugin) fetchLicenseFromPOM(ctx context.Context, remoteURL, group, artifact, version string) string {
-	groupPath := strings.ReplaceAll(group, ".", "/")
-	pomURL := strings.TrimRight(remoteURL, "/") + "/" + groupPath + "/" + artifact + "/" + version + "/" + artifact + "-" + version + ".pom"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pomURL, nil)
-	if err != nil {
-		return ""
-	}
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-	var pom pomProject
-	if err := xml.NewDecoder(resp.Body).Decode(&pom); err != nil {
-		return ""
-	}
-	if len(pom.Licenses) > 0 {
-		return pom.Licenses[0].Name
-	}
-	return ""
-}
-
 func parseMavenLastUpdated(value string) (time.Time, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -996,15 +971,6 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 	_, _ = ctx.Writer.Write([]byte(xml.Header))
 	_, _ = ctx.Writer.Write(body)
 	return nil
-}
-
-func firstNonEmptyMaven(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func sortMavenVersions(versions []string) {

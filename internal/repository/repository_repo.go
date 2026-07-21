@@ -47,11 +47,6 @@ func (r *RepositoryRepository) FindByNameContext(ctx context.Context, name strin
 	return &repo, nil
 }
 
-// FindByID 根据ID查找仓库
-func (r *RepositoryRepository) FindByID(id uint) (*model.Repository, error) {
-	return r.FindByIDContext(context.Background(), id)
-}
-
 // FindByIDContext 根据ID查找仓库
 func (r *RepositoryRepository) FindByIDContext(ctx context.Context, id uint) (*model.Repository, error) {
 	var repo model.Repository
@@ -140,19 +135,6 @@ func (r *RepositoryRepository) Delete(name string) error {
 		return err
 	}
 	return r.db.Delete(repo).Error
-}
-
-// FindByPackageType 根据包类型查找所有启用的仓库，按代理优先级排序
-func (r *RepositoryRepository) FindByPackageType(pkgType string) ([]model.Repository, error) {
-	var repos []model.Repository
-	err := r.db.Where("package_type = ? AND enabled = ?", pkgType, true).
-		Order("proxy_priority ASC").Find(&repos).Error
-	return repos, err
-}
-
-// FindVirtualByPackageType 查找指定包类型的虚拟仓库
-func (r *RepositoryRepository) FindVirtualByPackageType(pkgType string) (*model.Repository, error) {
-	return r.FindVirtualByPackageTypeContext(context.Background(), pkgType)
 }
 
 // FindVirtualByPackageTypeContext 查找指定包类型的虚拟仓库

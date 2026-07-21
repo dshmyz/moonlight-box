@@ -96,10 +96,6 @@ func (c *RepositoryCache) GetByNameContext(ctx context.Context, name string) (*m
 	return repo, nil
 }
 
-func (c *RepositoryCache) GetByID(id uint) (*model.Repository, error) {
-	return c.GetByIDContext(context.Background(), id)
-}
-
 func (c *RepositoryCache) GetByIDContext(ctx context.Context, id uint) (*model.Repository, error) {
 	c.mu.RLock()
 	entry, exists := c.reposByID[id]
@@ -150,10 +146,6 @@ func (c *RepositoryCache) setCacheEntry(repo *model.Repository) {
 	c.reposByID[repo.ID] = entry
 }
 
-func (c *RepositoryCache) GetVirtualRepo(pkgType string) (*model.Repository, error) {
-	return c.GetVirtualRepoContext(context.Background(), pkgType)
-}
-
 func (c *RepositoryCache) GetVirtualRepoContext(ctx context.Context, pkgType string) (*model.Repository, error) {
 	c.mu.RLock()
 	for _, entry := range c.repos {
@@ -199,10 +191,6 @@ func (c *RepositoryCache) GetVirtualRepoContext(ctx context.Context, pkgType str
 	)
 
 	return repo, nil
-}
-
-func (c *RepositoryCache) GetMembers(virtualRepoID uint) ([]model.RepositoryMember, error) {
-	return c.GetMembersContext(context.Background(), virtualRepoID)
 }
 
 func (c *RepositoryCache) GetMembersContext(ctx context.Context, virtualRepoID uint) ([]model.RepositoryMember, error) {
@@ -299,22 +287,6 @@ func (c *RepositoryCache) Invalidate(name string) {
 		slog.Info("Invalidated repository cache",
 			"module", "repository_cache",
 			"repo_name", name,
-		)
-	}
-}
-
-func (c *RepositoryCache) InvalidateByID(id uint) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if entry, exists := c.reposByID[id]; exists {
-		delete(c.repos, entry.repo.Name)
-		delete(c.reposByID, id)
-		delete(c.members, id)
-		slog.Info("Invalidated repository cache by ID",
-			"module", "repository_cache",
-			"repo_id", id,
-			"repo_name", entry.repo.Name,
 		)
 	}
 }

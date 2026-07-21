@@ -60,9 +60,3 @@ func (r *BackupRepository) List(page, pageSize int) ([]model.Backup, int64, erro
 
 	return backups, total, err
 }
-
-func (r *BackupRepository) ListByStatus(status model.BackupStatus) ([]model.Backup, error) {
-	var backups []model.Backup
-	err := r.db.Where("status = ?", status).Order("created_at DESC").Find(&backups).Error
-	return backups, err
-}

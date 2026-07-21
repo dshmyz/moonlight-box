@@ -42,3 +42,24 @@ func TestTransportManagerSeparatesSecureAndInsecureTLSConfig(t *testing.T) {
 		t.Fatal("insecure transport should skip TLS verification only when requested")
 	}
 }
+
+func TestRemoteClientBuildClientFallsBackToDefaultReadTimeout(t *testing.T) {
+	// 调用方未指定 ReadTimeout 时，buildClient 必须兜底为 defaultReadTimeout，
+	// 防止 client.Timeout=0 导致上游 accept 后不发响应时请求无限挂起。
+	c := NewRemoteClientWithRetry(NewTransportManager(time.Second, NewDNSResolver(nil)), 10, 1, time.Millisecond)
+	got := c.buildClient(RequestOptions{})
+	if got.Timeout != c.defaultReadTimeout {
+		t.Fatalf("buildClient() Timeout = %v, want default %v", got.Timeout, c.defaultReadTimeout)
+	}
+	if got.Timeout <= 0 {
+		t.Fatal("buildClient() must not produce a client with zero Timeout")
+	}
+}
+
+func TestRemoteClientBuildClientRespectsExplicitReadTimeout(t *testing.T) {
+	c := NewRemoteClientWithRetry(NewTransportManager(time.Second, NewDNSResolver(nil)), 10, 1, time.Millisecond)
+	got := c.buildClient(RequestOptions{ReadTimeout: 7 * time.Second})
+	if got.Timeout != 7*time.Second {
+		t.Fatalf("buildClient() Timeout = %v, want 7s", got.Timeout)
+	}
+}

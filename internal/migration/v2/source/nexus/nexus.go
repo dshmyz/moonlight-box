@@ -27,11 +27,6 @@ type NexusSource struct {
 	scriptOnce  sync.Once
 	scriptReady bool
 	scriptErr   error
-
-	// version stores detected Nexus version
-	version      NexusVersion
-	versionReady bool
-	versionErr   error
 }
 
 func New(baseURL, username, password string) *NexusSource {

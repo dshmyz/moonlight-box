@@ -1,7 +1,6 @@
 package nexus
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/source"
-	"github.com/sirupsen/logrus"
 )
 
 type NexusVersion struct {
@@ -479,107 +477,4 @@ func (s *NexusSource) listComponentsPageNexus2(ctx context.Context, repoName, co
 		Items:             items,
 		ContinuationToken: result.ContinuationToken,
 	}, nil
-}
-
-func (s *NexusSource) testConnectionNexus2(ctx context.Context) error {
-	url := s.baseURL + "/service/local/status"
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return err
-	}
-	s.setAuth(req)
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("connection failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("connection failed with status: %d", resp.StatusCode)
-	}
-	return nil
-}
-
-func (s *NexusSource) ensureNexus2Compatibility(ctx context.Context) (NexusVersion, error) {
-	version, err := s.DetectVersion(ctx)
-	if err != nil {
-		return version, err
-	}
-
-	logrus.WithFields(logrus.Fields{
-		"version": version.String(),
-		"baseURL": s.baseURL,
-	}).Info("Detected Nexus version")
-
-	return version, nil
-}
-
-func (s *NexusSource) getNexus2BlobStores(ctx context.Context) ([]string, error) {
-	url := s.baseURL + "/service/local/blobstores"
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	s.setAuth(req)
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to list blobstores: %d", resp.StatusCode)
-	}
-
-	var result struct {
-		Data []struct {
-			Name string `json:"name"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-
-	var names []string
-	for _, store := range result.Data {
-		names = append(names, store.Name)
-	}
-	return names, nil
-}
-
-func (s *NexusSource) exportNexus2Config(ctx context.Context, exportPath string) error {
-	url := fmt.Sprintf("%s/service/local/export/%s", s.baseURL, exportPath)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return err
-	}
-	s.setAuth(req)
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("export failed: %d", resp.StatusCode)
-	}
-
-	return nil
-}
-
-func (s *NexusSource) importNexus2Config(ctx context.Context, importPath string, content []byte) error {
-	url := fmt.Sprintf("%s/service/local/import/%s", s.baseURL, importPath)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(content))
-	if err != nil {
-		return err
-	}
-	s.setAuth(req)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("import failed: %d", resp.StatusCode)
-	}
-
-	return nil
 }

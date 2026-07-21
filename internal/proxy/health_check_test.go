@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,8 +9,6 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
-	"github.com/dshmyz/moonlight-box/internal/types"
-	"github.com/gin-gonic/gin"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
 	"gorm.io/driver/sqlite"
@@ -32,38 +29,6 @@ type mockConfigReader struct{}
 
 func (m *mockConfigReader) GetConfigAsBool(key string, defaultValue bool) bool {
 	return defaultValue
-}
-
-type testMockAdapter struct{}
-
-func (m *testMockAdapter) Type() types.PackageType { return "maven" }
-func (m *testMockAdapter) RoutePrefix() string     { return "/maven" }
-func (m *testMockAdapter) ParsePackagePath(path string) (*types.PackageIdentity, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-func (m *testMockAdapter) ParsePath(path string) (*types.PackagePathInfo, error) {
-	return &types.PackagePathInfo{
-		Name:       path,
-		RemotePath: path,
-	}, nil
-}
-func (m *testMockAdapter) BuildRemotePath(name, version, filename string) string {
-	return fmt.Sprintf("%s/%s/%s", name, version, filename)
-}
-func (m *testMockAdapter) HandlePublish(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-func (m *testMockAdapter) HandleDelete(c *gin.Context, ctx *types.DeleteContext) error {
-	return fmt.Errorf("not implemented")
-}
-func (m *testMockAdapter) ParseIntent(path string, method string) *types.RequestIntent {
-	return &types.RequestIntent{Type: types.RequestUnknown}
-}
-func (m *testMockAdapter) HandleGet(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-func (m *testMockAdapter) HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error) {
-	return nil, fmt.Errorf("not implemented")
 }
 
 func (m *mockConfigReader) GetConfigAsInt(key string, defaultValue int) int {

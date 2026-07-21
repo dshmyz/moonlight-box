@@ -912,41 +912,6 @@ func (p *PyPIPlugin) handleJsonAPI(ctx *runtime.RequestContext, repoRuntime runt
 	return nil
 }
 
-func (p *PyPIPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
-	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
-	if err != nil {
-		if errors.Is(err, runtime.ErrNotFound) {
-			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-			return nil
-		}
-		// 其他错误（含 ErrBlocked）交给 router 处理
-		return err
-	}
-
-	if len(artifact.BlobRefs) == 0 {
-		http.Error(ctx.Writer, "No blob available", http.StatusNotFound)
-		return nil
-	}
-	if artifact.Content == nil {
-		http.Error(ctx.Writer, "No blob available", http.StatusNotFound)
-		return nil
-	}
-	defer artifact.Content.Close()
-
-	ctx.FromCache = artifact.FromCache
-	ctx.RemoteURL = artifact.RemoteURL
-	ctx.SizeBytes = artifact.SizeBytes
-
-	ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
-	ctx.Writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, runtime.SanitizeFilename(key.Filename)))
-	ctx.Writer.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
-		logrus.WithError(err).Warn("failed to write artifact content to client")
-		return nil
-	}
-	return nil
-}
-
 func (p *PyPIPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
 	packageName := p.extractPackageNameFromFilename(key.Filename)
 	version := p.extractVersionFromFilename(key.Filename)
@@ -1571,15 +1536,6 @@ func parsePyPIFileSize(value interface{}) int64 {
 	default:
 		return 0
 	}
-}
-
-func (p *PyPIPlugin) extractStringField(info map[string]interface{}, key string) string {
-	if v, ok := info[key]; ok {
-		if s, ok := v.(string); ok && s != "" {
-			return s
-		}
-	}
-	return ""
 }
 
 func selectPyPILicense(info map[string]interface{}) string {

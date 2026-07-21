@@ -79,26 +79,6 @@ func (r *BlockRuleRepository) ListWithPage(page, pageSize int, filter map[string
 	return rules, total, err
 }
 
-func (r *BlockRuleRepository) FindEnabledByPackageType(pkgType string) ([]model.BlockRule, error) {
-	var rules []model.BlockRule
-	err := r.db.Where("package_type = ? AND enabled = ?", pkgType, true).Find(&rules).Error
-	return rules, err
-}
-
-func (r *BlockRuleRepository) FindEnabledExactRules(pkgType, pkgName, version string) ([]model.BlockRule, error) {
-	var rules []model.BlockRule
-	err := r.db.Where("package_type = ? AND enabled = ? AND match_type = ? AND package_name = ? AND version = ?",
-		pkgType, true, model.BlockMatchExact, pkgName, version).Find(&rules).Error
-	return rules, err
-}
-
-func (r *BlockRuleRepository) FindEnabledWildcardRules(pkgType string) ([]model.BlockRule, error) {
-	var rules []model.BlockRule
-	err := r.db.Where("package_type = ? AND enabled = ? AND match_type = ?",
-		pkgType, true, model.BlockMatchWildcard).Find(&rules).Error
-	return rules, err
-}
-
 // FindAllEnabledExactRules 查询所有启用的精确匹配规则，排除带条件的规则
 // （ConditionType 为空或 NULL 的才算无条件规则）
 func (r *BlockRuleRepository) FindAllEnabledExactRules() ([]model.BlockRule, error) {

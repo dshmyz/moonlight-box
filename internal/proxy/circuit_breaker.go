@@ -265,11 +265,6 @@ func (s CircuitState) String() string {
 	return string(s)
 }
 
-// IsHealthy 判断是否健康（断路器处于关闭状态）
-func (cb *CircuitBreaker) IsHealthy() bool {
-	return cb.GetState() == CircuitClosed
-}
-
 // GetRemainingFailures 获取距离熔断还有多少次失败
 func (cb *CircuitBreaker) GetRemainingFailures() int {
 	cb.mu.RLock()

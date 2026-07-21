@@ -89,6 +89,9 @@ type RemoteClient struct {
 	defaultMaxRedirects int
 	defaultMaxRetries   int
 	defaultRetryDelay   time.Duration
+	// defaultReadTimeout 在调用方未指定 ReadTimeout 时的兜底响应超时，
+	// 防止上游 accept 后不发响应导致请求无限挂起。
+	defaultReadTimeout time.Duration
 
 	clientCache sync.Map // 缓存 http.Client，key 为配置参数
 }
@@ -101,6 +104,7 @@ func NewRemoteClient(tm *TransportManager, defaultMaxRedirects int) *RemoteClien
 		defaultMaxRedirects: defaultMaxRedirects,
 		defaultMaxRetries:   3,
 		defaultRetryDelay:   1 * time.Second,
+		defaultReadTimeout:  30 * time.Second,
 	}
 }
 
@@ -110,6 +114,7 @@ func NewRemoteClientWithRetry(tm *TransportManager, defaultMaxRedirects, default
 		defaultMaxRedirects: defaultMaxRedirects,
 		defaultMaxRetries:   defaultMaxRetries,
 		defaultRetryDelay:   defaultRetryDelay,
+		defaultReadTimeout:  30 * time.Second,
 	}
 }
 
@@ -126,6 +131,9 @@ func (c *RemoteClient) buildClient(opts RequestOptions) *http.Client {
 	}
 
 	timeout := opts.ReadTimeout
+	if timeout <= 0 {
+		timeout = c.defaultReadTimeout
+	}
 	key := clientCacheKey{
 		maxRedirects: maxRedirects,
 		insecure:     opts.InsecureSkipVerify,

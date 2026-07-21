@@ -487,28 +487,6 @@ func (p *NpmPlugin) handlePackage(ctx *runtime.RequestContext, repoRuntime runti
 	return errors.New("method not allowed")
 }
 
-func (p *NpmPlugin) handleTarballDelete(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
-	parts := strings.Split(path, "/-/")
-	if len(parts) != 2 {
-		http.Error(ctx.Writer, "Invalid path", http.StatusBadRequest)
-		return nil
-	}
-	packageName := parts[0]
-	filename := parts[1]
-	version := extractNpmVersionFromTarball(packageName, filename)
-	key := runtime.ArtifactKey{
-		RepositoryID: ctx.Repository.ID,
-		Format:       "npm",
-		Kind:         runtime.KindArtifact,
-		Name:         packageName,
-		Version:      version,
-		Path:         packageName + "/-",
-		Filename:     filename,
-		RemotePath:   path,
-	}
-	return deleteArtifact(ctx, repoRuntime, key)
-}
-
 func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, packageName string) error {
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
@@ -685,15 +663,6 @@ func normalizeNpmSemver(version string) string {
 	return "v" + version
 }
 
-func firstNonEmptyNpm(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
 // restoreStringField 从 Attributes 中读取字符串字段，写入目标 map。
 func restoreStringField(attrs map[string]string, key string, target map[string]interface{}) {
 	if v, ok := attrs[key]; ok && v != "" {
@@ -776,32 +745,6 @@ func forwardedPrefix(r *http.Request, header string) (string, bool) {
 		value = "/" + value
 	}
 	return strings.TrimRight(value, "/"), true
-}
-
-func (p *NpmPlugin) handlePackageDelete(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, packageName string) error {
-	key := runtime.ArtifactKey{
-		RepositoryID: ctx.Repository.ID,
-		Format:       "npm",
-		Name:         packageName,
-	}
-	return deleteArtifact(ctx, repoRuntime, key)
-}
-
-func deleteArtifact(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
-	err := repoRuntime.DeleteArtifact(ctx.Request.Context(), key)
-	if err != nil {
-		switch {
-		case errors.Is(err, runtime.ErrNotFound):
-			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-		case errors.Is(err, runtime.ErrReadOnly):
-			http.Error(ctx.Writer, "Repository is read only", http.StatusMethodNotAllowed)
-		default:
-			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
-		}
-		return nil
-	}
-	ctx.Writer.WriteHeader(http.StatusNoContent)
-	return nil
 }
 
 // extractNpmVersionAttributes 从 npm 上传元数据中提取关键字段到 Attributes map。

@@ -127,23 +127,3 @@ func (r *AuditRepository) GetBlockStats(hours int) (*BlockStats, error) {
 
 	return stats, nil
 }
-
-func (r *AuditRepository) GetRecentBlocks(limit int) ([]model.AuditLog, error) {
-	var logs []model.AuditLog
-	err := r.db.Model(&model.AuditLog{}).
-		Where("action = ?", model.ActionBlock).
-		Order("created_at DESC").
-		Limit(limit).
-		Find(&logs).Error
-	return logs, err
-}
-
-func (r *AuditRepository) GetBlocksByIP(ipAddress string, limit int) ([]model.AuditLog, error) {
-	var logs []model.AuditLog
-	err := r.db.Model(&model.AuditLog{}).
-		Where("action = ? AND ip_address = ?", model.ActionBlock, ipAddress).
-		Order("created_at DESC").
-		Limit(limit).
-		Find(&logs).Error
-	return logs, err
-}
