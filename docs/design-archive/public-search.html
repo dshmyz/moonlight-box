@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Moonlight Box — 搜索：requests</title>
+<style>
+  /* ============================================================
+     Moonlight Box · 搜索结果页 · Apple 冷白
+     ============================================================ */
+
+  :root {
+    --bg:           #ffffff;
+    --bg-soft:      #fbfbfd;
+    --bg-elevated:  #f5f5f7;
+    --ink:          #1d1d1f;
+    --ink-2:        #424245;
+    --muted:        #6e6e73;
+    --muted-2:      #86868b;
+    --hair:         #d2d2d7;
+    --hair-soft:    #e8e8ed;
+    --blue:         #0071e3;
+    --blue-hover:   #0077ed;
+    --blue-soft:    #2997ff;
+    --green:        #34c759;
+
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+            "SF Pro Text", "Helvetica Neue", "PingFang SC",
+            "Noto Sans CJK SC", sans-serif;
+    --mono: "SF Mono", "JetBrains Mono", "Noto Sans Mono CJK SC",
+            Consolas, monospace;
+
+    --gutter: clamp(20px, 5vw, 80px);
+    --maxw:   1024px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--ink); }
+  body {
+    font-family: var(--font);
+    font-size: 17px;
+    line-height: 1.47059;
+    font-weight: 400;
+    letter-spacing: -0.022em;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  a { color: inherit; text-decoration: none; }
+  ::selection { background: rgba(0, 113, 227, 0.2); }
+
+  /* ===================== NAV ===================== */
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 1px solid var(--hair-soft);
+  }
+  .nav-inner {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 12px var(--gutter);
+    display: flex;
+    align-items: center;
+    height: 48px;
+  }
+  .brand {
+    font-size: 19px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+  }
+  .nav-links {
+    display: flex;
+    margin-left: auto;
+    align-items: center;
+  }
+  .nav-links a {
+    font-size: 14px;
+    color: var(--ink);
+    padding: 0 12px;
+    line-height: 44px;
+    transition: color .2s;
+    opacity: 0.88;
+  }
+  .nav-links a:hover { opacity: 1; color: var(--blue); }
+  .nav-cta {
+    font-size: 14px;
+    color: var(--bg);
+    background: var(--blue);
+    padding: 6px 14px;
+    border-radius: 980px;
+    margin-left: 16px;
+    transition: background .2s;
+    line-height: 1.4;
+  }
+  .nav-cta:hover { background: var(--blue-hover); }
+
+  /* ===================== SEARCH BAR (顶部固定) ===================== */
+  .search-zone {
+    background: var(--bg);
+    border-bottom: 1px solid var(--hair-soft);
+    padding: 40px var(--gutter) 32px;
+  }
+  .search-zone-inner {
+    max-width: var(--maxw);
+    margin: 0 auto;
+  }
+  .search-row {
+    display: flex;
+    align-items: center;
+    background: var(--bg);
+    border: 1px solid var(--hair);
+    border-radius: 14px;
+    padding: 18px 22px;
+    transition: border-color .2s, box-shadow .2s;
+    max-width: 760px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  }
+  .search-row:focus-within {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.12), 0 1px 2px rgba(0, 0, 0, 0.03);
+  }
+  .search-icon {
+    width: 22px; height: 22px;
+    margin-right: 16px;
+    color: var(--muted-2);
+    flex-shrink: 0;
+    transition: color .2s;
+    stroke-width: 1.5;
+  }
+  .search-row:focus-within .search-icon { color: var(--blue); }
+  .search input,
+  .search-zone .search-row input {
+    flex: 1;
+    border: none !important;
+    background: transparent !important;
+    outline: 0;
+    box-shadow: none !important;
+    -webkit-appearance: none;
+    appearance: none;
+    font-family: var(--font);
+    font-size: 20px;
+    font-weight: 400;
+    color: var(--ink);
+    letter-spacing: -0.022em;
+    caret-color: var(--blue);
+    line-height: 1.3;
+    height: 32px;
+    padding: 0;
+    min-width: 0;
+  }
+  .search input::placeholder {
+    color: var(--muted-2);
+    font-weight: 400;
+  }
+  .search input:-webkit-autofill {
+    -webkit-box-shadow: 0 0 0 1000px var(--bg) inset;
+    -webkit-text-fill-color: var(--ink);
+  }
+  .search-clear {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--muted-2);
+    color: var(--bg);
+    border: 0;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: background .2s;
+    margin-left: 8px;
+  }
+  .search-clear:hover { background: var(--muted); }
+  .search-key {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted-2);
+    background: var(--bg-elevated);
+    border: 1px solid var(--hair-soft);
+    padding: 4px 8px;
+    border-radius: 6px;
+    margin-left: 16px;
+    line-height: 1.3;
+  }
+
+  /* ===================== RESULT HEADER ===================== */
+  .result-meta {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 32px var(--gutter) 0;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .result-count {
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .result-count strong {
+    color: var(--ink);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .result-query {
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .result-time {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--muted-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ===================== FILTER CHIPS ===================== */
+  .filters {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 20px var(--gutter) 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .filter-label {
+    font-size: 13px;
+    color: var(--muted);
+    margin-right: 4px;
+  }
+  .chip {
+    font-size: 14px;
+    color: var(--ink-2);
+    background: var(--bg-elevated);
+    padding: 6px 14px;
+    border-radius: 980px;
+    cursor: pointer;
+    transition: background .2s, color .2s;
+    border: 1px solid transparent;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .chip:hover { background: var(--hair-soft); }
+  .chip.active {
+    background: var(--ink);
+    color: var(--bg);
+  }
+  .chip .count {
+    font-family: var(--mono);
+    font-size: 12px;
+    opacity: 0.7;
+    font-variant-numeric: tabular-nums;
+  }
+  .chip.active .count { opacity: 0.8; }
+
+  /* ===================== RESULTS ===================== */
+  .results {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 16px var(--gutter) 48px;
+  }
+  .pkg-grid {
+    background: var(--bg);
+    border-radius: 18px;
+    overflow: hidden;
+    border: 1px solid var(--hair-soft);
+  }
+  .pkg {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    align-items: center;
+    gap: 20px;
+    padding: 22px 24px;
+    border-bottom: 1px solid var(--hair-soft);
+    cursor: pointer;
+    transition: background .18s;
+  }
+  .pkg:last-child { border-bottom: 0; }
+  .pkg:hover { background: var(--bg-soft); }
+  .pkg-main { min-width: 0; }
+  .pkg-name {
+    font-family: var(--mono);
+    font-size: 16px;
+    color: var(--ink);
+    font-weight: 500;
+    margin-bottom: 4px;
+  }
+  /* 高亮匹配文字 */
+  .pkg-name mark {
+    background: rgba(255, 200, 0, 0.25);
+    color: inherit;
+    padding: 0 2px;
+    border-radius: 3px;
+  }
+  .pkg-desc {
+    font-size: 14px;
+    color: var(--muted);
+    margin-bottom: 8px;
+    line-height: 1.4;
+  }
+  .pkg-meta {
+    display: flex;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--muted-2);
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .pkg-meta span { display: inline-flex; align-items: center; gap: 4px; }
+  .pkg-meta .dot { width: 3px; height: 3px; border-radius: 50%; background: var(--muted-2); }
+  .pkg-type {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ink-2);
+    background: var(--bg-elevated);
+    padding: 4px 10px;
+    border-radius: 980px;
+    text-transform: lowercase;
+  }
+  .pkg-ver {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    min-width: 90px;
+    text-align: right;
+  }
+  .pkg-dl {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--ink-2);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    min-width: 90px;
+    text-align: right;
+  }
+
+  /* ===================== PAGINATION ===================== */
+  .pagination {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 0 var(--gutter) 80px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 6px;
+  }
+  .page-btn {
+    min-width: 36px;
+    height: 36px;
+    border-radius: 980px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--ink-2);
+    font-size: 14px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .18s, color .18s, border-color .18s;
+    font-family: var(--font);
+    font-variant-numeric: tabular-nums;
+  }
+  .page-btn:hover { background: var(--bg-elevated); }
+  .page-btn.active {
+    background: var(--ink);
+    color: var(--bg);
+    font-weight: 500;
+  }
+  .page-btn.disabled {
+    color: var(--muted-2);
+    cursor: default;
+    opacity: 0.5;
+  }
+  .page-btn.disabled:hover { background: transparent; }
+  .page-ellipsis {
+    color: var(--muted-2);
+    padding: 0 4px;
+  }
+
+  /* ===================== FOOTER ===================== */
+  .footer {
+    border-top: 1px solid var(--hair-soft);
+    background: var(--bg);
+    padding: 32px var(--gutter);
+  }
+  .footer-inner {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px 32px;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    color: var(--muted-2);
+  }
+  .footer-meta { display: flex; gap: 20px; flex-wrap: wrap; }
+  .footer-meta a:hover { color: var(--ink-2); }
+
+  /* ===================== 响应式 ===================== */
+  @media (max-width: 768px) {
+    .nav-links a:not(.nav-cta) { display: none; }
+    .pkg {
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+    }
+    .pkg-ver, .pkg-dl { display: none; }
+    .pkg-type { grid-column: 2; align-self: start; }
+    .pkg-meta { flex-wrap: wrap; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ===================== NAV ===================== -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="public-homepage.html">Moonlight Box</a>
+    <div class="nav-links">
+      <a href="#">浏览</a>
+      <a href="#">协议</a>
+      <a href="#">文档</a>
+      <a class="nav-cta" href="#">登录</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ===================== SEARCH ZONE ===================== -->
+<section class="search-zone">
+  <div class="search-zone-inner">
+    <div class="search-row">
+      <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="7"></circle>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+      </svg>
+      <input type="text" value="requests" autofocus="" />
+      <button class="search-clear" title="清除">×</button>
+      <span class="search-key">⌘ K</span>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== RESULT META ===================== -->
+<div class="result-meta">
+  <div class="result-count">
+    找到 <strong>14</strong> 个与 <span class="result-query">“requests”</span> 相关的制品
+  </div>
+  <div class="result-time">耗时 23ms</div>
+</div>
+
+<!-- ===================== FILTERS ===================== -->
+<div class="filters">
+  <span class="filter-label">协议</span>
+  <span class="chip active">全部 <span class="count">14</span></span>
+  <span class="chip">pypi <span class="count">6</span></span>
+  <span class="chip">npm <span class="count">3</span></span>
+  <span class="chip">maven <span class="count">2</span></span>
+  <span class="chip">go <span class="count">2</span></span>
+  <span class="chip">generic <span class="count">1</span></span>
+</div>
+
+<!-- ===================== RESULTS ===================== -->
+<section class="results">
+  <div class="pkg-grid">
+
+    <div class="pkg">
+      <div class="pkg-main">
+        <div class="pkg-name"><mark>requests</mark></div>
+        <div class="pkg-desc">HTTP for Humans — Python HTTP 客户端，简洁优雅的 API 设计</div>
+        <div class="pkg-meta">
+          <span>发布于 2024-01-13</span><span class="dot"></span>
+          <span>仓库 pypi-proxy</span><span class="dot"></span>
+          <span>许可证 Apache-2.0</span>
+        </div>
+      </div>
+      <span class="pkg-type">pypi</span>
+      <span class="pkg-ver">2.31.0</span>
+      <span class="pkg-dl">1,204,772</span>
+    </div>
+
+    <div class="pkg">
+      <div class="pkg-main">
+        <div class="pkg-name"><mark>requests</mark>-toolbelt</div>
+        <div class="pkg-desc">requests 工具带 — 文件上传、会话持久化、压缩等扩展功能</div>
+        <div class="pkg-meta">
+          <span>发布于 2023-11-08</span><span class="dot"></span>
+          <span>仓库 pypi-proxy</span><span class="dot"></span>
+          <span>许可证 Apache-2.0</span>
+        </div>
+      </div>
+      <span class="pkg-type">pypi</span>
+      <span class="pkg-ver">1.0.0</span>
+      <span class="pkg-dl">342,118</span>
+    </div>
+
+    <div class="pkg">
+      <div class="pkg-main">
+        <div class="pkg-name">@<mark>requests</mark>/core</div>
+        <div class="pkg-desc">轻量级 HTTP 请求库 — 浏览器端 fetch 封装，TypeScript 原生支持</div>
+        <div class="pkg-meta">
+          <span>发布于 2024-02-20</span><span class="dot"></span>
+          <span>仓库 npm-hosted</span><span class="dot"></span>
+          <span>许可证 MIT</span>
+        </div>
+      </div>
+      <span class="pkg-type">npm</span>
+      <span class="pkg-ver">3.1.4</span>
+      <span class="pkg-dl">89,302</span>
+    </div>
+
+    <div class="pkg">
+      <div class="pkg-main">
+        <div class="pkg-name">org.python:<mark>requests</mark></div>
+        <div class="pkg-desc">Jython 移植版 — Java 平台上的 requests 实现</div>
+        <div class="pkg-meta">
+          <span>发布于 2023-09-12</span><span class="dot"></span>
+          <span>仓库 maven-hosted</span><span class="dot"></span>
+          <span>许可证 Apache-2.0</span>
+        </div>
+      </div>
+      <span class="pkg-type">maven</span>
+      <span class="pkg-ver">2.28.1</span>
+      <span class="pkg-dl">12,847</span>
+    </div>
+
+    <div class="pkg">
+      <div class="pkg-main">
+        <div class="pkg-name">github.com/byteplus/<mark>requests</mark></div>
+        <div class="pkg-desc">Go HTTP 客户端 — 支持重试、超时、连接池的 requests 风格封装</div>
+        <div class="pkg-meta">
+          <span>发布于 2024-03-05</span><span class="dot"></span>
+          <span>仓库 go-proxy</span><span class="dot"></span>
+          <span>许可证 MIT</span>
+        </div>
+      </div>
+      <span class="pkg-type">go</span>
+      <span class="pkg-ver">v1.2.0</span>
+      <span class="pkg-dl">8,104</span>
+    </div>
+
+    <div class="pkg">
+      <div class="pkg-main">
+        <div class="pkg-name"><mark>requests</mark>-html</div>
+        <div class="pkg-desc">HTML Parsing for Humans — 基于 requests 的 HTML 解析库</div>
+        <div class="pkg-meta">
+          <span>发布于 2023-07-22</span><span class="dot"></span>
+          <span>仓库 pypi-proxy</span><span class="dot"></span>
+          <span>许可证 MIT</span>
+        </div>
+      </div>
+      <span class="pkg-type">pypi</span>
+      <span class="pkg-ver">0.10.0</span>
+      <span class="pkg-dl">67,432</span>
+    </div>
+
+    <div class="pkg">
+      <div class="pkg-main">
+        <div class="pkg-name"><mark>requests</mark>-mock</div>
+        <div class="pkg-desc">requests 模拟器 — 单元测试中 mock HTTP 请求的官方搭档</div>
+        <div class="pkg-meta">
+          <span>发布于 2024-01-30</span><span class="dot"></span>
+          <span>仓库 pypi-proxy</span><span class="dot"></span>
+          <span>许可证 Apache-2.0</span>
+        </div>
+      </div>
+      <span class="pkg-type">pypi</span>
+      <span class="pkg-ver">1.12.1</span>
+      <span class="pkg-dl">45,219</span>
+    </div>
+
+    <div class="pkg">
+      <div class="pkg-main">
+        <div class="pkg-name"><mark>requests</mark>-ntlm</div>
+        <div class="pkg-desc">NTLM 认证支持 — 为 requests 添加 Windows NTLM 身份验证</div>
+        <div class="pkg-meta">
+          <span>发布于 2023-10-04</span><span class="dot"></span>
+          <span>仓库 pypi-proxy</span><span class="dot"></span>
+          <span>许可证 ISC</span>
+        </div>
+      </div>
+      <span class="pkg-type">pypi</span>
+      <span class="pkg-ver">1.2.0</span>
+      <span class="pkg-dl">9,876</span>
+    </div>
+
+  </div>
+</section>
+
+<!-- ===================== PAGINATION ===================== -->
+<nav class="pagination">
+  <button class="page-btn disabled">‹</button>
+  <button class="page-btn active">1</button>
+  <button class="page-btn">2</button>
+  <span class="page-ellipsis">…</span>
+  <button class="page-btn">14</button>
+  <button class="page-btn">›</button>
+</nav>
+
+<!-- ===================== FOOTER ===================== -->
+<footer class="footer">
+  <div class="footer-inner">
+    <div>© 2026 Moonlight Registry</div>
+    <div class="footer-meta">
+      <a href="#">文档</a>
+      <a href="#">API</a>
+      <a href="#">状态</a>
+      <a href="#">隐私</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // —— 读取 URL 中的 q 参数回填到搜索框
+  const params = new URLSearchParams(location.search);
+  const initialQ = params.get('q') || 'requests';
+  const input = document.querySelector('.search-row input');
+  if (!input) {
+    console.error('search input not found');
+  } else {
+    input.value = initialQ;
+  }
+
+  // 同步更新结果统计行的查询词显示
+  const queryDisplay = document.querySelector('.result-query');
+  if (queryDisplay) queryDisplay.textContent = `“${initialQ}”`;
+
+  // —— chip 切换示例
+  document.querySelectorAll('.chip').forEach(c => {
+    c.addEventListener('click', () => {
+      document.querySelectorAll('.chip').forEach(x => x.classList.remove('active'));
+      c.classList.add('active');
+    });
+  });
+
+  // —— 搜索框：回车重新搜索（更新 URL 参数 + 模拟刷新结果）
+  if (input) {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const q = input.value.trim();
+        if (!q) return;
+        // 更新 URL 不刷新页面，模拟 SPA 行为
+        const newUrl = q ? `public-search.html?q=${encodeURIComponent(q)}` : 'public-search.html';
+        history.replaceState(null, '', newUrl);
+        // 同步刷新查询词显示
+        if (queryDisplay) queryDisplay.textContent = `“${q}”`;
+        // 模拟搜索：把第一个结果的名字改成带高亮（演示效果）
+        input.blur();
+        const resultsEl = document.querySelector('.results');
+        if (resultsEl) resultsEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
+  }
+
+  // —— 清除按钮 → 跳回首页
+  const clearBtn = document.querySelector('.search-clear');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      location.href = 'public-homepage.html';
+    });
+  }
+
+  // —— ⌘K 聚焦
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    }
+  });
+</script>
+</body>
+</html>

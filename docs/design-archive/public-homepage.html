@@ -1,0 +1,731 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Moonlight Box — 公共制品仓库</title>
+<style>
+  /* ============================================================
+     Moonlight Box · 公共仓库首页 · Apple 冷白
+     visual thesis: 纯白 + SF 字体 + 蓝色点睛 + 超大留白
+     ============================================================ */
+
+  :root {
+    --bg:           #ffffff;
+    --bg-soft:      #fbfbfd;
+    --bg-elevated:  #f5f5f7;
+    --ink:          #1d1d1f;
+    --ink-2:        #424245;
+    --muted:        #6e6e73;
+    --muted-2:      #86868b;
+    --hair:         #d2d2d7;
+    --hair-soft:    #e8e8ed;
+    --blue:         #0071e3;
+    --blue-hover:   #0077ed;
+    --blue-soft:    #2997ff;
+
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+            "SF Pro Text", "Helvetica Neue", "PingFang SC",
+            "Noto Sans CJK SC", sans-serif;
+    --mono: "SF Mono", "JetBrains Mono", "Noto Sans Mono CJK SC",
+            Consolas, monospace;
+
+    --gutter: clamp(20px, 5vw, 80px);
+    --maxw:   1024px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--ink); }
+  body {
+    font-family: var(--font);
+    font-size: 17px;
+    line-height: 1.47059;
+    font-weight: 400;
+    letter-spacing: -0.022em;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  a { color: inherit; text-decoration: none; }
+  ::selection { background: rgba(0, 113, 227, 0.2); }
+
+  /* ============================================================
+     NAV —— 半透明白 + blur，Apple 经典
+     ============================================================ */
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 1px solid var(--hair-soft);
+  }
+  .nav-inner {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 12px var(--gutter);
+    display: flex;
+    align-items: center;
+    gap: 0;
+    height: 48px;
+  }
+  .brand {
+    font-size: 19px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+  }
+  .nav-links {
+    display: flex;
+    gap: 0;
+    margin-left: auto;
+    align-items: center;
+  }
+  .nav-links a {
+    font-size: 14px;
+    color: var(--ink);
+    padding: 0 12px;
+    line-height: 44px;
+    transition: color .2s;
+    opacity: 0.88;
+  }
+  .nav-links a:hover { opacity: 1; color: var(--blue); }
+  .nav-cta {
+    font-size: 14px;
+    color: var(--bg);
+    background: var(--blue);
+    padding: 6px 14px;
+    border-radius: 980px;
+    margin-left: 16px;
+    transition: background .2s;
+    line-height: 1.4;
+  }
+  .nav-cta:hover { background: var(--blue-hover); }
+
+  /* ============================================================
+     HERO —— 居中、超大留白
+     ============================================================ */
+  .hero {
+    text-align: center;
+    padding: clamp(80px, 12vh, 130px) var(--gutter) clamp(40px, 6vh, 70px);
+    max-width: var(--maxw);
+    margin: 0 auto;
+  }
+  .hero-eyebrow {
+    font-size: 19px;
+    color: var(--blue);
+    font-weight: 600;
+    margin-bottom: 12px;
+    letter-spacing: -0.01em;
+    opacity: 0;
+    animation: rise .8s ease .05s forwards;
+  }
+  .hero-title {
+    font-size: clamp(48px, 8vw, 96px);
+    line-height: 1.05;
+    font-weight: 600;
+    letter-spacing: -0.045em;
+    color: var(--ink);
+    margin-bottom: 20px;
+    opacity: 0;
+    animation: rise .9s cubic-bezier(.2,.7,.2,1) .12s forwards;
+  }
+  .hero-sub {
+    font-size: clamp(21px, 2.4vw, 28px);
+    line-height: 1.3;
+    font-weight: 400;
+    color: var(--muted);
+    max-width: 720px;
+    margin: 0 auto 40px;
+    letter-spacing: -0.02em;
+    opacity: 0;
+    animation: rise .8s ease .24s forwards;
+  }
+
+  /* 搜索 —— 大尺寸、舒展、Apple Spotlight 风 */
+  .search {
+    max-width: 620px;
+    margin: 0 auto;
+    opacity: 0;
+    animation: rise .8s ease .34s forwards;
+  }
+  .search-row {
+    display: flex;
+    align-items: center;
+    background: var(--bg);
+    border: 1px solid var(--hair);
+    border-radius: 14px;
+    padding: 18px 22px;
+    transition: border-color .2s, box-shadow .2s;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  }
+  .search-row:focus-within {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.12), 0 1px 2px rgba(0, 0, 0, 0.03);
+  }
+  .search-icon {
+    width: 22px; height: 22px;
+    margin-right: 16px;
+    color: var(--muted-2);
+    flex-shrink: 0;
+    transition: color .2s;
+    stroke-width: 1.5;
+  }
+  .search-row:focus-within .search-icon { color: var(--blue); }
+  .search input {
+    flex: 1;
+    border: none !important;
+    background: transparent !important;
+    outline: 0;
+    box-shadow: none !important;
+    -webkit-appearance: none;
+    appearance: none;
+    font-family: var(--font);
+    font-size: 20px;
+    font-weight: 400;
+    color: var(--ink);
+    letter-spacing: -0.022em;
+    caret-color: var(--blue);
+    line-height: 1.3;
+    height: 32px;
+    padding: 0;
+    min-width: 0;
+  }
+  .search input::placeholder {
+    color: var(--muted-2);
+    font-weight: 400;
+  }
+  .search input:-webkit-autofill {
+    -webkit-box-shadow: 0 0 0 1000px var(--bg) inset;
+    -webkit-text-fill-color: var(--ink);
+  }
+  .search-key {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted-2);
+    background: var(--bg-elevated);
+    border: 1px solid var(--hair-soft);
+    padding: 4px 8px;
+    border-radius: 6px;
+    margin-left: 16px;
+    line-height: 1.3;
+  }
+  .search-hints {
+    margin-top: 18px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    font-size: 14px;
+  }
+  .chip {
+    color: var(--ink-2);
+    background: var(--bg-elevated);
+    padding: 6px 14px;
+    border-radius: 980px;
+    cursor: pointer;
+    transition: background .2s, color .2s;
+    font-size: 14px;
+  }
+  .chip:hover { background: var(--hair-soft); color: var(--blue); }
+
+  /* ============================================================
+     STATS —— 居中、细分隔点
+     ============================================================ */
+  .stats {
+    background: var(--bg-soft);
+    border-top: 1px solid var(--hair-soft);
+    border-bottom: 1px solid var(--hair-soft);
+    padding: 32px var(--gutter);
+  }
+  .stats-inner {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 0;
+  }
+  .stat {
+    text-align: center;
+    padding: 0 32px;
+    border-right: 1px solid var(--hair-soft);
+  }
+  .stat:last-child { border-right: 0; }
+  .stat .n {
+    font-size: 32px;
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+    display: block;
+  }
+  .stat .l {
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 4px;
+    letter-spacing: -0.01em;
+  }
+
+  /* ============================================================
+     SECTION 通用
+     ============================================================ */
+  .section {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: clamp(72px, 11vh, 120px) var(--gutter);
+  }
+  .section-head {
+    text-align: center;
+    margin-bottom: 48px;
+  }
+  .section-eyebrow {
+    font-size: 17px;
+    color: var(--blue);
+    font-weight: 600;
+    margin-bottom: 8px;
+    letter-spacing: -0.01em;
+  }
+  .section-title {
+    font-size: clamp(36px, 5vw, 56px);
+    line-height: 1.08;
+    font-weight: 600;
+    letter-spacing: -0.035em;
+    color: var(--ink);
+  }
+  .section-sub {
+    font-size: 19px;
+    color: var(--muted);
+    margin-top: 12px;
+    max-width: 600px;
+    margin-left: auto;
+    margin-right: auto;
+    letter-spacing: -0.01em;
+  }
+  .section-link {
+    display: inline-block;
+    margin-top: 18px;
+    font-size: 17px;
+    color: var(--blue);
+    font-weight: 400;
+  }
+  .section-link:hover { text-decoration: underline; }
+  .section-link::after { content: " ›"; }
+
+  /* ============================================================
+     PACKAGES —— 卡片式列表，圆角，浅边
+     ============================================================ */
+  .pkg-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    background: var(--bg);
+    border-radius: 18px;
+    overflow: hidden;
+    border: 1px solid var(--hair-soft);
+  }
+  .pkg {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto;
+    align-items: center;
+    gap: 20px;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--hair-soft);
+    cursor: pointer;
+    transition: background .18s;
+  }
+  .pkg:last-child { border-bottom: 0; }
+  .pkg:hover { background: var(--bg-soft); }
+  .pkg-main { min-width: 0; }
+  .pkg-name {
+    font-family: var(--mono);
+    font-size: 15px;
+    color: var(--ink);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pkg-desc {
+    font-size: 14px;
+    color: var(--muted);
+    margin-top: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pkg-type {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ink-2);
+    background: var(--bg-elevated);
+    padding: 4px 10px;
+    border-radius: 980px;
+    text-transform: lowercase;
+    letter-spacing: 0;
+  }
+  .pkg-ver {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    min-width: 90px;
+    text-align: right;
+  }
+  .pkg-dl {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--ink-2);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    min-width: 90px;
+    text-align: right;
+  }
+
+  /* ============================================================
+     PROTOCOLS —— 网格卡片
+     ============================================================ */
+  .protocols {
+    background: var(--bg-soft);
+    border-top: 1px solid var(--hair-soft);
+    border-bottom: 1px solid var(--hair-soft);
+  }
+  .proto-grid {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: clamp(72px, 11vh, 120px) var(--gutter);
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+  }
+  .proto {
+    background: var(--bg);
+    border-radius: 18px;
+    padding: 28px 22px;
+    text-align: center;
+    transition: transform .25s ease, box-shadow .25s;
+    border: 1px solid var(--hair-soft);
+  }
+  .proto:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.04);
+  }
+  .proto-name {
+    font-family: var(--mono);
+    font-size: 17px;
+    color: var(--ink);
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .proto-meta {
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  /* ============================================================
+     CTA —— 居中、巨大留白
+     ============================================================ */
+  .cta {
+    text-align: center;
+    padding: clamp(90px, 16vh, 160px) var(--gutter);
+    max-width: var(--maxw);
+    margin: 0 auto;
+  }
+  .cta-title {
+    font-size: clamp(40px, 6vw, 72px);
+    line-height: 1.06;
+    font-weight: 600;
+    letter-spacing: -0.04em;
+    color: var(--ink);
+    margin-bottom: 24px;
+  }
+  .cta-sub {
+    font-size: 21px;
+    color: var(--muted);
+    margin-bottom: 36px;
+    letter-spacing: -0.02em;
+  }
+  .cta-actions {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .btn {
+    font-size: 17px;
+    padding: 12px 24px;
+    border-radius: 980px;
+    transition: all .22s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    font-weight: 400;
+  }
+  .btn-primary {
+    background: var(--blue);
+    color: var(--bg);
+  }
+  .btn-primary:hover { background: var(--blue-hover); }
+  .btn-link {
+    color: var(--blue);
+    background: transparent;
+  }
+  .btn-link:hover { text-decoration: underline; }
+
+  /* ============================================================
+     FOOTER
+     ============================================================ */
+  .footer {
+    border-top: 1px solid var(--hair-soft);
+    background: var(--bg);
+    padding: 32px var(--gutter);
+  }
+  .footer-inner {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px 32px;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    color: var(--muted-2);
+  }
+  .footer-meta {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .footer-meta a:hover { color: var(--ink-2); }
+
+  /* ============================================================
+     动画
+     ============================================================ */
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .reveal { opacity: 0; transform: translateY(24px); transition: opacity .8s ease, transform .8s cubic-bezier(.2,.7,.2,1); }
+  .reveal.in { opacity: 1; transform: translateY(0); }
+
+  /* ============================================================
+     响应式
+     ============================================================ */
+  @media (max-width: 768px) {
+    .nav-links a:not(.nav-cta) { display: none; }
+    .pkg {
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+    }
+    .pkg-ver, .pkg-dl { display: none; }
+    .pkg-type { grid-column: 2; }
+    .proto-grid { grid-template-columns: repeat(2, 1fr); }
+    .stat { padding: 0 18px; }
+    .stat .n { font-size: 24px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .reveal { opacity: 1; transform: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ===================== NAV ===================== -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="#">Moonlight Box</a>
+    <div class="nav-links">
+      <a href="#browse">浏览</a>
+      <a href="#protocols">协议</a>
+      <a href="#docs">文档</a>
+      <a class="nav-cta" href="#signin">登录</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ===================== HERO ===================== -->
+<header class="hero" id="browse">
+  <div class="hero-eyebrow">公共制品仓库</div>
+  <h1 class="hero-title">一处月光，<br/>承载所有制品。</h1>
+  <p class="hero-sub">
+    统一代理、缓存与托管 7 种主流包格式。<br/>
+    企业内部与开源生态，同一座仓库。
+  </p>
+
+  <div class="search">
+    <div class="search-row">
+      <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="7"></circle>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+      </svg>
+      <input type="text" placeholder="搜索包名、group、module…" />
+      <span class="search-key">⌘ K</span>
+    </div>
+    <div class="search-hints">
+      <span class="chip">@vue/core</span>
+      <span class="chip">commons-lang3</span>
+      <span class="chip">requests</span>
+      <span class="chip">cobra</span>
+    </div>
+  </div>
+</header>
+
+<!-- ===================== STATS ===================== -->
+<section class="stats">
+  <div class="stats-inner">
+    <div class="stat"><span class="n">12,847</span><span class="l">个制品包</span></div>
+    <div class="stat"><span class="n">7</span><span class="l">种协议</span></div>
+    <div class="stat"><span class="n">48</span><span class="l">个托管仓库</span></div>
+    <div class="stat"><span class="n">2.3M</span><span class="l">本周下载</span></div>
+  </div>
+</section>
+
+<!-- ===================== POPULAR PACKAGES ===================== -->
+<section class="section reveal">
+  <div class="section-head">
+    <div class="section-eyebrow">热门</div>
+    <h2 class="section-title">本周下载最多</h2>
+    <p class="section-sub">团队里大家在用什么，一目了然。</p>
+    <a class="section-link" href="#all">查看全部</a>
+  </div>
+
+  <div class="pkg-grid">
+    <div class="pkg">
+      <div class="pkg-main">
+        <div class="pkg-name">@vue/core</div>
+        <div class="pkg-desc">渐进式 JavaScript 框架 — 核心运行时</div>
+      </div>
+      <span class="pkg-type">npm</span>
+      <span class="pkg-ver">v3.4.21</span>
+      <span class="pkg-dl">412,893</span>
+    </div>
+    <div class="pkg">
+      <div class="pkg-main">
+        <div class="pkg-name">org.apache.commons:commons-lang3</div>
+        <div class="pkg-desc">Apache Commons Lang — Java 核工具库</div>
+      </div>
+      <span class="pkg-type">maven</span>
+      <span class="pkg-ver">3.14.0</span>
+      <span class="pkg-dl">286,104</span>
+    </div>
+    <div class="pkg">
+      <div class="pkg-main">
+        <div class="pkg-name">requests</div>
+        <div class="pkg-desc">HTTP for Humans — Python HTTP 客户端</div>
+      </div>
+      <span class="pkg-type">pypi</span>
+      <span class="pkg-ver">2.31.0</span>
+      <span class="pkg-dl">1,204,772</span>
+    </div>
+    <div class="pkg">
+      <div class="pkg-main">
+        <div class="pkg-name">github.com/spf13/cobra</div>
+        <div class="pkg-desc">Go CLI 框架 — 现代命令行应用骨架</div>
+      </div>
+      <span class="pkg-type">go</span>
+      <span class="pkg-ver">v1.8.0</span>
+      <span class="pkg-dl">94,318</span>
+    </div>
+    <div class="pkg">
+      <div class="pkg-main">
+        <div class="pkg-name">nginx</div>
+        <div class="pkg-desc">高性能 HTTP / 反向代理服务器</div>
+      </div>
+      <span class="pkg-type">yum</span>
+      <span class="pkg-ver">1:1.24.0</span>
+      <span class="pkg-dl">56,902</span>
+    </div>
+    <div class="pkg">
+      <div class="pkg-main">
+        <div class="pkg-name">postgresql</div>
+        <div class="pkg-desc">PostgreSQL 关系型数据库服务端</div>
+      </div>
+      <span class="pkg-type">apt</span>
+      <span class="pkg-ver">16.1-1</span>
+      <span class="pkg-dl">32,447</span>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== PROTOCOLS ===================== -->
+<section class="protocols" id="protocols">
+  <div class="section-head reveal" style="padding-top: clamp(72px, 11vh, 120px);">
+    <div class="section-eyebrow">协议</div>
+    <h2 class="section-title">一种也不曾缺席</h2>
+    <p class="section-sub">统一适配器层收纳主流包格式，同一套权限与审计。</p>
+  </div>
+  <div class="proto-grid reveal">
+    <div class="proto"><div class="proto-name">npm</div><div class="proto-meta">JavaScript / Node</div></div>
+    <div class="proto"><div class="proto-name">maven</div><div class="proto-meta">JVM / Java</div></div>
+    <div class="proto"><div class="proto-name">pypi</div><div class="proto-meta">Python / pip</div></div>
+    <div class="proto"><div class="proto-name">go</div><div class="proto-meta">Go Modules</div></div>
+    <div class="proto"><div class="proto-name">yum</div><div class="proto-meta">RHEL / CentOS</div></div>
+    <div class="proto"><div class="proto-name">apt</div><div class="proto-meta">Debian / Ubuntu</div></div>
+    <div class="proto"><div class="proto-name">generic</div><div class="proto-meta">任意二进制</div></div>
+    <div class="proto"><div class="proto-name">+ more</div><div class="proto-meta">可扩展</div></div>
+  </div>
+</section>
+
+<!-- ===================== CTA ===================== -->
+<section class="cta" id="about">
+  <h2 class="cta-title">把仓库，放回自己手里。</h2>
+  <p class="cta-sub">自建、私有、托管，三种部署方式任你选。</p>
+  <div class="cta-actions">
+    <a class="btn btn-primary" href="#start">开始自建</a>
+    <a class="btn btn-link" href="#docs">阅读文档 ›</a>
+  </div>
+</section>
+
+<!-- ===================== FOOTER ===================== -->
+<footer class="footer">
+  <div class="footer-inner">
+    <div>© 2026 Moonlight Registry</div>
+    <div class="footer-meta">
+      <a href="#">文档</a>
+      <a href="#">API</a>
+      <a href="#">状态</a>
+      <a href="#">隐私</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      document.querySelector('.search input').focus();
+    }
+  });
+
+  // 首页搜索：回车跳到搜索结果页，带 query 参数
+  const input = document.querySelector('.search input');
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const q = input.value.trim();
+      const target = q ? `public-search.html?q=${encodeURIComponent(q)}` : 'public-search.html';
+      location.href = target;
+    }
+  });
+  // 点击示例 chip → 自动填入并搜索
+  document.querySelectorAll('.chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const q = chip.textContent.trim();
+      input.value = q;
+      location.href = `public-search.html?q=${encodeURIComponent(q)}`;
+    });
+  });
+</script>
+</body>
+</html>
