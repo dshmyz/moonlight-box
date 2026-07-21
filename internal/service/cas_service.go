@@ -6,11 +6,22 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
+	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/config"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
 )
+
+// CAS 端点默认路径，由 cas_service、config_initializer seed 与前端 CASSettings 共用。
+const (
+	DefaultCASLoginPath    = "/cas/login"
+	DefaultCASValidatePath = "/cas/serviceValidate"
+)
+
+// casHTTPClient 为 CAS 出站请求统一加超时，避免 CAS 不可达时登录/测试连接请求无限挂起。
+var casHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 type CASService struct {
 	cfg       *config.CASConfig
@@ -97,6 +108,64 @@ func (s *CASService) getEffectiveConfig() *model.CASConfig {
 	return &model.CASConfig{}
 }
 
+// GetAdminConfig 返回当前 CAS 配置（供管理端使用，始终返回完整字段）
+func (s *CASService) GetAdminConfig() *model.CASConfig {
+	return s.getEffectiveConfig()
+}
+
+// UpdateAdminConfig 更新 CAS 配置到 system_configs 表
+func (s *CASService) UpdateAdminConfig(cfg *model.CASConfig, userID uint) error {
+	if s.configSvc == nil {
+		return fmt.Errorf("system config service unavailable")
+	}
+
+	enabledVal := "false"
+	if cfg.Enabled {
+		enabledVal = "true"
+	}
+
+	keys := []struct {
+		key, value, valueType, category, description string
+	}{
+		{"cas.enabled", enabledVal, "bool", "login", "Enable CAS SSO"},
+		{"cas.server_url", cfg.ServerURL, "string", "login", "CAS server base URL"},
+		{"cas.service_url", cfg.ServiceURL, "string", "login", "CAS service URL (callback)"},
+		{"cas.login_path", cfg.LoginPath, "string", "login", "CAS login path"},
+		{"cas.validate_path", cfg.ValidatePath, "string", "login", "CAS ticket validation path"},
+	}
+
+	for _, k := range keys {
+		if err := s.configSvc.Set(k.key, k.value, k.valueType, k.category, k.description, false, userID); err != nil {
+			return fmt.Errorf("failed to set %s: %w", k.key, err)
+		}
+	}
+	return nil
+}
+
+// TestConnection 测试 CAS 服务器可达性
+func (s *CASService) TestConnection() error {
+	cfg := s.getEffectiveConfig()
+	if cfg.ServerURL == "" {
+		return fmt.Errorf("CAS server URL is not configured")
+	}
+	if cfg.LoginPath == "" {
+		cfg.LoginPath = DefaultCASLoginPath
+	}
+
+	testURL := strings.TrimRight(cfg.ServerURL, "/") + cfg.LoginPath
+	resp, err := casHTTPClient.Head(testURL)
+	if err != nil {
+		return fmt.Errorf("failed to connect to CAS server: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// CAS 登录端点通常返回 302 重定向，200/302 都算可达
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		return nil
+	}
+	return fmt.Errorf("CAS server returned status %d", resp.StatusCode)
+}
+
 func (s *CASService) IsEnabled() bool {
 	cfg := s.getEffectiveConfig()
 	return cfg.Enabled && cfg.ServerURL != "" && cfg.ServiceURL != ""
@@ -124,7 +193,7 @@ func (s *CASService) ValidateTicket(ticket string) (username string, displayName
 		ticket,
 	)
 
-	resp, err := http.Get(validateURL)
+	resp, err := casHTTPClient.Get(validateURL)
 	if err != nil {
 		return "", "", "", fmt.Errorf("CAS validation request failed: %w", err)
 	}

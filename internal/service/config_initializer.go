@@ -61,8 +61,8 @@ func (i *ConfigInitializer) InitializeDefaultConfigs() error {
 		{"cas.enabled", "false", "bool", "login", "启用 CAS 单点登录", false},
 		{"cas.server_url", "", "string", "login", "CAS 服务器地址", false},
 		{"cas.service_url", "", "string", "login", "Service URL", false},
-		{"cas.login_path", "/cas/login", "string", "login", "CAS 登录路径", false},
-		{"cas.validate_path", "/cas/serviceValidate", "string", "login", "CAS 验证路径", false},
+		{"cas.login_path", DefaultCASLoginPath, "string", "login", "CAS 登录路径", false},
+		{"cas.validate_path", DefaultCASValidatePath, "string", "login", "CAS 验证路径", false},
 
 		{"metrics.enabled", "true", "bool", "general", "启用Prometheus监控", false},
 		{"metrics.path", "/metrics", "string", "general", "Prometheus监控路径", false},
@@ -104,14 +104,6 @@ func (i *ConfigInitializer) InitializeDefaultConfigs() error {
 
 	logrus.Info("Default system configurations initialized")
 	return nil
-}
-
-func (i *ConfigInitializer) GetConfig(key string) (string, error) {
-	config, err := i.configRepo.Get(key)
-	if err != nil {
-		return "", err
-	}
-	return config.Value, nil
 }
 
 func (i *ConfigInitializer) GetConfigAsBool(key string, defaultValue bool) bool {

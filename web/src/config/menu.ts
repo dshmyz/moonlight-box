@@ -115,6 +115,12 @@ export const menuConfig: MenuItem[] = [
         permission: { resource: 'system', action: 'admin' },
       },
       {
+        index: '/admin/cas-settings',
+        title: 'CAS 设置',
+        icon: 'fa-solid fa-key',
+        permission: { resource: 'system', action: 'admin' },
+      },
+      {
         index: '/admin/system-info',
         title: '系统信息',
         icon: 'fa-solid fa-info-circle',

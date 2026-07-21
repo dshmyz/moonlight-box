@@ -199,6 +199,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '系统配置', permission: { resource: 'system', action: 'admin' } },
       },
       {
+        path: 'cas-settings',
+        name: 'CASSettings',
+        component: () => import('@/views/CASSettings.vue'),
+        meta: { title: 'CAS 设置', permission: { resource: 'system', action: 'admin' } },
+      },
+      {
         path: 'system-info',
         name: 'SystemInfo',
         component: () => import('@/views/SystemInfo.vue'),
