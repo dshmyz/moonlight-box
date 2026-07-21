@@ -6,10 +6,10 @@
 
 | 文件名 | 说明 | 目标位置 |
 |--------|------|----------|
-| `.npmrc` | NPM 配置文件 | `~/.npmrc` 或项目根目录 |
+| `npmrc` | NPM 配置文件 | `~/.npmrc` 或项目根目录 |
 | `settings.xml` | Maven 配置文件 | `~/.m2/settings.xml` |
 | `pip.conf` | pip 配置文件 | `~/.pip/pip.conf` (Linux/Mac) |
-| `.pypirc` | PyPI 上传配置 | `~/.pypirc` |
+| `pypirc` | PyPI 上传配置 | `~/.pypirc` |
 | `NuGet.Config` | NuGet 配置文件 | 项目根目录或 `%APPDATA%\NuGet\` |
 | `moonlight.repo` | Yum 仓库配置 | `/etc/yum.repos.d/moonlight.repo` |
 | `moonlight.list` | APT 仓库配置 | `/etc/apt/sources.list.d/moonlight.list` |
@@ -21,10 +21,10 @@
 
 ```bash
 # 下载单个文件
-curl -o ~/.npmrc https://your-registry/docs/templates/.npmrc
+curl -o ~/.npmrc https://your-moonlight-domain/docs/templates/npmrc
 
 # 下载所有模板
-wget -r -np -nH --cut-dirs=3 -R index.html https://your-registry/docs/templates/
+wget -r -np -nH --cut-dirs=3 -R index.html https://your-moonlight-domain/docs/templates/
 ```
 
 ### 方式二：复制粘贴
@@ -34,20 +34,13 @@ wget -r -np -nH --cut-dirs=3 -R index.html https://your-registry/docs/templates/
 3. 粘贴到目标位置
 4. 修改配置参数
 
-### 方式三：使用脚本
-
-```bash
-# 自动配置脚本（即将推出）
-curl -fsSL https://your-registry/docs/install.sh | bash
-```
-
 ## 配置步骤
 
 ### 1. NPM 配置
 
 ```bash
 # 下载模板
-curl -o ~/.npmrc https://your-registry/docs/templates/.npmrc
+curl -o ~/.npmrc https://your-moonlight-domain/docs/templates/npmrc
 
 # 编辑配置
 vi ~/.npmrc
@@ -66,7 +59,7 @@ npm config list
 mkdir -p ~/.m2
 
 # 下载模板
-curl -o ~/.m2/settings.xml https://your-registry/docs/templates/settings.xml
+curl -o ~/.m2/settings.xml https://your-moonlight-domain/docs/templates/settings.xml
 
 # 编辑配置
 vi ~/.m2/settings.xml
@@ -86,7 +79,7 @@ mvn help:effective-settings
 mkdir -p ~/.pip
 
 # 下载模板
-curl -o ~/.pip/pip.conf https://your-registry/docs/templates/pip.conf
+curl -o ~/.pip/pip.conf https://your-moonlight-domain/docs/templates/pip.conf
 
 # 验证配置
 pip config list
@@ -96,7 +89,7 @@ pip config list
 
 ```bash
 # 下载环境变量脚本
-curl -o ~/moonlight-go-env.sh https://your-registry/docs/templates/go-env.sh
+curl -o ~/moonlight-go-env.sh https://your-moonlight-domain/docs/templates/go-env.sh
 
 # 添加到 shell 配置
 echo "source ~/moonlight-go-env.sh" >> ~/.bashrc
@@ -112,7 +105,7 @@ go env GOPROXY
 
 ```powershell
 # 下载配置文件
-Invoke-WebRequest -Uri "https://your-registry/docs/templates/NuGet.Config" -OutFile "NuGet.Config"
+Invoke-WebRequest -Uri "https://your-moonlight-domain/docs/templates/NuGet.Config" -OutFile "NuGet.Config"
 
 # 编辑配置
 notepad NuGet.Config
@@ -125,7 +118,7 @@ nuget sources list
 
 ```bash
 # 下载配置文件
-sudo curl -o /etc/yum.repos.d/moonlight.repo https://your-registry/docs/templates/moonlight.repo
+sudo curl -o /etc/yum.repos.d/moonlight.repo https://your-moonlight-domain/docs/templates/moonlight.repo
 
 # 更新缓存
 sudo yum clean all
@@ -139,7 +132,7 @@ yum repolist
 
 ```bash
 # 下载配置文件
-sudo curl -o /etc/apt/sources.list.d/moonlight.list https://your-registry/docs/templates/moonlight.list
+sudo curl -o /etc/apt/sources.list.d/moonlight.list https://your-moonlight-domain/docs/templates/moonlight.list
 
 # 更新索引
 sudo apt update
@@ -170,7 +163,7 @@ apt-cache policy
 
 4. **使用 HTTPS（生产环境）**
    - 生产环境应使用 HTTPS
-   - 将模板中的 `http://` 改为 `https://`
+   - 模板中默认使用 `https://`，请将 `your-moonlight-domain` 替换为实际域名
 
 ## 自定义配置
 
@@ -185,7 +178,7 @@ export MOONLIGHT_USERNAME="your-username"
 export MOONLIGHT_PASSWORD="your-password"
 
 # 使用 envsubst 替换
-envsubst < .npmrc.template > ~/.npmrc
+envsubst < npmrc.template > ~/.npmrc
 ```
 
 ### 多环境配置
@@ -231,10 +224,6 @@ ln -s .npmrc.dev ~/.npmrc
 
 如果遇到问题：
 
-1. 查看 [客户端配置指南](../client-configuration.md)
-2. 查看 [常见问题解答](../faq.md)
+1. 查看客户端配置指南
+2. 查看常见问题解答
 3. 联系管理员：admin@company.com
-
----
-
-**最后更新**：2026-05-03

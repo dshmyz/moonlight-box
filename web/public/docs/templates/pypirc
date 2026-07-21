@@ -8,13 +8,13 @@ index-servers =
 
 [moonlight]
 # 虚拟仓库（用于下载）
-repository = http://your-registry:9081/repo/pypi-virtual/
+repository = https://your-moonlight-domain/repository/pypi-virtual/
 username = YOUR_USERNAME
 password = YOUR_PASSWORD
 
 [moonlight-local]
 # 本地仓库（用于上传）
-repository = http://your-registry:9081/pypi/upload/
+repository = https://your-moonlight-domain/repository/pypi-local/
 username = YOUR_USERNAME
 password = YOUR_PASSWORD
 

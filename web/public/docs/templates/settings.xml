@@ -2,18 +2,69 @@
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
                               https://maven.apache.org/xsd/settings-1.0.0.xsd">
+
+  <!-- 本地仓库路径（可选） -->
+  <!-- <localRepository>~/.m2/repository</localRepository> -->
+
+  <!-- 服务器认证配置 -->
   <servers>
     <server>
       <id>moonlight</id>
       <username>YOUR_USERNAME</username>
       <password>YOUR_PASSWORD</password>
     </server>
+
+    <!-- 如需区分 Release/Snapshot 服务器，可使用以下配置 -->
+    <!--
+    <server>
+      <id>moonlight-releases</id>
+      <username>YOUR_USERNAME</username>
+      <password>YOUR_PASSWORD</password>
+    </server>
+    <server>
+      <id>moonlight-snapshots</id>
+      <username>YOUR_USERNAME</username>
+      <password>YOUR_PASSWORD</password>
+    </server>
+    -->
   </servers>
+
+  <!-- 镜像配置 -->
   <mirrors>
+    <!-- 将 Maven Central 重定向到 Moonlight -->
     <mirror>
       <id>moonlight</id>
       <mirrorOf>central</mirrorOf>
       <url>https://your-moonlight-domain/repository/maven-virtual/</url>
     </mirror>
+
+    <!-- 可选：镜像所有外部仓库 -->
+    <!--
+    <mirror>
+      <id>moonlight-all</id>
+      <mirrorOf>external:*</mirrorOf>
+      <url>https://your-moonlight-domain/repository/maven-virtual/</url>
+    </mirror>
+    -->
   </mirrors>
+
+  <!-- Profile 配置（可选，用于显式声明仓库） -->
+  <!--
+  <profiles>
+    <profile>
+      <id>moonlight</id>
+      <repositories>
+        <repository>
+          <id>moonlight-virtual</id>
+          <url>https://your-moonlight-domain/repository/maven-virtual/</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>true</enabled></snapshots>
+        </repository>
+      </repositories>
+    </profile>
+  </profiles>
+  <activeProfiles>
+    <activeProfile>moonlight</activeProfile>
+  </activeProfiles>
+  -->
 </settings>
