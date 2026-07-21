@@ -9,6 +9,10 @@
 
 BASE_URL="${1:-http://localhost:9081}"
 
+# 统一 curl 超时配置：连接超时 10s，总超时 30s
+# 避免上游不可达时无限等待卡住整套测试
+CURL_OPTS="--connect-timeout 10 --max-time 30"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -32,7 +36,7 @@ echo
 # ── helper ──────────────────────────────────────────────
 # get_header <url> <header> - 用 HEAD 取响应头
 head_header() {
-  curl -sI -o /dev/null -w "%{header_json}" "$1" 2>/dev/null \
+  curl $CURL_OPTS -sI -o /dev/null -w "%{header_json}" "$1" 2>/dev/null \
     | python3 -c "import sys,json; h=json.load(sys.stdin); print(h.get('$2',[['']])[0])" 2>/dev/null || true
 }
 

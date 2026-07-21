@@ -114,16 +114,6 @@
                   <span v-else class="no-value">-</span>
                 </template>
               </el-table-column>
-              <!-- <el-table-column label="同步状态" width="140">
-                <template #default="{ row }">
-                  <div v-if="row.type === 'proxy' && row.metadata_sync_enabled" class="sync-status">
-                    <el-tag :class="['sync-tag', getSyncStatusClass(row.last_sync_status)]" size="small">
-                      {{ getSyncStatusText(row.last_sync_status) }}
-                    </el-tag>
-                  </div>
-                  <span v-else class="no-sync">-</span>
-                </template>
-              </el-table-column> -->
               <el-table-column label="健康" width="80" align="center">
                 <template #default="{ row }">
                   <el-tooltip :content="getHealthTooltip(row)" placement="top" :show-after="300">
@@ -156,24 +146,6 @@
                       编辑
                     </el-button>
                     <el-button class="btn-delete" size="small" link @click="confirmDelete(row)">删除</el-button>
-                    <!-- <el-dropdown v-if="row.type === 'proxy'" trigger="click" @command="(cmd: string) => handleProxyCommand(cmd, row)">
-                      <el-button class="btn-proxy" size="small" type="primary">
-                        更多
-                        <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-                      </el-button>
-                      <template #dropdown>
-                        <el-dropdown-menu>
-                          <el-dropdown-item command="sync" :disabled="row.syncing">
-                            <el-icon><Refresh /></el-icon>
-                            {{ row.syncing ? '同步中...' : '同步元数据' }}
-                          </el-dropdown-item>
-                          <el-dropdown-item command="history">
-                            <el-icon><Clock /></el-icon>
-                            同步历史
-                          </el-dropdown-item>
-                        </el-dropdown-menu>
-                      </template>
-                    </el-dropdown> -->
                   </div>
                 </template>
               </el-table-column>
@@ -213,9 +185,7 @@ import RepositoryFormDialog from '@/components/repository/RepositoryFormDialog.v
 import { confirm, success, error } from '@/utils/message'
 import { PACKAGE_TYPE_OPTIONS } from '@/constants/package'
 
-interface LocalRepository extends RepositoryWithHealth {
-  syncing?: boolean
-}
+type LocalRepository = RepositoryWithHealth
 
 const loading = ref(false)
 const activeTab = ref('all')
@@ -847,45 +817,6 @@ onMounted(loadRepos)
   color: #cbd5e1;
 }
 
-.sync-status {
-  display: flex;
-  align-items: center;
-}
-
-.sync-tag {
-  font-size: 11px;
-  padding: 4px 10px;
-  border-radius: 6px;
-  font-weight: 500;
-  border: none;
-  display: inline-block;
-  white-space: nowrap;
-}
-
-.sync-tag--success {
-  background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
-  color: #059669;
-}
-
-.sync-tag--failed {
-  background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
-  color: #dc2626;
-}
-
-.sync-tag--partial {
-  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
-  color: #d97706;
-}
-
-.sync-tag--pending {
-  background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
-  color: #64748b;
-}
-
-.no-sync {
-  color: #cbd5e1;
-}
-
 .health-dot {
   display: inline-block;
   width: 10px;
@@ -960,70 +891,6 @@ onMounted(loadRepos)
   background: #f1f5f9;
   border-color: #cbd5e1;
   color: #475569;
-}
-
-.btn-sync {
-  border-radius: 8px;
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 500;
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  border: none;
-  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
-  transition: all 0.2s ease;
-}
-
-.btn-sync:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
-}
-
-.btn-proxy {
-  border-radius: 8px;
-  padding: 6px 8px;
-  font-size: 12px;
-  font-weight: 500;
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  border: none;
-  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
-  transition: all 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-}
-
-.btn-proxy:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
-}
-
-:deep(.el-dropdown-menu) {
-  border-radius: 10px;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
-  padding: 6px;
-}
-
-:deep(.el-dropdown-menu__item) {
-  padding: 10px 14px;
-  border-radius: 6px;
-  font-size: 13px;
-  color: #475569;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-:deep(.el-dropdown-menu__item:hover) {
-  background: #f1f5f9;
-  color: #1e293b;
-}
-
-:deep(.el-dropdown-menu__item.is-disabled) {
-  color: #cbd5e1;
-}
-
-:deep(.el-dropdown-menu__item .el-icon) {
-  font-size: 14px;
 }
 
 .btn-delete {

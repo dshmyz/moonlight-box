@@ -12,7 +12,7 @@ Enterprise-grade multi-protocol package registry management system with proxy, c
 - **Security Scanning:** Automatic package scanning on upload with blocking of critical and high-severity vulnerabilities
 - **Access Control:** Role-based access control (RBAC) with CAS single sign-on support
 - **Multi-Storage Backend:** Local filesystem and Amazon S3 object storage support
-- **Multi-Database Support:** SQLite (default) and PostgreSQL
+- **Multi-Database Support:** SQLite (default), PostgreSQL, and MySQL
 - **Observability:** Prometheus metrics collection and structured logging
 - **Data Migration:** Migration support from Nexus Repository Manager
 
@@ -20,9 +20,9 @@ Enterprise-grade multi-protocol package registry management system with proxy, c
 
 ### Prerequisites
 
-- Go >= 1.26
+- Go >= 1.24
 - Node.js >= 20 (for frontend build)
-- SQLite or PostgreSQL
+- SQLite, PostgreSQL, or MySQL
 
 ### Installation
 
@@ -51,7 +51,7 @@ Core configuration options:
 | Option | Description | Default |
 |--------|-------------|---------|
 | `server.port` | Server port | 9081 |
-| `database.driver` | Database driver (sqlite / postgres) | sqlite |
+| `database.driver` | Database driver (sqlite / postgres / mysql) | sqlite |
 | `storage.backend` | Storage backend (local / s3) | local |
 | `ai.enabled` | Enable AI assistant | false |
 | `cache.enabled` | Enable caching | true |
@@ -92,7 +92,7 @@ After starting, access the application at `http://localhost:9081`.
 │                            │                                │
 │  ┌─────────────────────────┴──────────────────────────────┐ │
 │  │              Data Layer                                 │ │
-│  │  (SQLite / PostgreSQL)  +  (Local FS / S3)             │ │
+│  │  (SQLite / PostgreSQL / MySQL) + (Local FS / S3)       │ │
 │  └────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```

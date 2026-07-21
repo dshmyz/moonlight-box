@@ -15,7 +15,7 @@ bin/
 
 # Build output directories
 cmd/registry/registry
-cmd/registry/dist/
+cmd/registry/front/
 e2e
 internal/adapter/npm/lodash/4.17.21/package.tgz
 internal/adapter/pypi/test-package/test-package-1.0.0.tar.gz

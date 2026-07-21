@@ -57,7 +57,7 @@
 
 - Go >= 1.24
 - Node.js >= 20（前端构建）
-- SQLite 或 PostgreSQL
+- SQLite、PostgreSQL 或 MySQL
 
 ### 安装
 
@@ -86,7 +86,7 @@ cp configs/config.example.yaml configs/config.yaml
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
 | `server.port` | 服务端口 | 9081 |
-| `database.driver` | 数据库驱动（sqlite / postgres） | sqlite |
+| `database.driver` | 数据库驱动（sqlite / postgres / mysql） | sqlite |
 | `storage.backend` | 存储后端（local / s3） | local |
 | `ai.enabled` | 是否启用 AI 助手 | false |
 | `cache.enabled` | 是否启用缓存 | true |
@@ -147,7 +147,7 @@ cp configs/config.example.yaml configs/config.yaml
 │  ┌───────────────────────────┴────────────────────────────────────┐        │
 │  │                        Data Layer                               │        │
 │  │  ┌──────────────────┐              ┌──────────────────┐        │        │
-│  │  │ SQLite/PostgreSQL│              │ Local FS / S3    │        │        │
+│  │  │ SQLite/PostgreSQL/MySQL│         │ Local FS / S3    │        │        │
 │  │  └──────────────────┘              └──────────────────┘        │        │
 │  └────────────────────────────────────────────────────────────────┘        │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -267,48 +267,52 @@ moonlight-box/
 ├── cmd/registry/          # 主程序入口
 │   ├── main.go           # 启动入口
 │   ├── router.go         # 路由配置
-│   └── frontend.go       # 前端静态文件服务
-├── configs/               # 配置文件
+│   ├── runtime_init.go   # 运行时层（Runtime/Plugin）组装
+│   └── frontend.go       # 前端静态文件服务（embed）
+├── configs/               # 配置文件示例
 ├── internal/              # 核心业务代码
-│   ├── adapter/           # 包类型适配器（npm/maven/pypi等）
-│   ├── ai/                # AI 功能模块
-│   ├── cache/             # 缓存系统
-│   ├── config/            # 配置管理
+│   ├── api/http/          # HTTP 处理器（Gin）
+│   ├── ai/                # AI 功能模块（LLM + 工具调用）
+│   ├── config/            # 配置管理（Viper）
 │   ├── constants/         # 常量定义
-│   ├── database/          # 数据库连接
-│   ├── errors/            # 错误定义
-│   ├── handler/           # HTTP 处理器
-│   ├── middleware/        # Gin 中间件
-│   ├── migration/         # 数据迁移
+│   ├── core/              # 运行时核心
+│   │   ├── cache/         # 缓存系统（含 MetadataCache）
+│   │   └── runtime/       # ProtocolPlugin Runtime：hosted/proxy/group 路由与回源
+│   ├── database/          # 数据库连接 + AutoMigrate
+│   ├── errors/            # 业务错误定义（ErrNotFound/ErrBlocked 等）
+│   ├── job/               # 后台任务
+│   ├── metrics/           # Prometheus 指标
+│   ├── middleware/        # Gin 中间件（Auth/CORS/RBAC/Recovery 等）
+│   ├── migration/         # 数据迁移（v2 流水线架构）
 │   ├── model/             # 数据模型（GORM）
-│   ├── proxy/             # 代理下载逻辑
+│   ├── plugins/           # 协议插件（npm/maven/pypi/go/yum/apt/raw）
+│   ├── proxy/             # 代理下载、远程客户端、健康检查、熔断器
 │   ├── repository/        # 数据访问层
 │   ├── response/          # 统一响应封装
 │   ├── service/           # 业务逻辑层
-│   ├── storage/           # 存储后端抽象
-│   ├── types/             # 类型定义/接口
+│   ├── storage/           # 存储后端抽象（Local/S3/CAS Blob Store）
+│   ├── types/             # 通用类型与上下文声明
 │   ├── util/              # 工具函数
-│   └── version/           # 版本解析
+│   └── version/           # 版本解析（npm/maven/pypi/go）
 ├── web/                   # 前端项目（Vue 3 + TypeScript）
-├── docs/                  # 文档
-├── scripts/               # 脚本
+├── docs/                  # 文档（含 superpowers/plans/specs、swagger）
+├── scripts/               # 运维与测试脚本
+├── sql/                   # SQL Schema & 迁移脚本
 └── Makefile
 ```
 
-### 添加新的包适配器
+### 添加新的协议插件
 
-实现 `types.Adapter` 接口即可添加新的包类型支持：
+实现 `ProtocolPlugin` 接口（定义于 `internal/core/runtime/interface.go`）即可添加新的包类型支持：
 
 ```go
-type Adapter interface {
-    Type() types.PackageType
-    ParseIntent(path string, method string) *types.RequestIntent
-    HandleGet(ctx context.Context, repo *model.Repository, intent *types.RequestIntent) (*types.ContentResult, error)
-    HandlePut(c *gin.Context, ctx *types.PublishContext) (*types.PublishResult, error)
-    HandleDelete(c *gin.Context, ctx *types.DeleteContext) error
-    ParsePath(path string) (*types.PackagePathInfo, error)
+type ProtocolPlugin interface {
+    Name() string
+    Handle(ctx *RequestContext, runtime RepositoryRuntime) error
 }
 ```
+
+插件在 `Handle` 中通过 `runtime.QueryArtifacts` / `runtime.GetArtifact` / `runtime.RenderProjection` / `runtime.BeginUpload` 等方法与 Runtime 交互。需要回源能力时实现 `RemoteFetcher` 接口，由 Runtime 回调插件做协议相关的远端拉取与解析。详见 `docs/new3.md` 与 `docs/protocol-plugin-contract.md`。
 
 ### 依赖注入
 
@@ -327,7 +331,7 @@ type RouterContext struct {
 
 - **后端**：Go 1.24 + Gin + GORM
 - **前端**：Vue 3 + TypeScript + Vite
-- **数据库**：SQLite / PostgreSQL
+- **数据库**：SQLite / PostgreSQL / MySQL
 - **存储**：Local Filesystem / Amazon S3
 - **缓存**：内存缓存 + Redis（可选）
 - **监控**：Prometheus + Grafana

@@ -29,11 +29,11 @@ clean:
 	rm -rf bin/ coverage.out coverage.html
 
 dev:
-	AIR_CONFIG=.air.toml air
+	air
 
 # 嵌入前端到二进制
 embed-web:
-	rm -rf cmd/registry/dist
+	rm -rf cmd/registry/front
 	cd web && npm run build
 
 # 生成 Swagger 文档（从代码注释生成 openapi.json）

@@ -4,10 +4,18 @@ server:
   mode: debug  # debug / release / test
   read_timeout: 30s
   write_timeout: 0s
+  idle_timeout: 60s  # 空闲连接超时
+  static_dir: "./cmd/registry/front"  # 前端静态文件目录（为空则使用 embed 嵌入版本）
+  max_upload_size: 209715200  # 上传体积上限 (200MB)
 
 database:
   driver: sqlite  # sqlite / postgres / mysql
   dsn: "./data/registry.db"
+  log_level: warn  # silent / error / warn / info
+  max_open_conns: 100  # 最大打开连接数（sqlite 默认 4，由代码强制设置）
+  max_idle_conns: 10
+  conn_max_lifetime: 1h
+  conn_max_idle_time: 30m
   # postgres:
   #   host: localhost
   #   port: 5432
@@ -55,6 +63,13 @@ logging:
   level: info  # debug / info / warn / error
   format: console  # console / json
   output: stdout  # stdout / stderr / 文件路径（如 ./logs/app.log）
+  # 分文件日志（启用后按类型拆分到不同文件，便于轮转和检索）
+  enable_split_files: false
+  sql_log_file: "./logs/sql.log"
+  error_log_file: "./logs/error.log"
+  access_log_file: "./logs/access.log"
+  log_retention_days: 30  # 日志保留天数（lumberjack 轮转依据）
+  cleanup_interval: 24h  # 日志清理检查间隔
   # 日志采样配置（避免高频错误日志刷屏）
   # sample_rate: 0=不记录, 1=全部记录, 0.1=10%记录
   # 仅对 warn/error 级别生效
@@ -85,6 +100,7 @@ proxy:
     interval: 30s
     timeout: 5s
     failure_threshold: 3
+    block_on_unhealthy: false  # 健康检查不健康时是否阻断请求
 
 # AI 配置
 ai:
@@ -105,6 +121,8 @@ ai:
       - package_info
       - security_analysis
       - code_generator
+      - block_log_analyzer
+      - dependency_optimizer
     max_execution_time: 10
     enable_audit_log: true
   

@@ -25,27 +25,37 @@ moonlight-box/
 ├── cmd/registry/          # 主程序入口
 │   ├── main.go            # 启动入口：配置加载 → DB 初始化 → DI 组装 → HTTP Server
 │   ├── router.go          # 路由注册 + RouterContext 依赖注入
+│   ├── runtime_init.go    # 运行时（Runtime/Plugin）组装与初始化
 │   └── frontend.go        # 前端静态文件 embed & 服务
 ├── internal/              # 核心业务代码（禁止外部 import）
-│   ├── adapter/           # 包类型适配器（npm/maven/pypi/go/yum/apt/generic）
+│   ├── api/http/          # HTTP Handler 层（Gin）
 │   ├── ai/                # AI 助手（LLM 集成 + 工具调用）
-│   ├── cache/             # 缓存管理器 + 各类缓存实现
 │   ├── config/            # YAML 配置加载（Viper）
+│   ├── constants/         # 全局常量
+│   ├── core/              # 运行时核心
+│   │   ├── cache/         # 缓存管理器 + 各类缓存实现（含 MetadataCache）
+│   │   └── runtime/       # ProtocolPlugin Runtime：hosted/proxy/group 路由与回源
 │   ├── database/          # DB 连接 + AutoMigrate + Seed
-│   ├── handler/           # HTTP Handler 层（Gin）
-│   ├── middleware/        # Gin 中间件（Auth/CORS/Audit）
-│   ├── migration/         # 从 Nexus 等迁移数据
+│   ├── errors/            # 业务错误定义（ErrNotFound/ErrBlocked 等）
+│   ├── job/               # 后台任务
+│   ├── metrics/           # Prometheus 指标
+│   ├── middleware/        # Gin 中间件（Auth/CORS/RBAC/Recovery 等）
+│   ├── migration/         # 从 Nexus 等迁移数据（v2 流水线架构）
 │   ├── model/             # GORM 数据模型
-│   ├── proxy/             # 代理下载、远程仓库客户端、健康检查
+│   ├── plugins/           # 协议插件（npm/maven/pypi/go/yum/apt/raw），实现 ProtocolPlugin 接口
+│   ├── proxy/             # 代理下载、远程仓库客户端、健康检查、熔断器
 │   ├── repository/        # 数据访问层（GORM 封装）
+│   ├── response/          # 统一 API 响应封装
 │   ├── service/           # 业务逻辑层
-│   ├── storage/           # 存储后端抽象（Local/S3）
-│   └── types/             # 接口定义 + 类型声明
+│   ├── storage/           # 存储后端抽象（Local/S3/CAS Blob Store）
+│   ├── types/             # 通用类型与上下文声明
+│   ├── util/              # 通用工具（加密/哈希/日志/Stream 校验等）
+│   └── version/           # 版本号解析（npm/maven/pypi/go）
 ├── web/                   # 前端（Vue 3 + TS + Element Plus）
-├── configs/               # 配置文件
-├── scripts/               # 运维脚本
-├── sql/                   # SQL Schema & 迁移
-├── docs/                  # 文档
+├── configs/               # 配置文件示例
+├── scripts/               # 运维与测试脚本（按 clients/core/debug/lifecycle 等分类）
+├── sql/                   # SQL Schema & 迁移脚本
+├── docs/                  # 文档（含 superpowers/plans/specs、swagger、design-archive）
 ├── bin/                   # 编译产物
 ├── Makefile               # 构建命令
 └── go.mod                 # Go 依赖
@@ -76,11 +86,11 @@ make swagger        # 从注释生成 OpenAPI 文档
 ## 架构模式
 
 - **分层架构**: Handler → Service → Repository → Model/Storage
-- **适配器模式**: `types.Adapter` 接口统一不同包协议，每个协议一个 adapter 实现
-- **策略模式**: Proxy Router 根据仓库类型（Local/Proxy/Virtual）选择不同解析策略
+- **插件模式**: `ProtocolPlugin` 接口（`internal/plugins/`）统一不同包协议，每个协议一个插件实现；Runtime 通过 `RemoteFetcher` 回调插件做协议相关的远端交互
+- **策略模式**: Runtime 根据仓库类型（hosted/proxy/group）选择不同解析策略
 - **工厂模式**: 存储后端（Local/S3）动态创建
 - **熔断器模式**: 远程仓库健康检查与熔断保护
-- **显式依赖注入**: 所有服务在 `cmd/registry/main.go` 中集中组装，通过 `RouterContext` 传递
+- **显式依赖注入**: 所有服务在 `cmd/registry/main.go` 中集中组装，通过 `RouterContext` 传递；运行时层在 `runtime_init.go` 中组装
 
 ## 编码约定
 
@@ -97,15 +107,17 @@ make swagger        # 从注释生成 OpenAPI 文档
 |------|------|
 | `cmd/registry/main.go` | 启动入口，所有服务的 DI 组装点 |
 | `cmd/registry/router.go` | 路由注册 + RouterContext 定义 |
-| `internal/types/` | `Adapter` 接口定义，新增包类型需实现此接口 |
+| `cmd/registry/runtime_init.go` | 运行时层（Runtime/Plugin）组装与初始化 |
+| `internal/plugins/` | `ProtocolPlugin` 接口实现，新增包类型需实现此接口 |
+| `internal/core/runtime/` | Runtime 层：hosted/proxy/group 行为、回源策略、缓存决策 |
 | `internal/config/` | 配置结构体 + 加载逻辑 |
 | `internal/database/` | DB 初始化 + AutoMigrate |
 | `internal/proxy/` | 代理下载核心逻辑（缓存、远程请求、健康检查） |
-| `web/src/` | 前端源码（Vite 构建，输出到 `cmd/registry/dist/`） |
+| `web/src/` | 前端源码（Vite 构建，输出到 `cmd/registry/front/`） |
 
 ## 注意事项
 
-- **前端构建产物**嵌入到 `cmd/registry/dist/`，运行 `make embed-web` 会先清理再构建
+- **前端构建产物**嵌入到 `cmd/registry/front/`，运行 `make embed-web` 会先清理再构建
 
 ## 架构红线（绝对不可破坏）
 
@@ -161,7 +173,7 @@ Plugin 调用 QueryArtifacts(RemotePath=...)
 - **GORM AutoMigrate**: 会尝试更新表结构，但不处理列删除或重命名，需要手动 SQL 迁移
 - **Batcher 模式**: Download Count 和 Proxy Log 使用批量处理器（定时 flush），`defer Stop()` 确保优雅关闭
 - **健康检查**: 远程仓库健康检查配置优先从系统配置读取，其次回退到 YAML 配置
-- **前端测试**: 使用 Vitest + Playwright (e2e)，`web/scripts/e2e/` 存放端到端测试
+- **前端测试**: 使用 Vitest + Playwright (e2e)，端到端测试配置见 `web/playwright.config.ts`
 
 ## Agent skills
 
