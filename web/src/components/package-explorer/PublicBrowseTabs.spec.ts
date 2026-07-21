@@ -11,27 +11,27 @@ const mountIt = (props: Record<string, any> = {}) => mount(PublicBrowseTabs, {
 describe('PublicBrowseTabs', () => {
   it('默认显示两个 Tab', () => {
     const wrapper = mountIt()
-    const tabs = wrapper.findAll('.browse-tab')
+    const tabs = wrapper.findAll('.tab-item')
     expect(tabs).toHaveLength(2)
   })
 
   it('activeTab=packages 时包 Tab 高亮', () => {
     const wrapper = mountIt({ activeTab: 'packages' })
-    const tabs = wrapper.findAll('.browse-tab')
-    expect(tabs[0].classes()).toContain('browse-tab--active')
-    expect(tabs[1].classes()).not.toContain('browse-tab--active')
+    const tabs = wrapper.findAll('.tab-item')
+    expect(tabs[0].classes()).toContain('tab-item--active')
+    expect(tabs[1].classes()).not.toContain('tab-item--active')
   })
 
   it('activeTab=repositories 时仓库 Tab 高亮', () => {
     const wrapper = mountIt({ activeTab: 'repositories' })
-    const tabs = wrapper.findAll('.browse-tab')
-    expect(tabs[0].classes()).not.toContain('browse-tab--active')
-    expect(tabs[1].classes()).toContain('browse-tab--active')
+    const tabs = wrapper.findAll('.tab-item')
+    expect(tabs[0].classes()).not.toContain('tab-item--active')
+    expect(tabs[1].classes()).toContain('tab-item--active')
   })
 
   it('点击仓库 Tab 触发 update:activeTab', async () => {
     const wrapper = mountIt()
-    await wrapper.findAll('.browse-tab')[1].trigger('click')
+    await wrapper.findAll('.tab-item')[1].trigger('click')
     expect(wrapper.emitted('update:activeTab')?.[0]).toEqual(['repositories'])
   })
 

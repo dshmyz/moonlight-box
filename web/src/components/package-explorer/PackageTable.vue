@@ -55,7 +55,7 @@
 
     <el-table-column v-if="columns.versions !== false" prop="versions_count" label="版本" width="80" align="center">
       <template #default="{ row }">
-        <span class="version-count">{{ row.versions_count || 0 }}</span>
+        <span class="version-count" @click="$emit('view-versions', row)">{{ row.versions_count || 0 }}</span>
       </template>
     </el-table-column>
 
@@ -155,7 +155,8 @@ function onSelectionChange(rows: Package[]) {
 .copy-name-btn { opacity: 0; transition: opacity 0.2s; padding: 2px; }
 .package-info:hover .copy-name-btn { opacity: 1; }
 .package-description { font-size: 12px; color: #94a3b8; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.version-count { font-weight: 600; color: #1e293b; font-size: 14px; }
+.version-count { font-weight: 600; color: #1e293b; font-size: 14px; cursor: pointer; }
+.version-count:hover { color: #6366f1; }
 .download-count { font-weight: 600; color: #6366f1; font-size: 14px; }
 .update-time { color: #94a3b8; font-size: 13px; }
 .action-buttons { display: flex; gap: 8px; flex-wrap: nowrap; }

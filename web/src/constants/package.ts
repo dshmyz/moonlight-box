@@ -18,24 +18,6 @@ export const PACKAGE_TYPE_HEX_COLORS: Record<string, string> = {
   generic: '#64748b',
 }
 
-export const PACKAGE_TYPE_HEX_COLORS_RGB: Record<string, string> = {
-  npm: '203, 56, 55',
-  maven: '230, 81, 0',
-  pypi: '55, 117, 169',
-  go: '0, 173, 216',
-  yum: '46, 109, 164',
-  apt: '215, 10, 83',
-  generic: '100, 116, 139',
-}
-
-export const getPackageTypeHexColor = (type: string): string => {
-  return PACKAGE_TYPE_HEX_COLORS[normalizePackageType(type)] || PACKAGE_TYPE_HEX_COLORS.generic
-}
-
-export const getPackageTypeHexColorRGB = (type: string): string => {
-  return PACKAGE_TYPE_HEX_COLORS_RGB[normalizePackageType(type)] || PACKAGE_TYPE_HEX_COLORS_RGB.generic
-}
-
 export const PACKAGE_TYPE_LABELS: Record<string, string> = {
   npm: 'npm',
   maven: 'Maven',
@@ -90,18 +72,3 @@ export const PACKAGE_TYPE_OPTIONS = [
   { value: 'apt', label: 'Apt' },
   { value: 'generic', label: 'Generic' },
 ] as const
-
-export function formatPackageName(name: string, pkgType: string): string {
-  if (!name) return ''
-
-  const normalizedType = normalizePackageType(pkgType)
-  if (normalizedType === 'maven') {
-    const separator = name.includes(':') ? ':' : '/'
-    const parts = name.split(separator)
-    if (parts.length >= 2) {
-      return `${parts[0]}:${parts[1]}`
-    }
-  }
-
-  return name
-}

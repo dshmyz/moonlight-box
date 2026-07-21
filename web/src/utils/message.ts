@@ -36,11 +36,3 @@ export function success(message: string) {
 export function error(message: string) {
   ElMessage.error(message)
 }
-
-export function warning(message: string) {
-  ElMessage.warning(message)
-}
-
-export function info(message: string) {
-  ElMessage.info(message)
-}

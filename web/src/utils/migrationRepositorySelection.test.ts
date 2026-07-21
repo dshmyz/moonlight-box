@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { getMigratableArtifactRepositories, validateArtifactSelection, type SourceRepository } from './migrationRepositorySelection'
+import { getMigratableArtifactRepositories, validateArtifactSelection } from './migrationRepositorySelection'
+import type { SourceRepository } from '@/api/migrationV2'
 
 describe('migrationRepositorySelection', () => {
   const repositories: SourceRepository[] = [

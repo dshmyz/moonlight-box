@@ -161,7 +161,7 @@ describe('PackageTable', () => {
 
   it('点击查看版本触发 view-versions 事件', async () => {
     const wrapper = mountIt({ mode: 'admin' })
-    await wrapper.find('.btn-view-versions').trigger('click')
+    await wrapper.find('.version-count').trigger('click')
     expect(wrapper.emitted('view-versions')?.[0]).toEqual([samplePackages[0]])
   })
 

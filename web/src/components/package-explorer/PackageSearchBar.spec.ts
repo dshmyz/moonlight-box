@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import PackageSearchBar from './PackageSearchBar.vue'
+import { PACKAGE_TYPE_OPTIONS } from '@/constants/package'
 
 const baseQuery = {
   q: '', type: 'all', repository: '', version: '', source: 'all',
@@ -28,8 +29,8 @@ describe('PackageSearchBar', () => {
   it('渲染搜索框和类型 chips', () => {
     const wrapper = mountIt()
     expect(wrapper.find('.search-input').exists()).toBe(true)
-    // 全部 + 前5个类型 = 6 个常驻 chip（排除"更多"按钮）
-    expect(wrapper.findAll('.type-chip:not(.type-chip--more)')).toHaveLength(6)
+    // 全部 + 所有类型选项
+    expect(wrapper.findAll('.type-chip')).toHaveLength(1 + PACKAGE_TYPE_OPTIONS.length)
   })
 
   it('输入触发 500ms debounce 后 emit search', async () => {
@@ -78,7 +79,8 @@ describe('PackageSearchBar', () => {
       query: { ...baseQuery, repository: 'main' },
       hasActiveFilter: true,
     })
-    expect(wrapper.find('.filter-badge').exists()).toBe(true)
+    // 组件用 el-badge is-dot 实现红点，检查 is-dot 类是否应用
+    expect(wrapper.find('.el-badge__content.is-dot').exists()).toBe(true)
   })
 
   it('清空按钮触发清空并搜索', async () => {

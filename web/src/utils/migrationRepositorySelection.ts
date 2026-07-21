@@ -1,9 +1,4 @@
-export interface SourceRepository {
-  name: string
-  format: string
-  type: string
-  url?: string
-}
+import type { SourceRepository } from '@/api/migrationV2'
 
 export function getMigratableArtifactRepositories(repositories: SourceRepository[]): SourceRepository[] {
   return repositories.filter(repo => repo.name && (repo.type === 'hosted' || repo.type === 'proxy'))
