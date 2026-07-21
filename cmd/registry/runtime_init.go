@@ -9,6 +9,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/proxy"
 	"github.com/dshmyz/moonlight-box/internal/repository"
 	"github.com/dshmyz/moonlight-box/internal/service"
 	"github.com/dshmyz/moonlight-box/internal/storage"
@@ -58,6 +59,7 @@ func NewRepositoryFactory(
 	blocker runtime.PackageBlocker,
 	httpClient *http.Client,
 	artifactSvc *service.ArtifactService,
+	cbLookup proxy.CircuitBreakerLookup,
 ) runtime.RepositoryFactory {
 	return func(name string) (*runtime.Repository, error) {
 		repo, err := repoRepo.FindByName(name)
@@ -70,7 +72,7 @@ func NewRepositoryFactory(
 			return nil, fmt.Errorf("no default storage backend available")
 		}
 
-		repoRuntime, err := createRuntimeForRepo(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers, blocker, httpClient, artifactSvc)
+		repoRuntime, err := createRuntimeForRepo(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers, blocker, httpClient, artifactSvc, cbLookup)
 		if err != nil {
 			return nil, err
 		}
@@ -118,6 +120,7 @@ func createRuntimeForRepo(
 	blocker runtime.PackageBlocker,
 	httpClient *http.Client,
 	artifactSvc *service.ArtifactService,
+	cbLookup proxy.CircuitBreakerLookup,
 ) (runtime.RepositoryRuntime, error) {
 	metadataStore := storage.NewMetadataStoreWithArtifactService(db, artifactSvc)
 	blobStore := storage.NewCASBlobStore(backend, db)
@@ -158,7 +161,7 @@ func createRuntimeForRepo(
 		pr := &runtime.ProxyRuntime{
 			MetadataStore: metadataStore,
 			BlobStore:     blobStore,
-			RemoteClient:  runtime.NewHTTPRemoteClient(httpClient),
+			RemoteClient:  newRemoteClientWithCircuitBreaker(httpClient, repo.ID, cbLookup),
 			RepositoryID:  fmt.Sprintf("%d", repo.ID),
 			RemoteBaseURL: remoteBaseURL,
 			CachePolicy:   cachePolicy,
@@ -174,11 +177,44 @@ func createRuntimeForRepo(
 		return pr, nil
 
 	case model.RepoTypeVirtual:
-		return createGroupRuntime(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers, blocker, httpClient, artifactSvc)
+		return createGroupRuntime(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers, blocker, httpClient, artifactSvc, cbLookup)
 
 	default:
 		return nil, fmt.Errorf("unsupported repo type: %s", repo.Type)
 	}
+}
+
+// newRemoteClientWithCircuitBreaker 组装带熔断器的 RemoteClient。
+// cbLookup 为 nil 时（如测试场景）返回裸 HTTPRemoteClient，不包装熔断器。
+func newRemoteClientWithCircuitBreaker(httpClient *http.Client, repoID uint, cbLookup proxy.CircuitBreakerLookup) runtime.RemoteClient {
+	inner := runtime.NewHTTPRemoteClient(httpClient)
+	if cbLookup == nil {
+		return inner
+	}
+	cb := cbLookup.GetOrCreateCircuitBreaker(repoID)
+	if cb == nil {
+		return inner
+	}
+	return runtime.NewCircuitBreakerDecorator(inner, cb)
+}
+
+// healthCheckLookup 把 *proxy.HealthCheckService 适配为 proxy.CircuitBreakerLookup。
+// HealthCheckService.GetOrCreateCircuitBreaker 返回 *proxy.CircuitBreaker（具体类型），
+// 需要用 NewCircuitBreakerAdapter 包装为 runtime.CircuitBreaker 接口。
+// 这层适配器让 runtime_init.go 不直接依赖 HealthCheckService 的具体方法签名。
+type healthCheckLookup struct {
+	svc *proxy.HealthCheckService
+}
+
+func (l *healthCheckLookup) GetOrCreateCircuitBreaker(repoID uint) runtime.CircuitBreaker {
+	if l == nil || l.svc == nil {
+		return nil
+	}
+	cb := l.svc.GetOrCreateCircuitBreaker(repoID)
+	if cb == nil {
+		return nil
+	}
+	return proxy.NewCircuitBreakerAdapter(cb)
 }
 
 func createGroupRuntime(
@@ -192,6 +228,7 @@ func createGroupRuntime(
 	blocker runtime.PackageBlocker,
 	httpClient *http.Client,
 	artifactSvc *service.ArtifactService,
+	cbLookup proxy.CircuitBreakerLookup,
 ) (runtime.RepositoryRuntime, error) {
 	members, err := repoRepo.FindByName(repo.Name)
 	if err != nil {
@@ -259,7 +296,7 @@ func createGroupRuntime(
 				n := &runtime.ProxyRuntime{
 					MetadataStore: memberMeta,
 					BlobStore:     memberBlob,
-					RemoteClient:  runtime.NewHTTPRemoteClient(httpClient),
+					RemoteClient:  newRemoteClientWithCircuitBreaker(httpClient, memberRepo.ID, cbLookup),
 					RepositoryID:  memberID,
 					RemoteBaseURL: remoteBaseURL,
 					CachePolicy:   cachePolicy,

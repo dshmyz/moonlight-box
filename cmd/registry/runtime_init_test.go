@@ -41,7 +41,7 @@ func TestCreateRuntimeForProxyRepoAllowsNilConfig(t *testing.T) {
 
 	nilFetchers := map[string]runtime.RemoteFetcher(nil)
 	var nilBlocker runtime.PackageBlocker
-	repoRuntime, err := createRuntimeForRepo(repo, nil, nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nilFetchers, nilBlocker, nil, nil)
+	repoRuntime, err := createRuntimeForRepo(repo, nil, nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nilFetchers, nilBlocker, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create runtime: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestCreateRuntimeForLocalRepoInjectsBlocker(t *testing.T) {
 	}
 	blocker := &testRuntimeBlocker{}
 
-	repoRuntime, err := createRuntimeForRepo(repo, nil, nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nil, blocker, nil, nil)
+	repoRuntime, err := createRuntimeForRepo(repo, nil, nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nil, blocker, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create runtime: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestCreateGroupRuntimeAllowsProxyMemberWithNilConfig(t *testing.T) {
 
 	nilFetchers := map[string]runtime.RemoteFetcher(nil)
 	var nilBlocker runtime.PackageBlocker
-	repoRuntime, err := createGroupRuntime(&group, repository.NewRepositoryRepository(db), nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nilFetchers, nilBlocker, nil, nil)
+	repoRuntime, err := createGroupRuntime(&group, repository.NewRepositoryRepository(db), nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nilFetchers, nilBlocker, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create group runtime: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestCreateGroupRuntimeInjectsBlockerIntoLocalMember(t *testing.T) {
 	}
 	blocker := &testRuntimeBlocker{}
 
-	repoRuntime, err := createGroupRuntime(&group, repository.NewRepositoryRepository(db), nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nil, blocker, nil, nil)
+	repoRuntime, err := createGroupRuntime(&group, repository.NewRepositoryRepository(db), nil, db, fakeStorageBackend{}, runtime.NewDefaultRepositoryManager(), nil, blocker, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("create group runtime: %v", err)
 	}

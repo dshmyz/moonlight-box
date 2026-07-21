@@ -167,3 +167,87 @@ func TestRepositoryRouterLogsBlockReasonForRuntimeRejection(t *testing.T) {
 		t.Fatalf("Reason = %q, want %q (must propagate BlockedError.Reason)", audit.entries[0].Reason, "检测到严重安全漏洞")
 	}
 }
+
+// --- ErrCircuitOpen → 503 + Retry-After 测试（P0-B）---
+
+// errCircuitOpenPlugin 模拟 Plugin 返回熔断打开错误。
+type errCircuitOpenPlugin struct {
+	retryAfter int
+}
+
+func (p *errCircuitOpenPlugin) Name() string { return "npm" }
+func (p *errCircuitOpenPlugin) Handle(*RequestContext, RepositoryRuntime) error {
+	return NewCircuitOpenError(p.retryAfter)
+}
+
+// TestRouterMapsCircuitOpenToServiceUnavailable
+// 验证 ErrCircuitOpen 被映射为 503 + Retry-After 头。
+func TestRouterMapsCircuitOpenToServiceUnavailable(t *testing.T) {
+	router := newRouterForTest(nil, nil, &errCircuitOpenPlugin{retryAfter: 42})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/repository/npm/left-pad", nil))
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", response.Code)
+	}
+	if got := response.Header().Get("Retry-After"); got != "42" {
+		t.Fatalf("Retry-After = %q, want %q", got, "42")
+	}
+}
+
+// TestRouterMapsCircuitOpenWithZeroRetryAfter
+// 验证 RetryAfter=0 时也返回 503（但 Retry-After 头为 "0"）。
+// 这对应熔断即将转 half_open 的边界场景。
+func TestRouterMapsCircuitOpenWithZeroRetryAfter(t *testing.T) {
+	router := newRouterForTest(nil, nil, &errCircuitOpenPlugin{retryAfter: 0})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/repository/npm/left-pad", nil))
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", response.Code)
+	}
+	// Retry-After: 0 是合法值（RFC 7231 允许），表示"立即重试可能成功"
+	if got := response.Header().Get("Retry-After"); got != "0" {
+		t.Fatalf("Retry-After = %q, want %q", got, "0")
+	}
+}
+
+// TestRouterCircuitOpenDoesNotLogAsBlock
+// 验证熔断打开不被误记为 block 审计日志（熔断不是安全规则阻断）。
+func TestRouterCircuitOpenDoesNotLogAsBlock(t *testing.T) {
+	audit := &recordingAuditLogger{}
+	router := newRouterForTest(nil, audit, &errCircuitOpenPlugin{retryAfter: 30})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/repository/npm/left-pad", nil))
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", response.Code)
+	}
+	if len(audit.entries) != 0 {
+		t.Fatalf("audit entries = %d, want 0 (circuit open is not a block)", len(audit.entries))
+	}
+}
+
+// errCircuitOpenWrappedPlugin 模拟 Plugin 返回被包装的 ErrCircuitOpen
+// （如 group.GetArtifact 返回的 firstErr 可能被 fmt.Errorf 包装）。
+type errCircuitOpenWrappedPlugin struct{}
+
+func (errCircuitOpenWrappedPlugin) Name() string { return "npm" }
+func (errCircuitOpenWrappedPlugin) Handle(*RequestContext, RepositoryRuntime) error {
+	return fmt.Errorf("group get artifact: %w", NewCircuitOpenError(60))
+}
+
+// TestRouterHandlesWrappedCircuitOpenError
+// 验证 router 用 errors.Is 正确识别被包装的 ErrCircuitOpen。
+func TestRouterHandlesWrappedCircuitOpenError(t *testing.T) {
+	router := newRouterForTest(nil, nil, errCircuitOpenWrappedPlugin{})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/repository/npm/left-pad", nil))
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (wrapped ErrCircuitOpen must be detected via errors.Is)", response.Code)
+	}
+	if got := response.Header().Get("Retry-After"); got != "60" {
+		t.Fatalf("Retry-After = %q, want %q (must extract via errors.As)", got, "60")
+	}
+}

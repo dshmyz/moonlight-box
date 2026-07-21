@@ -13,14 +13,25 @@ type GroupRuntime struct {
 }
 
 func (g *GroupRuntime) OpenRemote(ctx context.Context, request RemoteOpenRequest) (*RemoteResponse, error) {
+	var firstErr error
 	for _, node := range g.Members {
 		response, err := node.OpenRemote(ctx, request)
 		if err == nil {
 			return response, nil
 		}
-		if !errors.Is(err, ErrRemoteUnsupported) {
-			return nil, err
+		// ErrRemoteUnsupported：该成员不支持 OpenRemote（如 hosted 仓库），跳过
+		// ErrCircuitOpen：该成员上游熔断打开，跳过试下一个成员（语义同"暂时不可用"）
+		// 其他错误（如 503）：立即返回，不雪崩到后续成员
+		if errors.Is(err, ErrRemoteUnsupported) || errors.Is(err, ErrCircuitOpen) {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
+		return nil, err
+	}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 	return nil, ErrRemoteUnsupported
 }

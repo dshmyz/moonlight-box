@@ -305,6 +305,7 @@ func main() {
 	// 设置懒加载 factory：Get() 在内存缓存未命中时自动从 DB 创建 Runtime
 	repoManager.SetFactory(NewRepositoryFactory(
 		repoRepo, groupRepo, db, storageSvc, repoManager, fetchers, blocker, pluginHTTPClient, artifactSvc,
+		&healthCheckLookup{svc: healthCheckSvc},
 	))
 
 	// 预热所有仓库 Runtime（可选，避免首次请求冷启动）

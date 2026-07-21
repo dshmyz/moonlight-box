@@ -453,3 +453,153 @@ func (n *groupArtifactNode) BeginUpload(ctx context.Context, request UploadReque
 func (n *groupArtifactNode) DeleteArtifact(ctx context.Context, key ArtifactKey) error {
 	return ErrReadOnly
 }
+
+// --- ErrCircuitOpen 在 group 中的行为测试（P0-B）---
+//
+// 设计语义：熔断打开表示"该上游暂时不可用"，group 应跳过该成员尝试下一个；
+// 当所有 proxy 成员都熔断时，返回 ErrCircuitOpen（而非 ErrNotFound），router 映射为 503。
+// 这与 ErrNotFound（成员正常应答"我没有这个包"）语义不同——熔断是临时故障，404 是确定无此包。
+
+// TestGroupGetArtifactSkipsCircuitOpenMember 验证熔断打开的成员被跳过，
+// 后续成员能返回结果时 group 正常返回。
+func TestGroupGetArtifactSkipsCircuitOpenMember(t *testing.T) {
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupErrorNode{err: NewCircuitOpenError(30)},
+			&groupArtifactNode{artifact: NewArtifact(ArtifactSpec{Format: "npm", Name: "lodash"})},
+		},
+	}
+
+	artifact, err := group.GetArtifact(context.Background(), ArtifactKey{Format: "npm", Name: "lodash"})
+	if err != nil {
+		t.Fatalf("expected success after skipping circuit-open member, got %v", err)
+	}
+	if artifact == nil || artifact.Name != "lodash" {
+		t.Fatalf("artifact = %+v, want lodash", artifact)
+	}
+}
+
+// TestGroupGetArtifactReturnsCircuitOpenWhenAllMembersOpen
+// 验证所有成员都熔断时返回 ErrCircuitOpen（携带 RetryAfter），而非 ErrNotFound。
+func TestGroupGetArtifactReturnsCircuitOpenWhenAllMembersOpen(t *testing.T) {
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupErrorNode{err: NewCircuitOpenError(30)},
+			&groupErrorNode{err: NewCircuitOpenError(60)},
+		},
+	}
+
+	_, err := group.GetArtifact(context.Background(), ArtifactKey{Format: "npm", Name: "lodash"})
+	if !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("error = %v, want ErrCircuitOpen", err)
+	}
+	// 应保留第一个成员的 RetryAfter（group 返回 firstErr）
+	if ra := CircuitRetryAfter(err); ra != 30 {
+		t.Fatalf("RetryAfter = %d, want 30 (from first member)", ra)
+	}
+}
+
+// TestGroupQueryArtifactsSkipsCircuitOpenMember 验证 QueryArtifacts 跳过熔断成员。
+func TestGroupQueryArtifactsSkipsCircuitOpenMember(t *testing.T) {
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupErrorNode{err: NewCircuitOpenError(30)},
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
+				Format: "npm", Name: "lodash",
+			})}},
+		},
+	}
+
+	artifacts, err := group.QueryArtifacts(context.Background(), ArtifactQuery{Format: "npm"})
+	if err != nil {
+		t.Fatalf("expected success after skipping circuit-open member, got %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Name != "lodash" {
+		t.Fatalf("artifacts = %+v, want lodash", artifacts)
+	}
+}
+
+// TestGroupRenderProjectionSkipsCircuitOpenMember 验证 RenderProjection 跳过熔断成员。
+func TestGroupRenderProjectionSkipsCircuitOpenMember(t *testing.T) {
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupErrorNode{err: NewCircuitOpenError(30)},
+			&groupProjectionNode{result: &ProjectionResult{Content: []byte("projected")}},
+		},
+	}
+
+	result, err := group.RenderProjection(context.Background(), ProjectionQuery{})
+	if err != nil {
+		t.Fatalf("expected success after skipping circuit-open member, got %v", err)
+	}
+	if result == nil || string(result.Content) != "projected" {
+		t.Fatalf("result = %+v, want projected", result)
+	}
+}
+
+// TestGroupOpenRemoteSkipsCircuitOpenMember 验证 OpenRemote 跳过熔断成员。
+// OpenRemote 中 ErrCircuitOpen 应视同 ErrRemoteUnsupported：跳过该成员尝试下一个。
+func TestGroupOpenRemoteSkipsCircuitOpenMember(t *testing.T) {
+	first := &groupOpenNode{err: NewCircuitOpenError(30)}
+	successful := &groupOpenNode{response: &RemoteResponse{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("body")),
+	}}
+	group := &GroupRuntime{Members: []RepositoryNode{first, successful}}
+
+	resp, err := group.OpenRemote(context.Background(), RemoteOpenRequest{Path: "pkg", Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("expected success after skipping circuit-open member, got %v", err)
+	}
+	defer resp.Body.Close()
+	if successful.openCalls != 1 {
+		t.Fatalf("successful member calls = %d, want 1", successful.openCalls)
+	}
+}
+
+// TestGroupOpenRemoteReturnsCircuitOpenWhenAllMembersOpen
+// 验证所有成员都熔断时 OpenRemote 返回 ErrCircuitOpen。
+// 注意：当前 OpenRemote 实现在所有成员返回非 ErrRemoteUnsupported 错误时返回第一个错误，
+// 语义上等价于"全部熔断"时返回 ErrCircuitOpen——无需特殊处理。
+func TestGroupOpenRemoteReturnsCircuitOpenWhenAllMembersOpen(t *testing.T) {
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupOpenNode{err: NewCircuitOpenError(30)},
+			&groupOpenNode{err: NewCircuitOpenError(60)},
+		},
+	}
+
+	_, err := group.OpenRemote(context.Background(), RemoteOpenRequest{Path: "pkg", Method: http.MethodGet})
+	if !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("error = %v, want ErrCircuitOpen", err)
+	}
+}
+
+// groupProjectionNode 是为 RenderProjection 测试新增的 fake node。
+type groupProjectionNode struct {
+	result *ProjectionResult
+}
+
+func (n *groupProjectionNode) GetArtifact(ctx context.Context, key ArtifactKey) (*Artifact, error) {
+	return nil, ErrNotFound
+}
+
+func (n *groupProjectionNode) QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
+	return nil, ErrNotFound
+}
+
+func (n *groupProjectionNode) RenderProjection(ctx context.Context, query ProjectionQuery) (*ProjectionResult, error) {
+	return n.result, nil
+}
+
+func (n *groupProjectionNode) OpenRemote(context.Context, RemoteOpenRequest) (*RemoteResponse, error) {
+	return nil, ErrRemoteUnsupported
+}
+
+func (n *groupProjectionNode) BeginUpload(ctx context.Context, request UploadRequest) (UploadSession, error) {
+	return nil, ErrReadOnly
+}
+
+func (n *groupProjectionNode) DeleteArtifact(ctx context.Context, key ArtifactKey) error {
+	return ErrReadOnly
+}

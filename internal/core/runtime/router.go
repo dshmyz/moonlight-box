@@ -377,6 +377,18 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 			http.Error(ctx.Writer, "Bad Gateway", http.StatusBadGateway)
 			return
 		}
+		// ErrCircuitOpen：上游熔断打开，返回 503 + Retry-After 头。
+		// 与 ErrUpstreamUnavailable（502）的区别：
+		//   - 502：本次回源失败，客户端可立即重试其他镜像
+		//   - 503：上游被判定为不可用（熔断），客户端应按 Retry-After 退避
+		// Retry-After 透传给客户端协议（npm/pip/maven 等），避免熔断期间盲目重试放大流量。
+		if errors.Is(err, ErrCircuitOpen) {
+			retryAfter := CircuitRetryAfter(err)
+			ctx.Writer.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			ctx.StatusCode = http.StatusServiceUnavailable
+			http.Error(ctx.Writer, "Service Unavailable: upstream circuit open", http.StatusServiceUnavailable)
+			return
+		}
 		ctx.StatusCode = http.StatusInternalServerError
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 	}
