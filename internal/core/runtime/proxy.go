@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -20,6 +21,10 @@ import (
 const maxMetadataCacheSize = 10000 // 内存缓存上限，防止无限增长
 const maxNegativeCacheSize = 5000  // 负缓存上限，防止 DoS
 
+// backgroundRefreshTimeout 限制异步刷新的最长执行时间，避免 FetchRemote 挂起导致
+// refreshingPaths 永不释放、该路径后续刷新全部失效以及 goroutine 泄漏。
+const backgroundRefreshTimeout = 30 * time.Second
+
 type ProxyRuntime struct {
 	MetadataStore        MetadataStore
 	BlobStore            BlobStore
@@ -35,7 +40,8 @@ type ProxyRuntime struct {
 	MetadataFailureTTL   time.Duration
 
 	metadataCacheMu   sync.RWMutex
-	metadataCache     map[string]cachedArtifact
+	metadataCache     map[string]*list.Element // LRU: 值为 *cachedArtifactEntry，链表队首为最久未访问
+	metadataCacheLL   *list.List
 	negativeCache     map[string]time.Time
 	fetchGroup        singleflight.Group
 	refreshingMu      sync.Mutex
@@ -119,15 +125,19 @@ func filterHopByHopHeaders(headers http.Header) http.Header {
 }
 
 func isHopByHopHeader(name string) bool {
-	for hopByHopHeader := range hopByHopHeaders {
-		if strings.EqualFold(name, hopByHopHeader) {
-			return true
-		}
-	}
-	return false
+	_, ok := hopByHopHeaders[http.CanonicalHeaderKey(name)]
+	return ok
 }
 
 type cachedArtifact struct {
+	artifact  *Artifact
+	expiresAt time.Time
+	negative  bool
+}
+
+// cachedArtifactEntry 是 LRU 链表节点，持有缓存键以便 O(1) 从 map 删除。
+type cachedArtifactEntry struct {
+	key       string
 	artifact  *Artifact
 	expiresAt time.Time
 	negative  bool
@@ -555,15 +565,23 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 				if n.tryRefreshPath(query.RemotePath) {
 					go func() {
 						defer n.doneRefreshPath(query.RemotePath)
+						// 用带超时的独立 context，避免请求结束后父 ctx 取消导致刷新中断；
+						// 同时限制超时防止 FetchRemote 挂起泄漏 goroutine 和 refreshingPaths 槽位。
+						refreshCtx, cancel := context.WithTimeout(context.Background(), backgroundRefreshTimeout)
+						defer cancel()
+						// 保留触发请求的 client IP 用于审计，否则背景 ctx 拿不到 IP
+						if ip := ClientIPFromContext(ctx); ip != "" {
+							refreshCtx = ContextWithClientIP(refreshCtx, ip)
+						}
 						fetchStart := time.Now()
-						fetched, fetchErr := n.Fetcher.FetchRemote(context.Background(), n.RemoteBaseURL, query.RemotePath)
+						fetched, fetchErr := n.Fetcher.FetchRemote(refreshCtx, n.RemoteBaseURL, query.RemotePath)
 						fetchDuration := time.Since(fetchStart).Seconds()
 						if fetchErr == nil && len(fetched) > 0 {
 							metrics.RecordProxyFetch(n.Format, "success", fetchDuration)
 							oldMap := buildArtifactMap(artifacts)
-							toUpdate := n.prepareArtifactsForUpdate(context.Background(), fetched, oldMap)
+							toUpdate := n.prepareArtifactsForUpdate(refreshCtx, fetched, oldMap)
 							if len(toUpdate) > 0 {
-								if err := n.MetadataStore.BatchPut(context.Background(), toUpdate); err != nil {
+								if err := n.MetadataStore.BatchPut(refreshCtx, toUpdate); err != nil {
 									logrus.WithFields(logrus.Fields{
 										"remoteBaseURL": n.RemoteBaseURL,
 										"remotePath":    query.RemotePath,
@@ -851,7 +869,15 @@ func (n *ProxyRuntime) refreshStaleMetadata(ctx context.Context, artifact *Artif
 	}
 	remoteMeta, err := n.RemoteClient.FetchMetadata(ctx, key)
 	if err != nil {
-		logrus.WithError(err).Warn("remote unreachable, serving cached artifact")
+		// 远端不可达：设置短 TTL 负缓存，避免故障期间每个请求都重复回源放大流量。
+		// 不返回错误（stale-while-revalidate 语义），继续服务本地缓存数据。
+		// 用 NegativeTTL 的一半作为故障负缓存 TTL，区别于"远端确认不存在"的完整 NegativeTTL。
+		failureTTL := n.CachePolicy.NegativeTTL / 2
+		if failureTTL < 30*time.Second {
+			failureTTL = 30 * time.Second
+		}
+		n.setNegativeCacheWithTTL(key, failureTTL)
+		logrus.WithError(err).Warn("remote unreachable, serving cached artifact (negative cache set)")
 		return nil
 	}
 	if !remoteMeta.Exists {
@@ -898,15 +924,20 @@ func (n *ProxyRuntime) getCachedArtifact(key ArtifactKey) (*Artifact, bool) {
 	if n.CachePolicy.MetadataTTL <= 0 {
 		return nil, false
 	}
-	n.metadataCacheMu.RLock()
-	entry, ok := n.metadataCache[key.String()]
-	n.metadataCacheMu.RUnlock()
-	if !ok || time.Now().After(entry.expiresAt) || entry.negative {
-		if ok {
-			n.invalidateCachedArtifact(key)
-		}
+	cacheKey := key.String()
+	n.metadataCacheMu.Lock()
+	defer n.metadataCacheMu.Unlock()
+	el, ok := n.metadataCache[cacheKey]
+	if !ok {
 		return nil, false
 	}
+	entry := el.Value.(*cachedArtifactEntry)
+	if time.Now().After(entry.expiresAt) || entry.negative {
+		n.removeElementLocked(el)
+		return nil, false
+	}
+	// 命中后移到队尾（最近访问），LRU 淘汰时从队首删
+	n.metadataCacheLL.MoveToBack(el)
 	return entry.artifact, true
 }
 
@@ -914,16 +945,29 @@ func (n *ProxyRuntime) setCachedArtifact(key ArtifactKey, artifact *Artifact) {
 	if n.CachePolicy.MetadataTTL <= 0 || artifact == nil {
 		return
 	}
+	cacheKey := key.String()
+	entry := &cachedArtifactEntry{
+		key:       cacheKey,
+		artifact:  cloneArtifactForCache(artifact),
+		expiresAt: time.Now().Add(n.CachePolicy.MetadataTTL),
+	}
 	n.metadataCacheMu.Lock()
+	defer n.metadataCacheMu.Unlock()
 	if n.metadataCache == nil {
-		n.metadataCache = map[string]cachedArtifact{}
+		n.metadataCache = map[string]*list.Element{}
+		n.metadataCacheLL = list.New()
 	}
-	// 超过上限时淘汰最老的 25% 条目，避免全量清空引发缓存击穿
-	if len(n.metadataCache) >= maxMetadataCacheSize {
-		n.evictOldestEntries(maxMetadataCacheSize / 4)
+	if el, ok := n.metadataCache[cacheKey]; ok {
+		el.Value = entry
+		n.metadataCacheLL.MoveToBack(el)
+		return
 	}
-	n.metadataCache[key.String()] = cachedArtifact{artifact: cloneArtifactForCache(artifact), expiresAt: time.Now().Add(n.CachePolicy.MetadataTTL)}
-	n.metadataCacheMu.Unlock()
+	el := n.metadataCacheLL.PushBack(entry)
+	n.metadataCache[cacheKey] = el
+	// 超过上限时淘汰队首（最久未访问），O(1)
+	for n.metadataCacheLL.Len() > maxMetadataCacheSize {
+		n.removeOldestLocked()
+	}
 }
 
 func cloneArtifactForCache(artifact *Artifact) *Artifact {
@@ -954,35 +998,44 @@ func cloneArtifactForResponse(artifact *Artifact) *Artifact {
 }
 
 func (n *ProxyRuntime) invalidateCachedArtifact(key ArtifactKey) {
+	cacheKey := key.String()
 	n.metadataCacheMu.Lock()
-	delete(n.metadataCache, key.String())
-	n.metadataCacheMu.Unlock()
+	defer n.metadataCacheMu.Unlock()
+	if el, ok := n.metadataCache[cacheKey]; ok {
+		n.removeElementLocked(el)
+	}
 }
 
-// evictOldestEntries 淘汰 count 个条目，优先删除已过期条目。
+// removeOldestLocked 删除队首元素（最久未访问），O(1)。
 // 调用方必须持有 metadataCacheMu 写锁。
-func (n *ProxyRuntime) evictOldestEntries(count int) {
-	if count <= 0 || len(n.metadataCache) == 0 {
+func (n *ProxyRuntime) removeOldestLocked() {
+	if n.metadataCacheLL == nil {
 		return
 	}
-
-	now := time.Now()
-	deleted := 0
-	for key, entry := range n.metadataCache {
-		if deleted >= count {
-			return
-		}
-		if now.After(entry.expiresAt) {
-			delete(n.metadataCache, key)
-			deleted++
-		}
+	el := n.metadataCacheLL.Front()
+	if el == nil {
+		return
 	}
-	for key := range n.metadataCache {
-		if deleted >= count {
-			return
-		}
-		delete(n.metadataCache, key)
-		deleted++
+	n.removeElementLocked(el)
+}
+
+// removeElementLocked 从 map 和链表中同步移除元素，O(1)。
+// 调用方必须持有 metadataCacheMu 写锁。
+func (n *ProxyRuntime) removeElementLocked(el *list.Element) {
+	entry := el.Value.(*cachedArtifactEntry)
+	delete(n.metadataCache, entry.key)
+	n.metadataCacheLL.Remove(el)
+}
+
+// evictOldestEntries 淘汰 count 个条目。
+// LRU 实现下从队首删除，O(count)。
+// 调用方必须持有 metadataCacheMu 写锁。
+func (n *ProxyRuntime) evictOldestEntries(count int) {
+	if count <= 0 || n.metadataCacheLL == nil {
+		return
+	}
+	for i := 0; i < count && n.metadataCacheLL.Len() > 0; i++ {
+		n.removeOldestLocked()
 	}
 }
 
@@ -1028,6 +1081,16 @@ func (n *ProxyRuntime) setNegativeCache(key ArtifactKey) {
 	if n.CachePolicy.NegativeTTL <= 0 {
 		return
 	}
+	n.setNegativeCacheWithTTL(key, n.CachePolicy.NegativeTTL)
+}
+
+// setNegativeCacheWithTTL 设置自定义 TTL 的负缓存条目。
+// failureTTL <= 0 时不记录（调用方应保证 failureTTL > 0，
+// refreshStaleMetadata 用 30s 下限兜底确保满足此约束）。
+func (n *ProxyRuntime) setNegativeCacheWithTTL(key ArtifactKey, failureTTL time.Duration) {
+	if failureTTL <= 0 {
+		return
+	}
 	n.metadataCacheMu.Lock()
 	if n.negativeCache == nil {
 		n.negativeCache = map[string]time.Time{}
@@ -1035,7 +1098,7 @@ func (n *ProxyRuntime) setNegativeCache(key ArtifactKey) {
 	if len(n.negativeCache) >= maxNegativeCacheSize {
 		n.evictNegativeCache(maxNegativeCacheSize / 4)
 	}
-	n.negativeCache[key.String()] = time.Now().Add(n.CachePolicy.NegativeTTL)
+	n.negativeCache[key.String()] = time.Now().Add(failureTTL)
 	n.metadataCacheMu.Unlock()
 }
 

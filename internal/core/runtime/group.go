@@ -109,11 +109,33 @@ func (g *GroupRuntime) queryWithPriority(ctx context.Context, query ArtifactQuer
 }
 
 func (g *GroupRuntime) RenderProjection(ctx context.Context, query ProjectionQuery) (*ProjectionResult, error) {
-	for _, node := range g.Members {
+	var firstErr error
+	for i, node := range g.Members {
 		result, err := node.RenderProjection(ctx, query)
 		if err == nil {
 			return result, nil
 		}
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if errors.Is(err, ErrBlocked) {
+			logrus.WithFields(logrus.Fields{
+				"memberIndex": i,
+				"remotePath":  query.RemotePath,
+			}).Warn("group: member blocked projection request")
+			return nil, err
+		}
+		logrus.WithFields(logrus.Fields{
+			"memberIndex": i,
+			"remotePath":  query.RemotePath,
+			"error":       err.Error(),
+		}).Warn("group: member RenderProjection failed")
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 	return nil, ErrNotFound
 }

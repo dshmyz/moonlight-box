@@ -300,6 +300,7 @@ func main() {
 
 	// 创建统一的 ArtifactService，用于 artifact 写入时自动同步 packages 聚合表
 	artifactSvc := service.NewArtifactService(db)
+	defer artifactSvc.Stop()
 
 	// 设置懒加载 factory：Get() 在内存缓存未命中时自动从 DB 创建 Runtime
 	repoManager.SetFactory(NewRepositoryFactory(

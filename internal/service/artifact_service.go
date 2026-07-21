@@ -32,10 +32,112 @@ type ArtifactService struct {
 	onCacheInvalid           func() // 可选：packages 表变更后清除搜索缓存的回调
 	packageVersionTableOnce  sync.Once
 	packageVersionTableReady bool
+
+	// packageRecalcWorker 相关字段用于异步重算 packages 聚合表。
+	// SaveBatch 事务提交后，把 seenPackages 投递到 recalcCh，
+	// worker goroutine 用独立 db 连接执行 recalcPackageVersions，
+	// 避免在事务内做每包 2 次全表扫描导致长事务持锁。
+	recalcCh   chan map[string]bool
+	recalcStop chan struct{}
+	recalcDone chan struct{}
+	recalcOnce sync.Once
 }
 
 func NewArtifactService(db *gorm.DB) *ArtifactService {
-	return &ArtifactService{db: db}
+	s := &ArtifactService{db: db}
+	s.startPackageRecalcWorker()
+	return s
+}
+
+// startPackageRecalcWorker 启动异步 worker 处理 packages 聚合表重算。
+// worker 用独立 db 连接（不在 SaveBatch 事务内），避免长事务持锁。
+// 同一包短时间内多次提交会去重（map 覆盖），worker 按节流间隔执行。
+func (s *ArtifactService) startPackageRecalcWorker() {
+	s.recalcCh = make(chan map[string]bool, 256)
+	s.recalcStop = make(chan struct{})
+	s.recalcDone = make(chan struct{})
+	util.SafeGo("artifact-service.recalc-worker", s.recalcLoop)
+}
+
+func (s *ArtifactService) recalcLoop() {
+	defer close(s.recalcDone)
+	// 合并 200ms 内到达的多个 seenPackages，避免短时间内对同一包重复重算
+	const mergeWindow = 200 * time.Millisecond
+	var pending map[string]bool
+	var timerC <-chan time.Time
+	var timer *time.Timer
+	for {
+		select {
+		case <-s.recalcStop:
+			// 关闭时停止 timer，避免 200ms 内部 goroutine 短暂泄漏
+			if timer != nil {
+				timer.Stop()
+			}
+			// 关闭时处理剩余任务
+			if pending != nil {
+				s.executePackageRecalc(pending)
+			}
+			// 排空 channel，避免丢失已提交任务
+			for {
+				select {
+				case p := <-s.recalcCh:
+					if pending == nil {
+						pending = p
+					} else {
+						for k := range p {
+							pending[k] = true
+						}
+					}
+					continue
+				default:
+					if pending != nil {
+						s.executePackageRecalc(pending)
+					}
+					return
+				}
+			}
+		case p := <-s.recalcCh:
+			if pending == nil {
+				pending = p
+				if timer == nil {
+					timer = time.NewTimer(mergeWindow)
+					timerC = timer.C
+				} else {
+					timer.Reset(mergeWindow)
+				}
+			} else {
+				for k := range p {
+					pending[k] = true
+				}
+			}
+		case <-timerC:
+			s.executePackageRecalc(pending)
+			pending = nil
+			timerC = nil
+		}
+	}
+}
+
+// executePackageRecalc 用独立 db 连接执行 packages 重算，失败仅记录日志。
+func (s *ArtifactService) executePackageRecalc(seenPackages map[string]bool) {
+	if len(seenPackages) == 0 {
+		return
+	}
+	// 用独立 db 连接（不在事务内），避免长事务持锁
+	if err := s.recalcPackageVersions(s.db, seenPackages); err != nil {
+		util.WithFields(logrus.Fields{
+			util.LogKeyModule: "artifact-service",
+			"packageCount":    len(seenPackages),
+		}).WithError(err).Warn("async package recalc failed")
+	}
+}
+
+// Stop 优雅关闭异步 worker，等待剩余任务完成。
+func (s *ArtifactService) Stop() {
+	s.recalcOnce.Do(func() {
+		close(s.recalcStop)
+		<-s.recalcDone
+	})
 }
 
 // SetCacheInvalidationCallback 设置缓存失效回调
@@ -123,8 +225,10 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 		}
 	}
 
+	// seenPackages 提升到事务外，事务提交后供异步 worker 使用。
+	seenPackages := make(map[string]bool) // 用于批量更新 packages 去重
+
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		seenPackages := make(map[string]bool) // 用于批量更新 packages 去重
 		seenPackageVersions := make(map[string]bool)
 
 		// 批量查询已有记录，避免逐条 SELECT
@@ -234,11 +338,27 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 		if err := s.recalcPackageVersionSummaries(tx, seenPackageVersions); err != nil {
 			return err
 		}
-		// 批量结束后，精确更新所有涉及 packages 的 version_count
-		return s.recalcPackageVersions(tx, seenPackages)
+		// seenPackages 副本投递给异步 worker；原 map 供事务内去重使用。
+		// packages 表是 read model，弱一致性可接受；事务提交后异步重算 version_count/latest_version，
+		// 避免每包 2 次全表扫描在事务内执行导致长事务持锁。
+		return nil
 	})
 	if err == nil {
 		s.notifyCacheInvalidation()
+		// 投递 seenPackages 副本到异步 worker。channel 满时阻塞最多 100ms，
+		// 超时则降级为同步执行，保证 packages 聚合表最终一致。
+		if len(seenPackages) > 0 {
+			packagesCopy := make(map[string]bool, len(seenPackages))
+			for k := range seenPackages {
+				packagesCopy[k] = true
+			}
+			select {
+			case s.recalcCh <- packagesCopy:
+			case <-time.After(100 * time.Millisecond):
+				// channel 满，降级同步执行
+				s.executePackageRecalc(packagesCopy)
+			}
+		}
 	}
 	return err
 }

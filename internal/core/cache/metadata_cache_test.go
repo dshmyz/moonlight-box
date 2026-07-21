@@ -18,16 +18,13 @@ func TestMetadataCacheSetNegativeCountsTowardMaxSize(t *testing.T) {
 	if got := countMetadataCacheEntries(cache); got != 1 {
 		t.Fatalf("entry count = %d, want 1", got)
 	}
-	if cache.size != 1 {
-		t.Fatalf("tracked size = %d, want 1", cache.size)
+	if cache.ll.Len() != 1 {
+		t.Fatalf("tracked size = %d, want 1", cache.ll.Len())
 	}
 }
 
 func countMetadataCacheEntries(cache *MetadataCache) int {
-	count := 0
-	cache.store.Range(func(_, _ interface{}) bool {
-		count++
-		return true
-	})
-	return count
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	return cache.ll.Len()
 }

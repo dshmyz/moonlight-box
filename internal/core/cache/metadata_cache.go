@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"container/list"
 	"context"
 	"sync"
 	"time"
@@ -8,15 +9,20 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 )
 
+// MetadataCache 是带 TTL 和 LRU 淘汰的元数据缓存。
+//
+// 用双向链表维护访问顺序，Get/Set/Evict 均为 O(1)，
+// 避免 sync.Map.Range 全表扫描的反模式（修复前 evictOldest 是 O(n)）。
 type MetadataCache struct {
-	store   sync.Map
+	mu      sync.Mutex
+	store   map[string]*list.Element
+	ll      *list.List
 	ttl     time.Duration
 	maxSize int
-	size    int
-	mu      sync.Mutex
 }
 
 type cachedMetadata struct {
+	key        string
 	artifact   *runtime.Artifact
 	cachedAt   time.Time
 	isNegative bool
@@ -24,6 +30,8 @@ type cachedMetadata struct {
 
 func NewMetadataCache(ttl time.Duration, maxSize int) *MetadataCache {
 	return &MetadataCache{
+		store:   make(map[string]*list.Element),
+		ll:      list.New(),
 		ttl:     ttl,
 		maxSize: maxSize,
 	}
@@ -32,92 +40,92 @@ func NewMetadataCache(ttl time.Duration, maxSize int) *MetadataCache {
 func (c *MetadataCache) Get(ctx context.Context, key *runtime.ArtifactKey) (*runtime.Artifact, bool) {
 	cacheKey := key.String()
 
-	value, ok := c.store.Load(cacheKey)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	el, ok := c.store[cacheKey]
 	if !ok {
 		return nil, false
 	}
 
-	cached := value.(*cachedMetadata)
-
+	cached := el.Value.(*cachedMetadata)
 	if time.Since(cached.cachedAt) > c.ttl {
-		c.mu.Lock()
-		c.deleteKeyLocked(cacheKey)
-		c.mu.Unlock()
+		c.removeElementLocked(el)
 		return nil, false
 	}
 
 	if cached.isNegative {
+		// 负缓存命中：命中后移到队尾（最近访问），但不返回 artifact
+		c.ll.MoveToBack(el)
 		return nil, false
 	}
 
+	// 命中后移到队尾（最近访问），LRU 淘汰时从队首删
+	c.ll.MoveToBack(el)
 	return cached.artifact, true
 }
 
 func (c *MetadataCache) Set(ctx context.Context, key *runtime.ArtifactKey, artifact *runtime.Artifact) {
-	cacheKey := key.String()
-	c.mu.Lock()
-	if _, exists := c.store.Load(cacheKey); !exists {
-		c.evictIfNeededLocked()
-		c.size++
-	}
-	c.store.Store(cacheKey, &cachedMetadata{
+	c.setLocked(key.String(), &cachedMetadata{
 		artifact: artifact,
 		cachedAt: time.Now(),
 	})
-	c.mu.Unlock()
 }
 
 func (c *MetadataCache) SetNegative(ctx context.Context, key *runtime.ArtifactKey) {
-	cacheKey := key.String() + ":negative"
-	c.mu.Lock()
-	if _, exists := c.store.Load(cacheKey); !exists {
-		c.evictIfNeededLocked()
-		c.size++
-	}
-	c.store.Store(cacheKey, &cachedMetadata{
+	c.setLocked(key.String()+":negative", &cachedMetadata{
 		cachedAt:   time.Now(),
 		isNegative: true,
 	})
-	c.mu.Unlock()
+}
+
+func (c *MetadataCache) setLocked(cacheKey string, cached *cachedMetadata) {
+	cached.key = cacheKey
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if el, ok := c.store[cacheKey]; ok {
+		el.Value = cached
+		c.ll.MoveToBack(el)
+		return
+	}
+
+	el := c.ll.PushBack(cached)
+	c.store[cacheKey] = el
+
+	if c.maxSize > 0 && c.ll.Len() > c.maxSize {
+		c.evictOldestLocked()
+	}
 }
 
 func (c *MetadataCache) Invalidate(ctx context.Context, key *runtime.ArtifactKey) {
-	cacheKey := key.String()
 	c.mu.Lock()
-	c.deleteKeyLocked(cacheKey)
-	c.deleteKeyLocked(cacheKey + ":negative")
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+
+	cacheKey := key.String()
+	if el, ok := c.store[cacheKey]; ok {
+		c.removeElementLocked(el)
+	}
+	negativeKey := cacheKey + ":negative"
+	if el, ok := c.store[negativeKey]; ok {
+		c.removeElementLocked(el)
+	}
 }
 
-func (c *MetadataCache) evictIfNeededLocked() {
-	if c.maxSize <= 0 {
+// evictOldestLocked 删除队首元素（最久未访问），O(1)。
+// 调用方必须持有 c.mu。
+func (c *MetadataCache) evictOldestLocked() {
+	el := c.ll.Front()
+	if el == nil {
 		return
 	}
-	for c.size >= c.maxSize {
-		c.evictOldest()
-	}
+	c.removeElementLocked(el)
 }
 
-func (c *MetadataCache) evictOldest() {
-	var oldestKey string
-	var oldestTime time.Time
-
-	c.store.Range(func(key, value interface{}) bool {
-		cached := value.(*cachedMetadata)
-		if oldestKey == "" || cached.cachedAt.Before(oldestTime) {
-			oldestKey = key.(string)
-			oldestTime = cached.cachedAt
-		}
-		return true
-	})
-
-	if oldestKey != "" {
-		c.deleteKeyLocked(oldestKey)
-	}
-}
-
-func (c *MetadataCache) deleteKeyLocked(key string) {
-	if _, loaded := c.store.LoadAndDelete(key); loaded && c.size > 0 {
-		c.size--
-	}
+// removeElementLocked 从 map 和链表中同步移除元素，O(1)。
+// 调用方必须持有 c.mu。
+func (c *MetadataCache) removeElementLocked(el *list.Element) {
+	cached := el.Value.(*cachedMetadata)
+	delete(c.store, cached.key)
+	c.ll.Remove(el)
 }

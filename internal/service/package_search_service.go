@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/cache"
+	"github.com/dshmyz/moonlight-box/internal/database/dialect"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
@@ -59,6 +61,10 @@ type PackageSearchService struct {
 	db             *gorm.DB
 	cache          *cache.MemoryCache
 	hasPackagesTbl bool
+
+	// packageVersions 表存在性在启动后通常不变，用 sync.Once 缓存避免每次请求执行系统表查询。
+	packageVersionsTableOnce  sync.Once
+	packageVersionsTableReady bool
 }
 
 func NewPackageSearchService(db *gorm.DB) *PackageSearchService {
@@ -76,8 +82,10 @@ func (s *PackageSearchService) InvalidateCache() {
 
 // generateCacheKey 生成缓存键
 func (s *PackageSearchService) generateCacheKey(req *SearchRequest) string {
-	data := fmt.Sprintf("%s|%s|%s|%s|%s|%d|%d",
-		req.Query, req.Type, req.Name, req.Version, req.Repository, req.Page, req.PageSize)
+	// 注意：必须包含所有影响结果集和顺序的请求字段，否则不同输入会命中同一缓存条目，
+	// 导致结果污染（例如不同 Sort 复用同一份按某顺序排序的结果）。
+	data := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%d|%d",
+		req.Query, req.Type, req.Name, req.Version, req.Repository, req.Sort, req.Page, req.PageSize)
 	hash := sha256.Sum256([]byte(data))
 	return base64.URLEncoding.EncodeToString(hash[:])
 }
@@ -111,24 +119,22 @@ func (s *PackageSearchService) Search(ctx context.Context, req *SearchRequest) (
 		return pkgResult, nil
 	}
 
-	util.WithFields(logrus.Fields{
-		util.LogKeyModule: "package-search",
-		"reason":          pkgErr.Error(),
-	}).Warn("Falling back to artifacts aggregation because packages table is unavailable")
+	if pkgErr != nil {
+		util.WithFields(logrus.Fields{
+			util.LogKeyModule: "package-search",
+			"reason":          pkgErr.Error(),
+		}).Warn("Falling back to artifacts aggregation because packages table is unavailable")
+	}
 
 	artifactResult, err := s.searchFromArtifacts(ctx, req)
 	if err != nil {
-		return nil, err
-	}
-	result := artifactResult
-	if artifactResult.Total == 0 && pkgErr == nil && pkgResult != nil {
-		result = pkgResult
+		return nil, fmt.Errorf("search artifacts fallback failed: %w", err)
 	}
 
 	// 缓存结果（5分钟）
-	s.cache.Set(cacheKey, result, 5*time.Minute)
+	s.cache.Set(cacheKey, artifactResult, 5*time.Minute)
 
-	return result, nil
+	return artifactResult, nil
 }
 
 // searchFromPackages 从 packages 表查询（快速路径）
@@ -351,11 +357,19 @@ func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *Sea
 			if acc.firstID == 0 {
 				acc.firstID = row.ID
 			}
-			if acc.license == "" {
-				acc.license = extractField(row.Attributes, "license")
+			// license/description 取最新非空：遇到更晚 updated_at 的行时覆盖已有值，
+			// 与 searchFromArtifactsGrouped 的 SQL 子查询（ORDER BY updated_at DESC LIMIT 1）对齐。
+			if license := extractField(row.Attributes, "license"); license != "" {
+				if acc.license == "" || row.UpdatedAt.After(acc.latestLicenseTime) {
+					acc.license = license
+					acc.latestLicenseTime = row.UpdatedAt
+				}
 			}
-			if acc.description == "" {
-				acc.description = extractField(row.Attributes, "description")
+			if description := extractField(row.Attributes, "description"); description != "" {
+				if acc.description == "" || row.UpdatedAt.After(acc.latestDescriptionTime) {
+					acc.description = description
+					acc.latestDescriptionTime = row.UpdatedAt
+				}
 			}
 		}
 		if len(rows) < artifactBatchSize {
@@ -452,7 +466,8 @@ type groupedArtifact struct {
 	RepositoryID uint   `gorm:"column:repository_id"`
 	Format       string `gorm:"column:format"`
 	Name         string `gorm:"column:name"`
-	Attributes   string `gorm:"column:attributes"`
+	License      string `gorm:"column:license"`
+	Description  string `gorm:"column:description"`
 	VersionCount int    `gorm:"column:version_count"`
 	UpdatedAt    string `gorm:"column:updated_at"`
 }
@@ -474,8 +489,22 @@ func (s *PackageSearchService) searchFromArtifactsGrouped(ctx context.Context, r
 		return nil, err
 	}
 
+	// 对 JSONB 字段 attributes 不能用 MAX()：不同方言行为不一致（SQLite 按字典序取最大字符串，
+	// PostgreSQL 可能报错），且取到的不是最新版本的 license/description。
+	// 改用相关子查询按 updated_at DESC 取最新行的对应字段，与 ArtifactService.RebuildPackages 对齐。
+	dialectName := s.db.Dialector.Name()
+	licenseExpr := dialect.JSONTextExpr(dialectName, "a2.attributes", "license")
+	descriptionExpr := dialect.JSONTextExpr(dialectName, "a3.attributes", "description")
 	groupedQuery := "SELECT MIN(id) AS id, repository_id, format, name, " +
-		"MAX(attributes) AS attributes, COUNT(*) AS version_count, MAX(updated_at) AS updated_at " +
+		"COUNT(*) AS version_count, MAX(updated_at) AS updated_at, " +
+		"COALESCE((SELECT " + licenseExpr + " FROM artifacts a2 WHERE a2.repository_id = artifacts.repository_id " +
+		"AND a2.format = artifacts.format AND a2.name = artifacts.name " +
+		"AND " + licenseExpr + " IS NOT NULL AND " + licenseExpr + " != '' " +
+		"ORDER BY a2.updated_at DESC LIMIT 1), '') AS license, " +
+		"COALESCE((SELECT " + descriptionExpr + " FROM artifacts a3 WHERE a3.repository_id = artifacts.repository_id " +
+		"AND a3.format = artifacts.format AND a3.name = artifacts.name " +
+		"AND " + descriptionExpr + " IS NOT NULL AND " + descriptionExpr + " != '' " +
+		"ORDER BY a3.updated_at DESC LIMIT 1), '') AS description " +
 		"FROM artifacts" + whereClause + " GROUP BY repository_id, format, name"
 
 	var total int64
@@ -490,7 +519,7 @@ func (s *PackageSearchService) searchFromArtifactsGrouped(ctx context.Context, r
 	offset := (req.Page - 1) * req.PageSize
 	pageArgs := append(append([]interface{}{}, args...), req.PageSize, offset)
 	var rows []groupedArtifact
-	pageQuery := "SELECT id, repository_id, format, name, attributes, version_count, updated_at FROM (" +
+	pageQuery := "SELECT id, repository_id, format, name, license, description, version_count, updated_at FROM (" +
 		groupedQuery + ") grouped ORDER BY " + orderBy + " LIMIT ? OFFSET ?"
 	if err := s.db.WithContext(ctx).Raw(pageQuery, pageArgs...).Scan(&rows).Error; err != nil {
 		return nil, err
@@ -530,11 +559,11 @@ func (s *PackageSearchService) searchFromArtifactsGrouped(ctx context.Context, r
 			RepositoryID:   row.RepositoryID,
 			Format:         row.Format,
 			Name:           row.Name,
-			Description:    extractField(row.Attributes, "description"),
+			Description:    row.Description,
 			VersionCount:   row.VersionCount,
 			UpdatedAt:      updatedAt,
 			RepositoryName: repoNameMap[row.RepositoryID],
-			License:        extractField(row.Attributes, "license"),
+			License:        row.License,
 		}
 	}
 
@@ -604,6 +633,12 @@ type groupAcc struct {
 	firstID      uint
 	license      string
 	description  string
+	// latestLicenseTime / latestDescriptionTime 记录当前已采纳的 license/description
+	// 来自哪一行的 updated_at；用于在内存聚合中复刻 grouped 路径
+	// "ORDER BY updated_at DESC LIMIT 1 取最新非空字段"的语义，
+	// 保证 glob 路径和 grouped 路径返回一致的元数据。
+	latestLicenseTime     time.Time
+	latestDescriptionTime time.Time
 }
 
 func searchableArtifactSQL(alias string) string {
@@ -1005,7 +1040,10 @@ func (s *PackageSearchService) batchLoadVersions(ctx context.Context, keys []pac
 }
 
 func (s *PackageSearchService) hasPackageVersionsTable() bool {
-	return s.db.Migrator().HasTable(&model.PackageVersion{})
+	s.packageVersionsTableOnce.Do(func() {
+		s.packageVersionsTableReady = s.db.Migrator().HasTable(&model.PackageVersion{})
+	})
+	return s.packageVersionsTableReady
 }
 
 // batchLoadVersionsFromReadModel 从 package_versions 表批量查询版本列表。
