@@ -195,6 +195,25 @@ func TestHandle_Ping(t *testing.T) {
 	}
 }
 
+func TestHandle_PingDashPath(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	// npm CLI 实际请求 GET /-/ping（不是 /-/npm/ping）
+	ctx, w := newCtx("GET", "-/ping", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /-/ping, got %d", w.Code)
+	}
+	var result map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &result)
+	if result["ok"] != true {
+		t.Errorf("expected ok=true for /-/ping, got %v", result["ok"])
+	}
+}
+
 func TestHandle_SecurityAudit(t *testing.T) {
 	p := NewNpmPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
@@ -249,10 +268,26 @@ func TestHandle_UploadWithTarball(t *testing.T) {
 	p := NewNpmPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
-	// npm publish body with _attachments
+	// 真实 npm publish body：版本元数据在 versions 字典里，顶层无 version 字段
 	body, _ := json.Marshal(map[string]interface{}{
-		"name":    "my-pkg",
-		"version": "1.0.0",
+		"name": "my-pkg",
+		"dist-tags": map[string]interface{}{
+			"latest": "1.0.0",
+		},
+		"versions": map[string]interface{}{
+			"1.0.0": map[string]interface{}{
+				"name":        "my-pkg",
+				"version":     "1.0.0",
+				"description": "test pkg",
+				"license":     "MIT",
+				"main":        "index.js",
+				"dist": map[string]interface{}{
+					"tarball":   "http://example.com/my-pkg/-/my-pkg-1.0.0.tgz",
+					"shasum":    "abc123",
+					"integrity": "sha512-xxx",
+				},
+			},
+		},
 		"_attachments": map[string]interface{}{
 			"my-pkg-1.0.0.tgz": map[string]interface{}{
 				"content_type": "application/octet-stream",
@@ -267,9 +302,219 @@ func TestHandle_UploadWithTarball(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", w.Code)
 	}
-	// Should have 2 artifacts: tarball + metadata
+	// 应写入 2 个 artifact：1 个 tarball + 1 个 metadata
 	if len(rt.UploadedArts) != 2 {
 		t.Fatalf("expected 2 uploaded artifacts (tarball + metadata), got %d", len(rt.UploadedArts))
+	}
+
+	var tarballArt, metadataArt *runtime.Artifact
+	for _, a := range rt.UploadedArts {
+		switch a.Kind {
+		case runtime.KindArtifact:
+			tarballArt = a
+		case runtime.KindMetadata:
+			metadataArt = a
+		}
+	}
+	if tarballArt == nil || metadataArt == nil {
+		t.Fatalf("expected both tarball and metadata artifacts, got: %+v", rt.UploadedArts)
+	}
+
+	// tarball artifact 校验
+	if tarballArt.Version != "1.0.0" {
+		t.Errorf("tarball version: expected '1.0.0', got %q", tarballArt.Version)
+	}
+	if tarballArt.RemotePath != "my-pkg/-/my-pkg-1.0.0.tgz" {
+		t.Errorf("tarball remote_path: expected 'my-pkg/-/my-pkg-1.0.0.tgz', got %q", tarballArt.RemotePath)
+	}
+
+	// metadata artifact 校验：Version 必须非空（这是 bug 的核心断言）
+	if metadataArt.Version != "1.0.0" {
+		t.Errorf("metadata version: expected '1.0.0', got %q", metadataArt.Version)
+	}
+	if metadataArt.Name != "my-pkg" {
+		t.Errorf("metadata name: expected 'my-pkg', got %q", metadataArt.Name)
+	}
+	if metadataArt.RemotePath != "my-pkg" {
+		t.Errorf("metadata remote_path: expected 'my-pkg', got %q", metadataArt.RemotePath)
+	}
+	// Attributes 应从 versions[ver] 提取
+	if metadataArt.Attributes["license"] != "MIT" {
+		t.Errorf("metadata license: expected 'MIT', got %q", metadataArt.Attributes["license"])
+	}
+	if metadataArt.Attributes["description"] != "test pkg" {
+		t.Errorf("metadata description: expected 'test pkg', got %q", metadataArt.Attributes["description"])
+	}
+	if metadataArt.Attributes["main"] != "index.js" {
+		t.Errorf("metadata main: expected 'index.js', got %q", metadataArt.Attributes["main"])
+	}
+	if metadataArt.Attributes["shasum"] != "abc123" {
+		t.Errorf("metadata shasum: expected 'abc123', got %q", metadataArt.Attributes["shasum"])
+	}
+	if metadataArt.Attributes["integrity"] != "sha512-xxx" {
+		t.Errorf("metadata integrity: expected 'sha512-xxx', got %q", metadataArt.Attributes["integrity"])
+	}
+}
+
+// TestHandle_UploadMultipleVersionsNotOverwritten 验证同一包多次 publish 不同版本时，
+// metadata artifact 的 IdentityKey 不互相覆盖。
+func TestHandle_UploadMultipleVersionsNotOverwritten(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+
+	// 第一次 publish v1.0.0
+	rt1 := &testhelper.MockRuntime{}
+	body1, _ := json.Marshal(map[string]interface{}{
+		"name": "multi-pkg",
+		"versions": map[string]interface{}{
+			"1.0.0": map[string]interface{}{
+				"name":    "multi-pkg",
+				"version": "1.0.0",
+				"license": "MIT",
+			},
+		},
+		"_attachments": map[string]interface{}{
+			"multi-pkg-1.0.0.tgz": map[string]interface{}{
+				"data": "dGVzdA==",
+			},
+		},
+	})
+	ctx1, w1 := newCtx("PUT", "multi-pkg", bytes.NewReader(body1))
+	if err := p.Handle(ctx1, rt1); err != nil {
+		t.Fatalf("first publish failed: %v", err)
+	}
+	if w1.Code != http.StatusCreated {
+		t.Fatalf("first publish expected 201, got %d", w1.Code)
+	}
+
+	// 第二次 publish v2.0.0
+	rt2 := &testhelper.MockRuntime{}
+	body2, _ := json.Marshal(map[string]interface{}{
+		"name": "multi-pkg",
+		"versions": map[string]interface{}{
+			"2.0.0": map[string]interface{}{
+				"name":    "multi-pkg",
+				"version": "2.0.0",
+				"license": "Apache-2.0",
+			},
+		},
+		"_attachments": map[string]interface{}{
+			"multi-pkg-2.0.0.tgz": map[string]interface{}{
+				"data": "dGVzdDI=",
+			},
+		},
+	})
+	ctx2, w2 := newCtx("PUT", "multi-pkg", bytes.NewReader(body2))
+	if err := p.Handle(ctx2, rt2); err != nil {
+		t.Fatalf("second publish failed: %v", err)
+	}
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("second publish expected 201, got %d", w2.Code)
+	}
+
+	// 两次 publish 的 metadata artifact IdentityKey 必须不同
+	var idKey1, idKey2 string
+	for _, a := range rt1.UploadedArts {
+		if a.Kind == runtime.KindMetadata {
+			idKey1 = a.IdentityKey
+		}
+	}
+	for _, a := range rt2.UploadedArts {
+		if a.Kind == runtime.KindMetadata {
+			idKey2 = a.IdentityKey
+		}
+	}
+	if idKey1 == "" || idKey2 == "" {
+		t.Fatalf("expected non-empty metadata IdentityKey, got idKey1=%q idKey2=%q", idKey1, idKey2)
+	}
+	if idKey1 == idKey2 {
+		t.Errorf("metadata IdentityKey of v1.0.0 and v2.0.0 must differ to avoid overwrite, both got %q", idKey1)
+	}
+}
+
+// TestHandle_UploadLegacyTopLevelVersion 验证非标准 body（顶层 version，无 versions 字典）兼容。
+// 某些非标准客户端或旧测试 body 会直接在顶层放 version。
+func TestHandle_UploadLegacyTopLevelVersion(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	// 非标准 body：顶层 version，无 versions 字典
+	body, _ := json.Marshal(map[string]interface{}{
+		"name":    "legacy-pkg",
+		"version": "1.5.0",
+		"_attachments": map[string]interface{}{
+			"legacy-pkg-1.5.0.tgz": map[string]interface{}{
+				"data": "dGVzdA==",
+			},
+		},
+	})
+	ctx, w := newCtx("PUT", "legacy-pkg", bytes.NewReader(body))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w.Code)
+	}
+
+	var metadataArt *runtime.Artifact
+	for _, a := range rt.UploadedArts {
+		if a.Kind == runtime.KindMetadata {
+			metadataArt = a
+		}
+	}
+	if metadataArt == nil {
+		t.Fatalf("expected metadata artifact, got: %+v", rt.UploadedArts)
+	}
+	if metadataArt.Version != "1.5.0" {
+		t.Errorf("metadata version: expected '1.5.0', got %q", metadataArt.Version)
+	}
+}
+
+// TestHandle_PackageGet_LegacyEmptyVersionMetadataFallback 验证存量数据兜底查询：
+// DB 里只有 Version="" 的 metadata artifact（bug 版本写入的存量）+ 正常 tarball artifact，
+// handlePackageGet 应 fallback 查询命中 tarball，返回 200 而非 404。
+func TestHandle_PackageGet_LegacyEmptyVersionMetadataFallback(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	// 模拟存量数据：Version="" 的 metadata + 正常 tarball
+	arts := []*runtime.Artifact{
+		// 存量 metadata artifact（bug 版本写入，Version 为空）
+		runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "npm",
+			Kind:       runtime.KindMetadata,
+			Name:       "legacy-pkg",
+			Version:    "",
+			RemotePath: "legacy-pkg",
+		}),
+		// 正常的 tarball artifact（Version 从文件名提取，有值）
+		runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "npm",
+			Kind:       runtime.KindArtifact,
+			Name:       "legacy-pkg",
+			Version:    "1.0.0",
+			Filename:   "legacy-pkg-1.0.0.tgz",
+			RemotePath: "legacy-pkg/-/legacy-pkg-1.0.0.tgz",
+			Attributes: map[string]string{"artifact_type": "tarball"},
+		}),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "legacy-pkg", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (fallback should find tarball), got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if result["name"] != "legacy-pkg" {
+		t.Errorf("expected name 'legacy-pkg', got %v", result["name"])
+	}
+	versions, ok := result["versions"].(map[string]interface{})
+	if !ok || len(versions) == 0 {
+		t.Errorf("expected non-empty versions, got %v", result["versions"])
 	}
 }
 
@@ -280,11 +525,22 @@ func TestHandle_QueryRemotePath(t *testing.T) {
 	ctx, _ := newCtx("GET", "express", nil)
 	p.Handle(ctx, rt)
 
-	if len(rt.QueryCalls) != 1 {
-		t.Fatalf("expected 1 query call, got %d", len(rt.QueryCalls))
+	// 第一次查询必须带 RemotePath（包元数据主查询）
+	if len(rt.QueryCalls) < 1 {
+		t.Fatalf("expected at least 1 query call, got %d", len(rt.QueryCalls))
 	}
 	if rt.QueryCalls[0].RemotePath != "express" {
-		t.Errorf("expected RemotePath 'express', got %q", rt.QueryCalls[0].RemotePath)
+		t.Errorf("expected first query RemotePath 'express', got %q", rt.QueryCalls[0].RemotePath)
+	}
+	// 若无命中结果，会触发 fallback 查询（只按 Name，不带 RemotePath），
+	// 这是存量数据兜底行为。验证 fallback 查询不带 RemotePath。
+	if len(rt.QueryCalls) >= 2 {
+		if rt.QueryCalls[1].RemotePath != "" {
+			t.Errorf("expected fallback query without RemotePath, got %q", rt.QueryCalls[1].RemotePath)
+		}
+		if rt.QueryCalls[1].Name != "express" {
+			t.Errorf("expected fallback query Name 'express', got %q", rt.QueryCalls[1].Name)
+		}
 	}
 }
 
@@ -1387,4 +1643,763 @@ func TestRestoreJSONField(t *testing.T) {
 			t.Error("missing key should be skipped")
 		}
 	})
+}
+
+// ==================== handlePackagePut 扩展测试 ====================
+
+// TestHandle_UploadMultiVersionsInOnePublish 验证同次 publish 多个版本
+// （npm CLI 支持 unpublish 后一次 republish 多个版本）。
+func TestHandle_UploadMultiVersionsInOnePublish(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "multi-ver-pkg",
+		"versions": map[string]interface{}{
+			"1.0.0": map[string]interface{}{
+				"name":    "multi-ver-pkg",
+				"version": "1.0.0",
+				"license": "MIT",
+			},
+			"2.0.0": map[string]interface{}{
+				"name":    "multi-ver-pkg",
+				"version": "2.0.0",
+				"license": "Apache-2.0",
+			},
+		},
+		"_attachments": map[string]interface{}{
+			"multi-ver-pkg-1.0.0.tgz": map[string]interface{}{"data": "dGVzdA=="},
+			"multi-ver-pkg-2.0.0.tgz": map[string]interface{}{"data": "dGVzdDI="},
+		},
+	})
+	ctx, w := newCtx("PUT", "multi-ver-pkg", bytes.NewReader(body))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w.Code)
+	}
+
+	// 应写入 4 个 artifact：2 个 tarball + 2 个 metadata
+	tarballCount, metadataCount := 0, 0
+	metadataVersions := map[string]bool{}
+	for _, a := range rt.UploadedArts {
+		switch a.Kind {
+		case runtime.KindArtifact:
+			tarballCount++
+		case runtime.KindMetadata:
+			metadataCount++
+			metadataVersions[a.Version] = true
+		}
+	}
+	if tarballCount != 2 {
+		t.Errorf("expected 2 tarball artifacts, got %d", tarballCount)
+	}
+	if metadataCount != 2 {
+		t.Errorf("expected 2 metadata artifacts, got %d", metadataCount)
+	}
+	if !metadataVersions["1.0.0"] || !metadataVersions["2.0.0"] {
+		t.Errorf("expected metadata for versions 1.0.0 and 2.0.0, got %v", metadataVersions)
+	}
+
+	// 两个 metadata artifact 的 IdentityKey 必须不同
+	idKeys := map[string]int{}
+	for _, a := range rt.UploadedArts {
+		if a.Kind == runtime.KindMetadata {
+			idKeys[a.IdentityKey]++
+		}
+	}
+	if len(idKeys) != 2 {
+		t.Errorf("expected 2 distinct metadata IdentityKeys, got %d: %v", len(idKeys), idKeys)
+	}
+}
+
+// TestHandle_UploadExtractsDistTags 验证 dist-tags 解析到 metadata artifact 的 Properties。
+func TestHandle_UploadExtractsDistTags(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "tagged-pkg",
+		"dist-tags": map[string]interface{}{
+			"latest": "2.0.0",
+			"beta":   "2.0.0-beta.1",
+		},
+		"versions": map[string]interface{}{
+			"2.0.0": map[string]interface{}{
+				"name":    "tagged-pkg",
+				"version": "2.0.0",
+			},
+			"2.0.0-beta.1": map[string]interface{}{
+				"name":    "tagged-pkg",
+				"version": "2.0.0-beta.1",
+			},
+		},
+		"_attachments": map[string]interface{}{
+			"tagged-pkg-2.0.0.tgz":        map[string]interface{}{"data": "dGVzdA=="},
+			"tagged-pkg-2.0.0-beta.1.tgz": map[string]interface{}{"data": "dGVzdA=="},
+		},
+	})
+	ctx, w := newCtx("PUT", "tagged-pkg", bytes.NewReader(body))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w.Code)
+	}
+
+	// 2.0.0 的 metadata 应有 dist-tag=latest
+	// 2.0.0-beta.1 的 metadata 应有 dist-tag=beta
+	tagByVersion := map[string]string{}
+	for _, a := range rt.UploadedArts {
+		if a.Kind == runtime.KindMetadata {
+			tagByVersion[a.Version] = a.Properties["dist-tag"]
+		}
+	}
+	if tagByVersion["2.0.0"] != "latest" {
+		t.Errorf("v2.0.0 dist-tag: expected 'latest', got %q", tagByVersion["2.0.0"])
+	}
+	if tagByVersion["2.0.0-beta.1"] != "beta" {
+		t.Errorf("v2.0.0-beta.1 dist-tag: expected 'beta', got %q", tagByVersion["2.0.0-beta.1"])
+	}
+}
+
+// TestHandle_UploadExtractsTimeField 验证 time 字段的 published_at 提取到 Attributes。
+func TestHandle_UploadExtractsTimeField(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "time-pkg",
+		"time": map[string]interface{}{
+			"1.0.0": "2024-03-15T08:00:00.000Z",
+			"2.0.0": "2024-06-20T12:00:00.000Z",
+		},
+		"versions": map[string]interface{}{
+			"1.0.0": map[string]interface{}{"name": "time-pkg", "version": "1.0.0"},
+			"2.0.0": map[string]interface{}{"name": "time-pkg", "version": "2.0.0"},
+		},
+		"_attachments": map[string]interface{}{
+			"time-pkg-1.0.0.tgz": map[string]interface{}{"data": "dGVzdA=="},
+			"time-pkg-2.0.0.tgz": map[string]interface{}{"data": "dGVzdA=="},
+		},
+	})
+	ctx, w := newCtx("PUT", "time-pkg", bytes.NewReader(body))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w.Code)
+	}
+
+	pubAtByVersion := map[string]string{}
+	for _, a := range rt.UploadedArts {
+		if a.Kind == runtime.KindMetadata {
+			pubAtByVersion[a.Version] = a.Attributes["published_at"]
+		}
+	}
+	if pubAtByVersion["1.0.0"] != "2024-03-15T08:00:00.000Z" {
+		t.Errorf("v1.0.0 published_at: expected '2024-03-15T08:00:00.000Z', got %q", pubAtByVersion["1.0.0"])
+	}
+	if pubAtByVersion["2.0.0"] != "2024-06-20T12:00:00.000Z" {
+		t.Errorf("v2.0.0 published_at: expected '2024-06-20T12:00:00.000Z', got %q", pubAtByVersion["2.0.0"])
+	}
+}
+
+// TestHandle_UploadScopedPackage 验证 scoped 包（@scope/pkg）的 publish。
+// 关键点：tarball 文件名不含 scope 前缀。
+func TestHandle_UploadScopedPackage(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "@my-scope/scoped-pkg",
+		"versions": map[string]interface{}{
+			"1.0.0": map[string]interface{}{
+				"name":    "@my-scope/scoped-pkg",
+				"version": "1.0.0",
+				"license": "MIT",
+			},
+		},
+		"_attachments": map[string]interface{}{
+			// scoped 包 tarball 文件名不含 @scope/ 前缀
+			"scoped-pkg-1.0.0.tgz": map[string]interface{}{"data": "dGVzdA=="},
+		},
+	})
+	ctx, w := newCtx("PUT", "@my-scope/scoped-pkg", bytes.NewReader(body))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w.Code)
+	}
+
+	var tarballArt, metadataArt *runtime.Artifact
+	for _, a := range rt.UploadedArts {
+		switch a.Kind {
+		case runtime.KindArtifact:
+			tarballArt = a
+		case runtime.KindMetadata:
+			metadataArt = a
+		}
+	}
+	if tarballArt == nil || metadataArt == nil {
+		t.Fatalf("expected both tarball and metadata artifacts, got: %+v", rt.UploadedArts)
+	}
+	// tarball 的 Name 应是完整 scoped 包名
+	if tarballArt.Name != "@my-scope/scoped-pkg" {
+		t.Errorf("tarball name: expected '@my-scope/scoped-pkg', got %q", tarballArt.Name)
+	}
+	// tarball 文件名不含 scope 前缀
+	if tarballArt.Filename != "scoped-pkg-1.0.0.tgz" {
+		t.Errorf("tarball filename: expected 'scoped-pkg-1.0.0.tgz', got %q", tarballArt.Filename)
+	}
+	// tarball version 从文件名提取（去掉 scope 前缀后）
+	if tarballArt.Version != "1.0.0" {
+		t.Errorf("tarball version: expected '1.0.0', got %q", tarballArt.Version)
+	}
+	if metadataArt.Version != "1.0.0" {
+		t.Errorf("metadata version: expected '1.0.0', got %q", metadataArt.Version)
+	}
+	if metadataArt.Name != "@my-scope/scoped-pkg" {
+		t.Errorf("metadata name: expected '@my-scope/scoped-pkg', got %q", metadataArt.Name)
+	}
+}
+
+// TestHandle_UploadRejectsInvalidBody 验证无效 body（无 versions 无顶层 version）被拒绝。
+func TestHandle_UploadRejectsInvalidBody(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	// 既无 versions 字典也无顶层 version
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "bad-pkg",
+		"_attachments": map[string]interface{}{
+			"bad-pkg-1.0.0.tgz": map[string]interface{}{"data": "dGVzdA=="},
+		},
+	})
+	ctx, w := newCtx("PUT", "bad-pkg", bytes.NewReader(body))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle returned err: %v", err)
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid body, got %d; body: %s", w.Code, w.Body.String())
+	}
+	// 不应有任何 artifact 被写入
+	if len(rt.UploadedArts) != 0 {
+		t.Errorf("expected 0 uploaded artifacts for invalid body, got %d", len(rt.UploadedArts))
+	}
+}
+
+// TestHandle_UploadExtractsComplexFields 验证 bin/scripts/dependencies 等复合字段
+// 从 versions[ver] 提取并 JSON 序列化到 Attributes。
+func TestHandle_UploadExtractsComplexFields(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "complex-pkg",
+		"versions": map[string]interface{}{
+			"1.0.0": map[string]interface{}{
+				"name":    "complex-pkg",
+				"version": "1.0.0",
+				"bin": map[string]interface{}{
+					"cli": "./bin/cli.js",
+				},
+				"scripts": map[string]interface{}{
+					"test":  "jest",
+					"build": "tsc",
+				},
+				"dependencies": map[string]interface{}{
+					"lodash": "^4.17.21",
+				},
+				"engines": map[string]interface{}{
+					"node": ">=14",
+				},
+			},
+		},
+		"_attachments": map[string]interface{}{
+			"complex-pkg-1.0.0.tgz": map[string]interface{}{"data": "dGVzdA=="},
+		},
+	})
+	ctx, w := newCtx("PUT", "complex-pkg", bytes.NewReader(body))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w.Code)
+	}
+
+	var metadataArt *runtime.Artifact
+	for _, a := range rt.UploadedArts {
+		if a.Kind == runtime.KindMetadata {
+			metadataArt = a
+		}
+	}
+	if metadataArt == nil {
+		t.Fatalf("expected metadata artifact, got: %+v", rt.UploadedArts)
+	}
+
+	// bin 应 JSON 序列化存储
+	binRaw := metadataArt.Attributes["bin"]
+	if binRaw == "" {
+		t.Fatal("bin attribute is empty")
+	}
+	var binObj map[string]interface{}
+	if err := json.Unmarshal([]byte(binRaw), &binObj); err != nil {
+		t.Fatalf("bin is not valid JSON: %v", err)
+	}
+	if binObj["cli"] != "./bin/cli.js" {
+		t.Errorf("bin[\"cli\"]: expected './bin/cli.js', got %v", binObj["cli"])
+	}
+
+	// scripts
+	var scriptsObj map[string]interface{}
+	if err := json.Unmarshal([]byte(metadataArt.Attributes["scripts"]), &scriptsObj); err != nil {
+		t.Fatalf("scripts is not valid JSON: %v", err)
+	}
+	if scriptsObj["test"] != "jest" {
+		t.Errorf("scripts[\"test\"]: expected 'jest', got %v", scriptsObj["test"])
+	}
+
+	// dependencies
+	var depsObj map[string]interface{}
+	if err := json.Unmarshal([]byte(metadataArt.Attributes["dependencies"]), &depsObj); err != nil {
+		t.Fatalf("dependencies is not valid JSON: %v", err)
+	}
+	if depsObj["lodash"] != "^4.17.21" {
+		t.Errorf("dependencies[\"lodash\"]: expected '^4.17.21', got %v", depsObj["lodash"])
+	}
+
+	// engines
+	var enginesObj map[string]interface{}
+	if err := json.Unmarshal([]byte(metadataArt.Attributes["engines"]), &enginesObj); err != nil {
+		t.Fatalf("engines is not valid JSON: %v", err)
+	}
+	if enginesObj["node"] != ">=14" {
+		t.Errorf("engines[\"node\"]: expected '>=14', got %v", enginesObj["node"])
+	}
+}
+
+// ==================== handlePackageGet 扩展测试 ====================
+
+// TestHandle_PackageGet_DirectHitNoFallback 验证主查询命中时（新格式数据）
+// 不触发 fallback 查询，避免每次 GET 都多查一次的性能问题。
+func TestHandle_PackageGet_DirectHitNoFallback(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	// 新格式数据：metadata artifact 有非空 Version
+	arts := []*runtime.Artifact{
+		runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "npm",
+			Kind:       runtime.KindMetadata,
+			Name:       "new-pkg",
+			Version:    "1.0.0",
+			RemotePath: "new-pkg",
+			Attributes: map[string]string{"license": "MIT"},
+		}),
+		runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "npm",
+			Kind:       runtime.KindArtifact,
+			Name:       "new-pkg",
+			Version:    "1.0.0",
+			Filename:   "new-pkg-1.0.0.tgz",
+			RemotePath: "new-pkg/-/new-pkg-1.0.0.tgz",
+			Attributes: map[string]string{"artifact_type": "tarball"},
+		}),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "new-pkg", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	// 关键断言：主查询命中后不应触发 fallback（只允许 1 次查询）
+	if len(rt.QueryCalls) != 1 {
+		t.Errorf("expected 1 query call (no fallback), got %d", len(rt.QueryCalls))
+	}
+}
+
+// TestHandle_PackageGet_FallbackAlsoMiss 验证主查询和 fallback 都未命中时返回 404。
+func TestHandle_PackageGet_FallbackAlsoMiss(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	// 空数据：主查询和 fallback 都查不到任何记录
+	rt := &testhelper.MockRuntime{}
+
+	ctx, w := newCtx("GET", "nonexistent-pkg", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 when both primary and fallback miss, got %d; body: %s", w.Code, w.Body.String())
+	}
+	// 应触发 2 次查询：主查询 + fallback
+	if len(rt.QueryCalls) != 2 {
+		t.Errorf("expected 2 query calls (primary + fallback), got %d", len(rt.QueryCalls))
+	}
+}
+
+// TestHandle_PackageGet_FallbackOnEmptyVersionMetadata 验证主查询命中
+// 但所有 artifact Version 为空时触发 fallback。
+func TestHandle_PackageGet_FallbackOnEmptyVersionMetadata(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	// 主查询命中（RemotePath 匹配），但 metadata Version 空
+	arts := []*runtime.Artifact{
+		runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "npm",
+			Kind:       runtime.KindMetadata,
+			Name:       "empty-ver-pkg",
+			Version:    "",
+			RemotePath: "empty-ver-pkg",
+		}),
+		// tarball RemotePath 不同，主查询查不到，fallback 才能查到
+		runtime.NewArtifact(runtime.ArtifactSpec{
+			Format:     "npm",
+			Kind:       runtime.KindArtifact,
+			Name:       "empty-ver-pkg",
+			Version:    "1.0.0",
+			Filename:   "empty-ver-pkg-1.0.0.tgz",
+			RemotePath: "empty-ver-pkg/-/empty-ver-pkg-1.0.0.tgz",
+			Attributes: map[string]string{"artifact_type": "tarball"},
+		}),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "empty-ver-pkg", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (fallback should find tarball), got %d; body: %s", w.Code, w.Body.String())
+	}
+	// 2 次查询：主查询 + fallback
+	if len(rt.QueryCalls) != 2 {
+		t.Errorf("expected 2 query calls (primary with RemotePath + fallback without), got %d", len(rt.QueryCalls))
+	}
+	// 第 1 次带 RemotePath，第 2 次不带
+	if rt.QueryCalls[0].RemotePath != "empty-ver-pkg" {
+		t.Errorf("primary query RemotePath: expected 'empty-ver-pkg', got %q", rt.QueryCalls[0].RemotePath)
+	}
+	if rt.QueryCalls[1].RemotePath != "" {
+		t.Errorf("fallback query RemotePath: expected empty, got %q", rt.QueryCalls[1].RemotePath)
+	}
+}
+
+// ==================== 端到端测试 ====================
+
+// TestHandle_PublishThenGet_EndToEnd 验证 publish 后 GET 能完整还原。
+// 这是核心端到端测试：模拟真实用户场景，publish 后立即 view。
+func TestHandle_PublishThenGet_EndToEnd(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+
+	// === Step 1: publish ===
+	putRt := &testhelper.MockRuntime{}
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "e2e-pkg",
+		"dist-tags": map[string]interface{}{
+			"latest": "1.0.0",
+		},
+		"time": map[string]interface{}{
+			"1.0.0": "2024-01-01T00:00:00.000Z",
+		},
+		"versions": map[string]interface{}{
+			"1.0.0": map[string]interface{}{
+				"name":        "e2e-pkg",
+				"version":     "1.0.0",
+				"description": "end-to-end test pkg",
+				"license":     "MIT",
+				"main":        "index.js",
+				"dependencies": map[string]interface{}{
+					"lodash": "^4.17.21",
+				},
+				"dist": map[string]interface{}{
+					"shasum":    "abc123",
+					"integrity": "sha512-xyz",
+				},
+			},
+		},
+		"_attachments": map[string]interface{}{
+			"e2e-pkg-1.0.0.tgz": map[string]interface{}{"data": "dGVzdA=="},
+		},
+	})
+	putCtx, putW := newCtx("PUT", "e2e-pkg", bytes.NewReader(body))
+	if err := p.Handle(putCtx, putRt); err != nil {
+		t.Fatalf("PUT failed: %v", err)
+	}
+	if putW.Code != http.StatusCreated {
+		t.Fatalf("PUT expected 201, got %d", putW.Code)
+	}
+
+	// === Step 2: 把 publish 写入的 artifact 转入 GET 用的 MockRuntime ===
+	getRt := &testhelper.MockRuntime{Artifacts: putRt.UploadedArts}
+
+	// === Step 3: GET 验证完整还原 ===
+	getCtx, getW := newCtx("GET", "e2e-pkg", nil)
+	if err := p.Handle(getCtx, getRt); err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET expected 200, got %d; body: %s", getW.Code, getW.Body.String())
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(getW.Body.Bytes(), &result); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	// name
+	if result["name"] != "e2e-pkg" {
+		t.Errorf("name: expected 'e2e-pkg', got %v", result["name"])
+	}
+
+	// versions
+	versions, ok := result["versions"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("versions is not a map: %T", result["versions"])
+	}
+	v100, ok := versions["1.0.0"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("versions[1.0.0] is not a map: %T", versions["1.0.0"])
+	}
+	if v100["description"] != "end-to-end test pkg" {
+		t.Errorf("description: expected 'end-to-end test pkg', got %v", v100["description"])
+	}
+	if v100["license"] != "MIT" {
+		t.Errorf("license: expected 'MIT', got %v", v100["license"])
+	}
+	if v100["main"] != "index.js" {
+		t.Errorf("main: expected 'index.js', got %v", v100["main"])
+	}
+
+	// dependencies 还原
+	deps, ok := v100["dependencies"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("dependencies is not a map: %T", v100["dependencies"])
+	}
+	if deps["lodash"] != "^4.17.21" {
+		t.Errorf("dependencies[lodash]: expected '^4.17.21', got %v", deps["lodash"])
+	}
+
+	// dist 子字段还原
+	dist, ok := v100["dist"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("dist is not a map: %T", v100["dist"])
+	}
+	if dist["shasum"] != "abc123" {
+		t.Errorf("dist[shasum]: expected 'abc123', got %v", dist["shasum"])
+	}
+	if dist["integrity"] != "sha512-xyz" {
+		t.Errorf("dist[integrity]: expected 'sha512-xyz', got %v", dist["integrity"])
+	}
+	// tarball URL 应被重写为仓库地址
+	tarballURL, _ := dist["tarball"].(string)
+	if tarballURL == "" {
+		t.Error("dist[tarball] is empty")
+	} else if !strings.Contains(tarballURL, "e2e-pkg/-/e2e-pkg-1.0.0.tgz") {
+		t.Errorf("dist[tarball] should contain 'e2e-pkg/-/e2e-pkg-1.0.0.tgz', got %q", tarballURL)
+	}
+
+	// dist-tags 还原
+	distTags, ok := result["dist-tags"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("dist-tags is not a map: %T", result["dist-tags"])
+	}
+	if distTags["latest"] != "1.0.0" {
+		t.Errorf("dist-tags[latest]: expected '1.0.0', got %v", distTags["latest"])
+	}
+
+	// time 字段还原
+	timeMap, ok := result["time"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("time is not a map: %T", result["time"])
+	}
+	if timeMap["1.0.0"] != "2024-01-01T00:00:00.000Z" {
+		t.Errorf("time[1.0.0]: expected '2024-01-01T00:00:00.000Z', got %v", timeMap["1.0.0"])
+	}
+
+	// 端到端关键：主查询直接命中，不应触发 fallback
+	if len(getRt.QueryCalls) != 1 {
+		t.Errorf("expected 1 query call (direct hit, no fallback), got %d", len(getRt.QueryCalls))
+	}
+}
+
+// TestHandle_PublishMultipleVersionsThenGet 验证多次 publish 不同版本后
+// GET 能拿到全部版本。
+func TestHandle_PublishMultipleVersionsThenGet(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+
+	// 所有 publish 写入的 artifact 汇总到这里
+	allUploadedArts := []*runtime.Artifact{}
+
+	// === publish v1.0.0 ===
+	rt1 := &testhelper.MockRuntime{}
+	body1, _ := json.Marshal(map[string]interface{}{
+		"name": "multi-e2e-pkg",
+		"dist-tags": map[string]interface{}{
+			"latest": "1.0.0",
+		},
+		"versions": map[string]interface{}{
+			"1.0.0": map[string]interface{}{
+				"name":    "multi-e2e-pkg",
+				"version": "1.0.0",
+				"license": "MIT",
+			},
+		},
+		"_attachments": map[string]interface{}{
+			"multi-e2e-pkg-1.0.0.tgz": map[string]interface{}{"data": "dGVzdA=="},
+		},
+	})
+	ctx1, w1 := newCtx("PUT", "multi-e2e-pkg", bytes.NewReader(body1))
+	if err := p.Handle(ctx1, rt1); err != nil {
+		t.Fatalf("first publish failed: %v", err)
+	}
+	if w1.Code != http.StatusCreated {
+		t.Fatalf("first publish expected 201, got %d", w1.Code)
+	}
+	allUploadedArts = append(allUploadedArts, rt1.UploadedArts...)
+
+	// === publish v2.0.0 ===
+	rt2 := &testhelper.MockRuntime{}
+	body2, _ := json.Marshal(map[string]interface{}{
+		"name": "multi-e2e-pkg",
+		"dist-tags": map[string]interface{}{
+			"latest": "2.0.0",
+		},
+		"versions": map[string]interface{}{
+			"2.0.0": map[string]interface{}{
+				"name":    "multi-e2e-pkg",
+				"version": "2.0.0",
+				"license": "Apache-2.0",
+			},
+		},
+		"_attachments": map[string]interface{}{
+			"multi-e2e-pkg-2.0.0.tgz": map[string]interface{}{"data": "dGVzdDI="},
+		},
+	})
+	ctx2, w2 := newCtx("PUT", "multi-e2e-pkg", bytes.NewReader(body2))
+	if err := p.Handle(ctx2, rt2); err != nil {
+		t.Fatalf("second publish failed: %v", err)
+	}
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("second publish expected 201, got %d", w2.Code)
+	}
+	allUploadedArts = append(allUploadedArts, rt2.UploadedArts...)
+
+	// === GET 验证两个版本都可见 ===
+	getRt := &testhelper.MockRuntime{Artifacts: allUploadedArts}
+	getCtx, getW := newCtx("GET", "multi-e2e-pkg", nil)
+	if err := p.Handle(getCtx, getRt); err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET expected 200, got %d; body: %s", getW.Code, getW.Body.String())
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(getW.Body.Bytes(), &result); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	versions, ok := result["versions"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("versions is not a map: %T", result["versions"])
+	}
+	if len(versions) != 2 {
+		t.Errorf("expected 2 versions, got %d: %v", len(versions), versions)
+	}
+	if _, ok := versions["1.0.0"]; !ok {
+		t.Error("version 1.0.0 missing from response")
+	}
+	if _, ok := versions["2.0.0"]; !ok {
+		t.Error("version 2.0.0 missing from response")
+	}
+
+	// v1.0.0 的 license
+	if v1, ok := versions["1.0.0"].(map[string]interface{}); ok {
+		if v1["license"] != "MIT" {
+			t.Errorf("v1.0.0 license: expected 'MIT', got %v", v1["license"])
+		}
+	}
+	// v2.0.0 的 license
+	if v2, ok := versions["2.0.0"].(map[string]interface{}); ok {
+		if v2["license"] != "Apache-2.0" {
+			t.Errorf("v2.0.0 license: expected 'Apache-2.0', got %v", v2["license"])
+		}
+	}
+
+	// dist-tags.latest 应是 2.0.0（最后 publish 的版本）
+	distTags, ok := result["dist-tags"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("dist-tags is not a map: %T", result["dist-tags"])
+	}
+	if distTags["latest"] != "2.0.0" {
+		t.Errorf("dist-tags[latest]: expected '2.0.0', got %v", distTags["latest"])
+	}
+}
+
+// TestHandle_PublishScopedThenGet 验证 scoped 包 publish 后 GET 端到端。
+func TestHandle_PublishScopedThenGet(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+
+	putRt := &testhelper.MockRuntime{}
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "@my-scope/scoped-e2e",
+		"dist-tags": map[string]interface{}{
+			"latest": "1.0.0",
+		},
+		"versions": map[string]interface{}{
+			"1.0.0": map[string]interface{}{
+				"name":    "@my-scope/scoped-e2e",
+				"version": "1.0.0",
+				"license": "MIT",
+			},
+		},
+		"_attachments": map[string]interface{}{
+			"scoped-e2e-1.0.0.tgz": map[string]interface{}{"data": "dGVzdA=="},
+		},
+	})
+	putCtx, putW := newCtx("PUT", "@my-scope/scoped-e2e", bytes.NewReader(body))
+	if err := p.Handle(putCtx, putRt); err != nil {
+		t.Fatalf("PUT failed: %v", err)
+	}
+	if putW.Code != http.StatusCreated {
+		t.Fatalf("PUT expected 201, got %d", putW.Code)
+	}
+
+	getRt := &testhelper.MockRuntime{Artifacts: putRt.UploadedArts}
+	getCtx, getW := newCtx("GET", "@my-scope/scoped-e2e", nil)
+	if err := p.Handle(getCtx, getRt); err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET expected 200, got %d; body: %s", getW.Code, getW.Body.String())
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(getW.Body.Bytes(), &result); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if result["name"] != "@my-scope/scoped-e2e" {
+		t.Errorf("name: expected '@my-scope/scoped-e2e', got %v", result["name"])
+	}
+	versions, ok := result["versions"].(map[string]interface{})
+	if !ok || len(versions) != 1 {
+		t.Fatalf("expected 1 version, got: %v", result["versions"])
+	}
+	v100, ok := versions["1.0.0"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("versions[1.0.0] missing or wrong type")
+	}
+	dist, ok := v100["dist"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("dist missing")
+	}
+	// scoped 包 tarball URL 应使用短名（不含 @scope/ 前缀）
+	tarballURL, _ := dist["tarball"].(string)
+	if !strings.Contains(tarballURL, "@my-scope/scoped-e2e/-/scoped-e2e-1.0.0.tgz") {
+		t.Errorf("scoped tarball URL should use short name, got %q", tarballURL)
+	}
 }

@@ -99,6 +99,12 @@ type ArtifactSpec struct {
 	Properties map[string]string
 	BlobRefs   []BlobRef
 	Content    io.ReadCloser
+
+	// IdentityKey 显式指定 artifact 的身份键。
+	// 留空时由 BuildArtifactIdentityKey 根据其它字段自动计算。
+	// 用于同 RemotePath 但需区分多版本的 metadata/checksum 场景，
+	// 避免自动计算的 IdentityKey 在同包多版本间互相覆盖。
+	IdentityKey string
 }
 
 func NewArtifact(spec ArtifactSpec) *Artifact {
@@ -124,6 +130,12 @@ func NewArtifact(spec ArtifactSpec) *Artifact {
 		Content:      spec.Content,
 	}
 	NormalizeArtifactForStore(a)
+	// 显式 IdentityKey 覆盖自动计算结果。
+	// NormalizeArtifactForStore 已设置 normalized=true，后续 ValidateArtifactForStore
+	// 不会重算 IdentityKey，所以显式值会被保留。
+	if spec.IdentityKey != "" {
+		a.IdentityKey = spec.IdentityKey
+	}
 	return a
 }
 

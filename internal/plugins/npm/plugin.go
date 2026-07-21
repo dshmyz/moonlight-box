@@ -318,6 +318,11 @@ func (p *NpmPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Repo
 		return p.handleAllPackages(ctx, repoRuntime)
 	}
 
+	// npm CLI 心跳端点：GET /-/ping（不是 /-/npm/ping）
+	if path == "-/ping" {
+		return p.handlePing(ctx)
+	}
+
 	if strings.HasPrefix(path, "-/npm/") {
 		return p.handleNpmInternal(ctx, repoRuntime, path)
 	}
@@ -365,6 +370,18 @@ func (p *NpmPlugin) handleAllPackages(ctx *runtime.RequestContext, repoRuntime r
 	return nil
 }
 
+// handlePing 处理 npm CLI 心跳端点 GET /-/ping。
+// npm CLI 在每次操作前会请求此端点验证 registry 可用性。
+func (p *NpmPlugin) handlePing(ctx *runtime.RequestContext) error {
+	ctx.Writer.Header().Set("Content-Type", "application/json")
+	ctx.Writer.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(ctx.Writer).Encode(map[string]interface{}{
+		"ok":   true,
+		"pong": time.Now().UTC().Format(time.RFC3339),
+	})
+	return nil
+}
+
 func (p *NpmPlugin) handleNpmInternal(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
 	if ctx.Request.Method != http.MethodGet && ctx.Request.Method != http.MethodPost {
 		return errors.New("method not allowed")
@@ -372,15 +389,9 @@ func (p *NpmPlugin) handleNpmInternal(ctx *runtime.RequestContext, repoRuntime r
 
 	normalized := strings.TrimPrefix(path, "-/npm/")
 
-	// npm registry heartbeat endpoint used by npm CLI.
+	// npm registry heartbeat endpoint used by npm CLI (legacy path -/-/npm/ping)
 	if normalized == "ping" {
-		ctx.Writer.Header().Set("Content-Type", "application/json")
-		ctx.Writer.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(ctx.Writer).Encode(map[string]interface{}{
-			"ok":   true,
-			"pong": time.Now().UTC().Format(time.RFC3339),
-		})
-		return nil
+		return p.handlePing(ctx)
 	}
 
 	// npm audit endpoints: return empty advisory set to keep client flow working.
@@ -499,8 +510,8 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 			// 其他错误（含 ErrBlocked）交给 router 处理
 			return err
 		}
-		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-		return nil
+		// 主查询 NotFound 不直接 404，继续走 fallback 兜底
+		artifacts = nil
 	}
 
 	hasVersions := false
@@ -508,6 +519,25 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 		if a.Version != "" {
 			hasVersions = true
 			break
+		}
+	}
+	// 兜底查询：存量数据可能只有 Version="" 的 metadata（旧版 bug 写入）
+	// + 正常 tarball（RemotePath 不同，主查询未命中）。
+	// 放宽 RemotePath 限制，只按 Name 查，让 tarball artifact 纳入结果。
+	if !hasVersions {
+		fallbackArts, fbErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+			RepositoryID: ctx.Repository.ID,
+			Format:       "npm",
+			Name:         packageName,
+		})
+		if fbErr == nil {
+			for _, a := range fallbackArts {
+				if a.Version != "" {
+					hasVersions = true
+					artifacts = fallbackArts
+					break
+				}
+			}
 		}
 	}
 	if !hasVersions {
@@ -812,31 +842,60 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		http.Error(ctx.Writer, "invalid npm metadata: "+err.Error(), http.StatusBadRequest)
 		return nil
 	}
-	version := ""
-	if v, ok := npmMeta["version"].(string); ok {
-		version = v
-	}
 
 	// 提取 _attachments 中的 tarball 数据
 	attachmentsRaw, hasAttachments := npmMeta["_attachments"]
-	logrus.WithFields(logrus.Fields{
-		"packageName":     packageName,
-		"version":         version,
-		"hasAttachments":  hasAttachments,
-		"attachmentsType": fmt.Sprintf("%T", attachmentsRaw),
-	}).Debug("npm: handlePackagePut called")
-
-	attachments, ok := attachmentsRaw.(map[string]interface{})
-	if !ok {
-		logrus.WithFields(logrus.Fields{
-			"packageName": packageName,
-			"reason":      "attachments type assertion failed",
-		}).Debug("npm: handlePackagePut skipping attachments")
-		attachments = nil
-	}
+	attachments, _ := attachmentsRaw.(map[string]interface{})
 	delete(npmMeta, "_attachments") // 存储 metadata 时移除 attachments 数据
 
-	metadataJSON, _ := json.Marshal(npmMeta)
+	// 解析 dist-tags（用于 metadata artifact 的 Properties）
+	distTags := map[string]string{}
+	if dt, ok := npmMeta["dist-tags"].(map[string]interface{}); ok {
+		for tag, v := range dt {
+			if vs, ok := v.(string); ok {
+				distTags[tag] = vs
+			}
+		}
+	}
+
+	// 解析 time 字段（版本发布时间）
+	timeMap := map[string]string{}
+	if tm, ok := npmMeta["time"].(map[string]interface{}); ok {
+		for ver, v := range tm {
+			if vs, ok := v.(string); ok {
+				timeMap[ver] = vs
+			}
+		}
+	}
+
+	// 收集要写入的版本：优先 versions 字典（标准 npm publish 格式），
+	// fallback 顶层 version（非标准 body 兼容）。
+	type versionMeta struct {
+		version string
+		obj     map[string]interface{}
+	}
+	var versionsToWrite []versionMeta
+	if versionsRaw, ok := npmMeta["versions"].(map[string]interface{}); ok && len(versionsRaw) > 0 {
+		for ver, verRaw := range versionsRaw {
+			verObj, ok := verRaw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			versionsToWrite = append(versionsToWrite, versionMeta{version: ver, obj: verObj})
+		}
+	} else if topVersion, ok := npmMeta["version"].(string); ok && topVersion != "" {
+		versionsToWrite = append(versionsToWrite, versionMeta{version: topVersion, obj: npmMeta})
+	} else {
+		http.Error(ctx.Writer, "invalid npm metadata: missing versions", http.StatusBadRequest)
+		return nil
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"packageName":    packageName,
+		"hasAttachments": hasAttachments,
+		"versionCount":   len(versionsToWrite),
+	}).Debug("npm: handlePackagePut called")
+
 	session, err := repoRuntime.BeginUpload(ctx.Request.Context(), runtime.UploadRequest{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
@@ -849,11 +908,6 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 
 	// 存储 tarball blob（限制单个附件最大 100MB，防止内存耗尽）
 	const maxTarballSize = 100 * 1024 * 1024
-	logrus.WithFields(logrus.Fields{
-		"packageName":    packageName,
-		"attachmentsLen": len(attachments),
-	}).Debug("npm: starting tarball loop")
-
 	for tarballName, att := range attachments {
 		attMap, ok := att.(map[string]interface{})
 		if !ok {
@@ -880,11 +934,6 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 			http.Error(ctx.Writer, "invalid tarball base64: "+err.Error(), http.StatusBadRequest)
 			return nil
 		}
-		logrus.WithFields(logrus.Fields{
-			"packageName": packageName,
-			"tarballName": tarballName,
-			"tarballBlob": fmt.Sprintf("%v", tarballBlob),
-		}).Debug("npm: PutBlob success")
 
 		tarballVersion := extractNpmVersionFromTarball(packageName, tarballName)
 		tarballArtifact := runtime.NewArtifact(runtime.ArtifactSpec{
@@ -913,44 +962,59 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 			return nil
 		}
-		logrus.WithFields(logrus.Fields{
-			"packageName": packageName,
-			"tarballName": tarballName,
-		}).Debug("npm: PutArtifact success")
 	}
 
-	// 存储 metadata blob
-	blob, err := session.PutBlob(ctx.Request.Context(), strings.NewReader(string(metadataJSON)))
-	if err != nil {
-		session.Abort(ctx.Request.Context())
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
-		return nil
-	}
+	// 为每个版本写入独立的 metadata artifact。
+	// IdentityKey 包含 version，避免同包多版本 metadata 互相覆盖。
+	for _, vm := range versionsToWrite {
+		ver := vm.version
+		verObj := vm.obj
 
-	// 从上传的 npm 元数据中提取关键字段到 version artifact 的 Attributes
-	// 这样 handlePackageGet 可以统一从 Attributes 还原完整版本元数据
-	versionAttrs := extractNpmVersionAttributes(npmMeta)
+		// metadata blob：存对应版本对象序列化
+		metadataJSON, _ := json.Marshal(verObj)
+		blob, err := session.PutBlob(ctx.Request.Context(), strings.NewReader(string(metadataJSON)))
+		if err != nil {
+			session.Abort(ctx.Request.Context())
+			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			return nil
+		}
 
-	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
-		RepositoryID: ctx.Repository.ID,
-		Format:       "npm",
-		Kind:         runtime.KindMetadata,
-		Name:         packageName,
-		Version:      version,
-		Path:         packageName + "/" + version,
-		RemotePath:   packageName,
-		BlobRefs:     []runtime.BlobRef{blob},
-		Attributes:   versionAttrs,
-		Properties: map[string]string{
+		versionAttrs := extractNpmVersionAttributes(verObj)
+		if ts, ok := timeMap[ver]; ok && ts != "" {
+			versionAttrs["published_at"] = ts
+		}
+
+		props := map[string]string{
 			"package": packageName,
-			"version": version,
-		},
-	})
+			"version": ver,
+		}
+		// dist-tag：如果某个 tag 指向这个版本，记录到 Properties
+		for tag, v := range distTags {
+			if v == ver {
+				props["dist-tag"] = tag
+				break
+			}
+		}
 
-	if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
-		session.Abort(ctx.Request.Context())
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
-		return nil
+		artifact := runtime.NewArtifact(runtime.ArtifactSpec{
+			RepositoryID: ctx.Repository.ID,
+			Format:       "npm",
+			Kind:         runtime.KindMetadata,
+			Name:         packageName,
+			Version:      ver,
+			Path:         packageName + "/" + ver,
+			RemotePath:   packageName,
+			BlobRefs:     []runtime.BlobRef{blob},
+			Attributes:   versionAttrs,
+			Properties:   props,
+			IdentityKey:  "metadata/" + packageName + "/" + ver,
+		})
+
+		if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
+			session.Abort(ctx.Request.Context())
+			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			return nil
+		}
 	}
 
 	if err := session.Commit(ctx.Request.Context()); err != nil {
@@ -961,9 +1025,6 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}
-	logrus.WithFields(logrus.Fields{
-		"packageName": packageName,
-	}).Debug("npm: Commit success")
 
 	ctx.Writer.WriteHeader(http.StatusCreated)
 	return nil
