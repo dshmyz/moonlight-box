@@ -543,10 +543,11 @@ type mavenSnapshotVersXML struct {
 }
 
 type mavenSnapshotVersionXML struct {
-	Extension  string `xml:"extension"`
-	Classifier string `xml:"classifier,omitempty"`
-	Value      string `xml:"value"`
-	Updated    string `xml:"updated"`
+	Extension     string `xml:"extension"`
+	Classifier    string `xml:"classifier,omitempty"`
+	Value         string `xml:"value"`
+	Updated       string `xml:"updated"`
+	FileExtension string `xml:"fileExtension,omitempty"`
 }
 
 type snapshotFileInfo struct {
@@ -587,8 +588,15 @@ func parseSnapshotFileInfo(artifact, version, filename string) (info snapshotFil
 	}
 
 	// 收集文件类型（jar, pom, sources, javadoc 等）
+	// 处理双扩展名如 .tar.gz
 	ext := filepath.Ext(filename)
 	base := strings.TrimSuffix(filename, ext)
+	// 检查是否有双扩展名（如 .tar.gz）
+	secondaryExt := filepath.Ext(base)
+	if secondaryExt == ".tar" && ext == ".gz" {
+		ext = ".tar.gz"
+		base = strings.TrimSuffix(base, secondaryExt)
+	}
 	classifier := ""
 	// 检查是否有 classifier: artifactId-version-timestamp-buildNum-classifier
 	classifierPrefix := prefix + ts + "-" + buildNum + "-"
@@ -648,10 +656,11 @@ func buildSnapshotMetadata(artifact, version string, artifacts []*runtime.Artifa
 		}
 		seenItems[itemKey] = struct{}{}
 		snapshotItems = append(snapshotItems, mavenSnapshotVersionXML{
-			Extension:  info.ext,
-			Classifier: info.classifier,
-			Value:      value,
-			Updated:    lastUpdated,
+			Extension:     info.ext,
+			Classifier:    info.classifier,
+			Value:         value,
+			Updated:       lastUpdated,
+			FileExtension: info.ext,
 		})
 	}
 	if len(snapshotItems) == 0 {

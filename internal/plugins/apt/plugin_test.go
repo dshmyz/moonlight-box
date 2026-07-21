@@ -233,6 +233,43 @@ func TestHandle_UnsupportedPath(t *testing.T) {
 	}
 }
 
+func TestHandle_ByHashRequest(t *testing.T) {
+	p := NewAptPlugin(http.DefaultClient)
+	// by-hash 路径格式: {dir}/by-hash/{algorithm}/{hash}
+	hashPath := "dists/stable/main/binary-amd64/by-hash/SHA256/abc123def456"
+	art := testhelper.NewArtifact("apt", runtime.KindMetadata, map[string]string{
+		"file":        "abc123def456",
+		"filename":    "abc123def456",
+		"path":        "dists/stable/main/binary-amd64/by-hash/SHA256",
+		"remote_path": hashPath,
+	}, "packages-index-content")
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", hashPath, nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for by-hash request, got %d body=%q", w.Code, w.Body.String())
+	}
+	if w.Body.String() != "packages-index-content" {
+		t.Fatalf("unexpected body: %q", w.Body.String())
+	}
+}
+
+func TestHandle_ByHashRequestNotFound(t *testing.T) {
+	p := NewAptPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	ctx, w := newCtx("GET", "dists/stable/main/binary-amd64/by-hash/SHA256/nonexistent", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for non-existent by-hash, got %d", w.Code)
+	}
+}
+
 func TestParsePackagesIndex(t *testing.T) {
 	p := NewAptPlugin(http.DefaultClient)
 	content := `Package: nginx

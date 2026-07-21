@@ -503,11 +503,12 @@ func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime ru
 		RemotePath:   path,
 	})
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"modulePath": modulePath,
-			"error":      err.Error(),
-		}).Error("go: QueryArtifacts failed in handleVersionList")
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		if !errors.Is(err, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
+		}
+		// ErrNotFound: 模块不存在，返回 404
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
 

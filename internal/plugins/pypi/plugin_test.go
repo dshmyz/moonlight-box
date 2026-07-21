@@ -1699,6 +1699,49 @@ func TestHandle_LegacyUploadRejectsMismatchedSHA256Digest(t *testing.T) {
 	}
 }
 
+func TestHandle_LegacyUploadSanitizesPathTraversal(t *testing.T) {
+	p := NewPyPIPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	for _, maliciousName := range []string{
+		"../../etc/passwd",
+		"../etc/shadow",
+		"..\\..\\windows\\system32",
+	} {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		_ = writer.WriteField(":action", "file_upload")
+		_ = writer.WriteField("name", "testpkg")
+		_ = writer.WriteField("version", "1.0.0")
+		part, err := writer.CreateFormFile("content", maliciousName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = part.Write([]byte("package-content"))
+		_ = writer.Close()
+
+		ctx, w := newCtx("POST", "legacy/", &body)
+		ctx.Request.Header.Set("Content-Type", writer.FormDataContentType())
+		ctx.Request.ContentLength = int64(body.Len())
+		if err := p.Handle(ctx, rt); err != nil {
+			t.Fatalf("Handle failed: %v", err)
+		}
+		// 上传应成功，但文件名应被清理（只保留 base name）
+		if w.Code != http.StatusCreated && w.Code != http.StatusBadRequest {
+			t.Fatalf("for malicious filename %q: expected 201 or 400, got %d body=%q", maliciousName, w.Code, w.Body.String())
+		}
+		if w.Code == http.StatusCreated && len(rt.UploadedArts) > 0 {
+			art := rt.UploadedArts[len(rt.UploadedArts)-1]
+			if strings.Contains(art.RemotePath, "..") {
+				t.Fatalf("path traversal not sanitized: RemotePath=%q", art.RemotePath)
+			}
+			if strings.Contains(art.Filename, "/") || strings.Contains(art.Filename, "\\") {
+				t.Fatalf("filename contains path separator: %q", art.Filename)
+			}
+		}
+	}
+}
+
 func TestHandle_PackageList_NotFound(t *testing.T) {
 	p := NewPyPIPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{QueryErr: runtime.ErrNotFound}

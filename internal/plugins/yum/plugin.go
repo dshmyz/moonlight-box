@@ -587,16 +587,38 @@ func (p *YumPlugin) handleRepomd(ctx *runtime.RequestContext, repoRuntime runtim
 		Revision: fmt.Sprintf("%d", now),
 	}
 	for _, a := range artifacts {
+		// repomd.xml 只应引用元数据文件（primary/filelists/other 等），跳过 RPM 包
+		if a.Kind != runtime.KindMetadata {
+			continue
+		}
+		// repomd.xml 本身不应作为 data 条目自引用
+		if a.Filename == "repomd.xml" {
+			continue
+		}
 		f := a.Filename
 		if f == "" {
 			continue
 		}
 		dataType := a.Qualifiers["type"]
 		if dataType == "" {
-			dataType = "primary"
+			// 根据文件名推断 metadata 类型
+			dataType = inferYumDataType(f)
+		}
+		if dataType == "" {
+			continue
 		}
 		d := data{Type: dataType}
-		d.Location.Href = f
+		// location.href 必须是相对仓库根的完整路径（如 repodata/primary.xml.gz）
+		// 优先从 Qualifiers["href"] 获取（FetchRemote 设置的正确路径），
+		// 其次用 RemotePath，最后回退到 Filename
+		href := a.Qualifiers["href"]
+		if href == "" {
+			href = a.RemotePath
+		}
+		if href == "" {
+			href = f
+		}
+		d.Location.Href = href
 		d.Timestamp = fmt.Sprintf("%d", now)
 		if len(a.BlobRefs) > 0 {
 			d.Checksum = checksumXML{Type: a.BlobRefs[0].Algorithm, Value: a.BlobRefs[0].Digest}
@@ -715,8 +737,6 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 		return nil
 	}
 	var b strings.Builder
-	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
-	b.WriteString(`<metadata xmlns="http://linux.duke.edu/metadata/common">` + "\n")
 	packageCount := 0
 	for _, a := range artifacts {
 		name := a.Name
@@ -729,18 +749,35 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 		epoch := a.Attributes["epoch"]
 		href := firstNonEmptyYum(a.RemotePath, a.Filename)
 		fmt.Fprintf(&b, "  <package type=\"rpm\">\n")
-		fmt.Fprintf(&b, "    <name>%s</name>\n", name)
-		fmt.Fprintf(&b, "    <arch>%s</arch>\n", arch)
+		fmt.Fprintf(&b, "    <name>%s</name>\n", xmlEscapeYum(name))
+		fmt.Fprintf(&b, "    <arch>%s</arch>\n", xmlEscapeYum(arch))
 		b.WriteString("    <version")
 		if epoch != "" {
-			fmt.Fprintf(&b, ` epoch="%s"`, epoch)
+			fmt.Fprintf(&b, ` epoch="%s"`, xmlEscapeYum(epoch))
 		}
-		fmt.Fprintf(&b, ` ver="%s"`, ver)
+		fmt.Fprintf(&b, ` ver="%s"`, xmlEscapeYum(ver))
 		if release != "" {
-			fmt.Fprintf(&b, ` rel="%s"`, release)
+			fmt.Fprintf(&b, ` rel="%s"`, xmlEscapeYum(release))
 		}
 		b.WriteString("/>\n")
-		fmt.Fprintf(&b, `    <location href="%s"/>\n`, href)
+		// 校验和信息（从 BlobRefs 获取）
+		if len(a.BlobRefs) > 0 && a.BlobRefs[0].Digest != "" {
+			checksumType := a.BlobRefs[0].Algorithm
+			if checksumType == "" {
+				checksumType = "sha256"
+			}
+			fmt.Fprintf(&b, `    <checksum type="%s" pkgid="YES">%s</checksum>`+"\n",
+				xmlEscapeYum(checksumType), a.BlobRefs[0].Digest)
+		}
+		// 文件大小信息
+		pkgSize := a.SizeBytes
+		if pkgSize == 0 && len(a.BlobRefs) > 0 {
+			pkgSize = a.BlobRefs[0].Size
+		}
+		if pkgSize > 0 {
+			fmt.Fprintf(&b, `    <size package="%d" installed="%d" archive="%d"/>`+"\n", pkgSize, pkgSize, pkgSize)
+		}
+		fmt.Fprintf(&b, `    <location href="%s"/>`+"\n", xmlEscapeYum(href))
 		b.WriteString("  </package>\n")
 		packageCount++
 	}
@@ -748,14 +785,16 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
-	b.WriteString(`</metadata>`)
-	body := []byte(b.String())
+	// 构建完整 XML（packages 数量在循环后确定）
+	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>`+"\n"+
+		`<metadata xmlns="http://linux.duke.edu/metadata/common" xmlns:rpm="http://linux.duke.edu/metadata/rpm" packages="%d">`+"\n",
+		packageCount) + b.String() + `</metadata>`
 	if p.cache != nil {
-		p.cache.Set(cacheKey, body, 5*time.Minute)
+		p.cache.Set(cacheKey, []byte(body), 5*time.Minute)
 	}
 	ctx.Writer.Header().Set("Content-Type", "application/xml")
 	ctx.Writer.WriteHeader(http.StatusOK)
-	_, _ = ctx.Writer.Write(body)
+	_, _ = ctx.Writer.Write([]byte(body))
 	return nil
 }
 
@@ -766,6 +805,38 @@ func firstNonEmptyYum(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// inferYumDataType 根据元数据文件名推断 repomd data type。
+// 返回空字符串表示无法识别（调用方应跳过该 artifact）。
+func inferYumDataType(filename string) string {
+	base := strings.ToLower(filename)
+	switch {
+	case strings.Contains(base, "primary"):
+		return "primary"
+	case strings.Contains(base, "filelists"):
+		return "filelists"
+	case strings.Contains(base, "other"):
+		return "other"
+	case strings.Contains(base, "updateinfo"):
+		return "updateinfo"
+	case strings.Contains(base, "comps"):
+		return "group"
+	case strings.Contains(base, "prestodelta"), strings.Contains(base, "deltainfo"):
+		return "prestodelta"
+	default:
+		return ""
+	}
+}
+
+// xmlEscapeYum 转义 XML 特殊字符，防止注入。
+func xmlEscapeYum(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, `"`, "&quot;")
+	s = strings.ReplaceAll(s, "'", "&apos;")
+	return s
 }
 
 func (p *YumPlugin) handleRpmPackage(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {

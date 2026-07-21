@@ -352,6 +352,10 @@ func (p *AptPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Repo
 		return p.handlePackages(ctx, repoRuntime, path)
 	}
 
+	if p.isByHashRequest(path) {
+		return p.handleByHash(ctx, repoRuntime, path)
+	}
+
 	if p.isDebPackageRequest(path) {
 		return p.handleDebPackage(ctx, repoRuntime, path)
 	}
@@ -373,6 +377,101 @@ func (p *AptPlugin) isPackagesRequest(path string) bool {
 
 func (p *AptPlugin) isDebPackageRequest(path string) bool {
 	return strings.HasSuffix(path, ".deb")
+}
+
+// isByHashRequest 检测 apt by-hash 路径。
+// 格式: {dir}/by-hash/{algorithm}/{hash}
+// 例如: dists/stable/main/binary-amd64/by-hash/SHA256/abc123...
+func (p *AptPlugin) isByHashRequest(path string) bool {
+	return strings.Contains(path, "/by-hash/")
+}
+
+// handleByHash 处理 apt by-hash 请求。
+// by-hash 是 Debian 的 Acquire-By-Hash 机制，客户端通过哈希值而非文件名查找索引文件。
+// 将 by-hash 路径直接作为 RemotePath 传给 Runtime，触发上游回源和缓存。
+func (p *AptPlugin) handleByHash(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
+	if ctx.Request.Method != http.MethodGet && ctx.Request.Method != http.MethodHead {
+		return errors.New("method not allowed")
+	}
+
+	filename := filepath.Base(path)
+	dir := aptArtifactDir(path)
+
+	ctx.Filename = filename
+
+	key := runtime.ArtifactKey{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "apt",
+		Kind:         runtime.KindMetadata,
+		Name:         filename,
+		Path:         dir,
+		Filename:     filename,
+		RemotePath:   path,
+	}
+
+	// 先尝试从缓存获取
+	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
+	if err != nil {
+		if !errors.Is(err, runtime.ErrNotFound) {
+			return err
+		}
+		// ErrNotFound: 继续走回源 fallback
+	} else if artifact.Content != nil {
+		defer artifact.Content.Close()
+		ctx.FromCache = artifact.FromCache
+		ctx.RemoteURL = artifact.RemoteURL
+		ctx.SizeBytes = artifact.SizeBytes
+		ctx.Writer.Header().Set("Content-Type", contentTypeForFile(filename))
+		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(filename)+"\"")
+		ctx.Writer.WriteHeader(http.StatusOK)
+		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+			logrus.WithError(err).Warn("failed to write by-hash content to client")
+		}
+		return nil
+	}
+
+	// GetArtifact 未命中，通过 QueryArtifacts + RemotePath 回源
+	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+		RepositoryID: ctx.Repository.ID,
+		Format:       "apt",
+		RemotePath:   path,
+	})
+	if err != nil {
+		if !errors.Is(err, runtime.ErrNotFound) {
+			return err
+		}
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	if len(artifacts) == 0 {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+
+	// 回源成功后再次获取带 blob 的完整 artifact
+	artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
+	if err != nil {
+		if !errors.Is(err, runtime.ErrNotFound) {
+			return err
+		}
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	if artifact.Content == nil {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+		return nil
+	}
+	defer artifact.Content.Close()
+	ctx.FromCache = artifact.FromCache
+	ctx.RemoteURL = artifact.RemoteURL
+	ctx.SizeBytes = artifact.SizeBytes
+	ctx.Writer.Header().Set("Content-Type", contentTypeForFile(filename))
+	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(filename)+"\"")
+	ctx.Writer.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
+		logrus.WithError(err).Warn("failed to write by-hash content to client")
+	}
+	return nil
 }
 
 func aptArtifactDir(remotePath string) string {

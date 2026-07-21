@@ -505,6 +505,20 @@ func TestHandle_VersionList_MethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestHandle_VersionList_NotFound(t *testing.T) {
+	p := NewGoPlugin(http.DefaultClient)
+	// QueryArtifacts 返回 ErrNotFound，应返回 404 而不是 500
+	rt := &testhelper.MockRuntime{QueryErr: runtime.ErrNotFound}
+
+	ctx, w := newCtx("GET", "github.com/nonexistent/mod/@v/list", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle should not return error for ErrNotFound, got: %v", err)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for non-existent module, got %d body=%q", w.Code, w.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Handle - module download (@v/*.info, *.mod, *.zip)
 // ---------------------------------------------------------------------------

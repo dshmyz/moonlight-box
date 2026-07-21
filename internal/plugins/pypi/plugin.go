@@ -688,6 +688,10 @@ func (p *PyPIPlugin) handleFileMetadataRequest(ctx *runtime.RequestContext, repo
 		Format:       "pypi",
 		RemotePath:   artifactPath,
 	})
+	if err != nil && !errors.Is(err, runtime.ErrNotFound) {
+		// 其他错误（含 ErrBlocked）交给 router 处理
+		return err
+	}
 	if err != nil || len(artifacts) == 0 {
 		http.Error(ctx.Writer, "not found", http.StatusNotFound)
 		return nil
@@ -798,6 +802,10 @@ func (p *PyPIPlugin) handleChecksumRequest(ctx *runtime.RequestContext, repoRunt
 		Format:       "pypi",
 		RemotePath:   actualPath,
 	})
+	if err != nil && !errors.Is(err, runtime.ErrNotFound) {
+		// 其他错误（含 ErrBlocked）交给 router 处理
+		return err
+	}
 	if err != nil || len(artifacts) == 0 {
 		// Backward-compatible fallback for older metadata that did not store
 		// remote_path. Exact path remains preferred to avoid same-filename
@@ -808,6 +816,10 @@ func (p *PyPIPlugin) handleChecksumRequest(ctx *runtime.RequestContext, repoRunt
 			Format:       "pypi",
 			Filename:     actualFilename,
 		})
+		if err != nil && !errors.Is(err, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
+		}
 		if err != nil || len(artifacts) == 0 {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
@@ -852,8 +864,13 @@ func (p *PyPIPlugin) handleJsonAPI(ctx *runtime.RequestContext, repoRuntime runt
 		RemotePath:   queryRemotePath, // 必须带 RemotePath，供 FetchRemote 回源使用
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
-		return nil
+		if errors.Is(err, runtime.ErrNotFound) {
+			// PEP 691: 包不存在返回 404
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
+		// 其他错误（含 ErrBlocked）交给 router 处理
+		return err
 	}
 
 	releases := make(map[string][]map[string]interface{})
@@ -991,9 +1008,12 @@ func (p *PyPIPlugin) handleLegacyUpload(ctx *runtime.RequestContext, repoRuntime
 		http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
 		return nil
 	}
-	filename := runtime.SanitizeFilename(header.Filename)
-	if filename == "" {
-		http.Error(ctx.Writer, "missing filename", http.StatusBadRequest)
+	// 先把 \ 替换为 /（防御 Windows 路径分隔符注入），再用 filepath.Base 剥离路径和 ".."，
+	// 最后用 SanitizeFilename 清理控制字符
+	safeName := strings.ReplaceAll(header.Filename, "\\", "/")
+	filename := runtime.SanitizeFilename(filepath.Base(safeName))
+	if filename == "" || filename == "." || filename == ".." {
+		http.Error(ctx.Writer, "missing or invalid filename", http.StatusBadRequest)
 		return nil
 	}
 	packageName := normalizePackageName(firstNonEmptyPyPI(ctx.Request.FormValue("name"), p.extractPackageNameFromFilename(filename)))

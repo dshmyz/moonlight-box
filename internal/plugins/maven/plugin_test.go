@@ -1093,6 +1093,68 @@ func TestHandle_HostedSnapshotMetadataIncludesJarAndPomExtensions(t *testing.T) 
 	}
 }
 
+func TestHandle_HostedSnapshotMetadataIncludesFileExtension(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	rt := newHostedMavenRuntime(t)
+
+	uploads := []string{
+		"com/example/app/1.0-SNAPSHOT/app-1.0-20260609.120000-2.jar",
+	}
+	for _, path := range uploads {
+		uploadCtx, uploadW := newCtx("PUT", path, bytes.NewReader([]byte(path)))
+		if err := p.Handle(uploadCtx, rt); err != nil {
+			t.Fatalf("upload %s failed: %v", path, err)
+		}
+		if uploadW.Code != http.StatusCreated {
+			t.Fatalf("upload %s status = %d", path, uploadW.Code)
+		}
+	}
+
+	ctx, w := newCtx("GET", "com/example/app/1.0-SNAPSHOT/maven-metadata.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("metadata Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected metadata 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	// fileExtension 字段应出现在 snapshotVersion 中
+	if !strings.Contains(body, "<fileExtension>") {
+		t.Fatalf("expected <fileExtension> in snapshot metadata, got: %s", body)
+	}
+}
+
+func TestHandle_HostedSnapshotMetadataTarGzDoubleExtension(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	rt := newHostedMavenRuntime(t)
+
+	// .tar.gz 双扩展名应被正确识别为 "tar.gz"，而不是 "gz"
+	uploadPath := "com/example/app/1.0-SNAPSHOT/app-1.0-20260609.120000-2.tar.gz"
+	uploadCtx, uploadW := newCtx("PUT", uploadPath, bytes.NewReader([]byte("tarball-content")))
+	if err := p.Handle(uploadCtx, rt); err != nil {
+		t.Fatalf("upload failed: %v", err)
+	}
+	if uploadW.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d", uploadW.Code)
+	}
+
+	ctx, w := newCtx("GET", "com/example/app/1.0-SNAPSHOT/maven-metadata.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("metadata Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected metadata 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	// extension 应为 "tar.gz"，不是 "gz"
+	if !strings.Contains(body, "<extension>tar.gz</extension>") {
+		t.Fatalf("expected <extension>tar.gz</extension> in snapshot metadata, got: %s", body)
+	}
+	if strings.Contains(body, "<extension>gz</extension>") {
+		t.Fatalf("should not have <extension>gz</extension> for .tar.gz file, got: %s", body)
+	}
+}
+
 func TestHandle_MetadataChecksumForDynamicMetadata(t *testing.T) {
 	p := NewMavenPlugin(http.DefaultClient)
 	rt := newHostedMavenRuntime(t)

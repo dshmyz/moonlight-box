@@ -252,6 +252,40 @@ func TestHandle_RejectsPathTraversal(t *testing.T) {
 	}
 }
 
+func TestHandle_AllowsDoubleDotInFilename(t *testing.T) {
+	p := NewGenericPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	// 合法文件名包含 ".." 不应被拒绝（如 version_1..2_patch.bin）
+	for _, filename := range []string{
+		"version_1..2_patch.bin",
+		"my..file.txt",
+		"foo..bar/data.tar",
+	} {
+		ctx, w := newCtx("GET", filename, nil)
+		_ = p.Handle(ctx, rt)
+		if w.Code == http.StatusBadRequest {
+			t.Fatalf("legitimate filename %q was rejected as path traversal, got %d", filename, w.Code)
+		}
+	}
+}
+
+func TestHandle_RejectsNestedPathTraversal(t *testing.T) {
+	p := NewGenericPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	for _, path := range []string{
+		"foo/../../etc/passwd",
+		"foo/bar/../../../etc/shadow",
+	} {
+		ctx, w := newCtx("GET", path, nil)
+		_ = p.Handle(ctx, rt)
+		if w.Code != http.StatusBadRequest && w.Code != http.StatusNotFound {
+			t.Fatalf("expected rejection for nested traversal %q, got %d", path, w.Code)
+		}
+	}
+}
+
 func TestFetchRemote_HTMLDirectoryListing(t *testing.T) {
 	html := `<html><body>
 <a href="../">../</a>

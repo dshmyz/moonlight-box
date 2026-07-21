@@ -217,9 +217,17 @@ func (p *GenericPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.
 		return p.handleRootListing(ctx, repoRuntime)
 	}
 
-	if strings.Contains(path, "..") || strings.Contains(path, "\\") {
+	// 规范化路径，拒绝任何尝试逃逸仓库根的输入
+	cleanPath := filepath.Clean(path)
+	if strings.HasPrefix(cleanPath, "..") || filepath.IsAbs(cleanPath) || strings.Contains(path, "\\") {
 		http.Error(ctx.Writer, "invalid path: path traversal not allowed", http.StatusBadRequest)
 		return nil
+	}
+	// 将内部 ".." 段清理掉（filepath.Clean 已解析），但保留原始的结尾斜杠判断
+	path = cleanPath
+	// 重新补上原始结尾斜杠（已被 Clean 去掉），用于下方目录列表判断
+	if strings.HasSuffix(ctx.RepositoryPath, "/") && path != "" {
+		path = path + "/"
 	}
 
 	if strings.HasSuffix(path, "/") {
@@ -364,6 +372,9 @@ func (p *GenericPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime 
 }
 
 func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
+	// 上传大小限制由全局中间件 middleware.BodySizeLimit 统一控制
+	// （配置项 server.max_upload_size，默认 200MB，可通过配置调整）
+
 	session, err := repoRuntime.BeginUpload(ctx.Request.Context(), runtime.UploadRequest{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "generic",
@@ -378,6 +389,12 @@ func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime ru
 	blobRef, err := session.PutBlob(ctx.Request.Context(), ctx.Request.Body)
 	if err != nil {
 		session.Abort(ctx.Request.Context())
+		// 全局 BodySizeLimit 触发的是 *http.MaxBytesError，返回 413
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(ctx.Writer, "file too large", http.StatusRequestEntityTooLarge)
+			return nil
+		}
 		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
 		return nil
 	}

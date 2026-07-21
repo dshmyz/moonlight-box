@@ -81,6 +81,68 @@ func TestHandle_RepomdDynamicHasRequiredFields(t *testing.T) {
 	}
 }
 
+func TestHandle_RepomdExcludesRpmPackages(t *testing.T) {
+	p := NewYumPlugin(http.DefaultClient)
+	// 混合 metadata 和 RPM 包 artifact，验证 RPM 包不出现在 repomd.xml 中
+	arts := []*runtime.Artifact{
+		testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{
+			"file": "abc123-primary.xml.gz", "type": "primary",
+			"href": "repodata/abc123-primary.xml.gz",
+			"remote_path": "repodata/repomd.xml",
+		}, ""),
+		// RPM 包应被跳过
+		testhelper.NewArtifact("yum", runtime.KindFile, map[string]string{
+			"name": "nginx", "version": "1.20.1",
+			"file": "nginx-1.20.1-1.el8.x86_64.rpm",
+			"remote_path": "repodata/repomd.xml",
+		}, ""),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "repodata/repomd.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	// RPM 包不应出现在 repomd.xml 中
+	if strings.Contains(body, "nginx") || strings.Contains(body, ".rpm") {
+		t.Fatalf("RPM package should not appear in repomd.xml: %s", body)
+	}
+	// primary metadata 应出现
+	if !strings.Contains(body, `type="primary"`) {
+		t.Fatalf("primary metadata missing from repomd.xml: %s", body)
+	}
+}
+
+func TestHandle_RepomdLocationHrefUsesCorrectPath(t *testing.T) {
+	p := NewYumPlugin(http.DefaultClient)
+	art := testhelper.NewArtifact("yum", runtime.KindMetadata, map[string]string{
+		"file": "abc123-primary.xml.gz", "type": "primary",
+		"href": "repodata/abc123-primary.xml.gz",
+		"remote_path": "repodata/repomd.xml",
+	}, "")
+
+	rt := &testhelper.MockRuntime{Artifacts: []*runtime.Artifact{art}}
+
+	ctx, w := newCtx("GET", "repodata/repomd.xml", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	// location.href 应使用 Qualifiers["href"] 的值（repodata/abc123-primary.xml.gz），
+	// 而不是 RemotePath（repodata/repomd.xml）或 Filename（abc123-primary.xml.gz）
+	expected := `href="repodata/abc123-primary.xml.gz"`
+	if !strings.Contains(body, expected) {
+		t.Fatalf("expected location %s in repomd.xml, got: %s", expected, body)
+	}
+}
+
 func TestHandle_PrimaryDynamicHasRequiredFields(t *testing.T) {
 	p := NewYumPlugin(http.DefaultClient)
 	art := testhelper.NewArtifact("yum", runtime.KindFile, map[string]string{
