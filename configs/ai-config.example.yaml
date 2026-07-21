@@ -50,18 +50,22 @@ ai:
     enabled: true
 
     # 允许使用的工具列表
-    # 可选工具:
-    # - query_logs: 查询系统日志
-    # - query_database: 查询数据库统计
-    # - query_package_info: 查询包信息
-    # - analyze_security: 安全分析
-    # - generate_demo_code: 生成示例代码
+    # 可选工具（名称必须与 internal/ai/tools/*.go 的 Name() 返回值一致）:
+    # - log_query: 查询系统日志
+    # - db_query: 查询数据库统计
+    # - package_info: 查询包信息
+    # - security_analysis: 安全分析
+    # - code_generator: 生成示例代码
+    # - block_log_analyzer: 阻断日志分析
+    # - dependency_optimizer: 依赖优化建议
     allowed_tools:
-      - query_logs
-      - query_database
-      - query_package_info
-      - analyze_security
-      - generate_demo_code
+      - log_query
+      - db_query
+      - package_info
+      - security_analysis
+      - code_generator
+      - block_log_analyzer
+      - dependency_optimizer
 
     # 工具最大执行时间（秒）
     max_execution_time: 10

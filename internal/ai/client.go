@@ -8,25 +8,50 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/ai/models"
 	"github.com/dshmyz/moonlight-box/internal/config"
 )
 
+// defaultAITimeout 在配置未指定 ai.timeout 时的兜底超时。
+const defaultAITimeout = 60 * time.Second
+
 // AIClient 是 AI 服务的客户端
 type AIClient struct {
 	config     *config.AIConfig
 	httpClient *http.Client
+	// streamHTTPClient 用于 SSE 流式响应：不设整体 Timeout（避免切断长 token 流），
+	// 但 Transport 的 ResponseHeaderTimeout 保证上游 accept 后不发响应头时不会无限挂起。
+	streamHTTPClient *http.Client
 }
 
 // NewAIClient 创建一个新的 AI 客户端
 func NewAIClient(cfg *config.AIConfig) *AIClient {
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = defaultAITimeout
+	}
+	streamTransport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: timeout,
+		ExpectContinueTimeout: 1 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	}
 	return &AIClient{
 		config: cfg,
 		httpClient: &http.Client{
-			Timeout: cfg.Timeout,
+			Timeout: timeout,
+		},
+		streamHTTPClient: &http.Client{
+			Transport: streamTransport,
 		},
 	}
 }
@@ -138,7 +163,7 @@ func (c *AIClient) Stream(ctx context.Context, req *models.ChatRequest) (<-chan 
 	httpReq.Header.Set("Accept", "text/event-stream")
 
 	// 发送请求
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.streamHTTPClient.Do(httpReq)
 	if err != nil {
 		close(ch)
 		return nil, fmt.Errorf("failed to send request: %w", err)

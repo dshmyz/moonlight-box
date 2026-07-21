@@ -362,19 +362,9 @@ func (s *AIService) RegisterTool(tool tools.Tool, allowedRoles []string) {
 	s.toolManager.RegisterTool(tool, allowedRoles)
 }
 
-// GetSession 获取会话
-func (s *AIService) GetSession(sessionID string) *Session {
-	return s.sessionManager.GetSession(sessionID)
-}
-
 // DeleteSession 删除会话
 func (s *AIService) DeleteSession(sessionID string) {
 	s.sessionManager.DeleteSession(sessionID)
-}
-
-// DeleteUserSessions 删除用户的所有会话
-func (s *AIService) DeleteUserSessions(userID uint) {
-	s.sessionManager.DeleteUserSessions(userID)
 }
 
 // ListTools 列出所有工具
@@ -413,12 +403,6 @@ func (s *AIService) Stop() {
 		}
 		s.client.Close()
 	})
-}
-
-// SetToolContext 设置工具上下文
-func (s *AIService) SetToolContext(ctx *tools.ToolContext) {
-	// 这个方法用于设置工具执行时的上下文
-	// 工具管理器会在执行工具时设置上下文
 }
 
 // StreamChat 流式聊天

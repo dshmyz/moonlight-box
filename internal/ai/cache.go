@@ -130,20 +130,6 @@ func (rc *ResponseCache) Clear() {
 	rc.lruIndex = make(map[string]*list.Element)
 }
 
-// Delete 删除指定查询的缓存
-func (rc *ResponseCache) Delete(query string) {
-	key := rc.hashQuery(query)
-
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-
-	delete(rc.entries, key)
-	if elem, ok := rc.lruIndex[key]; ok {
-		rc.lruList.Remove(elem)
-		delete(rc.lruIndex, key)
-	}
-}
-
 // GetStats 获取缓存统计信息
 func (rc *ResponseCache) GetStats() *CacheStats {
 	rc.mu.RLock()
@@ -154,13 +140,6 @@ func (rc *ResponseCache) GetStats() *CacheStats {
 		MaxSize:         rc.maxSize,
 		TTLMilliseconds: rc.ttl.Milliseconds(),
 	}
-}
-
-// Size 获取当前缓存大小
-func (rc *ResponseCache) Size() int {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
-	return len(rc.entries)
 }
 
 // evict 淘汰最久未使用的条目

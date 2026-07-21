@@ -3,13 +3,11 @@ package ai
 import (
 	"regexp"
 	"strings"
-	"sync"
 )
 
 // Sanitizer 数据脱敏器
 type Sanitizer struct {
 	rules []sanitizationRule
-	mu    sync.Mutex
 }
 
 // sanitizationRule 脱敏规则
@@ -304,22 +302,4 @@ func (s *Sanitizer) sanitizeDatabaseResult(result string) string {
 		result = pattern.ReplaceAllString(result, `"${field}": "****"`)
 	}
 	return result
-}
-
-// AddCustomRule 添加自定义脱敏规则
-func (s *Sanitizer) AddCustomRule(name, pattern, replacement string) error {
-	compiled, err := regexp.Compile(pattern)
-	if err != nil {
-		return err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.rules = append(s.rules, sanitizationRule{
-		name:        name,
-		pattern:     compiled,
-		replacement: replacement,
-	})
-	return nil
 }

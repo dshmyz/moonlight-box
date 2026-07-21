@@ -86,13 +86,6 @@ func (tm *ToolManager) RegisterTool(tool tools.Tool, allowedRoles []string) {
 	}
 }
 
-// UnregisterTool 注销工具
-func (tm *ToolManager) UnregisterTool(name string) {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	delete(tm.tools, name)
-}
-
 // ExecuteTool 执行工具
 func (tm *ToolManager) ExecuteTool(ctx context.Context, toolName string, params map[string]interface{}, user *model.User) (string, error) {
 	startTime := time.Now()
@@ -213,26 +206,6 @@ func (tm *ToolManager) ListTools() []ToolInfo {
 	return infos
 }
 
-// GetTool 获取指定工具
-func (tm *ToolManager) GetTool(name string) tools.Tool {
-	tm.mu.RLock()
-	defer tm.mu.RUnlock()
-
-	if registered, exists := tm.tools[name]; exists {
-		return registered.tool
-	}
-	return nil
-}
-
-// HasTool 检查工具是否存在
-func (tm *ToolManager) HasTool(name string) bool {
-	tm.mu.RLock()
-	defer tm.mu.RUnlock()
-
-	_, exists := tm.tools[name]
-	return exists
-}
-
 // ToolCount 获取工具数量
 func (tm *ToolManager) ToolCount() int {
 	tm.mu.RLock()
@@ -276,11 +249,6 @@ func (tm *ToolManager) logAudit(toolName string, user *model.User, params map[st
 // GetAuditLogs 获取审计日志
 func (tm *ToolManager) GetAuditLogs(limit int) []AuditEntry {
 	return tm.auditLogger.Get(limit)
-}
-
-// ClearAuditLogs 清空审计日志
-func (tm *ToolManager) ClearAuditLogs() {
-	tm.auditLogger.Clear()
 }
 
 // AuditLogger 方法
