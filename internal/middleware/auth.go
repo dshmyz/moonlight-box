@@ -61,31 +61,6 @@ func Auth(authService *service.AuthService) gin.HandlerFunc {
 	}
 }
 
-func OptionalAuth(authService *service.AuthService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		token := extractToken(c)
-		if token != "" {
-			claims, err := authService.ValidateToken(token)
-			if err == nil {
-				c.Set("userID", claims.UserID)
-				c.Set("username", claims.Username)
-				c.Set("roles", claims.Roles)
-				c.Next()
-				return
-			}
-		}
-
-		userID, username, roles, ok := extractBasicAuth(c, authService)
-		if ok {
-			c.Set("userID", userID)
-			c.Set("username", username)
-			c.Set("roles", roles)
-		}
-
-		c.Next()
-	}
-}
-
 func extractToken(c *gin.Context) string {
 	authHeader := c.GetHeader("Authorization")
 	if authHeader == "" {

@@ -1,8 +1,6 @@
 package middleware
 
 import (
-	"strings"
-
 	"github.com/dshmyz/moonlight-box/internal/response"
 	"github.com/dshmyz/moonlight-box/internal/service"
 
@@ -34,29 +32,4 @@ func RequirePermission(permCache *service.PermissionCacheService, resource, acti
 	}
 }
 
-func RequireRole(roleNames ...string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		roles := c.GetStringSlice("roles")
 
-		hasRole := false
-		for _, userRole := range roles {
-			for _, requiredRole := range roleNames {
-				if strings.EqualFold(userRole, requiredRole) {
-					hasRole = true
-					break
-				}
-			}
-			if hasRole {
-				break
-			}
-		}
-
-		if !hasRole {
-			response.Forbidden(c, "insufficient role")
-			c.Abort()
-			return
-		}
-
-		c.Next()
-	}
-}
