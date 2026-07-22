@@ -251,3 +251,32 @@ func TestRouterHandlesWrappedCircuitOpenError(t *testing.T) {
 		t.Fatalf("Retry-After = %q, want %q (must extract via errors.As)", got, "60")
 	}
 }
+
+// errCircuitOpenDoubleWrappedPlugin 模拟真实 ProxyRuntime.OpenRemote 的错误包装路径。
+// proxy.go:87 用 fmt.Errorf("%w: %w", ErrUpstreamUnavailable, err) 同时包装两个 sentinel，
+// 此时 errors.Is 对 ErrUpstreamUnavailable 和 ErrCircuitOpen 都返回 true。
+// 用来验证 router.go 的判断顺序：必须先判 ErrCircuitOpen 再判 ErrUpstreamUnavailable，
+// 否则熔断打开会被误映射为 502，丢失 Retry-After 头。
+type errCircuitOpenDoubleWrappedPlugin struct{}
+
+func (errCircuitOpenDoubleWrappedPlugin) Name() string { return "npm" }
+func (errCircuitOpenDoubleWrappedPlugin) Handle(*RequestContext, RepositoryRuntime) error {
+	return fmt.Errorf("%w: %w", ErrUpstreamUnavailable, NewCircuitOpenError(60))
+}
+
+// TestRouterHandlesDoubleWrappedCircuitOpenError
+// 复现并锁定真实 ProxyRuntime.OpenRemote 路径下的双 wrap 场景：
+// err = fmt.Errorf("%w: %w", ErrUpstreamUnavailable, *CircuitOpenError)
+// router 必须返回 503 + Retry-After，而不是 502。
+func TestRouterHandlesDoubleWrappedCircuitOpenError(t *testing.T) {
+	router := newRouterForTest(nil, nil, errCircuitOpenDoubleWrappedPlugin{})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/repository/npm/left-pad", nil))
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (double-wrapped ErrCircuitOpen must be detected before ErrUpstreamUnavailable)", response.Code)
+	}
+	if got := response.Header().Get("Retry-After"); got != "60" {
+		t.Fatalf("Retry-After = %q, want %q (must extract via errors.As through double wrap)", got, "60")
+	}
+}

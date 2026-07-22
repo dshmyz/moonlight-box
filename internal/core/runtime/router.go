@@ -372,21 +372,25 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return
 		}
-		if errors.Is(err, ErrUpstreamUnavailable) {
-			ctx.StatusCode = http.StatusBadGateway
-			http.Error(ctx.Writer, "Bad Gateway", http.StatusBadGateway)
-			return
-		}
 		// ErrCircuitOpen：上游熔断打开，返回 503 + Retry-After 头。
-		// 与 ErrUpstreamUnavailable（502）的区别：
+		// 必须在 ErrUpstreamUnavailable 之前判断——ProxyRuntime.OpenRemote 会用
+		// fmt.Errorf("%w: %w", ErrUpstreamUnavailable, err) 同时包装两个 sentinel，
+		// 此时 errors.Is 对两者都返回 true，若先判 ErrUpstreamUnavailable 会误返回 502，
+		// 丢失 Retry-After 头，导致客户端在熔断期间盲目重试放大流量。
+		//
+		// 502 与 503 的语义区别：
 		//   - 502：本次回源失败，客户端可立即重试其他镜像
 		//   - 503：上游被判定为不可用（熔断），客户端应按 Retry-After 退避
-		// Retry-After 透传给客户端协议（npm/pip/maven 等），避免熔断期间盲目重试放大流量。
 		if errors.Is(err, ErrCircuitOpen) {
 			retryAfter := CircuitRetryAfter(err)
 			ctx.Writer.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			ctx.StatusCode = http.StatusServiceUnavailable
 			http.Error(ctx.Writer, "Service Unavailable: upstream circuit open", http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, ErrUpstreamUnavailable) {
+			ctx.StatusCode = http.StatusBadGateway
+			http.Error(ctx.Writer, "Bad Gateway", http.StatusBadGateway)
 			return
 		}
 		ctx.StatusCode = http.StatusInternalServerError

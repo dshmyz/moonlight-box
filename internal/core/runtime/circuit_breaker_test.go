@@ -6,57 +6,83 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
-	"time"
 )
 
 // fakeCircuitBreaker 是测试用的 CircuitBreaker 接口实现，记录所有调用便于断言。
+// 计数字段用 atomic 以支持 -race 下的并发测试；allowRequest/retryAfterValue 在测试
+// 构造后只读，无需同步。
 type fakeCircuitBreaker struct {
-	allowRequest     bool
-	allowRequestCall  int
-	successRecorded  int
-	failureRecorded  int
-	timeoutRecorded  int
-	retryAfterValue  int
+	allowRequest    bool
+	retryAfterValue int
+
+	allowRequestCall int64
+	successRecorded  int64
+	failureRecorded  int64
+	timeoutRecorded  int64
 }
 
 func (f *fakeCircuitBreaker) AllowRequest() bool {
-	f.allowRequestCall++
+	atomic.AddInt64(&f.allowRequestCall, 1)
 	return f.allowRequest
 }
 
-func (f *fakeCircuitBreaker) RecordSuccess()  { f.successRecorded++ }
-func (f *fakeCircuitBreaker) RecordFailure()  { f.failureRecorded++ }
-func (f *fakeCircuitBreaker) RecordTimeout()  { f.timeoutRecorded++ }
-func (f *fakeCircuitBreaker) GetRetryAfter() int { return f.retryAfterValue }
+func (f *fakeCircuitBreaker) RecordSuccess() { atomic.AddInt64(&f.successRecorded, 1) }
+func (f *fakeCircuitBreaker) RecordFailure() { atomic.AddInt64(&f.failureRecorded, 1) }
+func (f *fakeCircuitBreaker) RecordTimeout() { atomic.AddInt64(&f.timeoutRecorded, 1) }
+func (f *fakeCircuitBreaker) GetRetryAfter() int {
+	return f.retryAfterValue
+}
+
+// 以下 getter 用 atomic.LoadInt64 读取计数器，保证 -race 下的安全读取。
+func (f *fakeCircuitBreaker) AllowRequestCalls() int64 {
+	return atomic.LoadInt64(&f.allowRequestCall)
+}
+func (f *fakeCircuitBreaker) SuccessCount() int64 {
+	return atomic.LoadInt64(&f.successRecorded)
+}
+func (f *fakeCircuitBreaker) FailureCount() int64 {
+	return atomic.LoadInt64(&f.failureRecorded)
+}
+func (f *fakeCircuitBreaker) TimeoutCount() int64 {
+	return atomic.LoadInt64(&f.timeoutRecorded)
+}
 
 // fakeInnerRemoteClient 用于测试装饰器对内层 RemoteClient 的调用。
+// 返回值字段在构造后只读；调用计数用 atomic 以支持 -race 下的并发测试。
 type fakeInnerRemoteClient struct {
-	metadata       *RemoteMetadata
-	metadataErr    error
-	blob           io.ReadCloser
-	blobErr        error
-	openResponse   *RemoteResponse
-	openErr        error
-	metadataCalled int
-	blobCalled     int
-	openCalled     int
+	metadata     *RemoteMetadata
+	metadataErr  error
+	blob         io.ReadCloser
+	blobErr      error
+	openResponse *RemoteResponse
+	openErr      error
+
+	metadataCalled int64
+	blobCalled     int64
+	openCalled     int64
 }
 
 func (c *fakeInnerRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (*RemoteMetadata, error) {
-	c.metadataCalled++
+	atomic.AddInt64(&c.metadataCalled, 1)
 	return c.metadata, c.metadataErr
 }
 
 func (c *fakeInnerRemoteClient) FetchBlob(ctx context.Context, key ArtifactKey) (io.ReadCloser, error) {
-	c.blobCalled++
+	atomic.AddInt64(&c.blobCalled, 1)
 	return c.blob, c.blobErr
 }
 
 func (c *fakeInnerRemoteClient) Open(ctx context.Context, request RemoteRequest) (*RemoteResponse, error) {
-	c.openCalled++
+	atomic.AddInt64(&c.openCalled, 1)
 	return c.openResponse, c.openErr
 }
+
+// MetadataCalls / BlobCalls / OpenCalls 用 atomic 读取调用计数，保证 -race 安全。
+func (c *fakeInnerRemoteClient) MetadataCalls() int64 { return atomic.LoadInt64(&c.metadataCalled) }
+func (c *fakeInnerRemoteClient) BlobCalls() int64     { return atomic.LoadInt64(&c.blobCalled) }
+func (c *fakeInnerRemoteClient) OpenCalls() int64     { return atomic.LoadInt64(&c.openCalled) }
 
 // timeoutError 实现 net.Error 接口，用于测试超时判定。
 type timeoutError struct{}
@@ -103,9 +129,9 @@ func TestCircuitBreakerDecoratorBlocksWhenOpen(t *testing.T) {
 	}
 
 	// 熔断打开时不应该调用内层
-	if inner.metadataCalled != 0 || inner.blobCalled != 0 || inner.openCalled != 0 {
+	if inner.MetadataCalls() != 0 || inner.BlobCalls() != 0 || inner.OpenCalls() != 0 {
 		t.Fatalf("inner client should not be called when circuit open, got meta=%d blob=%d open=%d",
-			inner.metadataCalled, inner.blobCalled, inner.openCalled)
+			inner.MetadataCalls(), inner.BlobCalls(), inner.OpenCalls())
 	}
 }
 
@@ -162,11 +188,11 @@ func TestCircuitBreakerDecoratorFetchMetadataRecordsSuccess(t *testing.T) {
 
 	_, _ = decorator.FetchMetadata(context.Background(), ArtifactKey{})
 
-	if cb.successRecorded != 1 {
-		t.Fatalf("successRecorded = %d, want 1", cb.successRecorded)
+	if cb.SuccessCount() != 1 {
+		t.Fatalf("successRecorded = %d, want 1", cb.SuccessCount())
 	}
-	if cb.failureRecorded != 0 {
-		t.Fatalf("failureRecorded = %d, want 0", cb.failureRecorded)
+	if cb.FailureCount() != 0 {
+		t.Fatalf("failureRecorded = %d, want 0", cb.FailureCount())
 	}
 }
 
@@ -179,11 +205,11 @@ func TestCircuitBreakerDecoratorFetchMetadataNotFoundNotRecordedAsFailure(t *tes
 
 	_, _ = decorator.FetchMetadata(context.Background(), ArtifactKey{})
 
-	if cb.failureRecorded != 0 {
-		t.Fatalf("failureRecorded = %d, want 0 (404 is not a failure)", cb.failureRecorded)
+	if cb.FailureCount() != 0 {
+		t.Fatalf("failureRecorded = %d, want 0 (404 is not a failure)", cb.FailureCount())
 	}
-	if cb.successRecorded != 0 {
-		t.Fatalf("successRecorded = %d, want 0 (404 is not a success either)", cb.successRecorded)
+	if cb.SuccessCount() != 0 {
+		t.Fatalf("successRecorded = %d, want 0 (404 is not a success either)", cb.SuccessCount())
 	}
 }
 
@@ -198,11 +224,11 @@ func TestCircuitBreakerDecoratorFetchMetadataErrorRecordsFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if cb.failureRecorded != 1 {
-		t.Fatalf("failureRecorded = %d, want 1", cb.failureRecorded)
+	if cb.FailureCount() != 1 {
+		t.Fatalf("failureRecorded = %d, want 1", cb.FailureCount())
 	}
-	if cb.timeoutRecorded != 0 {
-		t.Fatalf("timeoutRecorded = %d, want 0 (not a timeout)", cb.timeoutRecorded)
+	if cb.TimeoutCount() != 0 {
+		t.Fatalf("timeoutRecorded = %d, want 0 (not a timeout)", cb.TimeoutCount())
 	}
 }
 
@@ -215,12 +241,12 @@ func TestCircuitBreakerDecoratorFetchMetadataTimeoutRecordsTimeout(t *testing.T)
 
 	_, _ = decorator.FetchMetadata(context.Background(), ArtifactKey{})
 
-	if cb.timeoutRecorded != 1 {
-		t.Fatalf("timeoutRecorded = %d, want 1", cb.timeoutRecorded)
+	if cb.TimeoutCount() != 1 {
+		t.Fatalf("timeoutRecorded = %d, want 1", cb.TimeoutCount())
 	}
 	// 超时不应该再计 failure（避免一次失败计两次）
-	if cb.failureRecorded != 0 {
-		t.Fatalf("failureRecorded = %d, want 0 (timeout should use RecordTimeout only)", cb.failureRecorded)
+	if cb.FailureCount() != 0 {
+		t.Fatalf("failureRecorded = %d, want 0 (timeout should use RecordTimeout only)", cb.FailureCount())
 	}
 }
 
@@ -232,8 +258,8 @@ func TestCircuitBreakerDecoratorFetchBlobRecordsSuccess(t *testing.T) {
 
 	_, _ = decorator.FetchBlob(context.Background(), ArtifactKey{})
 
-	if cb.successRecorded != 1 {
-		t.Fatalf("successRecorded = %d, want 1", cb.successRecorded)
+	if cb.SuccessCount() != 1 {
+		t.Fatalf("successRecorded = %d, want 1", cb.SuccessCount())
 	}
 }
 
@@ -246,11 +272,11 @@ func TestCircuitBreakerDecoratorFetchBlobNotFoundNotRecordedAsFailure(t *testing
 
 	_, _ = decorator.FetchBlob(context.Background(), ArtifactKey{})
 
-	if cb.failureRecorded != 0 {
-		t.Fatalf("failureRecorded = %d, want 0 (404 is not a failure)", cb.failureRecorded)
+	if cb.FailureCount() != 0 {
+		t.Fatalf("failureRecorded = %d, want 0 (404 is not a failure)", cb.FailureCount())
 	}
-	if cb.successRecorded != 0 {
-		t.Fatalf("successRecorded = %d, want 0 (404 is not a success)", cb.successRecorded)
+	if cb.SuccessCount() != 0 {
+		t.Fatalf("successRecorded = %d, want 0 (404 is not a success)", cb.SuccessCount())
 	}
 }
 
@@ -263,8 +289,8 @@ func TestCircuitBreakerDecoratorFetchBlobErrorRecordsFailure(t *testing.T) {
 
 	_, _ = decorator.FetchBlob(context.Background(), ArtifactKey{})
 
-	if cb.failureRecorded != 1 {
-		t.Fatalf("failureRecorded = %d, want 1", cb.failureRecorded)
+	if cb.FailureCount() != 1 {
+		t.Fatalf("failureRecorded = %d, want 1", cb.FailureCount())
 	}
 }
 
@@ -282,11 +308,11 @@ func TestCircuitBreakerDecoratorOpenRecordsSuccess(t *testing.T) {
 
 	_, _ = decorator.Open(context.Background(), RemoteRequest{})
 
-	if cb.successRecorded != 1 {
-		t.Fatalf("successRecorded = %d, want 1 (Open 5xx is transparent)", cb.successRecorded)
+	if cb.SuccessCount() != 1 {
+		t.Fatalf("successRecorded = %d, want 1 (Open 5xx is transparent)", cb.SuccessCount())
 	}
-	if cb.failureRecorded != 0 {
-		t.Fatalf("failureRecorded = %d, want 0 (Open 5xx is not a transport failure)", cb.failureRecorded)
+	if cb.FailureCount() != 0 {
+		t.Fatalf("failureRecorded = %d, want 0 (Open 5xx is not a transport failure)", cb.FailureCount())
 	}
 }
 
@@ -298,8 +324,8 @@ func TestCircuitBreakerDecoratorOpenErrorRecordsFailure(t *testing.T) {
 
 	_, _ = decorator.Open(context.Background(), RemoteRequest{})
 
-	if cb.failureRecorded != 1 {
-		t.Fatalf("failureRecorded = %d, want 1", cb.failureRecorded)
+	if cb.FailureCount() != 1 {
+		t.Fatalf("failureRecorded = %d, want 1", cb.FailureCount())
 	}
 }
 
@@ -394,9 +420,12 @@ func TestCircuitBreakerDecoratorConcurrentSafe(t *testing.T) {
 	for i := 0; i < concurrency; i++ {
 		<-done
 	}
-	// 不 panic 即通过；fakeCircuitBreaker 字段非原子操作会有 race，
-	// 但本测试只验证装饰器不引入额外共享状态
+	// 通过条件：不 panic 且 -race 下无 data race 报告。
+	// fakeCircuitBreaker 的计数字段用 atomic 保护，装饰器本身无共享状态。
+	// 额外断言所有调用都被记录，确保并发下计数不丢。
+	totalCalls := cb.SuccessCount() + cb.FailureCount() + cb.TimeoutCount()
+	if totalCalls != int64(concurrency)*3 {
+		t.Fatalf("total recorded = %d, want %d (concurrency=%d, 3 ops per goroutine)",
+			totalCalls, int64(concurrency)*3, concurrency)
+	}
 }
-
-// 确保 time 包被使用（避免 import 报错，后续测试可能用到）
-var _ = time.Second
