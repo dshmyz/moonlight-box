@@ -24,7 +24,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Search, Document, Warning, Edit } from '@element-plus/icons-vue'
+import { Search, Document, Warning, Edit, Lock, MagicStick } from '@element-plus/icons-vue'
 import type { ToolCallResult } from '@/api/ai'
 
 interface Props {
@@ -43,6 +43,8 @@ const toolIcon = computed(() => {
     analyze_security: Warning,
     generate_demo_code: Edit,
     query_package_info: Document,
+    block_rule_generator: Lock,
+    block_rule_optimizer: MagicStick,
   }
   return iconMap[props.toolCall.name] || Document
 })
@@ -54,6 +56,8 @@ const getToolDisplayName = (name: string) => {
     analyze_security: '安全分析',
     generate_demo_code: '生成代码',
     query_package_info: '查询包信息',
+    block_rule_generator: '生成阻断规则',
+    block_rule_optimizer: '优化阻断规则',
   }
   return nameMap[name] || name
 }

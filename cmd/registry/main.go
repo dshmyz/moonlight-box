@@ -470,6 +470,18 @@ func main() {
 		blockLogAnalyzerTool.SetContext(toolContext)
 		aiService.RegisterTool(blockLogAnalyzerTool, []string{"admin", "security_admin"})
 
+		// 阻断规则生成工具 - 管理员和安全管理员可用
+		// Preview-only：根据漏洞数据或用户描述生成阻断规则草案，不自动写入 DB
+		blockRuleGenTool := tools.NewBlockRuleGeneratorTool(scanRepo, blockRuleSvc)
+		blockRuleGenTool.SetContext(toolContext)
+		aiService.RegisterTool(blockRuleGenTool, []string{"admin", "security_admin"})
+
+		// 阻断规则优化分析工具 - 管理员和安全管理员可用
+		// 只读分析现有规则集，输出 over_broad/stale/redundant 优化建议
+		blockRuleOptimizerTool := tools.NewBlockRuleOptimizerTool()
+		blockRuleOptimizerTool.SetContext(toolContext)
+		aiService.RegisterTool(blockRuleOptimizerTool, []string{"admin", "security_admin"})
+
 		// 代码生成工具 - 所有用户可用
 		codeGenTool := tools.NewCodeGenTool()
 		codeGenTool.SetContext(toolContext)

@@ -345,6 +345,16 @@ func (s *AIService) buildSystemPrompt(user *model.User) string {
 	sb.WriteString("- 使用工具查询信息时，请确保参数正确\n")
 	sb.WriteString("- 回复使用中文，简洁明了\n")
 
+	// 安全相关提示词：引导 AI 在安全分析后主动建议生成阻断规则
+	sb.WriteString("\n## 安全策略建议\n")
+	sb.WriteString("- 当使用 security_analysis 工具发现 critical 或 high 级别漏洞，且漏洞存在 FixedVersion 时，")
+	sb.WriteString("应主动建议用户调用 block_rule_generator 工具生成阻断规则草案\n")
+	sb.WriteString("- 用户描述阻断需求（如\"阻断所有 log4j 1.x\"）时，调用 block_rule_generator 工具的 description 源生成规则草案\n")
+	sb.WriteString("- block_rule_generator 只生成 preview 草案，不自动写入数据库。需告知用户在管理后台确认后手动创建\n")
+	sb.WriteString("- 生成 range 规则时，版本约束用 semver 格式（如 <2.17.1、>=1.0.0 <2.0.0）\n")
+	sb.WriteString("- 当用户想审查或精简现有阻断规则时，调用 block_rule_optimizer 工具（operation=analyze）获取优化建议\n")
+	sb.WriteString("- block_rule_optimizer 检测三类问题：over_broad（过宽规则）、stale（过期规则）、redundant（冗余规则），只读分析不修改规则\n")
+
 	return sb.String()
 }
 

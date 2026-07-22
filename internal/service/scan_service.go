@@ -350,22 +350,65 @@ func (s *SecurityScanner) ScanAllPackages(ctx context.Context) {
 	}
 }
 
+// BlockByVulnerability 根据 CVE ID 查询 vulnerability 表，为每个受影响的包
+// 生成精确的阻断规则：
+//   - FixedVersion 非空：生成 range 规则，阻断所有低于 FixedVersion 的版本
+//   - FixedVersion 为空：生成 wildcard 规则，阻断该包所有版本
+//
+// 按 DependencyName 去重（同一个包在同一 CVE 下只创建一条规则）。
+// PackageType 设为 "*"，因为 vulnerability 表不存储包类型，且阻断规则应覆盖所有协议。
 func (s *SecurityScanner) BlockByVulnerability(ctx context.Context, cveID string) error {
-	ruleName := fmt.Sprintf("auto-block-%s", strings.ToLower(cveID))
-
-	err := s.blockRepo.Create(&model.BlockRule{
-		PackageName: ruleName,
-		Version:     "*",
-		MatchType:   model.BlockMatchWildcard,
-		PackageType: "*",
-		Reason:      fmt.Sprintf("Auto-blocked for %s", cveID),
-		Enabled:     true,
-	})
-
+	vulns, err := s.scanRepo.FindVulnerabilitiesByCVE(cveID)
 	if err != nil {
-		return fmt.Errorf("failed to create block rule: %w", err)
+		return fmt.Errorf("query vulnerabilities for CVE %s: %w", cveID, err)
+	}
+	if len(vulns) == 0 {
+		return fmt.Errorf("no vulnerability data found for CVE %s", cveID)
 	}
 
-	s.logger.Infof("Created block rule for CVE: %s", cveID)
+	// 按 DependencyName 去重：FindVulnerabilitiesByCVE 已按 cvss_score DESC 排序，
+	// 同名包只取第一条（CVSS 分数最高）
+	seen := make(map[string]bool)
+	var rules []*model.BlockRule
+	for i := range vulns {
+		v := &vulns[i]
+		depName := strings.TrimSpace(v.DependencyName)
+		if depName == "" || seen[depName] {
+			continue
+		}
+		seen[depName] = true
+
+		rule := &model.BlockRule{
+			PackageName: depName,
+			PackageType: "*",
+			Reason:      fmt.Sprintf("Auto-blocked for %s: %s", cveID, v.Title),
+			Enabled:     true,
+		}
+
+		if fixed := strings.TrimSpace(v.FixedVersion); fixed != "" {
+			// FixedVersion 存在：用 range 规则阻断所有低于修复版本的版本
+			rule.MatchType = model.BlockMatchRange
+			rule.Version = fmt.Sprintf("<%s", fixed)
+		} else {
+			// FixedVersion 为空：阻断该包所有版本
+			rule.MatchType = model.BlockMatchWildcard
+			rule.Version = "*"
+		}
+
+		rules = append(rules, rule)
+	}
+
+	if len(rules) == 0 {
+		return fmt.Errorf("no valid dependency names found for CVE %s", cveID)
+	}
+
+	// 批量创建规则
+	for _, rule := range rules {
+		if err := s.blockRepo.Create(rule); err != nil {
+			return fmt.Errorf("failed to create block rule for %s: %w", rule.PackageName, err)
+		}
+	}
+
+	s.logger.Infof("Created %d block rule(s) for CVE: %s", len(rules), cveID)
 	return nil
 }

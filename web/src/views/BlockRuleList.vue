@@ -11,6 +11,14 @@
         </div>
       </div>
       <div class="header-actions">
+        <el-button class="ai-optimize-btn" @click="openOptimizerDialog">
+          <el-icon><MagicStick /></el-icon>
+          <span>AI 优化建议</span>
+        </el-button>
+        <el-button class="ai-generate-btn" @click="openGeneratorDialog">
+          <el-icon><MagicStick /></el-icon>
+          <span>AI 生成规则</span>
+        </el-button>
         <el-button class="import-btn" @click="showImportDialog = true">
           <el-icon><Upload /></el-icon>
           <span>批量导入</span>
@@ -141,17 +149,24 @@
     </el-dialog>
 
     <BlockRuleImportDialog v-model:visible="showImportDialog" @imported="loadRules" />
+
+    <BlockRuleAIDialog
+      v-model:visible="showAIDialog"
+      :mode="aiDialogMode"
+      @created="loadRules"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { Plus, Upload } from '@element-plus/icons-vue'
+import { Plus, Upload, MagicStick } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { blockRuleApi, type BlockRule, type BlockRuleCreateParams } from '@/api/blockRule'
 import BlockRuleForm from '@/components/block-rule/BlockRuleForm.vue'
 import BlockLogTable from '@/components/block-rule/BlockLogTable.vue'
 import BlockRuleImportDialog from '@/components/block-rule/BlockRuleImportDialog.vue'
+import BlockRuleAIDialog from '@/components/block-rule/BlockRuleAIDialog.vue'
 import { confirm, success, error } from '@/utils/message'
 import { formatDate } from '@/utils/format'
 import { PACKAGE_TYPE_OPTIONS } from '@/constants/package'
@@ -171,6 +186,8 @@ const total = ref(0)
 
 const showDialog = ref(false)
 const showImportDialog = ref(false)
+const showAIDialog = ref(false)
+const aiDialogMode = ref<'generator' | 'optimizer'>('generator')
 const isEdit = ref(false)
 const editId = ref<number | null>(null)
 const formData = ref<BlockRuleCreateParams>({
@@ -242,6 +259,16 @@ const loadRules = async () => {
 const handlePageChange = (p: number) => {
   page.value = p
   loadRules()
+}
+
+const openGeneratorDialog = () => {
+  aiDialogMode.value = 'generator'
+  showAIDialog.value = true
+}
+
+const openOptimizerDialog = () => {
+  aiDialogMode.value = 'optimizer'
+  showAIDialog.value = true
 }
 
 const openCreateDialog = () => {
@@ -435,6 +462,40 @@ onMounted(loadRules)
 .create-btn:hover {
   transform: translateY(-1px);
   box-shadow: 0 6px 16px rgba(99, 102, 241, 0.4);
+}
+
+.ai-generate-btn,
+.ai-optimize-btn {
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-weight: 500;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+  border: 1px solid #86efac;
+  color: #15803d;
+  transition: all 0.2s ease;
+}
+
+.ai-generate-btn:hover,
+.ai-optimize-btn:hover {
+  background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+  border-color: #4ade80;
+  color: #166534;
+}
+
+.ai-optimize-btn {
+  background: linear-gradient(135deg, #fefce8 0%, #fef9c3 100%);
+  border-color: #fde047;
+  color: #a16207;
+}
+
+.ai-optimize-btn:hover {
+  background: linear-gradient(135deg, #fef9c3 0%, #fef08a 100%);
+  border-color: #facc15;
+  color: #854d0e;
 }
 
 .content-panel {

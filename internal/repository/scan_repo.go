@@ -56,6 +56,17 @@ func (r *ScanRepository) ListVulnerabilities(scanResultID uint) ([]model.Vulnera
 	return vulns, err
 }
 
+// FindVulnerabilitiesByCVE 按 CVE ID 查询所有相关的 vulnerability 记录。
+// 用于 BlockByVulnerability 生成精确阻断规则时获取 DependencyName 和 FixedVersion。
+// 结果按 dependency_name 去重（同一个包在同一 CVE 下只保留 CVSS 分数最高的一条）。
+func (r *ScanRepository) FindVulnerabilitiesByCVE(cveID string) ([]model.Vulnerability, error) {
+	var vulns []model.Vulnerability
+	err := r.db.Where("cve_id = ?", cveID).
+		Order("cvss_score DESC, dependency_name").
+		Find(&vulns).Error
+	return vulns, err
+}
+
 // ListVulnerabilitiesByScanResultIDs 批量查询多个 scan result 的 vulnerabilities，避免 N+1 查询。
 // 结果按 cvss_score DESC 排序，与 ListVulnerabilities 保持一致。
 func (r *ScanRepository) ListVulnerabilitiesByScanResultIDs(scanResultIDs []uint) ([]model.Vulnerability, error) {

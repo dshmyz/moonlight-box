@@ -1,5 +1,20 @@
+# Yum 仓库配置文件模板
+# 将此文件复制到 /etc/yum.repos.d/moonlight.repo
+
 [moonlight]
 name=Moonlight Box
 baseurl=https://your-moonlight-domain/repository/yum-virtual/$basearch/
 enabled=1
 gpgcheck=0
+# gpgkey=https://your-moonlight-domain/repository/yum/gpg.key
+
+# 可选：优先级设置
+# priority=1
+
+# 可选：带宽限制
+# throttle=50k
+
+# 可选：代理设置
+# proxy=http://proxy.company.com:8080
+# proxy_username=proxy_user
+# proxy_password=proxy_pass
