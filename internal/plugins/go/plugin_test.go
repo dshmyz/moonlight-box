@@ -806,6 +806,44 @@ func TestFetchRemote_VersionList_Empty(t *testing.T) {
 	}
 }
 
+// TestFetchRemote_VersionList_Upstream5xxReturnsUpstreamUnavailable
+// 验证上游返回 5xx 时，FetchRemote 返回 ErrUpstreamUnavailable（而非普通 error），
+// 让 router 能正确映射为 502 Bad Gateway 而非 500 Internal Server Error。
+func TestFetchRemote_VersionList_Upstream5xxReturnsUpstreamUnavailable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	p := NewGoPlugin(http.DefaultClient)
+	_, err := p.FetchRemote(context.Background(), srv.URL, "github.com/example/mod/@v/list")
+	if err == nil {
+		t.Fatal("expected error for upstream 503, got nil")
+	}
+	if !errors.Is(err, runtime.ErrUpstreamUnavailable) {
+		t.Errorf("expected ErrUpstreamUnavailable, got: %v", err)
+	}
+}
+
+// TestFetchRemote_VersionList_Upstream4xxReturnsGenericError
+// 验证上游返回 4xx（非 404）时，FetchRemote 返回普通 error（非 ErrUpstreamUnavailable）。
+// 4xx 是客户端错误，不应映射为 502。
+func TestFetchRemote_VersionList_Upstream4xxReturnsGenericError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	p := NewGoPlugin(http.DefaultClient)
+	_, err := p.FetchRemote(context.Background(), srv.URL, "github.com/example/mod/@v/list")
+	if err == nil {
+		t.Fatal("expected error for upstream 403, got nil")
+	}
+	if errors.Is(err, runtime.ErrUpstreamUnavailable) {
+		t.Errorf("4xx should not return ErrUpstreamUnavailable, got: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // FetchRemote - @latest
 // ---------------------------------------------------------------------------

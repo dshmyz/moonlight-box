@@ -145,6 +145,11 @@ func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string)
 			"fullURL":    fullURL,
 			"statusCode": resp.StatusCode,
 		}).Error("go: fetch version list returned non-200 status")
+		// 上游 5xx/429 表示上游不可用，返回 ErrUpstreamUnavailable 让 router 映射为 502
+		if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
+			return nil, fmt.Errorf("%w: go: fetch version list from %s: status %d",
+				runtime.ErrUpstreamUnavailable, fullURL, resp.StatusCode)
+		}
 		return nil, fmt.Errorf("go: fetch version list from %s: status %d", fullURL, resp.StatusCode)
 	}
 

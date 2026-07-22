@@ -133,7 +133,20 @@ for i in $(seq 1 $CONCURRENT_COUNT); do
     ) &
 done
 
-wait
+# 带超时的 wait：每个子进程最多等 30 秒，防止异常情况下卡死整个测试套件
+for pid in $(jobs -p); do
+    for attempt in $(seq 1 30); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+        if [ $attempt -eq 30 ]; then
+            echo "  ⚠ WARN 子进程 $pid 超时 30s 未完成，强制终止"
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+    done
+done
+wait 2>/dev/null || true
 
 SUCCESS_COUNT=0
 FAIL_COUNT_SNAPSHOT=0
