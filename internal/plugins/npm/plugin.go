@@ -323,8 +323,23 @@ func (p *NpmPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Repo
 		return p.handlePing(ctx)
 	}
 
+	// npm whoami: GET /-/whoami
+	if path == "-/whoami" {
+		return p.handleWhoami(ctx)
+	}
+
 	if strings.HasPrefix(path, "-/npm/") {
 		return p.handleNpmInternal(ctx, repoRuntime, path)
+	}
+
+	// npm search: GET /-/v1/search?text=xxx&size=N
+	if path == "-/v1/search" || strings.HasPrefix(path, "-/v1/search?") {
+		return p.handleSearch(ctx, repoRuntime)
+	}
+
+	// npm dist-tag: /-/package/{pkg}/dist-tags[/{tag}]
+	if strings.HasPrefix(path, "-/package/") && strings.Contains(path, "/dist-tags") {
+		return p.handleDistTag(ctx, repoRuntime)
 	}
 
 	// npm adduser/login 端点已在路由层直接处理（cmd/registry/router.go），
