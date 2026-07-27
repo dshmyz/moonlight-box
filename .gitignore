@@ -79,3 +79,9 @@ docs/superpower/
 
 # Brainstorming visual companion files
 .superpowers/
+
+# Playwright MCP session logs
+.playwright-mcp/
+
+# Claude web 子目录配置 (开发者本地)
+web/.claude/
