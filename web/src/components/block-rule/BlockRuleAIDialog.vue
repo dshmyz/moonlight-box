@@ -2,7 +2,7 @@
   <el-dialog
     v-model="visible"
     :title="mode === 'generator' ? 'AI 生成阻断规则' : 'AI 优化阻断规则'"
-    width="720px"
+    width="820px"
     @close="handleClose"
   >
     <!-- 输入区 -->
@@ -10,7 +10,7 @@
       <template v-if="mode === 'generator'">
         <el-radio-group v-model="genSource" class="source-group">
           <el-radio-button value="vulnerability">按 CVE 生成</el-radio-button>
-          <el-radio-button value="description">按描述生成</el-radio-button>
+          <el-radio-button value="description">自然语言描述</el-radio-button>
         </el-radio-group>
 
         <div v-if="genSource === 'vulnerability'" class="input-row">
@@ -23,28 +23,58 @@
           <el-button type="primary" :loading="loading" @click="handleGenerate">生成草案</el-button>
         </div>
 
-        <div v-else class="description-form">
-          <el-input
-            v-model="descForm.package_name"
-            placeholder="包名，如 log4j-core"
-            class="desc-input"
-          />
-          <el-input
-            v-model="descForm.version"
-            placeholder='版本约束，如 <2.17.1 或 *'
-            class="desc-input"
-          />
-          <el-select v-model="descForm.match_type" placeholder="匹配类型" class="desc-select">
-            <el-option label="精确" value="exact" />
-            <el-option label="通配符" value="wildcard" />
-            <el-option label="版本范围" value="range" />
-          </el-select>
-          <el-input
-            v-model="descForm.reason"
-            placeholder="阻断原因（可选）"
-            class="desc-input"
-          />
-          <el-button type="primary" :loading="loading" @click="handleGenerate">生成草案</el-button>
+        <div v-else class="description-input">
+          <!-- 文本框 + 工具栏 -->
+          <div class="textarea-wrapper">
+            <el-input
+              v-model="descInput"
+              type="textarea"
+              :rows="4"
+              placeholder="描述阻断需求，如：阻断所有 log4j 1.x 版本"
+              @keyup.enter.ctrl="handleGenerate"
+            />
+            <div class="textarea-toolbar">
+              <el-upload
+                v-if="!fileContent"
+                :auto-upload="false"
+                :show-file-list="false"
+                accept=".txt,.csv,.json,.md"
+                :on-change="handleFileChange"
+              >
+                <el-button text :icon="UploadFilled" size="small">导入文件</el-button>
+              </el-upload>
+              <template v-else>
+                <span class="file-chip">
+                  <el-icon><Document /></el-icon>
+                  <span class="file-chip-name">{{ fileName }}</span>
+                  <span class="file-chip-size">{{ filePreview }}</span>
+                  <el-button text :icon="Close" size="small" @click="clearFile" />
+                </span>
+              </template>
+            </div>
+          </div>
+
+          <!-- 文件内容预览（导入后展示） -->
+          <div v-if="fileContent" class="file-content-preview">
+            {{ fileContent.slice(0, 500) }}{{ fileContent.length > 500 ? '...' : '' }}
+          </div>
+
+          <!-- 快捷示例：紧凑文字链接 -->
+          <div class="quick-links">
+            <span class="quick-links-label">常用</span>
+            <a
+              v-for="(p, idx) in quickPrompts"
+              :key="idx"
+              class="quick-link"
+              @click="useQuickPrompt(p.text)"
+            >{{ p.label }}</a>
+          </div>
+
+          <!-- 操作行 -->
+          <div class="action-row">
+            <span class="action-tip">{{ fileContent ? 'AI 将解析文件内容生成草案' : 'Ctrl+Enter 快速生成' }}</span>
+            <el-button type="primary" :loading="loading" :disabled="!descInput && !fileContent" @click="handleGenerate">生成草案</el-button>
+          </div>
         </div>
       </template>
 
@@ -147,7 +177,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { MagicStick } from '@element-plus/icons-vue'
+import { MagicStick, UploadFilled, Document, Close } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { aiApi } from '@/api/ai'
 import { blockRuleApi, type BlockRuleCreateParams } from '@/api/blockRule'
@@ -171,12 +201,70 @@ const visible = computed({
 // === generator 模式状态 ===
 const genSource = ref<'vulnerability' | 'description'>('vulnerability')
 const cveInput = ref('')
-const descForm = ref({
-  package_name: '',
-  version: '',
-  match_type: 'range' as 'exact' | 'wildcard' | 'range',
-  reason: '',
+const descInput = ref('')
+
+// === 文件导入状态 ===
+const fileName = ref('')
+const fileContent = ref('')
+
+// === 快捷提示词 ===
+interface QuickPrompt {
+  label: string
+  text: string
+  type: '' | 'success' | 'warning' | 'info' | 'danger'
+}
+
+const quickPrompts: QuickPrompt[] = [
+  { label: '阻断 log4j 1.x', text: '阻断所有 log4j-core 1.x 版本', type: 'danger' },
+  { label: '阻断低版本 lodash', text: '禁止使用 lodash 4.17.20 以下的版本', type: 'warning' },
+  { label: '屏蔽 GPL-3.0', text: '屏蔽所有含有 GPL-3.0 许可证的包', type: 'info' },
+  { label: '阻断高危漏洞包', text: '阻断所有存在 critical 级别漏洞的包', type: 'danger' },
+  { label: '阻断旧版本 Spring', text: '阻断 spring-core 5.3.0 以下的版本', type: 'warning' },
+  { label: '屏蔽废弃包', text: '屏蔽已标记为 deprecated 的包', type: 'info' },
+]
+
+const useQuickPrompt = (text: string) => {
+  descInput.value = text
+}
+
+const filePreview = computed(() => {
+  if (!fileContent.value) return ''
+  const bytes = new Blob([fileContent.value]).size
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 })
+
+// 限制文件大小 1MB，防止超长内容撑爆 LLM 上下文
+const MAX_FILE_SIZE = 1024 * 1024
+
+const handleFileChange = (file: any) => {
+  const raw = file.raw || file
+  if (!raw) return
+  if (raw.size > MAX_FILE_SIZE) {
+    ElMessage.error('文件过大，请限制在 1MB 以内')
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    const text = e.target?.result as string
+    if (!text || !text.trim()) {
+      ElMessage.error('文件内容为空')
+      return
+    }
+    fileName.value = raw.name
+    fileContent.value = text
+  }
+  reader.onerror = () => {
+    ElMessage.error('读取文件失败')
+  }
+  reader.readAsText(raw)
+}
+
+const clearFile = () => {
+  fileName.value = ''
+  fileContent.value = ''
+}
 
 // === 共享状态 ===
 const loading = ref(false)
@@ -296,14 +384,24 @@ const buildGeneratorPrompt = (): string | null => {
     return `请调用 block_rule_generator 工具，source=vulnerability，cve_ids=${idsJson}，批量生成阻断规则草案。`
   }
 
-  // description 模式
-  const f = descForm.value
-  if (!f.package_name || !f.version || !f.match_type) {
-    errorMsg.value = '请填写包名、版本和匹配类型'
+  // description 模式：自然语言描述 / 文件导入
+  const desc = descInput.value.trim()
+  const file = fileContent.value.trim()
+  if (!desc && !file) {
+    errorMsg.value = '请输入阻断需求描述或导入文件'
     return null
   }
-  const reasonPart = f.reason ? `，reason=${f.reason}` : ''
-  return `请调用 block_rule_generator 工具，source=description，package_name=${f.package_name}，version=${f.version}，match_type=${f.match_type}${reasonPart}，生成阻断规则草案。`
+
+  // 同时有描述和文件：合并
+  if (desc && file) {
+    return `请调用 block_rule_generator 工具，source=description，根据以下描述和文件内容生成阻断规则草案。\n描述：${desc}\n文件内容（${fileName.value}）：\n${file}`
+  }
+  // 只有文件
+  if (file) {
+    return `请调用 block_rule_generator 工具，source=description，根据以下文件内容（${fileName.value}）解析并生成阻断规则草案。文件可能是 CSV/JSON/TXT 格式，请自动识别格式，提取每条规则的包名、版本和匹配类型：\n${file}`
+  }
+  // 只有描述
+  return `请调用 block_rule_generator 工具，source=description，根据以下描述生成阻断规则草案：${desc}`
 }
 
 const extractDrafts = (res: any) => {
@@ -412,6 +510,7 @@ const handleClose = () => {
   suggestions.value = []
   totalRules.value = 0
   selectAll.value = false
+  clearFile()
 }
 
 // 切换模式时重置
@@ -439,21 +538,116 @@ watch(() => props.mode, () => {
   flex: 1;
 }
 
-.description-form {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+.description-input {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 文本框 + 工具栏 */
+.textarea-wrapper {
+  position: relative;
+}
+
+.textarea-wrapper :deep(.el-textarea__inner) {
+  padding-bottom: 32px;
+}
+
+.textarea-toolbar {
+  position: absolute;
+  left: 8px;
+  bottom: 4px;
+  display: flex;
   align-items: center;
+  gap: 4px;
 }
 
-.desc-input,
-.desc-select {
-  width: 100%;
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--el-fill-color);
+  font-size: 12px;
+  color: var(--el-text-color-regular);
 }
 
-.description-form > .el-button {
-  grid-column: span 2;
-  justify-self: start;
+.file-chip .el-icon {
+  color: var(--el-color-primary);
+  font-size: 14px;
+}
+
+.file-chip-name {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-chip-size {
+  color: var(--el-text-color-secondary);
+}
+
+/* 文件内容预览 */
+.file-content-preview {
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+  font-family: monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 120px;
+  overflow-y: auto;
+  line-height: 1.5;
+  padding: 8px 12px;
+  background: var(--el-fill-color-light);
+  border-radius: 6px;
+  border: 1px solid var(--el-border-color-lighter);
+}
+
+/* 快捷示例：紧凑文字链接 */
+.quick-links {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 0;
+  font-size: 13px;
+}
+
+.quick-links-label {
+  color: var(--el-text-color-secondary);
+  margin-right: 8px;
+}
+
+.quick-link {
+  color: var(--el-color-primary);
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.quick-link:hover {
+  background: var(--el-color-primary-light-9);
+}
+
+.quick-link:not(:last-child)::after {
+  content: '·';
+  color: var(--el-text-color-placeholder);
+  margin-left: 8px;
+}
+
+/* 操作行 */
+.action-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 4px;
+}
+
+.action-tip {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 .hint-text {
