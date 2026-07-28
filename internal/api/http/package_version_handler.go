@@ -212,6 +212,31 @@ func (h *PackageVersionHandler) respondVersionsFromArtifacts(c *gin.Context, pkg
 	}
 
 	versions := make([]gin.H, 0, len(verOrder))
+
+	// 批量加载仓库名
+	allRepoIDs := make(map[uint]bool)
+	for _, vp := range verGroups {
+		for id := range vp.repoIDs {
+			allRepoIDs[id] = true
+		}
+	}
+	repoNameMap := make(map[uint]string)
+	if len(allRepoIDs) > 0 {
+		ids := make([]uint, 0, len(allRepoIDs))
+		for id := range allRepoIDs {
+			ids = append(ids, id)
+		}
+		var repos []struct {
+			ID   uint   `gorm:"column:id"`
+			Name string `gorm:"column:name"`
+		}
+		h.db.WithContext(c.Request.Context()).Model(&model.Repository{}).
+			Where("id IN ?", ids).Select("id", "name").Find(&repos)
+		for _, r := range repos {
+			repoNameMap[r.ID] = r.Name
+		}
+	}
+
 	for _, ver := range verOrder {
 		vp := verGroups[ver]
 		publishedAt := vp.latestAt
@@ -241,6 +266,7 @@ func (h *PackageVersionHandler) respondVersionsFromArtifacts(c *gin.Context, pkg
 		entry := gin.H{
 			"id":               vp.id,
 			"repository_id":    singleRepositoryID(vp.repoIDs),
+			"repository_name":  repositoryNames(vp.repoIDs, repoNameMap),
 			"version":          ver,
 			"name":             vp.name,
 			"namespace":        vp.namespace,
@@ -544,6 +570,20 @@ func singleRepositoryID(repoIDs map[uint]bool) uint {
 		return repoID
 	}
 	return 0
+}
+
+// repositoryNames 返回版本关联的仓库名，多个时用逗号分隔
+func repositoryNames(repoIDs map[uint]bool, nameMap map[uint]string) string {
+	if len(repoIDs) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(repoIDs))
+	for id := range repoIDs {
+		if n, ok := nameMap[id]; ok {
+			names = append(names, n)
+		}
+	}
+	return strings.Join(names, ",")
 }
 
 func classifyFileType(format, filename string) string {

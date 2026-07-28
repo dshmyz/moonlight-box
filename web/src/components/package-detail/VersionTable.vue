@@ -55,6 +55,11 @@
           </div>
         </template>
       </el-table-column>
+      <el-table-column prop="repository_name" label="仓库" min-width="120">
+        <template #default="{ row }">
+          <span class="repo-name">{{ row.repository_name || '-' }}</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="published_at" label="发布时间" width="180">
         <template #default="{ row }">
           {{ formatDate(row.published_at) }}
