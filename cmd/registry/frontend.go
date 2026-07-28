@@ -29,7 +29,7 @@ func serveEmbeddedFrontend() gin.HandlerFunc {
 			reqPath = "/index.html"
 		}
 
-		filePath := path.Join("front", reqPath)
+		filePath := path.Clean(path.Join("front", reqPath))
 		data, err := frontendFS.ReadFile(filePath)
 		if err != nil {
 			fallbackPath := "front/index.html"
@@ -49,12 +49,20 @@ func serveEmbeddedFrontend() gin.HandlerFunc {
 }
 
 func serveFilesystemFrontend(staticDir string) gin.HandlerFunc {
+	absStaticDir, _ := filepath.Abs(staticDir)
 	return func(c *gin.Context) {
 		reqPath := c.Request.URL.Path
 		if reqPath == "/" {
 			reqPath = "/index.html"
 		}
 		filePath := filepath.Join(staticDir, reqPath)
+
+		// 防止路径遍历：解析后必须在 staticDir 内
+		absFilePath, _ := filepath.Abs(filePath)
+		if !strings.HasPrefix(absFilePath, absStaticDir+string(os.PathSeparator)) {
+			c.Status(http.StatusForbidden)
+			return
+		}
 
 		_, err := os.Stat(filePath)
 		if err != nil {

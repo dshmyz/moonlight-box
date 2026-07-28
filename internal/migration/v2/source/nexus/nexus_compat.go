@@ -62,14 +62,16 @@ func (s *NexusSource) DetectVersion(ctx context.Context) (NexusVersion, error) {
 			lastErr = err
 			continue
 		}
-		defer resp.Body.Close()
 
 		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
 			version := parseVersionFromResponse(string(body))
 			if version.Major > 0 {
 				return version, nil
 			}
+		} else {
+			resp.Body.Close()
 		}
 	}
 

@@ -1,10 +1,12 @@
 package http
 
 import (
-	"context"
 	"encoding/json"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/model"
@@ -42,7 +44,11 @@ func (h *VulnRuleHandler) ListRules(c *gin.Context) {
 }
 
 func (h *VulnRuleHandler) GetRule(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid id", err.Error())
+		return
+	}
 	rule, err := h.vulnRuleService.GetRule(uint(id))
 	if err != nil {
 		response.NotFound(c, "rule not found")
@@ -65,7 +71,11 @@ func (h *VulnRuleHandler) CreateRule(c *gin.Context) {
 }
 
 func (h *VulnRuleHandler) UpdateRule(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid id", err.Error())
+		return
+	}
 	var updates map[string]interface{}
 	if err := c.ShouldBindJSON(&updates); err != nil {
 		response.BadRequest(c, "invalid request", err.Error())
@@ -79,7 +89,11 @@ func (h *VulnRuleHandler) UpdateRule(c *gin.Context) {
 }
 
 func (h *VulnRuleHandler) DeleteRule(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid id", err.Error())
+		return
+	}
 	if err := h.vulnRuleService.DeleteRule(uint(id)); err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -124,7 +138,11 @@ func (h *VulnRuleHandler) CreateDataSource(c *gin.Context) {
 }
 
 func (h *VulnRuleHandler) UpdateDataSource(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid id", err.Error())
+		return
+	}
 	var updates map[string]interface{}
 	if err := c.ShouldBindJSON(&updates); err != nil {
 		response.BadRequest(c, "invalid request", err.Error())
@@ -138,7 +156,11 @@ func (h *VulnRuleHandler) UpdateDataSource(c *gin.Context) {
 }
 
 func (h *VulnRuleHandler) DeleteDataSource(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid id", err.Error())
+		return
+	}
 	if err := h.vulnRuleService.DeleteDataSource(uint(id)); err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -147,8 +169,12 @@ func (h *VulnRuleHandler) DeleteDataSource(c *gin.Context) {
 }
 
 func (h *VulnRuleHandler) SyncDataSource(c *gin.Context) {
-	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
-	if err := h.vulnRuleService.SyncDataSource(context.Background(), uint(id)); err != nil {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		response.BadRequest(c, "invalid id", err.Error())
+		return
+	}
+	if err := h.vulnRuleService.SyncDataSource(c.Request.Context(), uint(id)); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -156,7 +182,7 @@ func (h *VulnRuleHandler) SyncDataSource(c *gin.Context) {
 }
 
 func (h *VulnRuleHandler) SyncAllDataSources(c *gin.Context) {
-	if err := h.vulnRuleService.SyncAllDataSources(context.Background()); err != nil {
+	if err := h.vulnRuleService.SyncAllDataSources(c.Request.Context()); err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -167,6 +193,12 @@ func (h *VulnRuleHandler) TestDataSource(c *gin.Context) {
 	var ds model.VulnDataSource
 	if err := c.ShouldBindJSON(&ds); err != nil {
 		response.BadRequest(c, "invalid request", err.Error())
+		return
+	}
+
+	// SSRF 防护：只允许 http/https，禁止内网地址
+	if err := validateExternalURL(ds.URL); err != nil {
+		response.BadRequest(c, "invalid URL", err.Error())
 		return
 	}
 
@@ -199,4 +231,26 @@ func (h *VulnRuleHandler) TestDataSource(c *gin.Context) {
 
 func newVulnDataSourceHTTPClient() *http.Client {
 	return &http.Client{Timeout: 10 * time.Second}
+}
+
+// validateExternalURL 检查 URL 是否为合法的外部 http/https 地址，防止 SSRF
+func validateExternalURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return &url.Error{Op: "validate", URL: rawURL, Err: net.InvalidAddrError("only http/https allowed")}
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return &url.Error{Op: "validate", URL: rawURL, Err: net.InvalidAddrError("localhost not allowed")}
+	}
+	ip := net.ParseIP(host)
+	if ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return &url.Error{Op: "validate", URL: rawURL, Err: net.InvalidAddrError("private/internal address not allowed")}
+		}
+	}
+	return nil
 }
