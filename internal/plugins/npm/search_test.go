@@ -3,6 +3,7 @@ package npm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,7 +34,8 @@ func (f *fakeRepositoryRuntimeForSearch) RenderProjection(_ context.Context, q r
 }
 
 func (f *fakeRepositoryRuntimeForSearch) OpenRemote(_ context.Context, r runtime.RemoteOpenRequest) (*runtime.RemoteResponse, error) {
-	return nil, nil
+	// 模拟 hosted 仓库：不支持回源，search 应 fallback 到本地搜索
+	return nil, runtime.ErrRemoteUnsupported
 }
 
 func (f *fakeRepositoryRuntimeForSearch) DeleteArtifact(_ context.Context, k runtime.ArtifactKey) error {
@@ -441,6 +443,102 @@ func TestSearchScopedPackage(t *testing.T) {
 }
 
 // ========== Helper Functions ==========
+
+// proxySearchRuntime 模拟 proxy 仓库：OpenRemote 返回上游搜索响应。
+type proxySearchRuntime struct {
+	response *runtime.RemoteResponse
+	err      error
+	calls    int
+}
+
+func (f *proxySearchRuntime) QueryArtifacts(_ context.Context, q runtime.ArtifactQuery) ([]*runtime.Artifact, error) {
+	return nil, nil
+}
+
+func (f *proxySearchRuntime) GetArtifact(_ context.Context, k runtime.ArtifactKey) (*runtime.Artifact, error) {
+	return nil, runtime.ErrNotFound
+}
+
+func (f *proxySearchRuntime) BeginUpload(_ context.Context, r runtime.UploadRequest) (runtime.UploadSession, error) {
+	return nil, nil
+}
+
+func (f *proxySearchRuntime) RenderProjection(_ context.Context, q runtime.ProjectionQuery) (*runtime.ProjectionResult, error) {
+	return nil, nil
+}
+
+func (f *proxySearchRuntime) OpenRemote(_ context.Context, r runtime.RemoteOpenRequest) (*runtime.RemoteResponse, error) {
+	f.calls++
+	return f.response, f.err
+}
+
+func (f *proxySearchRuntime) DeleteArtifact(_ context.Context, k runtime.ArtifactKey) error {
+	return nil
+}
+
+// TestSearchProxyPassthrough 验证 proxy 仓库透传上游搜索响应，不走本地搜索
+func TestSearchProxyPassthrough(t *testing.T) {
+	p := newTestSearchPlugin()
+
+	upstreamBody := `{"total":1,"objects":[{"package":{"name":"lodash","version":"4.17.21","description":"Lodash utilities"},"score":{"final":1.0}}]}`
+	repo := &proxySearchRuntime{
+		response: &runtime.RemoteResponse{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+		},
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/-/v1/search?text=lodash&size=25", nil)
+	ctx := &runtime.RequestContext{
+		Writer:         w,
+		Request:        req,
+		Repository:     &runtime.Repository{ID: "1", Name: "proxy-npm", Format: "npm"},
+		RepositoryPath: "-/v1/search",
+	}
+
+	if err := p.handleSearch(ctx, repo); err != nil {
+		t.Fatalf("handleSearch failed: %v", err)
+	}
+
+	if repo.calls != 1 {
+		t.Fatalf("expected OpenRemote called once, got %d", repo.calls)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	// 验证响应是上游透传的原始 JSON（未被改写）
+	if !strings.Contains(w.Body.String(), `"lodash"`) {
+		t.Fatalf("expected response to contain upstream result, got %s", w.Body.String())
+	}
+}
+
+// TestSearchProxyUpstreamUnavailable 验证 proxy 上游不可达时返回 502
+func TestSearchProxyUpstreamUnavailable(t *testing.T) {
+	p := newTestSearchPlugin()
+
+	repo := &proxySearchRuntime{
+		err: runtime.ErrUpstreamUnavailable,
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/-/v1/search?text=lodash&size=25", nil)
+	ctx := &runtime.RequestContext{
+		Writer:         w,
+		Request:        req,
+		Repository:     &runtime.Repository{ID: "1", Name: "proxy-npm", Format: "npm"},
+		RepositoryPath: "-/v1/search",
+	}
+
+	if err := p.handleSearch(ctx, repo); err != nil {
+		t.Fatalf("handleSearch failed: %v", err)
+	}
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+}
 
 func newTestSearchPlugin() *NpmPlugin {
 	return NewNpmPlugin(http.DefaultClient)

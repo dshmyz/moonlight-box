@@ -3,14 +3,17 @@ package npm
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/sirupsen/logrus"
 )
 
 // npmSearchResponse 是 npm search API 的响应格式。
@@ -94,11 +97,11 @@ type searchPackageEntry struct {
 // handleSearch 处理 npm search 请求: GET /-/v1/search?text=xxx&size=N
 //
 // 搜索流程:
-//  1. 通过 repoRuntime.QueryArtifacts 查询当前仓库的 npm 版本记录
-//  2. 在内存中按 Name 聚合去重，构建包级条目
-//  3. 按 text 参数做 name/description 模糊匹配
-//  4. 按相关性评分排序
-//  5. 返回 npm search 格式的 JSON 响应
+//  1. proxy 仓库: 通过 OpenRemote 透传上游 /-/v1/search 响应（不经本地缓存）
+//  2. hosted/group 仓库: 通过 QueryArtifacts 查询本地记录，按 Name 聚合后模糊匹配
+//
+// 与 PyPI handleSimpleIndex 同样的 OpenRemote 模式：Runtime 负责 HTTP 调用、
+// 熔断和指标，Plugin 只渲染协议响应。
 func (p *NpmPlugin) handleSearch(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
 	if ctx.Request.Method != http.MethodGet {
 		return errors.New("method not allowed")
@@ -108,7 +111,12 @@ func (p *NpmPlugin) handleSearch(ctx *runtime.RequestContext, repoRuntime runtim
 	sizeStr := ctx.Request.URL.Query().Get("size")
 	size := parseSearchSize(sizeStr)
 
-	// 查询当前仓库的所有 npm 记录（version + artifact + metadata）
+	// proxy 仓库优先透传上游搜索结果（不持久化，纯展示）
+	if result := p.fetchUpstreamSearch(ctx, repoRuntime, text, size); result.handled {
+		return nil
+	}
+
+	// hosted/group 仓库: 本地搜索
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "npm",
@@ -152,6 +160,52 @@ func (p *NpmPlugin) handleSearch(ctx *runtime.RequestContext, repoRuntime runtim
 	ctx.Writer.WriteHeader(http.StatusOK)
 	json.NewEncoder(ctx.Writer).Encode(resp)
 	return nil
+}
+
+// upstreamSearchResult 是上游搜索透传的结果。nil 表示当前仓库不是 proxy
+// 或上游不可达，调用方应 fallback 到本地搜索。
+type upstreamSearchResult struct {
+	handled bool
+}
+
+// fetchUpstreamSearch 对 proxy 仓库通过 OpenRemote 透传上游 /-/v1/search 响应。
+// 返回 handled=true 表示已处理该请求（无论成功或失败，响应已写入 ctx.Writer）；
+// 返回 handled=false 表示当前仓库不支持回源（hosted/group），调用方应 fallback 到本地搜索。
+func (p *NpmPlugin) fetchUpstreamSearch(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, text string, size int) upstreamSearchResult {
+	// 构造上游搜索路径，保留原始 query 参数
+	q := url.Values{}
+	if text != "" {
+		q.Set("text", text)
+	}
+	q.Set("size", strconv.Itoa(size))
+	searchPath := "-/v1/search?" + q.Encode()
+
+	response, err := repoRuntime.OpenRemote(ctx.Request.Context(), runtime.RemoteOpenRequest{
+		Path:    searchPath,
+		Method:  ctx.Request.Method,
+		Headers: ctx.Request.Header,
+	})
+	if err == nil {
+		defer response.Body.Close()
+		// 透传上游状态码和响应体（npm search 响应是标准 JSON，无需改写）
+		for key := range response.Header {
+			ctx.Writer.Header().Set(key, response.Header.Get(key))
+		}
+		ctx.Writer.WriteHeader(response.StatusCode)
+		if _, copyErr := io.Copy(ctx.Writer, response.Body); copyErr != nil {
+			logrus.WithError(copyErr).Warn("npm: search: copy upstream response failed")
+		}
+		return upstreamSearchResult{handled: true}
+	}
+
+	// ErrRemoteUnsupported：当前仓库不是 proxy（hosted/group），fallback 到本地搜索
+	if errors.Is(err, runtime.ErrRemoteUnsupported) {
+		return upstreamSearchResult{handled: false}
+	}
+	// 其他错误（熔断打开、上游不可达等）：返回 502，不走本地搜索
+	logrus.WithError(err).Warn("npm: search: OpenRemote failed")
+	http.Error(ctx.Writer, "upstream search unavailable", http.StatusBadGateway)
+	return upstreamSearchResult{handled: true}
 }
 
 // parseSearchSize 解析 size 参数，默认 25，最大 250。
