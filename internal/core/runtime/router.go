@@ -213,7 +213,7 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if repo == nil {
 		logrus.WithFields(logrus.Fields{
 			"path":          req.URL.Path,
-			"repoName":      resolved.Repository.Name,
+			"repo_name":      resolved.Repository.Name,
 			"remainingPath": resolved.RemainingPath,
 		}).Warn("router: repository not found in manager")
 		http.Error(w, "Repository not found", http.StatusNotFound)
@@ -222,7 +222,7 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	logrus.WithFields(logrus.Fields{
 		"path":          req.URL.Path,
-		"repoName":      repo.Name,
+		"repo_name":      repo.Name,
 		"repoFormat":    repo.Format,
 		"repoType":      repo.Type,
 		"hasRuntime":    repo.Runtime != nil,
@@ -315,7 +315,7 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 	plugin, ok := r.Plugins[ctx.Repository.Format]
 	if !ok {
 		logrus.WithFields(logrus.Fields{
-			"repoName":   ctx.Repository.Name,
+			"repo_name":   ctx.Repository.Name,
 			"repoFormat": ctx.Repository.Format,
 			"availablePlugins": func() []string {
 				var keys []string
@@ -333,7 +333,7 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 	runtime := ctx.Repository.Runtime
 	if runtime == nil {
 		logrus.WithFields(logrus.Fields{
-			"repoName":   ctx.Repository.Name,
+			"repo_name":   ctx.Repository.Name,
 			"repoFormat": ctx.Repository.Format,
 			"repoType":   ctx.Repository.Type,
 		}).Error("router: repository runtime is nil")
@@ -343,7 +343,7 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"repoName":      ctx.Repository.Name,
+		"repo_name":      ctx.Repository.Name,
 		"repoFormat":    ctx.Repository.Format,
 		"remainingPath": ctx.RepositoryPath,
 		"method":        ctx.Request.Method,

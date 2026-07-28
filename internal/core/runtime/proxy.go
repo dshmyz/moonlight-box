@@ -333,11 +333,11 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 	key.RepositoryID = n.RepositoryID
 
 	logrus.WithFields(logrus.Fields{
-		"repositoryID": n.RepositoryID,
+		"repo_id": n.RepositoryID,
 		"format":       key.Format,
 		"name":         key.Name,
 		"version":      key.Version,
-		"remotePath":   key.RemotePath,
+		"remote_path":   key.RemotePath,
 		"filename":     key.Filename,
 	}).Debug("proxy: GetArtifact called")
 
@@ -352,7 +352,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 		metrics.RecordCacheHit(n.RepositoryID, n.Format)
 		logrus.WithFields(logrus.Fields{
 			"key":      key.String(),
-			"duration": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Seconds(),
 		}).Debug("proxy: GetArtifact memory cache hit")
 		artifact = cloneArtifactForResponse(artifact)
 		if err := n.evaluateConditionalAccess(ctx, key, artifact); err != nil {
@@ -429,7 +429,7 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 		n.setCachedArtifact(key, artifact)
 		logrus.WithFields(logrus.Fields{
 			"key":      key.String(),
-			"duration": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Seconds(),
 		}).Debug("proxy: GetArtifact metadata store hit")
 		fromCache := hadBlob && artifact.RemoteURL == ""
 		return getArtifactResult{artifact: artifact, fromCache: fromCache, remoteURL: artifact.RemoteURL}, nil
@@ -440,7 +440,7 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 
 	logrus.WithFields(logrus.Fields{
 		"key":           key.String(),
-		"remoteBaseURL": n.RemoteBaseURL,
+		"remote_base_url": n.RemoteBaseURL,
 	}).Debug("proxy: GetArtifact cache miss, fetching from remote")
 
 	key.RemoteURL = n.buildRemoteURL(key)
@@ -448,8 +448,8 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"key":       key.String(),
-			"remoteURL": key.RemoteURL,
-			"duration":  time.Since(start).Seconds(),
+			"remote_url": key.RemoteURL,
+			"duration_ms":  time.Since(start).Seconds(),
 			"error":     err.Error(),
 		}).Error("proxy: GetArtifact fetch metadata failed")
 		return getArtifactResult{}, err
@@ -458,8 +458,8 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 		n.setNegativeCache(key)
 		logrus.WithFields(logrus.Fields{
 			"key":       key.String(),
-			"remoteURL": key.RemoteURL,
-			"duration":  time.Since(start).Seconds(),
+			"remote_url": key.RemoteURL,
+			"duration_ms":  time.Since(start).Seconds(),
 		}).Debug("proxy: GetArtifact remote not found, set negative cache")
 		return getArtifactResult{}, ErrNotFound
 	}
@@ -515,8 +515,8 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 	n.setCachedArtifact(key, artifact)
 	logrus.WithFields(logrus.Fields{
 		"key":       key.String(),
-		"remoteURL": key.RemoteURL,
-		"duration":  time.Since(start).Seconds(),
+		"remote_url": key.RemoteURL,
+		"duration_ms":  time.Since(start).Seconds(),
 	}).Debug("proxy: GetArtifact fetch from remote success")
 	if len(artifact.BlobRefs) > 0 {
 		artifact.SizeBytes = artifact.BlobRefs[0].Size
@@ -535,9 +535,9 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 	query.RepositoryID = n.RepositoryID
 
 	logrus.WithFields(logrus.Fields{
-		"repositoryID":  n.RepositoryID,
-		"remoteBaseURL": n.RemoteBaseURL,
-		"remotePath":    query.RemotePath,
+		"repo_id":  n.RepositoryID,
+		"remote_base_url": n.RemoteBaseURL,
+		"remote_path":    query.RemotePath,
 		"format":        query.Format,
 		"hasFetcher":    n.Fetcher != nil,
 	}).Debug("proxy: QueryArtifacts called")
@@ -583,8 +583,8 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 							if len(toUpdate) > 0 {
 								if err := n.MetadataStore.BatchPut(refreshCtx, toUpdate); err != nil {
 									logrus.WithFields(logrus.Fields{
-										"remoteBaseURL": n.RemoteBaseURL,
-										"remotePath":    query.RemotePath,
+										"remote_base_url": n.RemoteBaseURL,
+										"remote_path":    query.RemotePath,
 										"error":         err.Error(),
 									}).Warn("QueryArtifacts: background BatchPut failed")
 								}
@@ -622,14 +622,14 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		// 缓存不完整，继续走回源逻辑
 		logrus.WithFields(logrus.Fields{
 			"cachedCount": len(artifacts),
-			"remotePath":  query.RemotePath,
+			"remote_path":  query.RemotePath,
 		}).Debug("proxy: cache has only artifact records, fetching from remote for complete metadata")
 	}
 	// 本地缓存为空,通过 RemoteFetcher 回源
 	if n.Fetcher != nil && n.RemoteBaseURL != "" && query.RemotePath != "" {
 		logrus.WithFields(logrus.Fields{
-			"remoteBaseURL": n.RemoteBaseURL,
-			"remotePath":    query.RemotePath,
+			"remote_base_url": n.RemoteBaseURL,
+			"remote_path":    query.RemotePath,
 		}).Debug("proxy: local cache empty, fetching from remote")
 
 		fetchStart := time.Now()
@@ -670,14 +670,14 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		if fetchErr != nil {
 			metrics.RecordProxyFetch(n.Format, "error", fetchDuration)
 			logrus.WithFields(logrus.Fields{
-				"remoteBaseURL": n.RemoteBaseURL,
-				"remotePath":    query.RemotePath,
+				"remote_base_url": n.RemoteBaseURL,
+				"remote_path":    query.RemotePath,
 				"error":         fetchErr.Error(),
 			}).Error("proxy: FetchRemote failed")
 			if len(artifacts) > 0 {
 				logrus.WithFields(logrus.Fields{
 					"cachedCount": len(artifacts),
-					"remotePath":  query.RemotePath,
+					"remote_path":  query.RemotePath,
 				}).Warn("proxy: serving cached artifacts after FetchRemote failure")
 				return n.filterBlockedArtifacts(artifacts), nil
 			}
@@ -691,8 +691,8 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 	}
 	logrus.WithFields(logrus.Fields{
 		"hasFetcher":    n.Fetcher != nil,
-		"remoteBaseURL": n.RemoteBaseURL,
-		"remotePath":    query.RemotePath,
+		"remote_base_url": n.RemoteBaseURL,
+		"remote_path":    query.RemotePath,
 	}).Warn("proxy: no fetcher or remote URL, returning empty result")
 	return n.filterBlockedArtifacts(artifacts), nil
 }
@@ -742,8 +742,8 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"repositoryID": n.RepositoryID,
-		"remoteURL":    key.RemoteURL,
+		"repo_id": n.RepositoryID,
+		"remote_url":    key.RemoteURL,
 		"filename":     key.Filename,
 	}).Debug("proxy: ensureArtifactBlob fetching from remote")
 
@@ -755,14 +755,14 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 			_ = n.MetadataStore.Delete(ctx, key)
 			n.setNegativeCache(key)
 			logrus.WithFields(logrus.Fields{
-				"remoteURL": key.RemoteURL,
-				"duration":  time.Since(start).Seconds(),
+				"remote_url": key.RemoteURL,
+				"duration_ms":  time.Since(start).Seconds(),
 			}).Debug("proxy: ensureArtifactBlob blob not found, set negative cache")
 			return ErrNotFound
 		}
 		logrus.WithFields(logrus.Fields{
-			"remoteURL": key.RemoteURL,
-			"duration":  time.Since(start).Seconds(),
+			"remote_url": key.RemoteURL,
+			"duration_ms":  time.Since(start).Seconds(),
 			"error":     err.Error(),
 		}).Error("proxy: ensureArtifactBlob fetch blob failed")
 		return err
@@ -784,8 +784,8 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 	}
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"remoteURL": key.RemoteURL,
-			"duration":  time.Since(start).Seconds(),
+			"remote_url": key.RemoteURL,
+			"duration_ms":  time.Since(start).Seconds(),
 			"error":     err.Error(),
 		}).Error("proxy: ensureArtifactBlob store blob failed")
 		return err
@@ -801,7 +801,7 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 			_ = n.BlobStore.Delete(blobRef)
 		}
 		logrus.WithFields(logrus.Fields{
-			"remoteURL": key.RemoteURL,
+			"remote_url": key.RemoteURL,
 			"size":      readSize,
 			"maxSize":   n.CachePolicy.MaxBlobSize,
 		}).Warn("proxy: blob too large, rejecting")
@@ -821,16 +821,16 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 	}
 	if err := n.MetadataStore.Put(ctx, artifact); err != nil {
 		logrus.WithFields(logrus.Fields{
-			"remoteURL": key.RemoteURL,
-			"duration":  time.Since(start).Seconds(),
+			"remote_url": key.RemoteURL,
+			"duration_ms":  time.Since(start).Seconds(),
 			"error":     err.Error(),
 		}).Error("proxy: ensureArtifactBlob update metadata failed")
 		return err
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"remoteURL": key.RemoteURL,
-		"duration":  time.Since(start).Seconds(),
+		"remote_url": key.RemoteURL,
+		"duration_ms":  time.Since(start).Seconds(),
 	}).Debug("proxy: ensureArtifactBlob success")
 	return nil
 }

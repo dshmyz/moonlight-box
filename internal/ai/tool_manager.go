@@ -44,7 +44,7 @@ type AuditEntry struct {
 	Params    map[string]interface{} `json:"params"`
 	Result    string                 `json:"result"`
 	Error     string                 `json:"error,omitempty"`
-	Duration  time.Duration          `json:"duration"`
+	Duration  time.Duration          `json:"duration_ms"`
 	Success   bool                   `json:"success"`
 }
 

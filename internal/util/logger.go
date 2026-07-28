@@ -2,9 +2,11 @@ package util
 
 import (
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -30,6 +32,8 @@ type LoggerConfig struct {
 	ErrorLogFile     string
 	AccessLogFile    string
 	LogRetentionDays int
+	SampleRate    float64            `json:"sample_rate"`    // 0.0~1.0，1.0 表示不采样（默认）
+	SampledModules map[string]float64 `json:"sample_by_module"` // module → 专属采样率，未列出用全局
 }
 
 // LogType 日志类型枚举
@@ -70,8 +74,20 @@ func initLoggers(cfg *LoggerConfig) error {
 	// 配置 logrus 包级标准 logger——所有 logrus.XXX / util.XXX 调用都走这一个实例。
 	// 这样配置的 output/level/format 对全部代码生效，不再有“独立实例不生效”的分裂。
 	logrus.SetLevel(level)
-	logrus.SetFormatter(newFormatter(cfg.Format))
+	logrus.SetFormatter(&samplingFormatter{base: newFormatter(cfg.Format)})
 	logrus.SetOutput(getWriter(cfg.Output, cfg.LogRetentionDays))
+
+	// 采样 hook：对 Debug/Info/Warn 全局采样，sample_by_module 可指定 module 专属采样率
+	sampling := &samplingHook{
+		rate:        cfg.SampleRate,
+		moduleRates: cfg.SampledModules,
+	}
+	if sampling.rate <= 0 {
+		sampling.rate = 1.0 // 默认不采样
+	}
+	if sampling.rate < 1.0 || len(sampling.moduleRates) > 0 {
+		logrus.AddHook(sampling)
+	}
 
 	// 如果启用分文件日志，初始化 SQL / Access 独立实例，并给主 logger 装 error hook
 	if cfg.EnableSplitFiles {
@@ -256,6 +272,70 @@ func (h *errorHook) Fire(entry *logrus.Entry) error {
 	}
 	_, err = h.writer.Write(formatted)
 	return err
+}
+
+// ---------- sampling hook ----------
+
+// samplingHook 按 sample_rate 全局采样 Debug/Info/Warn。
+// sample_by_module 中的 module 使用独立采样率，未列出的 module 用全局 rate。
+// 通过在 entry.Data 中设置 _sampled_drop 标记，由 samplingFormatter 决定不输出。
+type samplingHook struct {
+	rate           float64            // 全局采样率 0.0~1.0
+	moduleRates    map[string]float64 // module → 专属采样率
+	counter        uint64
+}
+
+var sampledDropKey = "_sampled_drop"
+
+func (h *samplingHook) Levels() []logrus.Level {
+	return []logrus.Level{logrus.DebugLevel, logrus.InfoLevel, logrus.WarnLevel}
+}
+
+func (h *samplingHook) Fire(entry *logrus.Entry) error {
+	// 确定本条日志使用的采样率：优先 module 专属，其次全局
+	rate := h.rate
+	if mod, ok := entry.Data[LogKeyModule].(string); ok {
+		if mr, exists := h.moduleRates[mod]; exists {
+			rate = mr
+		}
+	}
+	// rate=1.0 表示不采样，直接放行
+	if rate >= 1.0 {
+		return nil
+	}
+	// rate=0.0 表示全部丢弃
+	if rate <= 0.0 {
+		h.drop(entry)
+		return nil
+	}
+	// 全局采样：atomic 计数 + 概率判定
+	atomic.AddUint64(&h.counter, 1)
+	if rand.Float64() >= rate {
+		h.drop(entry)
+	}
+	return nil
+}
+
+func (h *samplingHook) drop(entry *logrus.Entry) {
+	// 创建新 map 并替换，避免和 errorHook 并发读写同一 map
+	newData := make(logrus.Fields, len(entry.Data)+1)
+	for k, v := range entry.Data {
+		newData[k] = v
+	}
+	newData[sampledDropKey] = true
+	entry.Data = newData
+}
+
+// samplingFormatter 包装 base Formatter，跳过被 samplingHook 标记的条目。
+type samplingFormatter struct {
+	base logrus.Formatter
+}
+
+func (f *samplingFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+	if dropped, ok := entry.Data[sampledDropKey]; ok && dropped.(bool) {
+		return nil, nil // 静默丢弃
+	}
+	return f.base.Format(entry)
 }
 
 // 关闭所有日志文件

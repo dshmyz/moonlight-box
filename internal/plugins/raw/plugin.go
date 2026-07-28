@@ -75,21 +75,21 @@ func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string)
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + path
 
 	logrus.WithFields(logrus.Fields{
-		"remoteURL": remoteURL,
+		"remote_url": remoteURL,
 		"path":      path,
-		"fullURL":   fullURL,
+		"full_url":   fullURL,
 	}).Debug("generic: FetchRemote called")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
-		logrus.WithError(err).WithField("fullURL", fullURL).Error("generic: create request failed")
+		logrus.WithError(err).WithField("full_url", fullURL).Error("generic: create request failed")
 		return nil, fmt.Errorf("generic: create request: %w", err)
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"fullURL":  fullURL,
-			"duration": time.Since(start).Seconds(),
+			"full_url":  fullURL,
+			"duration_ms": time.Since(start).Seconds(),
 			"error":    err.Error(),
 		}).Error("generic: HTTP request failed")
 		return nil, fmt.Errorf("generic: fetch from %s: %w", fullURL, err)
@@ -100,9 +100,9 @@ func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string)
 			return nil, runtime.ErrNotFound
 		}
 		logrus.WithFields(logrus.Fields{
-			"fullURL":    fullURL,
-			"statusCode": resp.StatusCode,
-			"duration":   time.Since(start).Seconds(),
+			"full_url":    fullURL,
+			"status_code": resp.StatusCode,
+			"duration_ms":   time.Since(start).Seconds(),
 		}).Error("generic: HTTP request returned non-200 status")
 		return nil, fmt.Errorf("generic: fetch from %s: status %d", fullURL, resp.StatusCode)
 	}
@@ -113,17 +113,17 @@ func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string)
 		artifacts, err := p.parseDirectoryListing(path, resp.Body)
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
-				"fullURL":  fullURL,
-				"duration": time.Since(start).Seconds(),
+				"full_url":  fullURL,
+				"duration_ms": time.Since(start).Seconds(),
 				"error":    err.Error(),
 			}).Error("generic: parse directory listing failed")
 			return nil, err
 		}
 		logrus.WithFields(logrus.Fields{
-			"fullURL":     fullURL,
+			"full_url":     fullURL,
 			"itemCount":   len(artifacts),
 			"contentType": contentType,
-			"duration":    time.Since(start).Seconds(),
+			"duration_ms":    time.Since(start).Seconds(),
 		}).Debug("generic: FetchRemote directory listing success")
 		return artifacts, nil
 	}
@@ -136,10 +136,10 @@ func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string)
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"fullURL":     fullURL,
+		"full_url":     fullURL,
 		"filename":    filename,
 		"contentType": contentType,
-		"duration":    time.Since(start).Seconds(),
+		"duration_ms":    time.Since(start).Seconds(),
 	}).Debug("generic: FetchRemote file success")
 	return []*runtime.Artifact{
 		runtime.NewArtifact(runtime.ArtifactSpec{

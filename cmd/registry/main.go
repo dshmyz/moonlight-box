@@ -99,6 +99,8 @@ func main() {
 			ErrorLogFile:     cfg.Logging.ErrorLogFile,
 			AccessLogFile:    cfg.Logging.AccessLogFile,
 			LogRetentionDays: cfg.Logging.LogRetentionDays,
+			SampleRate:       cfg.Logging.SampleRate,
+			SampledModules:   cfg.Logging.SampleByModule,
 		})
 	}
 

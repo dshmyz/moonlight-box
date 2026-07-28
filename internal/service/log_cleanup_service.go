@@ -197,14 +197,14 @@ func (s *LogCleanupService) cleanup() {
 		logrus.WithFields(logrus.Fields{
 			"module":   "log_cleanup",
 			"error":    err,
-			"duration": duration,
+			"duration_ms": duration,
 		}).Error("Failed to cleanup old logs")
 		return
 	}
 
 	logrus.WithFields(logrus.Fields{
 		"module":   "log_cleanup",
-		"duration": duration,
+		"duration_ms": duration,
 	}).Info("Log cleanup completed successfully")
 }
 

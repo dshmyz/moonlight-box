@@ -118,7 +118,7 @@ func (p *MavenPlugin) FetchRemote(ctx context.Context, remoteURL, path string) (
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"remoteURL": remoteURL,
+		"remote_url": remoteURL,
 		"path":      path,
 	}).Debug("maven: FetchRemote called")
 
@@ -204,21 +204,21 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + path
 
 	logrus.WithFields(logrus.Fields{
-		"remoteURL": remoteURL,
+		"remote_url": remoteURL,
 		"path":      path,
-		"fullURL":   fullURL,
+		"full_url":   fullURL,
 	}).Debug("maven: fetchMetadata called")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
-		logrus.WithError(err).WithField("fullURL", fullURL).Error("maven: create request for metadata failed")
+		logrus.WithError(err).WithField("full_url", fullURL).Error("maven: create request for metadata failed")
 		return nil, fmt.Errorf("maven: create request for metadata: %w", err)
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"fullURL":  fullURL,
-			"duration": time.Since(start).Seconds(),
+			"full_url":  fullURL,
+			"duration_ms": time.Since(start).Seconds(),
 			"error":    err.Error(),
 		}).Error("maven: fetch metadata HTTP request failed")
 		return nil, fmt.Errorf("maven: fetch metadata from %s: %w", fullURL, err)
@@ -229,9 +229,9 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 			return nil, runtime.ErrNotFound
 		}
 		logrus.WithFields(logrus.Fields{
-			"fullURL":    fullURL,
-			"statusCode": resp.StatusCode,
-			"duration":   time.Since(start).Seconds(),
+			"full_url":    fullURL,
+			"status_code": resp.StatusCode,
+			"duration_ms":   time.Since(start).Seconds(),
 		}).Error("maven: fetch metadata returned non-200 status")
 		return nil, fmt.Errorf("maven: fetch metadata from %s: status %d", fullURL, resp.StatusCode)
 	}
@@ -239,8 +239,8 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"fullURL":  fullURL,
-			"duration": time.Since(start).Seconds(),
+			"full_url":  fullURL,
+			"duration_ms": time.Since(start).Seconds(),
 			"error":    err.Error(),
 		}).Error("maven: read metadata body failed")
 		return nil, fmt.Errorf("maven: read metadata body: %w", err)
@@ -249,8 +249,8 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 	var meta mavenMetadata
 	if err := xml.Unmarshal(body, &meta); err != nil {
 		logrus.WithFields(logrus.Fields{
-			"fullURL":  fullURL,
-			"duration": time.Since(start).Seconds(),
+			"full_url":  fullURL,
+			"duration_ms": time.Since(start).Seconds(),
 			"error":    err.Error(),
 		}).Error("maven: unmarshal metadata XML failed")
 		return nil, fmt.Errorf("maven: unmarshal metadata XML: %w", err)
@@ -348,11 +348,11 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"fullURL":      fullURL,
+		"full_url":      fullURL,
 		"group":        group,
 		"artifact":     artifact,
 		"versionCount": len(artifacts),
-		"duration":     time.Since(start).Seconds(),
+		"duration_ms":     time.Since(start).Seconds(),
 	}).Debug("maven: fetchMetadata success")
 	return artifacts, nil
 }

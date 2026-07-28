@@ -143,7 +143,7 @@ func (p *YumPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"remoteURL": remoteURL,
+		"remote_url": remoteURL,
 		"path":      path,
 	}).Debug("yum: FetchRemote called")
 
@@ -185,21 +185,21 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + path
 
 	logrus.WithFields(logrus.Fields{
-		"remoteURL": remoteURL,
+		"remote_url": remoteURL,
 		"path":      path,
-		"fullURL":   fullURL,
+		"full_url":   fullURL,
 	}).Debug("yum: fetchRepomd called")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
-		logrus.WithError(err).WithField("fullURL", fullURL).Error("yum: create request for repomd failed")
+		logrus.WithError(err).WithField("full_url", fullURL).Error("yum: create request for repomd failed")
 		return nil, fmt.Errorf("yum: create request for repomd: %w", err)
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"fullURL":  fullURL,
-			"duration": time.Since(start).Seconds(),
+			"full_url":  fullURL,
+			"duration_ms": time.Since(start).Seconds(),
 			"error":    err.Error(),
 		}).Error("yum: fetch repomd HTTP request failed")
 		return nil, fmt.Errorf("yum: fetch repomd from %s: %w", fullURL, err)
@@ -210,9 +210,9 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 			return nil, runtime.ErrNotFound
 		}
 		logrus.WithFields(logrus.Fields{
-			"fullURL":    fullURL,
-			"statusCode": resp.StatusCode,
-			"duration":   time.Since(start).Seconds(),
+			"full_url":    fullURL,
+			"status_code": resp.StatusCode,
+			"duration_ms":   time.Since(start).Seconds(),
 		}).Error("yum: fetch repomd returned non-200 status")
 		return nil, fmt.Errorf("yum: fetch repomd from %s: status %d", fullURL, resp.StatusCode)
 	}
@@ -220,8 +220,8 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"fullURL":  fullURL,
-			"duration": time.Since(start).Seconds(),
+			"full_url":  fullURL,
+			"duration_ms": time.Since(start).Seconds(),
 			"error":    err.Error(),
 		}).Error("yum: read repomd body failed")
 		return nil, fmt.Errorf("yum: read repomd body: %w", err)
@@ -230,8 +230,8 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 	var repomd repomdXML
 	if err := xml.Unmarshal(body, &repomd); err != nil {
 		logrus.WithFields(logrus.Fields{
-			"fullURL":  fullURL,
-			"duration": time.Since(start).Seconds(),
+			"full_url":  fullURL,
+			"duration_ms": time.Since(start).Seconds(),
 			"error":    err.Error(),
 		}).Error("yum: unmarshal repomd XML failed")
 		return nil, fmt.Errorf("yum: unmarshal repomd XML: %w", err)
@@ -283,9 +283,9 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"fullURL":       fullURL,
+		"full_url":       fullURL,
 		"artifactCount": len(artifacts),
-		"duration":      time.Since(start).Seconds(),
+		"duration_ms":      time.Since(start).Seconds(),
 	}).Debug("yum: fetchRepomd success")
 	return artifacts, nil
 }
@@ -369,7 +369,7 @@ func (p *YumPlugin) fetchPrimaryIndexPackages(ctx context.Context, remoteURL str
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"fullURL":      fullURL,
+		"full_url":      fullURL,
 		"packageCount": len(artifacts),
 	}).Debug("yum: parsed primary.xml.gz packages")
 	return artifacts, nil
@@ -444,7 +444,7 @@ func (p *YumPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Repo
 		"isPrimary":      p.isPrimaryRequest(path),
 		"isRpmPackage":   p.isRpmPackageRequest(path),
 		"isRepodata":     p.isRepodataRequest(path),
-		"repositoryName": ctx.Repository.Name,
+		"repo_name": ctx.Repository.Name,
 	}).Debug("yum: Handle called")
 
 	if p.isRepomdRequest(path) {
@@ -466,7 +466,7 @@ func (p *YumPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Repo
 
 	logrus.WithFields(logrus.Fields{
 		"path":           path,
-		"repositoryName": ctx.Repository.Name,
+		"repo_name": ctx.Repository.Name,
 	}).Warn("yum: path does not match any known pattern, returning 404")
 	http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 	return nil

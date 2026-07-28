@@ -187,7 +187,7 @@ func (c *RemoteClient) Get(ctx context.Context, url string, opts RequestOptions,
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"url":      url,
-			"duration": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Seconds(),
 			"error":    err.Error(),
 		}).Error("proxy: HTTP request failed")
 		return nil, fmt.Errorf("请求失败: %w", err)
@@ -197,8 +197,8 @@ func (c *RemoteClient) Get(ctx context.Context, url string, opts RequestOptions,
 		resp.Body.Close()
 		logrus.WithFields(logrus.Fields{
 			"url":        url,
-			"statusCode": resp.StatusCode,
-			"duration":   time.Since(start).Seconds(),
+			"status_code": resp.StatusCode,
+			"duration_ms":   time.Since(start).Seconds(),
 		}).Warn("proxy: HTTP request returned non-200 status")
 		return nil, &RemoteError{
 			StatusCode: resp.StatusCode,
@@ -208,8 +208,8 @@ func (c *RemoteClient) Get(ctx context.Context, url string, opts RequestOptions,
 
 	logrus.WithFields(logrus.Fields{
 		"url":        url,
-		"statusCode": resp.StatusCode,
-		"duration":   time.Since(start).Seconds(),
+		"status_code": resp.StatusCode,
+		"duration_ms":   time.Since(start).Seconds(),
 	}).Debug("proxy: HTTP request success")
 	return resp, nil
 }
@@ -254,7 +254,7 @@ func (c *RemoteClient) GetBytes(ctx context.Context, url string, opts RequestOpt
 			logrus.WithFields(logrus.Fields{
 				"url":      url,
 				"attempts": i + 1,
-				"duration": time.Since(start).Seconds(),
+				"duration_ms": time.Since(start).Seconds(),
 				"error":    err.Error(),
 			}).Error("proxy: GetBytes request failed after all retries")
 			return nil, "", err
@@ -283,7 +283,7 @@ func (c *RemoteClient) GetBytes(ctx context.Context, url string, opts RequestOpt
 			logrus.WithFields(logrus.Fields{
 				"url":      url,
 				"attempts": i + 1,
-				"duration": time.Since(start).Seconds(),
+				"duration_ms": time.Since(start).Seconds(),
 				"error":    lastErr.Error(),
 			}).Error("proxy: GetBytes read body failed after all retries")
 			return nil, "", lastErr
@@ -293,14 +293,14 @@ func (c *RemoteClient) GetBytes(ctx context.Context, url string, opts RequestOpt
 			"url":         url,
 			"size":        len(body),
 			"contentType": contentType,
-			"duration":    time.Since(start).Seconds(),
+			"duration_ms":    time.Since(start).Seconds(),
 		}).Debug("proxy: GetBytes request success")
 		return body, contentType, nil
 	}
 
 	logrus.WithFields(logrus.Fields{
 		"url":      url,
-		"duration": time.Since(start).Seconds(),
+		"duration_ms": time.Since(start).Seconds(),
 		"error":    lastErr.Error(),
 	}).Error("proxy: GetBytes request failed after all attempts")
 	return nil, "", lastErr
@@ -379,7 +379,7 @@ func (c *RemoteClient) GetStream(ctx context.Context, url string, opts RequestOp
 			logrus.WithFields(logrus.Fields{
 				"url":      url,
 				"attempts": i + 1,
-				"duration": time.Since(start).Seconds(),
+				"duration_ms": time.Since(start).Seconds(),
 				"error":    err.Error(),
 			}).Error("proxy: GetStream request failed after all retries")
 			return nil, err
@@ -397,7 +397,7 @@ func (c *RemoteClient) GetStream(ctx context.Context, url string, opts RequestOp
 					"url":        url,
 					"attempt":    i + 1,
 					"delay":      delay.Seconds(),
-					"statusCode": resp.StatusCode,
+					"status_code": resp.StatusCode,
 				}).Warn("proxy: GetStream returned non-200 status, retrying")
 				select {
 				case <-ctx.Done():
@@ -409,23 +409,23 @@ func (c *RemoteClient) GetStream(ctx context.Context, url string, opts RequestOp
 			logrus.WithFields(logrus.Fields{
 				"url":        url,
 				"attempts":   i + 1,
-				"statusCode": resp.StatusCode,
-				"duration":   time.Since(start).Seconds(),
+				"status_code": resp.StatusCode,
+				"duration_ms":   time.Since(start).Seconds(),
 			}).Error("proxy: GetStream returned non-200 status after all retries")
 			return nil, lastErr
 		}
 
 		logrus.WithFields(logrus.Fields{
 			"url":        url,
-			"statusCode": resp.StatusCode,
-			"duration":   time.Since(start).Seconds(),
+			"status_code": resp.StatusCode,
+			"duration_ms":   time.Since(start).Seconds(),
 		}).Debug("proxy: GetStream request success")
 		return resp, nil
 	}
 
 	logrus.WithFields(logrus.Fields{
 		"url":      url,
-		"duration": time.Since(start).Seconds(),
+		"duration_ms": time.Since(start).Seconds(),
 		"error":    lastErr.Error(),
 	}).Error("proxy: GetStream request failed after all attempts")
 	return nil, lastErr

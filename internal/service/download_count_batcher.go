@@ -283,7 +283,7 @@ func (b *DownloadCountBatcher) batchUpdatePackageCounts(ctx context.Context, pkg
 
 	for pk, cnt := range pkgMap {
 		if _, err := stmt.ExecContext(ctx, cnt, pk.RepoID, pk.Format, pk.Name); err != nil {
-			slog.Error("failed to update package download count", "repoID", pk.RepoID, "format", pk.Format, "name", pk.Name, "error", err)
+			slog.Error("failed to update package download count", "repo_id", pk.RepoID, "format", pk.Format, "name", pk.Name, "error", err)
 		}
 	}
 
@@ -319,7 +319,7 @@ func (b *DownloadCountBatcher) batchUpdatePackageVersionCounts(ctx context.Conte
 
 	for pk, cnt := range versionMap {
 		if _, err := stmt.ExecContext(ctx, cnt, pk.RepoID, pk.Format, pk.Name, pk.Version); err != nil {
-			slog.Error("failed to update package version download count", "repoID", pk.RepoID, "format", pk.Format, "name", pk.Name, "version", pk.Version, "error", err)
+			slog.Error("failed to update package version download count", "repo_id", pk.RepoID, "format", pk.Format, "name", pk.Name, "version", pk.Version, "error", err)
 		}
 	}
 

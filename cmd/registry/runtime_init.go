@@ -154,7 +154,7 @@ func createRuntimeForRepo(
 		if remoteBaseURL == "" {
 			logrus.WithFields(logrus.Fields{
 				"repo":   repo.Name,
-				"repoID": repo.ID,
+				"repo_id": repo.ID,
 				"format": repo.PackageType,
 			}).Warn("proxy repository remote URL is empty")
 		}
@@ -288,7 +288,7 @@ func createGroupRuntime(
 				if remoteBaseURL == "" {
 					logrus.WithFields(logrus.Fields{
 						"repo":   memberRepo.Name,
-						"repoID": memberRepo.ID,
+						"repo_id": memberRepo.ID,
 						"format": memberRepo.PackageType,
 						"group":  repo.Name,
 					}).Warn("proxy member repository remote URL is empty")

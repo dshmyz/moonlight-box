@@ -53,7 +53,7 @@ func (s *NexusSource) TestConnection(ctx context.Context) error {
 
 	logrus.WithFields(logrus.Fields{
 		"version": version.String(),
-		"baseURL": s.baseURL,
+		"base_url": s.baseURL,
 	}).Info("Nexus connection test successful")
 
 	return nil

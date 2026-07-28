@@ -71,7 +71,7 @@ func (g *GroupRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 func (g *GroupRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
 	logrus.WithFields(logrus.Fields{
 		"format":      query.Format,
-		"remotePath":  query.RemotePath,
+		"remote_path":  query.RemotePath,
 		"memberCount": len(g.Members),
 	}).Debug("group: QueryArtifacts called")
 
@@ -91,13 +91,13 @@ func (g *GroupRuntime) queryWithPriority(ctx context.Context, query ArtifactQuer
 			if errors.Is(err, ErrBlocked) {
 				logrus.WithFields(logrus.Fields{
 					"memberIndex": i,
-					"remotePath":  query.RemotePath,
+					"remote_path":  query.RemotePath,
 				}).Warn("group: member blocked artifact query")
 				return nil, err
 			}
 			logrus.WithFields(logrus.Fields{
 				"memberIndex": i,
-				"remotePath":  query.RemotePath,
+				"remote_path":  query.RemotePath,
 				"error":       err.Error(),
 			}).Warn("group: member QueryArtifacts failed")
 			if firstErr == nil {
@@ -132,13 +132,13 @@ func (g *GroupRuntime) RenderProjection(ctx context.Context, query ProjectionQue
 		if errors.Is(err, ErrBlocked) {
 			logrus.WithFields(logrus.Fields{
 				"memberIndex": i,
-				"remotePath":  query.RemotePath,
+				"remote_path":  query.RemotePath,
 			}).Warn("group: member blocked projection request")
 			return nil, err
 		}
 		logrus.WithFields(logrus.Fields{
 			"memberIndex": i,
-			"remotePath":  query.RemotePath,
+			"remote_path":  query.RemotePath,
 			"error":       err.Error(),
 		}).Warn("group: member RenderProjection failed")
 		if firstErr == nil {

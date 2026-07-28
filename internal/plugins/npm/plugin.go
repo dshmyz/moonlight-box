@@ -74,22 +74,22 @@ func (p *NpmPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + encodedName
 
 	logrus.WithFields(logrus.Fields{
-		"remoteURL":   remoteURL,
+		"remote_url":   remoteURL,
 		"path":        path,
 		"packageName": packageName,
-		"fullURL":     fullURL,
+		"full_url":     fullURL,
 	}).Debug("npm: FetchRemote called")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
-		logrus.WithError(err).WithField("fullURL", fullURL).Error("npm: create request failed")
+		logrus.WithError(err).WithField("full_url", fullURL).Error("npm: create request failed")
 		return nil, err
 	}
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"fullURL":  fullURL,
-			"duration": time.Since(start).Seconds(),
+			"full_url":  fullURL,
+			"duration_ms": time.Since(start).Seconds(),
 			"error":    err.Error(),
 		}).Error("npm: HTTP request failed")
 		return nil, err
@@ -101,9 +101,9 @@ func (p *NpmPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 			return nil, runtime.ErrNotFound
 		}
 		logrus.WithFields(logrus.Fields{
-			"fullURL":    fullURL,
-			"statusCode": resp.StatusCode,
-			"duration":   time.Since(start).Seconds(),
+			"full_url":    fullURL,
+			"status_code": resp.StatusCode,
+			"duration_ms":   time.Since(start).Seconds(),
 		}).Error("npm: HTTP request returned non-200 status")
 		return nil, fmt.Errorf("npm: fetch from %s: status %d", fullURL, resp.StatusCode)
 	}
@@ -111,17 +111,17 @@ func (p *NpmPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 	artifacts, err := p.parseNpmMetadata(packageName, resp.Body)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"fullURL":  fullURL,
-			"duration": time.Since(start).Seconds(),
+			"full_url":  fullURL,
+			"duration_ms": time.Since(start).Seconds(),
 			"error":    err.Error(),
 		}).Error("npm: parse metadata failed")
 		return nil, err
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"fullURL":      fullURL,
+		"full_url":      fullURL,
 		"versionCount": len(artifacts),
-		"duration":     time.Since(start).Seconds(),
+		"duration_ms":     time.Since(start).Seconds(),
 	}).Debug("npm: FetchRemote success")
 	return artifacts, nil
 }

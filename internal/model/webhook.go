@@ -61,7 +61,7 @@ type WebhookDelivery struct {
 	ResponseCode int          `json:"response_code"`
 	Success      bool         `json:"success"`
 	Error        string       `json:"error"`
-	Duration     int64        `json:"duration"`
+	Duration     int64        `json:"duration_ms"`
 	// 持久化重试队列字段
 	Status      DeliveryStatus `json:"status" gorm:"not null;default:'pending';index"`
 	RetryCount  int            `json:"retry_count" gorm:"default:0"`

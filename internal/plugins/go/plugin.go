@@ -117,10 +117,10 @@ func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string)
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + encodeGoPath(path)
 
 	logrus.WithFields(logrus.Fields{
-		"remoteURL":  remoteURL,
+		"remote_url":  remoteURL,
 		"path":       path,
 		"modulePath": modulePath,
-		"fullURL":    fullURL,
+		"full_url":    fullURL,
 	}).Debug("go: fetchVersionList called")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
@@ -131,7 +131,7 @@ func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string)
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"fullURL": fullURL,
+			"full_url": fullURL,
 			"error":   err.Error(),
 		}).Error("go: fetch version list HTTP request failed")
 		return nil, fmt.Errorf("go: fetch version list from %s: %w", fullURL, err)
@@ -142,8 +142,8 @@ func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string)
 			return nil, runtime.ErrNotFound
 		}
 		logrus.WithFields(logrus.Fields{
-			"fullURL":    fullURL,
-			"statusCode": resp.StatusCode,
+			"full_url":    fullURL,
+			"status_code": resp.StatusCode,
 		}).Error("go: fetch version list returned non-200 status")
 		// 上游 5xx/429 表示上游不可用，返回 ErrUpstreamUnavailable 让 router 映射为 502
 		if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
@@ -496,7 +496,7 @@ func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime ru
 
 	logrus.WithFields(logrus.Fields{
 		"repository":   ctx.Repository.Name,
-		"repositoryID": ctx.Repository.ID,
+		"repo_id": ctx.Repository.ID,
 		"path":         path,
 		"modulePath":   modulePath,
 	}).Debug("go: handleVersionList called")
