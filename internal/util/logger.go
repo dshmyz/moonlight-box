@@ -12,9 +12,7 @@ import (
 )
 
 var (
-	mainLogger    *logrus.Logger
 	sqlLogger     *logrus.Logger
-	errorLogger   *logrus.Logger
 	accessLogger  *logrus.Logger
 	loggerOnce    sync.Once
 	logFiles      = make(map[string]*lumberjack.Logger)
@@ -69,21 +67,18 @@ func initLoggers(cfg *LoggerConfig) error {
 		level = logrus.InfoLevel
 	}
 
-	// 初始化主日志
-	mainLogger = setupLogger(level, cfg.Format, cfg.Output, cfg.LogRetentionDays)
+	// 配置 logrus 包级标准 logger——所有 logrus.XXX / util.XXX 调用都走这一个实例。
+	// 这样配置的 output/level/format 对全部代码生效，不再有“独立实例不生效”的分裂。
+	logrus.SetLevel(level)
+	logrus.SetFormatter(newFormatter(cfg.Format))
+	logrus.SetOutput(getWriter(cfg.Output, cfg.LogRetentionDays))
 
-	// 如果启用分文件日志，初始化各类型日志
+	// 如果启用分文件日志，初始化 SQL / Access 独立实例，并给主 logger 装 error hook
 	if cfg.EnableSplitFiles {
 		sqlLogger = setupLogger(
 			getLogLevel(cfg.Level, "sql"),
 			cfg.Format,
 			defaultIfEmpty(cfg.SqlLogFile, "./logs/sql.log"),
-			cfg.LogRetentionDays,
-		)
-		errorLogger = setupLogger(
-			logrus.ErrorLevel, // 错误日志始终记录 error 及以上
-			cfg.Format,
-			defaultIfEmpty(cfg.ErrorLogFile, "./logs/error.log"),
 			cfg.LogRetentionDays,
 		)
 		accessLogger = setupLogger(
@@ -92,19 +87,38 @@ func initLoggers(cfg *LoggerConfig) error {
 			defaultIfEmpty(cfg.AccessLogFile, "./logs/access.log"),
 			cfg.LogRetentionDays,
 		)
+		// error hook：把主 logger 的 Error/Fatal/Panic 复制写到 error.log
+		// 不再用独立 errorLogger——hook 让 653 处 .Error() 调用自动进 error.log，零调用点改动
+		errorWriter := getWriter(defaultIfEmpty(cfg.ErrorLogFile, "./logs/error.log"), cfg.LogRetentionDays)
+		logrus.AddHook(newErrorHook(errorWriter, newFormatter(cfg.Format)))
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"level":            level.String(),
-		"format":           cfg.Format,
-		"output":           cfg.Output,
-		"split_files":      cfg.EnableSplitFiles,
-		"sql_log_file":     cfg.SqlLogFile,
-		"error_log_file":   cfg.ErrorLogFile,
-		"access_log_file":  cfg.AccessLogFile,
+		"level":           level.String(),
+		"format":          cfg.Format,
+		"output":          cfg.Output,
+		"split_files":     cfg.EnableSplitFiles,
+		"sql_log_file":    cfg.SqlLogFile,
+		"error_log_file":  cfg.ErrorLogFile,
+		"access_log_file": cfg.AccessLogFile,
 	}).Info("Logger initialized")
 
 	return nil
+}
+
+// newFormatter 按配置创建格式化器
+func newFormatter(format string) logrus.Formatter {
+	switch format {
+	case "json":
+		return &logrus.JSONFormatter{
+			TimestampFormat: "2006-01-02T15:04:05.000Z07:00",
+		}
+	default:
+		return &logrus.TextFormatter{
+			FullTimestamp:   true,
+			TimestampFormat: "2006-01-02 15:04:05",
+		}
+	}
 }
 
 func getLogLevel(baseLevel, logType string) logrus.Level {
@@ -149,23 +163,8 @@ func defaultIfEmpty(val, defaultVal string) string {
 func setupLogger(level logrus.Level, format, output string, retentionDays int) *logrus.Logger {
 	l := logrus.New()
 	l.SetLevel(level)
-
-	// 设置格式化器
-	switch format {
-	case "json":
-		l.SetFormatter(&logrus.JSONFormatter{
-			TimestampFormat: "2006-01-02T15:04:05.000Z07:00",
-		})
-	default:
-		l.SetFormatter(&logrus.TextFormatter{
-			FullTimestamp:   true,
-			TimestampFormat: "2006-01-02 15:04:05",
-		})
-	}
-
-	// 设置输出（支持文件轮转）
+	l.SetFormatter(newFormatter(format))
 	l.SetOutput(getWriter(output, retentionDays))
-
 	return l
 }
 
@@ -219,23 +218,44 @@ func getRotatingWriter(path string, retentionDays int) *lumberjack.Logger {
 // GetLogger 获取指定类型的日志记录器
 func GetLogger(logType LogType) *logrus.Logger {
 	if logType == LogTypeMain || logConfig == nil || !logConfig.EnableSplitFiles {
-		return mainLogger
+		return logrus.StandardLogger()
 	}
 	switch logType {
 	case LogTypeSQL:
 		if sqlLogger != nil {
 			return sqlLogger
 		}
-	case LogTypeError:
-		if errorLogger != nil {
-			return errorLogger
-		}
 	case LogTypeAccess:
 		if accessLogger != nil {
 			return accessLogger
 		}
 	}
-	return mainLogger
+	return logrus.StandardLogger()
+}
+
+// errorHook 把 Error/Fatal/Panic 级别的日志复制写到独立的 error.log。
+// 用 hook 而非独立 logger，让所有 logrus.XXX / util.XXX 的 .Error() 调用自动进 error.log。
+type errorHook struct {
+	writer    io.Writer
+	formatter logrus.Formatter
+}
+
+func newErrorHook(writer io.Writer, formatter logrus.Formatter) *errorHook {
+	return &errorHook{writer: writer, formatter: formatter}
+}
+
+func (h *errorHook) Levels() []logrus.Level {
+	return []logrus.Level{logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel}
+}
+
+func (h *errorHook) Fire(entry *logrus.Entry) error {
+	// 用 formatter 序列化 entry，写到 error.log
+	formatted, err := h.formatter.Format(entry)
+	if err != nil {
+		return err
+	}
+	_, err = h.writer.Write(formatted)
+	return err
 }
 
 // 关闭所有日志文件
@@ -248,25 +268,25 @@ func CloseLoggers() {
 	logFiles = make(map[string]*lumberjack.Logger)
 }
 
-// 全局日志代理方法（兼容旧代码）
-func Debug(args ...interface{})                 { mainLogger.Debug(args...) }
-func Info(args ...interface{})                  { mainLogger.Info(args...) }
-func Warn(args ...interface{})                  { mainLogger.Warn(args...) }
-func Error(args ...interface{})                 { mainLogger.Error(args...) }
-func Debugf(format string, args ...interface{}) { mainLogger.Debugf(format, args...) }
-func Infof(format string, args ...interface{})  { mainLogger.Infof(format, args...) }
-func Warnf(format string, args ...interface{})  { mainLogger.Warnf(format, args...) }
-func Errorf(format string, args ...interface{}) { mainLogger.Errorf(format, args...) }
+// 全局日志代理方法：转发到 logrus 包级标准 logger（与 logrus.XXX 完全等价）
+func Debug(args ...interface{})                 { logrus.Debug(args...) }
+func Info(args ...interface{})                  { logrus.Info(args...) }
+func Warn(args ...interface{})                  { logrus.Warn(args...) }
+func Error(args ...interface{})                 { logrus.Error(args...) }
+func Debugf(format string, args ...interface{}) { logrus.Debugf(format, args...) }
+func Infof(format string, args ...interface{})  { logrus.Infof(format, args...) }
+func Warnf(format string, args ...interface{})  { logrus.Warnf(format, args...) }
+func Errorf(format string, args ...interface{}) { logrus.Errorf(format, args...) }
 
-func WithFields(fields logrus.Fields) *logrus.Entry { return mainLogger.WithFields(fields) }
+func WithFields(fields logrus.Fields) *logrus.Entry { return logrus.WithFields(fields) }
 func WithField(key string, value interface{}) *logrus.Entry {
-	return mainLogger.WithField(key, value)
+	return logrus.WithField(key, value)
 }
-func WithError(err error) *logrus.Entry { return mainLogger.WithError(err) }
-func WithTime(t time.Time) *logrus.Entry { return mainLogger.WithTime(t) }
+func WithError(err error) *logrus.Entry { return logrus.WithError(err) }
+func WithTime(t time.Time) *logrus.Entry { return logrus.WithTime(t) }
 
 // SetLevel 设置全局日志级别
-func SetLevel(level logrus.Level) { mainLogger.SetLevel(level) }
+func SetLevel(level logrus.Level) { logrus.SetLevel(level) }
 
 // AddHook 添加日志钩子
-func AddHook(hook logrus.Hook) { mainLogger.AddHook(hook) }
+func AddHook(hook logrus.Hook) { logrus.AddHook(hook) }

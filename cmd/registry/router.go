@@ -88,7 +88,7 @@ func (ctx *RouterContext) SetupRouter(version string) *gin.Engine {
 	if ctx.Config != nil && ctx.Config.Server.MaxUploadSize > 0 {
 		r.Use(middleware.BodySizeLimit(ctx.Config.Server.MaxUploadSize))
 	}
-	r.Use(gin.Logger())
+	r.Use(middleware.AccessLog())
 
 	ctx.setupPublicRoutes(r, version)
 	ctx.setupAPIRoutes(r)

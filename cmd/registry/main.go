@@ -583,5 +583,8 @@ func main() {
 	// 关闭审计服务，确保所有日志都已写入
 	auditSvc.Shutdown()
 
+	// 关闭日志文件（lumberjack 句柄），避免句柄泄露
+	util.CloseLoggers()
+
 	logrus.Info("Server exited")
 }

@@ -29,14 +29,12 @@ func RecoverPanic(name string) {
 		n := runtime.Stack(buf, false)
 		stack := string(buf[:n])
 
-		if mainLogger != nil {
-			WithFields(logrus.Fields{
-				"module":    "safego",
-				"goroutine": name,
-				"panic":     r,
-				"stack":     stack,
-			}).Error("recovered from panic in background goroutine")
-		}
+		WithFields(logrus.Fields{
+			"module":    "safego",
+			"goroutine": name,
+			"panic":     r,
+			"stack":     stack,
+		}).Error("recovered from panic in background goroutine")
 		// 兜底：即使日志未初始化也保证 panic 可见
 		fmt.Printf("PANIC in goroutine %q: %v\nstack:\n%s\n", name, r, stack)
 	}
