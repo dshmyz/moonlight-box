@@ -1,0 +1,23 @@
+# PyPI 上传配置文件模板
+# 将此文件复制到 ~/.pypirc
+
+[distutils]
+index-servers =
+    moonlight
+    moonlight-local
+
+[moonlight]
+# 虚拟仓库（用于下载）
+repository = https://your-moonlight-domain/repository/pypi-virtual/
+username = YOUR_USERNAME
+password = YOUR_PASSWORD
+
+[moonlight-local]
+# 本地仓库（用于上传）
+repository = https://your-moonlight-domain/repository/pypi-local/
+username = YOUR_USERNAME
+password = YOUR_PASSWORD
+
+# 使用说明：
+# 1. 上传包：twine upload --repository moonlight-local dist/*
+# 2. 安装包：pip install package-name

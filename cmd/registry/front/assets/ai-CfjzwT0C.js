@@ -1,0 +1,1 @@
+import{a as e}from"./index-CMgE9Zfm.js";const r={chat(t){return e.post("/ai/chat",t)},getTools(){return e.get("/ai/tools")},clearSession(t){return e.delete(`/ai/sessions/${t}`)},healthCheck(){return e.get("/ai/health")}};export{r as a};

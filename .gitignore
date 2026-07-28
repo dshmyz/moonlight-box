@@ -15,7 +15,7 @@ bin/
 
 # Build output directories
 cmd/registry/registry
-cmd/registry/front/
+# 注意：cmd/registry/front/ 不忽略，go:embed 需要前端产物入库
 e2e
 internal/adapter/npm/lodash/4.17.21/package.tgz
 internal/adapter/pypi/test-package/test-package-1.0.0.tar.gz
