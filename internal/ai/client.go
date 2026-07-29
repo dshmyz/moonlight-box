@@ -97,7 +97,7 @@ func (c *AIClient) Call(ctx context.Context, req *models.ChatRequest) (*models.C
 	defer resp.Body.Close()
 
 	// 读取响应体
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -171,7 +171,7 @@ func (c *AIClient) Stream(ctx context.Context, req *models.ChatRequest) (<-chan 
 
 	// 检查错误响应
 	if resp.StatusCode != http.StatusOK {
-		respBody, err := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 		resp.Body.Close()
 		close(ch)
 		if err != nil {

@@ -224,7 +224,7 @@ func (p *AptPlugin) fetchPackagesIndex(ctx context.Context, remoteURL, path stri
 		return nil, fmt.Errorf("apt: fetch packages index from %s: status %d", fullURL, resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,

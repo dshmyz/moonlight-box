@@ -148,7 +148,7 @@ func (s *VulnRuleService) syncDataSource(ctx context.Context, ds *model.VulnData
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
 	if err != nil {
 		return fmt.Errorf("failed to read response: %w", err)
 	}

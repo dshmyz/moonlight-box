@@ -216,7 +216,22 @@ func (s *AuthService) RefreshToken(refreshTokenString string) (*AuthResponse, er
 
 	s.blacklistToken(refreshTokenString)
 
-	accessToken, err := s.generateToken(user.ID, user.Username, claims.Roles, s.config.TokenExpiry)
+	// 从 DB 重新获取最新角色，避免使用旧 token 中的过期角色数据
+	roles, err := s.roleRepo.GetUserRoles(user.ID)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"module":  "auth",
+			"user_id": user.ID,
+			"error":   err,
+		}).Warn("Failed to get user roles during refresh, proceeding with empty roles")
+		roles = nil
+	}
+	roleNames := make([]string, len(roles))
+	for i, role := range roles {
+		roleNames[i] = role.Name
+	}
+
+	accessToken, err := s.generateToken(user.ID, user.Username, roleNames, s.config.TokenExpiry)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"module":  "auth",
@@ -226,7 +241,7 @@ func (s *AuthService) RefreshToken(refreshTokenString string) (*AuthResponse, er
 		return nil, err
 	}
 
-	newRefreshToken, err := s.generateToken(user.ID, user.Username, claims.Roles, s.config.RefreshExpiry)
+	newRefreshToken, err := s.generateToken(user.ID, user.Username, roleNames, s.config.RefreshExpiry)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"module":  "auth",

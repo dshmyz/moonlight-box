@@ -155,7 +155,7 @@ func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string)
 
 // parseDirectoryListing attempts to extract file links from an HTML directory listing.
 func (p *GenericPlugin) parseDirectoryListing(basePath string, body io.Reader) ([]*runtime.Artifact, error) {
-	htmlBytes, err := io.ReadAll(body)
+	htmlBytes, err := io.ReadAll(io.LimitReader(body, 50<<20))
 	if err != nil {
 		return nil, fmt.Errorf("generic: read directory listing: %w", err)
 	}

@@ -217,7 +217,7 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 		return nil, fmt.Errorf("yum: fetch repomd from %s: status %d", fullURL, resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,

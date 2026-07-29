@@ -26,6 +26,7 @@ func RequirePermission(permCache *service.PermissionCacheService, resource, acti
 		if !hasPerm {
 			response.Forbidden(c, "insufficient permissions")
 			c.Abort()
+			return
 		}
 
 		c.Next()

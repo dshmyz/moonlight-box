@@ -199,7 +199,7 @@ func (s *CASService) ValidateTicket(ticket string) (username string, displayName
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to read CAS response: %w", err)
 	}

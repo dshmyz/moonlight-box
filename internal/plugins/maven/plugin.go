@@ -187,7 +187,7 @@ func (p *MavenPlugin) FetchArtifactMetadata(ctx context.Context, remoteURL strin
 	if resp.StatusCode != http.StatusOK {
 		return nil, runtime.ErrMetadataUnavailable
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +236,7 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 		return nil, fmt.Errorf("maven: fetch metadata from %s: status %d", fullURL, resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,
@@ -1467,10 +1467,15 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		}
 	}
 	if strings.EqualFold(key.Extension, ".pom") || strings.HasSuffix(strings.ToLower(key.Filename), ".pom") {
-		bodyBytes, readErr := io.ReadAll(ctx.Request.Body)
+		bodyBytes, readErr := io.ReadAll(io.LimitReader(ctx.Request.Body, 50<<20+1))
 		if readErr != nil {
 			session.Abort(ctx.Request.Context())
-			http.Error(ctx.Writer, readErr.Error(), http.StatusInternalServerError)
+			http.Error(ctx.Writer, "failed to read upload content", http.StatusInternalServerError)
+			return nil
+		}
+		if int64(len(bodyBytes)) > 50<<20 {
+			session.Abort(ctx.Request.Context())
+			http.Error(ctx.Writer, "upload file too large (max 50MB)", http.StatusRequestEntityTooLarge)
 			return nil
 		}
 		body = io.NopCloser(bytes.NewReader(bodyBytes))
@@ -1483,7 +1488,8 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 	blobRef, err := session.PutBlob(ctx.Request.Context(), body)
 	if err != nil {
 		session.Abort(ctx.Request.Context())
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		logrus.WithError(err).Error("maven: failed to store blob")
+		http.Error(ctx.Writer, "upload failed", http.StatusInternalServerError)
 		return nil
 	}
 
