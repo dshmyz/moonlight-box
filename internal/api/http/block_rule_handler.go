@@ -38,11 +38,7 @@ func (h *BlockRuleHandler) List(c *gin.Context) {
 	}
 
 	if p := c.Query("page"); p != "" {
-		page, _ := strconv.Atoi(p)
-		pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-		if pageSize > 100 {
-			pageSize = 100
-		}
+		page, pageSize := parsePagination(c)
 		if page < 1 {
 			page = 1
 		}

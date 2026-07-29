@@ -27,11 +27,7 @@ func NewVulnRuleHandler(vulnRuleService *service.VulnRuleService) *VulnRuleHandl
 }
 
 func (h *VulnRuleHandler) ListRules(c *gin.Context) {
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-	if pageSize > 100 {
-		pageSize = 100
-	}
+	page, pageSize := parsePagination(c)
 	source := c.Query("source")
 	severity := c.Query("severity")
 	pkgType := c.Query("pkg_type")
