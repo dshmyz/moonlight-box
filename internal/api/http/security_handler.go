@@ -64,6 +64,9 @@ func (h *SecurityHandler) TriggerScan(c *gin.Context) {
 func (h *SecurityHandler) ListVulnerabilities(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if pageSize > 100 {
+		pageSize = 100
+	}
 	severity := c.Query("severity")
 	pkgType := c.Query("pkg_type")
 
@@ -98,6 +101,9 @@ func (h *SecurityHandler) ListVulnerabilities(c *gin.Context) {
 func (h *SecurityHandler) ListScanResults(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if pageSize > 100 {
+		pageSize = 100
+	}
 	status := c.Query("status")
 	pkgType := c.Query("pkg_type")
 

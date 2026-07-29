@@ -52,6 +52,9 @@ func (h *BackupHandler) Create(c *gin.Context) {
 func (h *BackupHandler) List(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
+	if pageSize > 100 {
+		pageSize = 100
+	}
 
 	backups, total, err := h.backupSvc.ListBackups(page, pageSize)
 	if err != nil {

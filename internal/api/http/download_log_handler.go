@@ -21,6 +21,9 @@ func NewDownloadLogHandler(logRepo *repository.DownloadLogRepository) *DownloadL
 func (h *DownloadLogHandler) List(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if pageSize > 100 {
+		pageSize = 100
+	}
 	repositoryIDStr := c.Query("repository_id")
 	packageType := c.Query("package_type")
 	status := c.Query("status")

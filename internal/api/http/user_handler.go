@@ -30,6 +30,9 @@ func NewUserHandler(userRepo *repository.UserRepository, roleRepo *repository.Ro
 func (h *UserHandler) List(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if pageSize > 100 {
+		pageSize = 100
+	}
 	keyword := c.Query("keyword")
 	isActiveStr := c.Query("is_active")
 

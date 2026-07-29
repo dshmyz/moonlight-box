@@ -22,6 +22,9 @@ func NewAuditLogHandler(auditRepo *repository.AuditRepository) *AuditLogHandler 
 func (h *AuditLogHandler) List(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if pageSize > 100 {
+		pageSize = 100
+	}
 	action := c.Query("action")
 	ipAddress := c.Query("ip_address")
 	resourceType := c.Query("resource_type")

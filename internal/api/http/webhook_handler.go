@@ -61,6 +61,9 @@ func (h *WebhookHandler) Create(c *gin.Context) {
 func (h *WebhookHandler) List(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
+	if pageSize > 100 {
+		pageSize = 100
+	}
 
 	webhooks, total, err := h.webhookSvc.ListWebhooks(page, pageSize)
 	if err != nil {
@@ -160,6 +163,9 @@ func (h *WebhookHandler) ListDeliveries(c *gin.Context) {
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
+	if pageSize > 100 {
+		pageSize = 100
+	}
 
 	deliveries, total, err := h.webhookSvc.ListDeliveries(uint(id), page, pageSize)
 	if err != nil {

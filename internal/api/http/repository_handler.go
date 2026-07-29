@@ -48,7 +48,7 @@ func getSchemeAndHost(c *gin.Context) (string, string) {
 }
 
 // parsePagination 从请求中解析分页参数
-// 只有客户端显式传了 page 或 page_size 时才启用分页（默认 page=1, pageSize=20）
+// 只有客户端显式传了 page 或 page_size 时才启用分页（默认 page=1, pageSize=20, maxPageSize=100）
 // 否则返回 0,0 表示不分页，兼容旧前端
 func parsePagination(c *gin.Context) (page, pageSize int) {
 	pageStr := c.Query("page")
@@ -63,6 +63,9 @@ func parsePagination(c *gin.Context) (page, pageSize int) {
 	}
 	if pageSize <= 0 {
 		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
 	}
 	return
 }
