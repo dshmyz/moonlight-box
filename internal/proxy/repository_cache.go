@@ -22,6 +22,7 @@ type RepositoryCache struct {
 	groupRepo *repository.GroupRepository
 	ttl       time.Duration
 	stopCh    chan struct{}
+	stopOnce  sync.Once
 	loadGroup singleflight.Group
 }
 
@@ -317,7 +318,9 @@ func (c *RepositoryCache) StartCleanup(interval time.Duration) {
 }
 
 func (c *RepositoryCache) Stop() {
-	close(c.stopCh)
+	c.stopOnce.Do(func() {
+		close(c.stopCh)
+	})
 }
 
 func (c *RepositoryCache) cleanup() {

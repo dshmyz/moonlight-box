@@ -130,6 +130,15 @@ func (h *VulnRuleHandler) CreateDataSource(c *gin.Context) {
 		response.BadRequest(c, "invalid request", err.Error())
 		return
 	}
+
+	// SSRF 防护：只允许 http/https，禁止内网地址
+	if ds.URL != "" {
+		if err := validateExternalURL(ds.URL); err != nil {
+			response.BadRequest(c, "invalid URL", err.Error())
+			return
+		}
+	}
+
 	if err := h.vulnRuleService.CreateDataSource(&ds); err != nil {
 		response.InternalError(c, "failed to create data source")
 		return

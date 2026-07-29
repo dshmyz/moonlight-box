@@ -276,7 +276,11 @@ func (h *HealthCheckService) checkAllRepos() {
 
 // checkRepoHealth 检查单个仓库的健康状态
 func (h *HealthCheckService) checkRepoHealth(repo *model.Repository) {
-	ctx, cancel := context.WithTimeout(context.Background(), h.config.Timeout)
+	h.mu.RLock()
+	timeout := h.config.Timeout
+	h.mu.RUnlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cb := h.GetOrCreateCircuitBreaker(repo.ID)

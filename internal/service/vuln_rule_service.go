@@ -40,7 +40,7 @@ func (s *VulnRuleService) UpdateRule(id uint, updates map[string]interface{}) er
 	if err != nil {
 		return fmt.Errorf("rule not found: %w", err)
 	}
-	return s.ruleRepo.Update(id, updates)
+	return s.ruleRepo.Update(id, filterUpdates(updates, allowedVulnRuleFields))
 }
 
 func (s *VulnRuleService) DeleteRule(id uint) error {
@@ -214,7 +214,7 @@ func (s *VulnRuleService) UpdateDataSource(id uint, updates map[string]interface
 	if err != nil {
 		return fmt.Errorf("data source not found: %w", err)
 	}
-	return s.sourceRepo.Update(id, updates)
+	return s.sourceRepo.Update(id, filterUpdates(updates, allowedDataSourceFields))
 }
 
 func (s *VulnRuleService) DeleteDataSource(id uint) error {
@@ -231,4 +231,31 @@ func (s *VulnRuleService) SyncDataSource(ctx context.Context, id uint) error {
 		return fmt.Errorf("data source not found: %w", err)
 	}
 	return s.syncDataSource(ctx, ds)
+}
+
+// allowedVulnRuleFields 白名单：UpdateRule 允许修改的字段
+var allowedVulnRuleFields = map[string]bool{
+	"package_pattern": true, "package_type": true,
+	"max_version": true, "min_version": true,
+	"cve": true, "severity": true, "cvss": true,
+	"title": true, "description": true, "fixed_version": true,
+	"references": true, "enabled": true,
+}
+
+// allowedDataSourceFields 白名单：UpdateDataSource 允许修改的字段
+var allowedDataSourceFields = map[string]bool{
+	"name": true, "type": true, "url": true,
+	"auth_type": true, "auth_token": true,
+	"enabled": true, "sync_cron": true,
+}
+
+// filterUpdates 从 updates 中只保留白名单字段，防止 mass assignment
+func filterUpdates(updates map[string]interface{}, allowed map[string]bool) map[string]interface{} {
+	filtered := make(map[string]interface{}, len(updates))
+	for k, v := range updates {
+		if allowed[k] {
+			filtered[k] = v
+		}
+	}
+	return filtered
 }
