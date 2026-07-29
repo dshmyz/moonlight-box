@@ -51,7 +51,7 @@ func (h *WebhookHandler) Create(c *gin.Context) {
 	}
 
 	if err := h.webhookSvc.CreateWebhook(webhook); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -67,7 +67,7 @@ func (h *WebhookHandler) List(c *gin.Context) {
 
 	webhooks, total, err := h.webhookSvc.ListWebhooks(page, pageSize)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -117,7 +117,7 @@ func (h *WebhookHandler) Update(c *gin.Context) {
 	webhook.PackageType = req.PackageType
 
 	if err := h.webhookSvc.UpdateWebhook(webhook); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -132,7 +132,7 @@ func (h *WebhookHandler) Delete(c *gin.Context) {
 	}
 
 	if err := h.webhookSvc.DeleteWebhook(uint(id)); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -147,7 +147,7 @@ func (h *WebhookHandler) Test(c *gin.Context) {
 	}
 
 	if err := h.webhookSvc.TestWebhook(uint(id)); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -169,7 +169,7 @@ func (h *WebhookHandler) ListDeliveries(c *gin.Context) {
 
 	deliveries, total, err := h.webhookSvc.ListDeliveries(uint(id), page, pageSize)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 

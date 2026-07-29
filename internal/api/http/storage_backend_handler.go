@@ -32,7 +32,7 @@ type storageBackendRequest struct {
 func (h *StorageBackendHandler) List(c *gin.Context) {
 	backends, err := h.svc.List()
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 	response.Success(c, backends)

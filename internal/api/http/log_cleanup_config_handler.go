@@ -78,17 +78,17 @@ func (h *LogCleanupConfigHandler) UpdateConfig(c *gin.Context) {
 	userID := c.GetUint("userID")
 
 	if err := h.configSvc.Set("log_cleanup.enabled", boolToString(req.Enabled), "boolean", "logging", "启用下载日志自动清理", false, userID); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
 	if err := h.configSvc.Set("log_cleanup.retention_days", strconv.Itoa(req.RetentionDays), "int", "logging", "下载日志保留天数", false, userID); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
 	if err := h.configSvc.Set("log_cleanup.interval", req.Interval, "string", "logging", "清理执行间隔", false, userID); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -105,7 +105,7 @@ func (h *LogCleanupConfigHandler) UpdateConfig(c *gin.Context) {
 // CleanupNow 立即执行一次日志清理。
 func (h *LogCleanupConfigHandler) CleanupNow(c *gin.Context) {
 	if err := h.logCleanupSvc.CleanupNow(); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 

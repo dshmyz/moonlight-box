@@ -62,22 +62,22 @@ func (h *BackupConfigHandler) UpdateConfig(c *gin.Context) {
 	userID := c.GetUint("userID")
 
 	if err := h.configSvc.Set("backup.enabled", boolToString(req.Enabled), "boolean", "backup", "Enable or disable scheduled backup", false, userID); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
 	if err := h.configSvc.Set("backup.interval", req.Interval, "string", "backup", "Backup interval (e.g., 24h, 12h, 1h)", false, userID); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
 	if err := h.configSvc.Set("backup.time", req.Time, "string", "backup", "Backup time (HH:MM format)", false, userID); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
 	if err := h.schedulerSvc.UpdateBackupSchedule(); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 

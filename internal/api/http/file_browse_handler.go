@@ -64,7 +64,7 @@ func (h *FileBrowseHandler) ListDirectory(c *gin.Context) {
 
 	files, err := backend.Browse(c.Request.Context(), relativePath)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -99,7 +99,7 @@ func (h *FileBrowseHandler) GetFileStats(c *gin.Context) {
 			response.NotFound(c, "file not found")
 			return
 		}
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -190,7 +190,7 @@ func (h *FileBrowseHandler) DownloadFile(c *gin.Context) {
 			response.NotFound(c, "file not found")
 			return
 		}
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -200,7 +200,7 @@ func (h *FileBrowseHandler) DownloadFile(c *gin.Context) {
 			response.NotFound(c, "file not found")
 			return
 		}
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 	defer reader.Close()

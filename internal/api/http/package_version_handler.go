@@ -95,7 +95,7 @@ func (h *PackageVersionHandler) respondVersionsFromArtifacts(c *gin.Context, pkg
 
 	var artifacts []model.Artifact
 	if err := db.Order("updated_at DESC").Find(&artifacts).Error; err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -346,7 +346,7 @@ func (h *PackageVersionHandler) ListVersionFiles(c *gin.Context) {
 
 	artifacts, err := findVersionArtifacts(h.db.WithContext(c.Request.Context()), repositoryID, pkgType, pkgName, version)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 	if len(artifacts) == 0 {
@@ -891,7 +891,7 @@ func (h *PackageVersionHandler) DeletePackage(c *gin.Context) {
 	}
 
 	if err := h.artifactSvc.DeletePackageByCoordinates(c.Request.Context(), repositoryID, format, name); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -943,7 +943,7 @@ func (h *PackageVersionHandler) writeVersionOperationError(c *gin.Context, err e
 		response.NotFound(c, "version not found")
 		return
 	}
-	response.InternalError(c, err.Error())
+	internalErr(c, err, "handler error")
 }
 
 func (h *PackageVersionHandler) resolvePackageDeleteTarget(c *gin.Context, packageID uint) (uint, string, string, error) {

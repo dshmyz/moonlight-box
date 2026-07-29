@@ -23,7 +23,7 @@ func NewRoleHandler(roleRepo *repository.RoleRepository, auditSvc *service.Audit
 func (h *RoleHandler) List(c *gin.Context) {
 	roles, err := h.roleRepo.List()
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 	response.Success(c, roles)
@@ -68,7 +68,7 @@ func (h *RoleHandler) Create(c *gin.Context) {
 	}
 
 	if err := h.roleRepo.Create(role); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -123,7 +123,7 @@ func (h *RoleHandler) Update(c *gin.Context) {
 	}
 
 	if err := h.roleRepo.Update(role); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -150,7 +150,7 @@ func (h *RoleHandler) Delete(c *gin.Context) {
 
 	inUse, err := h.roleRepo.IsRoleInUse(uint(id))
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -160,7 +160,7 @@ func (h *RoleHandler) Delete(c *gin.Context) {
 	}
 
 	if err := h.roleRepo.Delete(uint(id)); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -184,7 +184,7 @@ func (h *RoleHandler) UpdatePermissions(c *gin.Context) {
 	}
 
 	if err := h.roleRepo.UpdateRolePermissions(uint(id), req.PermissionIDs); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -195,7 +195,7 @@ func (h *RoleHandler) UpdatePermissions(c *gin.Context) {
 func (h *RoleHandler) ListPermissions(c *gin.Context) {
 	perms, err := h.roleRepo.ListPermissions()
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 	response.Success(c, perms)
@@ -226,7 +226,7 @@ func (h *RoleHandler) CloneRole(c *gin.Context) {
 
 	clonedRole, err := h.roleRepo.CloneRole(uint(id), req.Name, req.Description)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 

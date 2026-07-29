@@ -85,7 +85,7 @@ func (h *VulnRuleHandler) UpdateRule(c *gin.Context) {
 		return
 	}
 	if err := h.vulnRuleService.UpdateRule(uint(id), updates); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 	response.Success(c, gin.H{"message": "rule updated"})
@@ -98,7 +98,7 @@ func (h *VulnRuleHandler) DeleteRule(c *gin.Context) {
 		return
 	}
 	if err := h.vulnRuleService.DeleteRule(uint(id)); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 	response.Success(c, gin.H{"message": "rule deleted"})
@@ -161,7 +161,7 @@ func (h *VulnRuleHandler) UpdateDataSource(c *gin.Context) {
 		return
 	}
 	if err := h.vulnRuleService.UpdateDataSource(uint(id), updates); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 	response.Success(c, gin.H{"message": "data source updated"})
@@ -174,7 +174,7 @@ func (h *VulnRuleHandler) DeleteDataSource(c *gin.Context) {
 		return
 	}
 	if err := h.vulnRuleService.DeleteDataSource(uint(id)); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 	response.Success(c, gin.H{"message": "data source deleted"})
@@ -187,7 +187,7 @@ func (h *VulnRuleHandler) SyncDataSource(c *gin.Context) {
 		return
 	}
 	if err := h.vulnRuleService.SyncDataSource(c.Request.Context(), uint(id)); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 	response.Success(c, gin.H{"message": "sync completed"})
@@ -195,7 +195,7 @@ func (h *VulnRuleHandler) SyncDataSource(c *gin.Context) {
 
 func (h *VulnRuleHandler) SyncAllDataSources(c *gin.Context) {
 	if err := h.vulnRuleService.SyncAllDataSources(c.Request.Context()); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 	response.Success(c, gin.H{"message": "sync completed"})

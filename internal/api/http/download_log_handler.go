@@ -56,7 +56,7 @@ func (h *DownloadLogHandler) List(c *gin.Context) {
 
 	logs, total, err := h.logRepo.List(page, pageSize, repositoryID, packageType, status, startTime, endTime)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -94,7 +94,7 @@ func (h *DownloadLogHandler) GetStats(c *gin.Context) {
 
 	stats, err := h.logRepo.GetStats(repositoryID, startTime, endTime)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 

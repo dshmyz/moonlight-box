@@ -91,7 +91,7 @@ func (h *CacheHandler) DeleteItem(c *gin.Context) {
 		}
 
 		if err := p.Delete(c.Request.Context(), key); err != nil {
-			response.InternalError(c, err.Error())
+			internalErr(c, err, "handler error")
 			return
 		}
 
@@ -100,7 +100,7 @@ func (h *CacheHandler) DeleteItem(c *gin.Context) {
 	}
 
 	if err := h.cacheMgr.DeleteKeyFromAll(c.Request.Context(), key); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -121,7 +121,7 @@ func (h *CacheHandler) CleanupExpired(c *gin.Context) {
 	}
 
 	if err := p.Clear(c.Request.Context()); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -132,7 +132,7 @@ func (h *CacheHandler) Clear(c *gin.Context) {
 	name := c.Param("name")
 	if name != "" {
 		if err := h.cacheMgr.Clear(c.Request.Context(), name); err != nil {
-			response.InternalError(c, err.Error())
+			internalErr(c, err, "handler error")
 			return
 		}
 		response.Success(c, gin.H{"message": "Cache cleared"})
@@ -140,7 +140,7 @@ func (h *CacheHandler) Clear(c *gin.Context) {
 	}
 
 	if err := h.cacheMgr.ClearAll(c.Request.Context()); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -159,7 +159,7 @@ func (h *CacheHandler) Invalidate(c *gin.Context) {
 	}
 
 	if err := h.cacheMgr.Invalidate(c.Request.Context(), req.Name, req.Pattern); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 

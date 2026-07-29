@@ -46,7 +46,7 @@ func (h *PackageSearchHandler) Search(c *gin.Context) {
 
 	result, err := h.svc.Search(c.Request.Context(), req)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -101,7 +101,7 @@ func (h *PackageSearchHandler) List(c *gin.Context) {
 
 	result, err := h.svc.List(c.Request.Context(), req)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 

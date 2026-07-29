@@ -47,7 +47,7 @@ func (h *UserHandler) List(c *gin.Context) {
 
 	users, total, err := h.userRepo.List(page, pageSize, keyword, isActive)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -82,7 +82,7 @@ func (h *UserHandler) Create(c *gin.Context) {
 	}
 
 	if err := h.userRepo.Create(user); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -131,7 +131,7 @@ func (h *UserHandler) UpdateStatus(c *gin.Context) {
 
 	user.IsActive = req.IsActive
 	if err := h.userRepo.Update(user); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -180,7 +180,7 @@ func (h *UserHandler) AssignRoles(c *gin.Context) {
 
 	existingRoles, err := h.roleRepo.GetUserRoles(user.ID)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -230,7 +230,7 @@ func (h *UserHandler) AssignRoles(c *gin.Context) {
 func (h *UserHandler) ListRoles(c *gin.Context) {
 	roles, err := h.roleRepo.List()
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 	response.Success(c, roles)
@@ -265,7 +265,7 @@ func (h *UserHandler) ResetPassword(c *gin.Context) {
 
 	user.PasswordHash = hashedPassword
 	if err := h.userRepo.Update(user); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -310,7 +310,7 @@ func (h *UserHandler) Delete(c *gin.Context) {
 	}
 
 	if err := h.userRepo.Delete(uint(id)); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 

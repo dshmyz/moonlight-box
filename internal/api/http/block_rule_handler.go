@@ -48,14 +48,14 @@ func (h *BlockRuleHandler) List(c *gin.Context) {
 		}
 		rules, total, err := h.svc.ListWithPage(page, pageSize, filter)
 		if err != nil {
-			response.InternalError(c, err.Error())
+			internalErr(c, err, "handler error")
 			return
 		}
 		response.SuccessWithPagination(c, rules, page, pageSize, total)
 	} else {
 		rules, err := h.svc.List(filter)
 		if err != nil {
-			response.InternalError(c, err.Error())
+			internalErr(c, err, "handler error")
 			return
 		}
 		response.Success(c, rules)
@@ -107,7 +107,7 @@ func (h *BlockRuleHandler) Create(c *gin.Context) {
 			response.BadRequest(c, "Invalid block rule", err.Error())
 			return
 		}
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -132,7 +132,7 @@ func (h *BlockRuleHandler) Update(c *gin.Context) {
 			response.BadRequest(c, "Invalid block rule", err.Error())
 			return
 		}
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -147,7 +147,7 @@ func (h *BlockRuleHandler) Delete(c *gin.Context) {
 	}
 
 	if err := h.svc.Delete(uint(id)); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -166,7 +166,7 @@ func (h *BlockRuleHandler) ListBlockLogs(c *gin.Context) {
 
 	logs, total, err := h.auditSvc.List(page, pageSize, nil, string(model.ActionBlock))
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -224,7 +224,7 @@ func (h *BlockRuleHandler) BatchImport(c *gin.Context) {
 
 	success, failed, err := h.svc.BatchCreate(rules)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -253,7 +253,7 @@ func (h *BlockRuleHandler) GetBlockStats(c *gin.Context) {
 
 	stats, err := h.auditRepo.GetBlockStats(hours)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 

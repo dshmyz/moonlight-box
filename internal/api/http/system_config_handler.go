@@ -86,7 +86,7 @@ func (h *SystemConfigHandler) Get(c *gin.Context) {
 func (h *SystemConfigHandler) List(c *gin.Context) {
 	configs, err := h.configSvc.GetAll()
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -108,7 +108,7 @@ func (h *SystemConfigHandler) Set(c *gin.Context) {
 	}
 
 	if err := h.configSvc.Set(req.Key, req.Value, valueType, req.Category, req.Description, req.IsSensitive, userID); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -136,7 +136,7 @@ func (h *SystemConfigHandler) Delete(c *gin.Context) {
 	key := c.Param("key")
 
 	if err := h.configSvc.Delete(key); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 

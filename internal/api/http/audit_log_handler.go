@@ -37,7 +37,7 @@ func (h *AuditLogHandler) List(c *gin.Context) {
 
 	logs, total, err := h.auditRepo.List(page, pageSize, ipAddress, resourceType, actionFilter)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 

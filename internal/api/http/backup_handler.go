@@ -42,7 +42,7 @@ func (h *BackupHandler) Create(c *gin.Context) {
 
 	backup, err := h.backupSvc.CreateBackup(req.Name, backupType, req.Description, userID)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -58,7 +58,7 @@ func (h *BackupHandler) List(c *gin.Context) {
 
 	backups, total, err := h.backupSvc.ListBackups(page, pageSize)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -89,7 +89,7 @@ func (h *BackupHandler) Restore(c *gin.Context) {
 	}
 
 	if err := h.backupSvc.RestoreBackup(uint(id)); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
@@ -104,7 +104,7 @@ func (h *BackupHandler) Delete(c *gin.Context) {
 	}
 
 	if err := h.backupSvc.DeleteBackup(uint(id)); err != nil {
-		response.InternalError(c, err.Error())
+		internalErr(c, err, "handler error")
 		return
 	}
 
