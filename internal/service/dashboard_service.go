@@ -360,7 +360,6 @@ func (s *DashboardService) getStorageInfo() StorageInfo {
 
 	s.storageSizeMu.RLock()
 	cached := s.storageSize
-	lastUpdated := s.storageUpdated
 	s.storageSizeMu.RUnlock()
 
 	// 通过 syscall.Statfs 获取实际磁盘容量
@@ -381,14 +380,8 @@ func (s *DashboardService) getStorageInfo() StorageInfo {
 	}
 
 	// Statfs 失败时回退到缓存值
-	var usedBytes int64
-	if cached > 0 && time.Since(lastUpdated) < 5*time.Minute {
-		usedBytes = cached
-	} else {
-		usedBytes = cached
-	}
 	return StorageInfo{
-		UsedBytes: usedBytes,
+		UsedBytes: cached,
 	}
 }
 

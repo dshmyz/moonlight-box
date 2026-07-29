@@ -1243,11 +1243,9 @@ func deletePackageVersionsMatchingPackageWhere(tx *gorm.DB, where string, args .
 
 // replaceColumnName 精确替换 SQL WHERE 子句中的列名（按词边界匹配）
 func replaceColumnName(where, oldCol, newCol string) string {
-	// 匹配 oldCol 作为独立标识符：前面是空格/开头/逗号，后面是空格/?/>=/<=/!=/</>/结尾
-	re := regexp.MustCompile(`(?i)(^|[\s,])` + regexp.QuoteMeta(oldCol) + `([\s?=<>,)]|$)`)
-	return re.ReplaceAllStringFunc(where, func(match string) string {
-		return strings.Replace(match, oldCol, newCol, 1)
-	})
+	// \b 匹配单词边界，精确匹配独立列名，不会误匹配 name_id 等复合名
+	re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(oldCol) + `\b`)
+	return re.ReplaceAllString(where, newCol)
 }
 
 func firstNonZeroInt64(values ...int64) int64 {
