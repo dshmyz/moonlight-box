@@ -274,7 +274,14 @@ func (n *ProxyRuntime) metadataFailureCached(key string) bool {
 	n.metadataFailureMu.Lock()
 	defer n.metadataFailureMu.Unlock()
 	expiry, ok := n.metadataFailures[key]
-	return ok && time.Now().Before(expiry)
+	if !ok {
+		return false
+	}
+	if time.Now().After(expiry) {
+		delete(n.metadataFailures, key)
+		return false
+	}
+	return true
 }
 func (n *ProxyRuntime) cacheMetadataFailure(key string) {
 	ttl := n.MetadataFailureTTL
@@ -384,7 +391,10 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 	if err != nil {
 		return nil, err
 	}
-	res := result.(getArtifactResult)
+	res, ok := result.(getArtifactResult)
+	if !ok {
+		return nil, fmt.Errorf("unexpected singleflight result type")
+	}
 	artifact := cloneArtifactForResponse(res.artifact)
 	if err := n.evaluateConditionalAccess(ctx, key, artifact); err != nil {
 		return nil, err
@@ -1109,11 +1119,17 @@ func (n *ProxyRuntime) evictNegativeCache(count int) {
 			oldest = append(oldest, k)
 			continue
 		}
-		for i, o := range oldest {
-			if v.Before(n.negativeCache[o]) {
-				oldest[i] = k
-				break
+		// 找到当前 oldest 中过期最晚的条目替换
+		maxIdx := 0
+		maxTime := n.negativeCache[oldest[0]]
+		for i := 1; i < len(oldest); i++ {
+			if t := n.negativeCache[oldest[i]]; t.After(maxTime) {
+				maxTime = t
+				maxIdx = i
 			}
+		}
+		if v.Before(maxTime) {
+			oldest[maxIdx] = k
 		}
 	}
 	for _, k := range oldest {

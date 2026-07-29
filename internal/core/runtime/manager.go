@@ -64,7 +64,11 @@ func (m *DefaultRepositoryManager) Get(name string) *Repository {
 // loadAndCache 通过 singleflight 从 DB 加载并缓存
 func (m *DefaultRepositoryManager) loadAndCache(name string) *Repository {
 	chI, loaded := m.loading.LoadOrStore(name, make(chan *loadResult, 1))
-	ch := chI.(chan *loadResult)
+	ch, ok := chI.(chan *loadResult)
+	if !ok {
+		logrus.WithField("repo", name).Error("manager: unexpected loading channel type")
+		return nil
+	}
 	if !loaded {
 		// 当前 goroutine 负责加载
 		repo, err := m.factory(name)

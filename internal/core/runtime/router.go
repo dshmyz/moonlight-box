@@ -394,6 +394,7 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 			return
 		}
 		ctx.StatusCode = http.StatusInternalServerError
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		logrus.WithError(err).WithField("path", ctx.RepositoryPath).Error("Plugin handle failed")
+		http.Error(ctx.Writer, "Internal Server Error", http.StatusInternalServerError)
 	}
 }

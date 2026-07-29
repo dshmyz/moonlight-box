@@ -66,6 +66,7 @@ func (c *HTTPRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (
 		if getErr == nil {
 			return getMeta, nil
 		}
+		return nil, getErr
 	}
 	return meta, err
 }

@@ -28,6 +28,7 @@ type MemoryCache struct {
 	numShards int
 	cleaner   *time.Ticker
 	stopChan  chan struct{}
+	stopOnce  sync.Once
 }
 
 func NewMemoryCache() *MemoryCache {
@@ -216,16 +217,21 @@ func (c *MemoryCache) ListItems(offset, limit int, search string) ([]CacheItem, 
 }
 
 func (c *MemoryCache) Stop() {
-	close(c.stopChan)
+	c.stopOnce.Do(func() {
+		c.cleaner.Stop()
+		close(c.stopChan)
+	})
 }
 
-// GetAllItems 返回所有缓存项的详细信息（包含过期状态）
+// GetAllItems 返回所有缓存项的详细信息（包含过期状态），返回的是副本
 func (c *MemoryCache) GetAllItems() map[string]*Item {
 	result := make(map[string]*Item)
 	for _, shard := range c.shards {
 		shard.mu.RLock()
 		for key, item := range shard.items {
-			result[key] = item
+			// 返回副本，防止外部修改影响缓存内部数据
+			cp := *item
+			result[key] = &cp
 		}
 		shard.mu.RUnlock()
 	}
