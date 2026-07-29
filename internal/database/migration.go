@@ -95,26 +95,47 @@ func legacyColumnExists(tableName, columnName string) (bool, error) {
 }
 
 func SeedData() error {
-	oldRoles := []string{"maintainer", "developer", "readonly"}
-	for _, roleName := range oldRoles {
-		var oldRole model.Role
-		if err := DB.Where("name = ?", roleName).First(&oldRole).Error; err == nil {
-			DB.Where("role_id = ?", oldRole.ID).Delete(&model.RolePermission{})
-			DB.Where("role_id = ?", oldRole.ID).Delete(&model.UserRole{})
-			DB.Delete(&oldRole)
-		}
-	}
+	// 清理废弃角色/权限是一次性数据迁移，用 system_configs 中的标记守卫，确保只在首次启动执行一次。
+	// 之前这段逻辑每次启动都跑，而 developer 既是"废弃角色"又是当前系统角色，
+	// 导致每次重启都会删除所有用户的 developer 角色关联后重建空角色 -> 用户角色信息丢失。
+	const legacyCleanupMarker = "migration.legacy_roles_perms_cleaned"
+	var marker model.SystemConfig
+	if DB.Where("key = ?", legacyCleanupMarker).First(&marker).Error == nil {
+		// 标记已存在，说明一次性清理已执行过，跳过
+	} else {
+		logrus.WithField("step", "legacy_cleanup").Info("Running one-time legacy role/permission cleanup")
 
-	deprecatedPerms := []struct{ resource, action string }{
-		{"npm", "read"}, {"npm", "write"}, {"npm", "delete"}, {"npm", "admin"},
-		{"maven", "read"}, {"maven", "write"}, {"maven", "delete"}, {"maven", "admin"},
-	}
-	for _, dp := range deprecatedPerms {
-		var perm model.Permission
-		if err := DB.Where("resource = ? AND action = ?", dp.resource, dp.action).First(&perm).Error; err == nil {
-			DB.Where("permission_id = ?", perm.ID).Delete(&model.RolePermission{})
-			DB.Delete(&perm)
+		// developer 是当前系统角色，绝不能删；maintainer/readonly 为已废弃角色名
+		oldRoles := []string{"maintainer", "readonly"}
+		for _, roleName := range oldRoles {
+			var oldRole model.Role
+			if err := DB.Where("name = ?", roleName).First(&oldRole).Error; err == nil {
+				DB.Where("role_id = ?", oldRole.ID).Delete(&model.RolePermission{})
+				DB.Where("role_id = ?", oldRole.ID).Delete(&model.UserRole{})
+				DB.Delete(&oldRole)
+			}
 		}
+
+		deprecatedPerms := []struct{ resource, action string }{
+			{"npm", "read"}, {"npm", "write"}, {"npm", "delete"}, {"npm", "admin"},
+			{"maven", "read"}, {"maven", "write"}, {"maven", "delete"}, {"maven", "admin"},
+		}
+		for _, dp := range deprecatedPerms {
+			var perm model.Permission
+			if err := DB.Where("resource = ? AND action = ?", dp.resource, dp.action).First(&perm).Error; err == nil {
+				DB.Where("permission_id = ?", perm.ID).Delete(&model.RolePermission{})
+				DB.Delete(&perm)
+			}
+		}
+
+		// 标记已完成，后续启动不再执行（即使写入失败也无妨：developer 已不在清单，不会重复伤人）
+		DB.Create(&model.SystemConfig{
+			Key:         legacyCleanupMarker,
+			Value:       "true",
+			ValueType:   "bool",
+			Category:    "migration",
+			Description: "标记废弃角色/权限的一次性清理已完成",
+		})
 	}
 
 	roles := []model.Role{
