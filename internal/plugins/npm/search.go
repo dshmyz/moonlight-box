@@ -122,7 +122,7 @@ func (p *NpmPlugin) handleSearch(ctx *runtime.RequestContext, repoRuntime runtim
 		Format:       "npm",
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 

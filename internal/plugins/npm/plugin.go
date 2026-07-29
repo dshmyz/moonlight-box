@@ -362,7 +362,7 @@ func (p *NpmPlugin) handleAllPackages(ctx *runtime.RequestContext, repoRuntime r
 		Format:       "npm",
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
@@ -854,7 +854,7 @@ func extractNpmVersionAttributes(npmMeta map[string]interface{}) map[string]stri
 func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, packageName string) error {
 	var npmMeta map[string]interface{}
 	if err := json.NewDecoder(ctx.Request.Body).Decode(&npmMeta); err != nil {
-		http.Error(ctx.Writer, "invalid npm metadata: "+err.Error(), http.StatusBadRequest)
+		{ logrus.WithError(err).Warn("invalid npm metadata"); http.Error(ctx.Writer, "invalid npm metadata", http.StatusBadRequest) }
 		return nil
 	}
 
@@ -917,7 +917,7 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		Filename:     packageName,
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
@@ -946,7 +946,7 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 				"error":       err.Error(),
 			}).Error("npm: PutBlob failed")
 			session.Abort(ctx.Request.Context())
-			http.Error(ctx.Writer, "invalid tarball base64: "+err.Error(), http.StatusBadRequest)
+			{ logrus.WithError(err).Warn("invalid tarball base64"); http.Error(ctx.Writer, "invalid tarball payload", http.StatusBadRequest) }
 			return nil
 		}
 
@@ -974,7 +974,7 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 				"error":           err.Error(),
 			}).Error("npm: PutArtifact failed")
 			session.Abort(ctx.Request.Context())
-			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 			return nil
 		}
 	}
@@ -990,7 +990,7 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 		blob, err := session.PutBlob(ctx.Request.Context(), strings.NewReader(string(metadataJSON)))
 		if err != nil {
 			session.Abort(ctx.Request.Context())
-			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 			return nil
 		}
 
@@ -1027,7 +1027,7 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 
 		if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
 			session.Abort(ctx.Request.Context())
-			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 			return nil
 		}
 	}
@@ -1037,7 +1037,7 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 			"packageName": packageName,
 			"error":       err.Error(),
 		}).Error("npm: Commit failed")
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 

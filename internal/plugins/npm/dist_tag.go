@@ -59,7 +59,7 @@ func (p *NpmPlugin) handleDistTag(ctx *runtime.RequestContext, repoRuntime runti
 func (p *NpmPlugin) handleDistTagList(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, packageName string) error {
 	distTags, err := p.computeDistTags(ctx, repoRuntime, packageName)
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
@@ -74,7 +74,7 @@ func (p *NpmPlugin) handleDistTagList(ctx *runtime.RequestContext, repoRuntime r
 func (p *NpmPlugin) handleDistTagGetOne(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, packageName, tag string) error {
 	distTags, err := p.computeDistTags(ctx, repoRuntime, packageName)
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
@@ -124,7 +124,7 @@ func (p *NpmPlugin) handleDistTagAdd(ctx *runtime.RequestContext, repoRuntime ru
 		RemotePath:   packageName,
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
@@ -152,7 +152,7 @@ func (p *NpmPlugin) handleDistTagAdd(ctx *runtime.RequestContext, repoRuntime ru
 		Filename:     packageName,
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
@@ -161,7 +161,7 @@ func (p *NpmPlugin) handleDistTagAdd(ctx *runtime.RequestContext, repoRuntime ru
 		oldTagArtifact.Properties["dist-tag"] = ""
 		if err := session.PutArtifact(ctx.Request.Context(), oldTagArtifact); err != nil {
 			session.Abort(ctx.Request.Context())
-			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 			return nil
 		}
 	}
@@ -170,12 +170,12 @@ func (p *NpmPlugin) handleDistTagAdd(ctx *runtime.RequestContext, repoRuntime ru
 	targetArtifact.Properties["dist-tag"] = tag
 	if err := session.PutArtifact(ctx.Request.Context(), targetArtifact); err != nil {
 		session.Abort(ctx.Request.Context())
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
 	if err := session.Commit(ctx.Request.Context()); err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
@@ -209,7 +209,7 @@ func (p *NpmPlugin) handleDistTagRemove(ctx *runtime.RequestContext, repoRuntime
 		RemotePath:   packageName,
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
@@ -234,19 +234,19 @@ func (p *NpmPlugin) handleDistTagRemove(ctx *runtime.RequestContext, repoRuntime
 		Filename:     packageName,
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
 	tagArtifact.Properties["dist-tag"] = ""
 	if err := session.PutArtifact(ctx.Request.Context(), tagArtifact); err != nil {
 		session.Abort(ctx.Request.Context())
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
 	if err := session.Commit(ctx.Request.Context()); err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 

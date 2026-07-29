@@ -382,7 +382,7 @@ func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime ru
 		Size:         ctx.Request.ContentLength,
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
@@ -395,7 +395,7 @@ func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime ru
 			http.Error(ctx.Writer, "file too large", http.StatusRequestEntityTooLarge)
 			return nil
 		}
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
@@ -416,12 +416,12 @@ func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime ru
 
 	if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
 		session.Abort(ctx.Request.Context())
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
 	if err := session.Commit(ctx.Request.Context()); err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
@@ -438,7 +438,7 @@ func (p *GenericPlugin) handleDelete(ctx *runtime.RequestContext, repoRuntime ru
 		case errors.Is(err, runtime.ErrReadOnly):
 			http.Error(ctx.Writer, "Repository is read only", http.StatusMethodNotAllowed)
 		default:
-			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		}
 		return nil
 	}

@@ -447,7 +447,7 @@ func (p *MavenPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Re
 		if ctx.Request.Method == http.MethodPut {
 			key, err := p.parseMavenMetadataPath(path)
 			if err != nil {
-				http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
+				{ logrus.WithError(err).Warn("bad request"); http.Error(ctx.Writer, "bad request", http.StatusBadRequest) }
 				return nil
 			}
 			key.RepositoryID = ctx.Repository.ID
@@ -461,7 +461,7 @@ func (p *MavenPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Re
 	if metaPath, originalFile, algo, ok := parseMavenMetadataChecksum(path); ok {
 		metaKey, err := p.parseMavenMetadataPath(metaPath)
 		if err != nil {
-			http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
+			{ logrus.WithError(err).Warn("bad request"); http.Error(ctx.Writer, "bad request", http.StatusBadRequest) }
 			return nil
 		}
 		metaKey.RepositoryID = ctx.Repository.ID
@@ -482,7 +482,7 @@ func (p *MavenPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Re
 
 	key, err := p.parseMavenPath(path)
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
+		{ logrus.WithError(err).Warn("bad request"); http.Error(ctx.Writer, "bad request", http.StatusBadRequest) }
 		return nil
 	}
 	key.RepositoryID = ctx.Repository.ID
@@ -831,7 +831,7 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 
 					body, err := xml.MarshalIndent(meta, "", "  ")
 					if err != nil {
-						http.Error(ctx.Writer, fmt.Sprintf("render metadata failed: %v", err), http.StatusInternalServerError)
+						{ logrus.WithError(err).Error("render metadata failed"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 						return nil
 					}
 					ctx.Writer.Header().Set("Content-Type", "application/xml")
@@ -972,7 +972,7 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 
 	body, err := xml.MarshalIndent(meta, "", "  ")
 	if err != nil {
-		http.Error(ctx.Writer, fmt.Sprintf("render metadata failed: %v", err), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("render metadata failed"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 	ctx.Writer.Header().Set("Content-Type", "application/xml")
@@ -1171,7 +1171,7 @@ func (p *MavenPlugin) handleDelete(ctx *runtime.RequestContext, repoRuntime runt
 		case errors.Is(err, runtime.ErrReadOnly):
 			http.Error(ctx.Writer, "Repository is read only", http.StatusMethodNotAllowed)
 		default:
-			http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+			{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		}
 		return nil
 	}
@@ -1448,7 +1448,7 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 		Size:         ctx.Request.ContentLength,
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
@@ -1516,12 +1516,12 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 
 	if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
 		session.Abort(ctx.Request.Context())
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
 	if err := session.Commit(ctx.Request.Context()); err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 

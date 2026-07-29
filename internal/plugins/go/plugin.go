@@ -41,6 +41,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -239,7 +240,7 @@ func (p *GoPlugin) fetchVersionInfo(ctx context.Context, remoteURL, modulePath, 
 		Version string `json:"Version"`
 		Time    string `json:"Time"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 100<<20)).Decode(&result); err != nil {
 		return struct {
 			Version string
 			Time    string
@@ -276,7 +277,7 @@ func (p *GoPlugin) fetchLatest(ctx context.Context, remoteURL, path string) ([]*
 		Version string `json:"Version"`
 		Time    string `json:"Time"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 100<<20)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("go: decode @latest response: %w", err)
 	}
 	if result.Version == "" {
@@ -389,7 +390,7 @@ func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime
 		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 
