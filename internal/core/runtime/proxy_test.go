@@ -824,6 +824,20 @@ func TestNegativeCacheDoesNotGrowWithoutBound(t *testing.T) {
 	}
 }
 
+func TestMetadataFailuresDoesNotGrowWithoutBound(t *testing.T) {
+	rt := &ProxyRuntime{
+		MetadataFailureTTL: 30 * time.Second,
+	}
+	for i := 0; i < maxMetadataFailures+200; i++ {
+		rt.cacheMetadataFailure(fmt.Sprintf("pkg-%d:1.0", i))
+	}
+	rt.metadataFailureMu.Lock()
+	defer rt.metadataFailureMu.Unlock()
+	if len(rt.metadataFailures) > maxMetadataFailures {
+		t.Fatalf("metadataFailures grew to %d, exceeds limit %d", len(rt.metadataFailures), maxMetadataFailures)
+	}
+}
+
 func TestProxyRuntimeQueryArtifactsReturnsCachedArtifactsWhenFetchRemoteFails(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeMetadataStore()

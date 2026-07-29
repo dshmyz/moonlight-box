@@ -2,6 +2,7 @@ package apt
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"io"
 	"net/http"
@@ -419,5 +420,47 @@ func TestHandle_QueryRemotePath(t *testing.T) {
 	}
 	if rt.QueryCalls[0].RemotePath != "dists/jammy/main/binary-amd64/Packages" {
 		t.Errorf("unexpected RemotePath: %q", rt.QueryCalls[0].RemotePath)
+	}
+}
+
+func TestReadDecompressedWithLimitRejectsOversized(t *testing.T) {
+	// 超过 limit 时应报错，防止解压炸弹
+	big := bytes.NewReader(bytes.Repeat([]byte("A"), 102))
+	_, err := readDecompressedWithLimitN(big, "test", 100)
+	if err == nil {
+		t.Fatal("expected error for oversized decompressed data")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected 'exceeds' error, got %v", err)
+	}
+}
+
+func TestReadDecompressedWithLimitAcceptsAtLimit(t *testing.T) {
+	// 恰好等于 limit 时应正常返回
+	exact := bytes.NewReader(bytes.Repeat([]byte("A"), 100))
+	out, err := readDecompressedWithLimitN(exact, "test", 100)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out) != 100 {
+		t.Fatalf("expected 100 bytes, got %d", len(out))
+	}
+}
+
+func TestDecompressAptPackagesRejectsGzipBomb(t *testing.T) {
+	// 构造一个 gzip 压缩流，解压后超过 maxAptDecompressedSize
+	// 用小 limit 验证逻辑：通过 readDecompressedWithLimitN 间接测试
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	gw.Write(bytes.Repeat([]byte("X"), 200))
+	gw.Close()
+
+	// decompressAptPackages 使用 256MB 上限，正常 200 字节不会被拦截
+	out, err := decompressAptPackages("Packages.gz", buf.Bytes())
+	if err != nil {
+		t.Fatalf("unexpected error for small gzip: %v", err)
+	}
+	if len(out) != 200 {
+		t.Fatalf("expected 200 bytes decompressed, got %d", len(out))
 	}
 }

@@ -20,6 +20,7 @@ import (
 
 const maxMetadataCacheSize = 10000 // 内存缓存上限，防止无限增长
 const maxNegativeCacheSize = 5000  // 负缓存上限，防止 DoS
+const maxMetadataFailures = 5000   // 元数据失败缓存上限，防止 DoS
 
 // backgroundRefreshTimeout 限制异步刷新的最长执行时间，避免 FetchRemote 挂起导致
 // refreshingPaths 永不释放、该路径后续刷新全部失效以及 goroutine 泄漏。
@@ -289,11 +290,32 @@ func (n *ProxyRuntime) cacheMetadataFailure(key string) {
 		ttl = 5 * time.Minute
 	}
 	n.metadataFailureMu.Lock()
+	defer n.metadataFailureMu.Unlock()
 	if n.metadataFailures == nil {
 		n.metadataFailures = make(map[string]time.Time)
 	}
+	if len(n.metadataFailures) >= maxMetadataFailures {
+		n.evictMetadataFailuresLocked()
+	}
 	n.metadataFailures[key] = time.Now().Add(ttl)
-	n.metadataFailureMu.Unlock()
+}
+
+// evictMetadataFailuresLocked 清理失败缓存：先删过期项，仍超限时淘汰至 75%。
+// 调用时必须已持有 n.metadataFailureMu。
+func (n *ProxyRuntime) evictMetadataFailuresLocked() {
+	now := time.Now()
+	for k, expiry := range n.metadataFailures {
+		if now.After(expiry) {
+			delete(n.metadataFailures, k)
+		}
+	}
+	target := maxMetadataFailures * 3 / 4
+	for k := range n.metadataFailures {
+		if len(n.metadataFailures) <= target {
+			break
+		}
+		delete(n.metadataFailures, k)
+	}
 }
 func (n *ProxyRuntime) auditConditionUnverified(ctx context.Context, key ArtifactKey, requirements []ConditionRequirement, missing []string, reason string) {
 	if n.ConditionAudit == nil {
@@ -1113,6 +1135,9 @@ func (n *ProxyRuntime) setNegativeCacheWithTTL(key ArtifactKey, failureTTL time.
 }
 
 func (n *ProxyRuntime) evictNegativeCache(count int) {
+	if count <= 0 {
+		return
+	}
 	oldest := make([]string, 0, count)
 	for k, v := range n.negativeCache {
 		if len(oldest) < count {

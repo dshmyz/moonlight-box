@@ -248,6 +248,27 @@ func (p *AptPlugin) fetchPackagesIndex(ctx context.Context, remoteURL, path stri
 	return artifacts, nil
 }
 
+// maxAptDecompressedSize 限制解压后的 Packages 索引大小，防止解压炸弹。
+// Debian/Ubuntu 官方索引解压后一般不超过 100MB，256MB 留足余量。
+const maxAptDecompressedSize int64 = 256 << 20
+
+// readDecompressedWithLimitN 读取解压流，超过 limit 时报错（防解压炸弹）。
+func readDecompressedWithLimitN(r io.Reader, format string, limit int64) ([]byte, error) {
+	out, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("apt: read Packages %s: %w", format, err)
+	}
+	if int64(len(out)) > limit {
+		return nil, fmt.Errorf("apt: decompressed Packages %s exceeds %d bytes limit", format, limit)
+	}
+	return out, nil
+}
+
+// readDecompressedWithLimit 读取解压流，使用默认上限防解压炸弹。
+func readDecompressedWithLimit(r io.Reader, format string) ([]byte, error) {
+	return readDecompressedWithLimitN(r, format, maxAptDecompressedSize)
+}
+
 func decompressAptPackages(path string, body []byte) ([]byte, error) {
 	switch {
 	case strings.HasSuffix(path, ".gz"):
@@ -256,27 +277,15 @@ func decompressAptPackages(path string, body []byte) ([]byte, error) {
 			return nil, fmt.Errorf("apt: open Packages gzip: %w", err)
 		}
 		defer zr.Close()
-		out, err := io.ReadAll(zr)
-		if err != nil {
-			return nil, fmt.Errorf("apt: read Packages gzip: %w", err)
-		}
-		return out, nil
+		return readDecompressedWithLimit(zr, "gzip")
 	case strings.HasSuffix(path, ".xz"):
 		xr, err := xz.NewReader(bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("apt: open Packages xz: %w", err)
 		}
-		out, err := io.ReadAll(xr)
-		if err != nil {
-			return nil, fmt.Errorf("apt: read Packages xz: %w", err)
-		}
-		return out, nil
+		return readDecompressedWithLimit(xr, "xz")
 	case strings.HasSuffix(path, ".bz2"):
-		out, err := io.ReadAll(bzip2.NewReader(bytes.NewReader(body)))
-		if err != nil {
-			return nil, fmt.Errorf("apt: read Packages bzip2: %w", err)
-		}
-		return out, nil
+		return readDecompressedWithLimit(bzip2.NewReader(bytes.NewReader(body)), "bzip2")
 	default:
 		return body, nil
 	}
