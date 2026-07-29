@@ -68,6 +68,27 @@ import (
 	nethtml "golang.org/x/net/html"
 )
 
+// maxLegacyUploadSize 限制 Legacy 上传的文件大小（500MB），防止内存耗尽攻击
+const maxLegacyUploadSize = 500 << 20
+
+// maxJSONAPIResponseSize 限制 PyPI JSON API 远端响应大小（100MB）
+const maxJSONAPIResponseSize = 100 << 20
+
+// 合法的 PyPI filetype 值
+var allowedPyPIFileTypes = map[string]bool{
+	"sdist":       true,
+	"bdist_wheel": true,
+	"bdist":       true,
+	"bdist_dumb":  true,
+	"bdist_rpm":   true,
+	"bdist_wininst": true,
+	"bdist_msi":   true,
+	"bdist_egg":   true,
+}
+
+// pyVersionRe 校验 pyversion 字段格式（如 "cp39", "py3", "source" 等）
+var pyVersionRe = regexp.MustCompile(`^[a-z0-9_.]+$`)
+
 // pypiNormalizeRe 匹配 PEP 503 规范中需要归一化的连续字符：[-_.]+
 var pypiNormalizeRe = regexp.MustCompile(`[-_.]+`)
 
@@ -192,7 +213,7 @@ func (p *PyPIPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Rep
 	path = strings.TrimPrefix(path, "/")
 
 	if err := validatePyPIPath(path); err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
+		http.Error(ctx.Writer, "invalid path", http.StatusBadRequest)
 		return nil
 	}
 
@@ -225,7 +246,8 @@ func (p *PyPIPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.Rep
 		return p.handleMetadataRequest(ctx, repoRuntime, path)
 	}
 
-	return errors.New("invalid pypi path")
+	http.Error(ctx.Writer, "not found", http.StatusNotFound)
+	return nil
 }
 
 func (p *PyPIPlugin) isSimpleIndexRequest(path string) bool {
@@ -930,6 +952,18 @@ func (p *PyPIPlugin) handleJsonAPI(ctx *runtime.RequestContext, repoRuntime runt
 }
 
 func (p *PyPIPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
+	// 校验文件名是否为合法的 PyPI 包格式
+	if !isValidPyPIFilename(key.Filename) {
+		http.Error(ctx.Writer, "invalid PyPI package filename", http.StatusBadRequest)
+		return nil
+	}
+
+	// 校验上传大小
+	if ctx.Request.ContentLength > maxLegacyUploadSize {
+		http.Error(ctx.Writer, fmt.Sprintf("upload file too large (max %dMB)", maxLegacyUploadSize>>20), http.StatusRequestEntityTooLarge)
+		return nil
+	}
+
 	packageName := p.extractPackageNameFromFilename(key.Filename)
 	version := p.extractVersionFromFilename(key.Filename)
 
@@ -940,14 +974,16 @@ func (p *PyPIPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runti
 		Size:         ctx.Request.ContentLength,
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		logrus.WithError(err).Error("pypi: failed to begin upload")
+		http.Error(ctx.Writer, "upload failed", http.StatusInternalServerError)
 		return nil
 	}
 
 	blobRef, err := session.PutBlob(ctx.Request.Context(), ctx.Request.Body)
 	if err != nil {
 		session.Abort(ctx.Request.Context())
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		logrus.WithError(err).Error("pypi: failed to store blob")
+		http.Error(ctx.Writer, "upload failed", http.StatusInternalServerError)
 		return nil
 	}
 
@@ -970,12 +1006,14 @@ func (p *PyPIPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runti
 
 	if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
 		session.Abort(ctx.Request.Context())
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		logrus.WithError(err).Error("pypi: failed to put artifact")
+		http.Error(ctx.Writer, "upload failed", http.StatusInternalServerError)
 		return nil
 	}
 
 	if err := session.Commit(ctx.Request.Context()); err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		logrus.WithError(err).Error("pypi: failed to commit upload")
+		http.Error(ctx.Writer, "upload failed", http.StatusInternalServerError)
 		return nil
 	}
 
@@ -988,7 +1026,7 @@ func (p *PyPIPlugin) handleLegacyUpload(ctx *runtime.RequestContext, repoRuntime
 		return errors.New("method not allowed")
 	}
 	if err := ctx.Request.ParseMultipartForm(64 << 20); err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
+		http.Error(ctx.Writer, "invalid multipart form", http.StatusBadRequest)
 		return nil
 	}
 	if action := ctx.Request.FormValue(":action"); action != "file_upload" {
@@ -1003,9 +1041,13 @@ func (p *PyPIPlugin) handleLegacyUpload(ctx *runtime.RequestContext, repoRuntime
 	}
 	defer file.Close()
 
-	content, err := io.ReadAll(file)
+	content, err := io.ReadAll(io.LimitReader(file, maxLegacyUploadSize+1))
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusBadRequest)
+		http.Error(ctx.Writer, "failed to read upload content", http.StatusBadRequest)
+		return nil
+	}
+	if int64(len(content)) > maxLegacyUploadSize {
+		http.Error(ctx.Writer, fmt.Sprintf("upload file too large (max %dMB)", maxLegacyUploadSize>>20), http.StatusRequestEntityTooLarge)
 		return nil
 	}
 	// 先把 \ 替换为 /（防御 Windows 路径分隔符注入），再用 filepath.Base 剥离路径和 ".."，
@@ -1016,6 +1058,12 @@ func (p *PyPIPlugin) handleLegacyUpload(ctx *runtime.RequestContext, repoRuntime
 		http.Error(ctx.Writer, "missing or invalid filename", http.StatusBadRequest)
 		return nil
 	}
+	// 校验文件名是否为合法的 PyPI 包格式（.whl/.tar.gz/.zip/.tar.bz2 等）
+	if !isValidPyPIFilename(filename) {
+		http.Error(ctx.Writer, "invalid PyPI package filename", http.StatusBadRequest)
+		return nil
+	}
+
 	packageName := normalizePackageName(firstNonEmptyPyPI(ctx.Request.FormValue("name"), p.extractPackageNameFromFilename(filename)))
 	version := firstNonEmptyPyPI(ctx.Request.FormValue("version"), p.extractVersionFromFilename(filename))
 	sum := sha256.Sum256(content)
@@ -1026,6 +1074,19 @@ func (p *PyPIPlugin) handleLegacyUpload(ctx *runtime.RequestContext, repoRuntime
 	}
 	remotePath := pypiPackageRemotePath(digest, filename)
 
+	// 校验 filetype（允许为空，非空时必须在白名单内）
+	filetype := ctx.Request.FormValue("filetype")
+	if filetype != "" && !allowedPyPIFileTypes[filetype] {
+		http.Error(ctx.Writer, "invalid filetype, expected: sdist, bdist_wheel, etc.", http.StatusBadRequest)
+		return nil
+	}
+	// 校验 pyversion（允许为空，非空时必须符合格式）
+	pyversion := ctx.Request.FormValue("pyversion")
+	if pyversion != "" && !pyVersionRe.MatchString(pyversion) {
+		http.Error(ctx.Writer, "invalid pyversion format", http.StatusBadRequest)
+		return nil
+	}
+
 	session, err := repoRuntime.BeginUpload(ctx.Request.Context(), runtime.UploadRequest{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
@@ -1033,14 +1094,16 @@ func (p *PyPIPlugin) handleLegacyUpload(ctx *runtime.RequestContext, repoRuntime
 		Size:         int64(len(content)),
 	})
 	if err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		logrus.WithError(err).Error("pypi: failed to begin legacy upload")
+		http.Error(ctx.Writer, "upload failed", http.StatusInternalServerError)
 		return nil
 	}
 
 	blobRef, err := session.PutBlob(ctx.Request.Context(), bytes.NewReader(content))
 	if err != nil {
 		session.Abort(ctx.Request.Context())
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		logrus.WithError(err).Error("pypi: failed to store blob")
+		http.Error(ctx.Writer, "upload failed", http.StatusInternalServerError)
 		return nil
 	}
 	blobRef.Size = int64(len(content))
@@ -1059,8 +1122,8 @@ func (p *PyPIPlugin) handleLegacyUpload(ctx *runtime.RequestContext, repoRuntime
 		Checksums:    map[string]string{"sha256": digest},
 		Attributes: map[string]string{
 			"artifact_type": "package-file",
-			"filetype":      ctx.Request.FormValue("filetype"),
-			"pyversion":     ctx.Request.FormValue("pyversion"),
+			"filetype":      filetype,
+			"pyversion":     pyversion,
 		},
 		Qualifiers: map[string]string{
 			"package": packageName,
@@ -1073,11 +1136,13 @@ func (p *PyPIPlugin) handleLegacyUpload(ctx *runtime.RequestContext, repoRuntime
 
 	if err := session.PutArtifact(ctx.Request.Context(), artifact); err != nil {
 		session.Abort(ctx.Request.Context())
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		logrus.WithError(err).Error("pypi: failed to put artifact")
+		http.Error(ctx.Writer, "upload failed", http.StatusInternalServerError)
 		return nil
 	}
 	if err := session.Commit(ctx.Request.Context()); err != nil {
-		http.Error(ctx.Writer, err.Error(), http.StatusInternalServerError)
+		logrus.WithError(err).Error("pypi: failed to commit legacy upload")
+		http.Error(ctx.Writer, "upload failed", http.StatusInternalServerError)
 		return nil
 	}
 
@@ -1396,7 +1461,7 @@ func (p *PyPIPlugin) httpGet(ctx context.Context, url string) (*http.Response, e
 }
 
 func (p *PyPIPlugin) fetchPyPIPackageInfo(ctx context.Context, remoteURL, packageName string) (map[string]interface{}, error) {
-	jsonURL := strings.TrimRight(remoteURL, "/") + "/pypi/" + packageName + "/json"
+	jsonURL := strings.TrimRight(remoteURL, "/") + "/pypi/" + url.PathEscape(packageName) + "/json"
 	resp, err := p.httpGet(ctx, jsonURL)
 	if err != nil {
 		return nil, err
@@ -1405,7 +1470,7 @@ func (p *PyPIPlugin) fetchPyPIPackageInfo(ctx context.Context, remoteURL, packag
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("pypi json api returned status %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJSONAPIResponseSize))
 	if err != nil {
 		return nil, err
 	}
