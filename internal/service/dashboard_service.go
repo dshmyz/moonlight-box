@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/model"
@@ -76,6 +77,7 @@ type DashboardService struct {
 	cacheInfoTTL       time.Duration
 
 	stopCh chan struct{}
+	doneCh chan struct{}
 }
 
 // NewDashboardService 创建仪表盘服务实例
@@ -88,6 +90,7 @@ func NewDashboardService(db *gorm.DB, repoRepo *repository.RepositoryRepository,
 		cacheTTL:       30 * time.Second,
 		cacheInfoTTL:   5 * time.Minute,
 		stopCh:         make(chan struct{}),
+		doneCh:         make(chan struct{}),
 	}
 
 	// 启动后台任务定期计算目录大小
@@ -98,6 +101,7 @@ func NewDashboardService(db *gorm.DB, repoRepo *repository.RepositoryRepository,
 
 // storageSizeWorker 后台定期计算目录大小
 func (s *DashboardService) storageSizeWorker() {
+	defer close(s.doneCh)
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
@@ -131,6 +135,7 @@ func (s *DashboardService) updateStorageSize() {
 // Stop 停止后台任务
 func (s *DashboardService) Stop() {
 	close(s.stopCh)
+	<-s.doneCh
 }
 
 // GetStats 获取仪表盘统计数据
@@ -358,28 +363,32 @@ func (s *DashboardService) getStorageInfo() StorageInfo {
 	lastUpdated := s.storageUpdated
 	s.storageSizeMu.RUnlock()
 
-	if cached > 0 && time.Since(lastUpdated) < 5*time.Minute {
-		totalBytes := cached * 2
-		usagePercent := float64(cached) / float64(totalBytes) * 100
+	// 通过 syscall.Statfs 获取实际磁盘容量
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(s.storagePath, &stat); err == nil {
+		totalBytes := int64(stat.Blocks * uint64(stat.Bsize))
+		freeBytes := int64(stat.Bfree * uint64(stat.Bsize))
+		usedBytes := totalBytes - freeBytes
+		var usagePercent float64
+		if totalBytes > 0 {
+			usagePercent = float64(usedBytes) / float64(totalBytes) * 100
+		}
 		return StorageInfo{
 			TotalBytes:   totalBytes,
-			UsedBytes:    cached,
+			UsedBytes:    usedBytes,
 			UsagePercent: usagePercent,
 		}
 	}
 
-	var totalBytes int64
-	var usagePercent float64
-	if cached > 0 {
-		totalBytes = cached * 2
-		usagePercent = float64(cached) / float64(totalBytes) * 100
+	// Statfs 失败时回退到缓存值
+	var usedBytes int64
+	if cached > 0 && time.Since(lastUpdated) < 5*time.Minute {
+		usedBytes = cached
+	} else {
+		usedBytes = cached
 	}
-
-	// 返回缓存值，后台任务会定期更新
 	return StorageInfo{
-		TotalBytes:   totalBytes,
-		UsedBytes:    cached,
-		UsagePercent: usagePercent,
+		UsedBytes: usedBytes,
 	}
 }
 

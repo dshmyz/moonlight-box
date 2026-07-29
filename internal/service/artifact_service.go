@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -1235,8 +1236,18 @@ func packageVersionKey(repoID uint, format, name, version string) string {
 }
 
 func deletePackageVersionsMatchingPackageWhere(tx *gorm.DB, where string, args ...interface{}) error {
-	where = strings.ReplaceAll(where, "name", "package_name")
+	// 精确替换列名 "name" 为 "package_name"，避免误替换含 "name" 子串的其他列名
+	where = replaceColumnName(where, "name", "package_name")
 	return tx.Where(where, args...).Delete(&model.PackageVersion{}).Error
+}
+
+// replaceColumnName 精确替换 SQL WHERE 子句中的列名（按词边界匹配）
+func replaceColumnName(where, oldCol, newCol string) string {
+	// 匹配 oldCol 作为独立标识符：前面是空格/开头/逗号，后面是空格/?/>=/<=/!=/</>/结尾
+	re := regexp.MustCompile(`(?i)(^|[\s,])` + regexp.QuoteMeta(oldCol) + `([\s?=<>,)]|$)`)
+	return re.ReplaceAllStringFunc(where, func(match string) string {
+		return strings.Replace(match, oldCol, newCol, 1)
+	})
 }
 
 func firstNonZeroInt64(values ...int64) int64 {

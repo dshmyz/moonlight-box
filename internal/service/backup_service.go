@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/model"
@@ -29,6 +30,7 @@ type BackupService struct {
 	storageSvc   *StorageService
 	backupPrefix string // 备份文件在存储中的 key 前缀，如 "backups"
 	targets      []BackupTarget
+	wg           sync.WaitGroup
 }
 
 // NewBackupService 创建备份服务
@@ -74,7 +76,11 @@ func (s *BackupService) CreateBackup(name string, backupType model.BackupType, d
 		"type":        backupType,
 	}).Info("Backup created, starting execution")
 
-	go s.executeBackup(backup)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.executeBackup(backup)
+	}()
 
 	return backup, nil
 }
@@ -88,7 +94,9 @@ func (s *BackupService) executeBackup(backup *model.Backup) {
 
 	backup.Status = model.BackupStatusRunning
 	backup.StartedAt = &startTime
-	s.backupRepo.Update(backup)
+	if err := s.backupRepo.Update(backup); err != nil {
+		logrus.WithError(err).WithField("backup_id", backup.ID).Error("Failed to update backup status to running")
+	}
 
 	// 在内存中构建 tar.gz
 	var buf bytes.Buffer
@@ -159,7 +167,9 @@ func (s *BackupService) executeBackup(backup *model.Backup) {
 	backup.SizeBytes = totalSize
 	now := time.Now()
 	backup.CompletedAt = &now
-	s.backupRepo.Update(backup)
+	if err := s.backupRepo.Update(backup); err != nil {
+		logrus.WithError(err).WithField("backup_id", backup.ID).Error("Failed to update backup status to completed")
+	}
 
 	duration := time.Since(startTime)
 	logrus.WithFields(logrus.Fields{
@@ -177,13 +187,20 @@ func (s *BackupService) markBackupFailed(backup *model.Backup, errMsg string) {
 	backup.Error = errMsg
 	now := time.Now()
 	backup.CompletedAt = &now
-	s.backupRepo.Update(backup)
+	if err := s.backupRepo.Update(backup); err != nil {
+		logrus.WithError(err).WithField("backup_id", backup.ID).Error("Failed to update backup status to failed")
+	}
 
 	logrus.WithFields(logrus.Fields{
 		"module":    "backup",
 		"backup_id": backup.ID,
 		"error":     errMsg,
 	}).Error("Backup execution failed")
+}
+
+// Shutdown 等待所有正在执行的备份任务完成
+func (s *BackupService) Shutdown() {
+	s.wg.Wait()
 }
 
 func (s *BackupService) RestoreBackup(backupID uint) error {

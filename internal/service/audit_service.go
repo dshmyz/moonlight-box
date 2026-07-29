@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -101,8 +102,8 @@ func (s *AuditService) LogWithRequestAndStatus(ctx context.Context, userID *uint
 		logrus.WithFields(logrus.Fields{
 			"module": "audit",
 			"action": action,
-		}).Warn("Audit log channel is full, dropping log")
-		return nil
+		}).Error("Audit log channel is full, dropping log")
+		return fmt.Errorf("audit log channel is full")
 	}
 }
 

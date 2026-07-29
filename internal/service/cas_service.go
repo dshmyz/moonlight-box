@@ -12,6 +12,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/config"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/sirupsen/logrus"
 )
 
 // CAS 端点默认路径，由 cas_service、config_initializer seed 与前端 CASSettings 共用。
@@ -247,11 +248,15 @@ func (s *CASService) LoginByTicket(ticket string) (*AuthResponse, error) {
 
 	if casDisplayName != "" {
 		user.DisplayName = casDisplayName
-		_ = s.userRepo.Update(user)
+		if err := s.userRepo.Update(user); err != nil {
+			logrus.WithError(err).WithField("user_id", user.ID).Warn("CAS: failed to update display name")
+		}
 	}
 	if casEmail != "" && user.Email == casUsername+"@cas.local" {
 		user.Email = casEmail
-		_ = s.userRepo.Update(user)
+		if err := s.userRepo.Update(user); err != nil {
+			logrus.WithError(err).WithField("user_id", user.ID).Warn("CAS: failed to update email")
+		}
 	}
 
 	roles, _ := s.roleRepo.GetUserRoles(user.ID)
@@ -275,7 +280,9 @@ func (s *CASService) LoginByTicket(ticket string) (*AuthResponse, error) {
 		return nil, err
 	}
 
-	_ = s.userRepo.UpdateLastLogin(user.ID)
+	if err := s.userRepo.UpdateLastLogin(user.ID); err != nil {
+		logrus.WithError(err).WithField("user_id", user.ID).Warn("CAS: failed to update last login")
+	}
 
 	return &AuthResponse{
 		AccessToken:  accessToken,

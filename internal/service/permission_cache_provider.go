@@ -60,11 +60,15 @@ func (p *PermissionCacheProvider) Clear(ctx context.Context) error {
 
 func (p *PermissionCacheProvider) Stats(ctx context.Context) *cache.CacheStats {
 	stats := p.svc.GetStats()
+	total, _ := stats["total_items"].(int)
+	active, _ := stats["active_items"].(int)
+	expired, _ := stats["expired_items"].(int)
+	shards, _ := stats["num_shards"].(int)
 	return &cache.CacheStats{
-		TotalItems:   int64(stats["total_items"].(int)),
-		ActiveItems:  int64(stats["active_items"].(int)),
-		ExpiredItems: int64(stats["expired_items"].(int)),
-		NumShards:    stats["num_shards"].(int),
+		TotalItems:   int64(total),
+		ActiveItems:  int64(active),
+		ExpiredItems: int64(expired),
+		NumShards:    shards,
 	}
 }
 

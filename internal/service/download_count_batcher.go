@@ -27,6 +27,7 @@ type DownloadCountBatcher struct {
 	db                *gorm.DB
 	flushInterval     time.Duration
 	stopCh            chan struct{}
+	doneCh            chan struct{}
 	shards            []downloadCountShard
 	packagesTableOk   bool
 	packagesTableOnce sync.Once
@@ -46,6 +47,7 @@ func NewDownloadCountBatcher(db *gorm.DB, flushInterval time.Duration) *Download
 		db:            db,
 		flushInterval: flushInterval,
 		stopCh:        make(chan struct{}),
+		doneCh:        make(chan struct{}),
 		shards:        make([]downloadCountShard, defaultDownloadCountShardCount),
 	}
 	for i := range batcher.shards {
@@ -67,6 +69,7 @@ func (b *DownloadCountBatcher) Increment(repoID uint, format, name, version stri
 }
 
 func (b *DownloadCountBatcher) flushLoop() {
+	defer close(b.doneCh)
 	ticker := time.NewTicker(b.flushInterval)
 	defer ticker.Stop()
 	for {
@@ -330,4 +333,5 @@ func (b *DownloadCountBatcher) batchUpdatePackageVersionCounts(ctx context.Conte
 
 func (b *DownloadCountBatcher) Stop() {
 	close(b.stopCh)
+	<-b.doneCh
 }
