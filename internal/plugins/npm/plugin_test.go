@@ -2403,3 +2403,53 @@ func TestHandle_PublishScopedThenGet(t *testing.T) {
 		t.Errorf("scoped tarball URL should use short name, got %q", tarballURL)
 	}
 }
+
+// TestHandle_PublishWithAttachmentPathPrefix 验证 _attachments key 包含路径前缀时，
+// artifact.Filename 正确提取纯文件名（不含斜杠）。
+// 修复场景：某些 npm 客户端或代理会在 _attachments key 中包含完整路径，如 "@scope/pkg/-/file.tgz"。
+func TestHandle_PublishWithAttachmentPathPrefix(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "@test/mypackage",
+		"versions": map[string]interface{}{
+			"1.0.0": map[string]interface{}{
+				"name":    "@test/mypackage",
+				"version": "1.0.0",
+			},
+		},
+		"_attachments": map[string]interface{}{
+			// key 包含路径前缀（异常场景）
+			"@test/mypackage/-/mypackage-1.0.0.tgz": map[string]interface{}{
+				"data": "dGVzdC10YXJiYWxs", // base64 "test-tarball"
+			},
+		},
+	})
+
+	ctx, w := newCtx("PUT", "@test/mypackage", bytes.NewReader(body))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// 验证 tarball artifact 的 Filename 字段不包含斜杠
+	var tarballArt *runtime.Artifact
+	for _, a := range rt.UploadedArts {
+		if a.Kind == runtime.KindArtifact {
+			tarballArt = a
+			break
+		}
+	}
+	if tarballArt == nil {
+		t.Fatalf("tarball artifact not found")
+	}
+	if strings.Contains(tarballArt.Filename, "/") {
+		t.Errorf("tarball.Filename should not contain slash, got %q", tarballArt.Filename)
+	}
+	if tarballArt.Filename != "mypackage-1.0.0.tgz" {
+		t.Errorf("tarball.Filename: expected 'mypackage-1.0.0.tgz', got %q", tarballArt.Filename)
+	}
+}

@@ -32,6 +32,22 @@ bash scripts/clients/test_go_client.sh http://localhost:9081
 bash scripts/clients/test_npm_client.sh http://localhost:9081
 ```
 
+### 2.1 test_npm_publish_attachment_path.sh
+**回归测试**：验证 npm publish 时 `_attachments` key 包含路径前缀不会触发错误。
+
+**测试场景：**
+- 普通文件名：`pkg-1.0.0.tgz`
+- scoped 路径前缀：`@scope/pkg/-/pkg-1.0.0.tgz`
+- 多级路径前缀：`some/deep/path/to/pkg-1.0.0.tgz`
+
+**背景：**
+某些 npm 客户端或代理会在 `_attachments` key 中包含完整路径，修复前会触发 "filename must not contain slash" 校验错误。
+
+**使用示例：**
+```bash
+bash scripts/clients/test_npm_publish_attachment_path.sh http://localhost:9081
+```
+
 ### 3. test_maven_client.sh
 使用官方 `mvn` 命令测试 Maven 仓库功能。
 

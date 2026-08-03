@@ -819,3 +819,60 @@ func TestArtifactServiceRebuildPackagesRollsBackOnInsertFailure(t *testing.T) {
 		t.Fatalf("package after failed rebuild = latest %q count %d, want preserved latest 0.9.0 count 1", pkg.LatestVersion, pkg.VersionCount)
 	}
 }
+
+// TestArtifactServiceRepublishSameVersionIsIdempotent 验证同仓库重新发布
+// 相同包+版本不会产生重复的 artifact 行或 packages 行：
+// SaveBatch 按 (repository_id, identity_key) upsert，DB 唯一索引兜底。
+func TestArtifactServiceRepublishSameVersionIsIdempotent(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	repo := model.Repository{Name: "npm-local", Type: model.RepoTypeLocal, PackageType: "npm"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+
+	svc := NewArtifactService(db)
+	// 用 KindVersion（会被聚合进 packages 表）构造，模拟真实发布里驱动
+	// packages 聚合的 file/version 制品。
+	spec := runtime.ArtifactSpec{
+		RepositoryID: fmt.Sprint(repo.ID),
+		Format:       "npm",
+		Kind:         runtime.KindVersion,
+		Name:         "left-pad",
+		Version:      "1.0.0",
+		Attributes:   map[string]string{"license": "MIT", "description": "String left pad"},
+	}
+
+	// 同一包+版本发布两次（模拟重复 publish）
+	for i := 0; i < 2; i++ {
+		if err := svc.SaveBatch(context.Background(), []*runtime.Artifact{
+			runtime.NewArtifact(spec),
+		}); err != nil {
+			t.Fatalf("republish #%d: %v", i+1, err)
+		}
+	}
+
+	// artifacts 表只有一行
+	var artCount int64
+	if err := db.Model(&model.Artifact{}).Where("repository_id = ?", repo.ID).Count(&artCount).Error; err != nil {
+		t.Fatalf("count artifacts: %v", err)
+	}
+	if artCount != 1 {
+		t.Fatalf("artifact rows = %d, want 1 (no duplicate on republish)", artCount)
+	}
+
+	// packages 表只有一行
+	var pkgCount int64
+	if err := db.Model(&model.Package{}).Where("repository_id = ?", repo.ID).Count(&pkgCount).Error; err != nil {
+		t.Fatalf("count packages: %v", err)
+	}
+	if pkgCount != 1 {
+		t.Fatalf("package rows = %d, want 1 (no duplicate on republish)", pkgCount)
+	}
+}

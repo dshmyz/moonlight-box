@@ -30,6 +30,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -950,7 +951,9 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 			return nil
 		}
 
-		tarballVersion := extractNpmVersionFromTarball(packageName, tarballName)
+		// 提取纯文件名（_attachments key 可能包含路径前缀，如 @scope/pkg/-/file.tgz）
+		tarballFilename := path.Base(tarballName)
+		tarballVersion := extractNpmVersionFromTarball(packageName, tarballFilename)
 		tarballArtifact := runtime.NewArtifact(runtime.ArtifactSpec{
 			RepositoryID: ctx.Repository.ID,
 			Format:       "npm",
@@ -958,8 +961,8 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 			Name:         packageName,
 			Version:      tarballVersion,
 			Path:         packageName + "/-",
-			Filename:     tarballName,
-			RemotePath:   packageName + "/-/" + tarballName,
+			Filename:     tarballFilename,
+			RemotePath:   packageName + "/-/" + tarballFilename,
 			BlobRefs:     []runtime.BlobRef{tarballBlob},
 			Attributes:   map[string]string{"artifact_type": "tarball"},
 			Properties: map[string]string{

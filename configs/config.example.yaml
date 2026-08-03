@@ -87,8 +87,8 @@ proxy:
   connect_timeout: 10s
   large_file_threshold: 52428800  # 大文件阈值 (50MB)
   max_redirects: 10
-  insecure_skip_verify: true   # 是否跳过 SSL 证书校验
-  
+  # insecure_skip_verify: true   # 是否跳过 SSL 证书校验（默认 true，对自签名上游生效；如需强制校验改为 false）
+
   # DNS 映射（用于内网解析）
   # dns_mapping:
   #   "registry.npmjs.org": "10.0.0.1"

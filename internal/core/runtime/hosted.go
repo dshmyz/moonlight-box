@@ -172,7 +172,10 @@ func (n *HostedRuntime) RenderProjection(ctx context.Context, query ProjectionQu
 }
 
 func (n *HostedRuntime) BeginUpload(ctx context.Context, request UploadRequest) (UploadSession, error) {
-	return NewHostedUploadSession(n.MetadataStore, n.BlobStore), nil
+	session := NewHostedUploadSession(n.MetadataStore, n.BlobStore)
+	// 强制 artifact 归属到本 hosted 成员自身 ID（见 HostedUploadSession.RepositoryID 注释）
+	session.RepositoryID = n.RepositoryID
+	return session, nil
 }
 
 func (n *HostedRuntime) DeleteArtifact(ctx context.Context, key ArtifactKey) error {

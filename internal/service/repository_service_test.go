@@ -246,6 +246,82 @@ func TestRepositoryService_AddMember(t *testing.T) {
 	assert.Equal(t, "npm-local-2", members[0].MemberRepo.Name)
 }
 
+func TestRepositoryService_AddMember_RejectsFormatMismatch(t *testing.T) {
+	service, db := setupRepositoryService(t)
+
+	localRepo := &model.Repository{
+		Name:        "maven-local",
+		Type:        model.RepoTypeLocal,
+		PackageType: "maven",
+	}
+	db.Create(localRepo)
+
+	virtualRepo := &model.Repository{
+		Name:        "npm-virtual",
+		Type:        model.RepoTypeVirtual,
+		PackageType: "npm",
+	}
+	db.Create(virtualRepo)
+
+	err := service.AddMember("npm-virtual", "maven-local", 0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match virtual repository")
+
+	// 成员关系不应被写入
+	members, err := service.GetMembers("npm-virtual")
+	assert.Nil(t, err)
+	assert.Equal(t, 0, len(members))
+}
+
+func TestRepositoryService_AddMember_RejectsNonVirtualRepo(t *testing.T) {
+	service, db := setupRepositoryService(t)
+
+	localRepo := &model.Repository{
+		Name:        "npm-local-a",
+		Type:        model.RepoTypeLocal,
+		PackageType: "npm",
+	}
+	db.Create(localRepo)
+	localRepoB := &model.Repository{
+		Name:        "npm-local-b",
+		Type:        model.RepoTypeLocal,
+		PackageType: "npm",
+	}
+	db.Create(localRepoB)
+
+	// 非虚拟仓库不能作为组合仓库添加成员
+	err := service.AddMember("npm-local-a", "npm-local-b", 0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "is not a virtual")
+}
+
+func TestRepositoryService_Create_VirtualRepoRejectsFormatMismatch(t *testing.T) {
+	service, db := setupRepositoryService(t)
+
+	mavenRepo := &model.Repository{
+		Name:        "maven-local-c",
+		Type:        model.RepoTypeLocal,
+		PackageType: "maven",
+	}
+	db.Create(mavenRepo)
+
+	virtualRepo := &model.Repository{
+		Name:        "npm-virtual-c",
+		Type:        model.RepoTypeVirtual,
+		PackageType: "npm",
+		Enabled:     true,
+	}
+
+	err := service.Create(virtualRepo, []string{"maven-local-c"})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match virtual repository")
+
+	// 事务回滚：组合仓库及其成员关系都不应写入
+	var count int64
+	db.Model(&model.Repository{}).Where("name = ?", "npm-virtual-c").Count(&count)
+	assert.Equal(t, int64(0), count)
+}
+
 func TestRepositoryService_RemoveMember(t *testing.T) {
 	service, db := setupRepositoryService(t)
 

@@ -270,3 +270,59 @@ func (s *contextUploadSessionBlobStore) PutContext(ctx context.Context, reader i
 	s.contextValue = ctx.Value(contextKey("request"))
 	return s.uploadSessionBlobStore.Put(reader)
 }
+
+// TestHostedUploadSessionCommitForcesRepositoryID 验证组合仓库发布时，
+// artifact 会被强制归到 hosted 成员的 RepositoryID（与读路径一致），
+// 否则发布成功后无法按成员 ID 查询到。
+func TestHostedUploadSessionCommitForcesRepositoryID(t *testing.T) {
+	store := &uploadSessionMetadataStore{}
+	session := NewHostedUploadSession(store, &uploadSessionBlobStore{})
+	session.RepositoryID = "member-42" // HostedRuntime.BeginUpload 会设置它
+
+	if err := session.PutArtifact(context.Background(), NewArtifact(ArtifactSpec{
+		RepositoryID: "99", // plugin 从组合仓库 ctx 携带的 ID
+		Format:       "npm",
+		Kind:         KindMetadata,
+		Name:         "@scope/pkg",
+		Version:      "1.0.0",
+	})); err != nil {
+		t.Fatalf("put artifact: %v", err)
+	}
+
+	if err := session.Commit(context.Background()); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if len(store.artifacts) != 1 {
+		t.Fatalf("stored artifacts = %d, want 1", len(store.artifacts))
+	}
+	if got := store.artifacts[0].RepositoryID; got != "member-42" {
+		t.Fatalf("artifact RepositoryID = %q, want member-42", got)
+	}
+}
+
+// TestHostedUploadSessionCommitKeepsRepositoryIDWhenEmpty 验证未设置
+// RepositoryID（直接 hosted 发布路径），Commit 不覆写 artifact 的 ID。
+func TestHostedUploadSessionCommitKeepsRepositoryIDWhenEmpty(t *testing.T) {
+	store := &uploadSessionMetadataStore{}
+	session := NewHostedUploadSession(store, &uploadSessionBlobStore{}) // RepositoryID 为空
+
+	if err := session.PutArtifact(context.Background(), NewArtifact(ArtifactSpec{
+		RepositoryID: "7",
+		Format:       "npm",
+		Kind:         KindMetadata,
+		Name:         "pkg",
+		Version:      "1.0.0",
+	})); err != nil {
+		t.Fatalf("put artifact: %v", err)
+	}
+
+	if err := session.Commit(context.Background()); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if len(store.artifacts) != 1 {
+		t.Fatalf("stored artifacts = %d, want 1", len(store.artifacts))
+	}
+	if got := store.artifacts[0].RepositoryID; got != "7" {
+		t.Fatalf("artifact RepositoryID = %q, want 7", got)
+	}
+}

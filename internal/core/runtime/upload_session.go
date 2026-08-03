@@ -10,9 +10,14 @@ import (
 type HostedUploadSession struct {
 	metadataStore MetadataStore
 	blobStore     BlobStore
-	artifacts     []*Artifact // 支持多个 artifact（如 npm 的 tarball + metadata）
-	createdBlobs  []BlobRef
-	aborted       bool
+	// RepositoryID 为 artifact 落库时强制使用的仓库 ID。
+	// 组合仓库发布时 plugin 传入的是组合库 ID，但实际写入到 hosted 成员的存储；
+	// 与读路径（HostedRuntime.QueryArtifacts/GetArtifact 强制使用成员 ID）保持一致，
+	// 写路径也必须把 artifact 归到成员自身的 ID，否则发布成功却无法按成员 ID 查询到。
+	RepositoryID string // 为空表示不覆写
+	artifacts   []*Artifact  // 支持多个 artifact（如 npm 的 tarball + metadata）
+	createdBlobs []BlobRef
+	aborted      bool
 }
 
 func NewHostedUploadSession(metadataStore MetadataStore, blobStore BlobStore) *HostedUploadSession {
@@ -60,6 +65,12 @@ func (s *HostedUploadSession) Commit(ctx context.Context) error {
 	if len(s.artifacts) == 0 {
 		commitErr = ErrInvalidUpload
 	} else {
+		// 覆写 artifact 的 RepositoryID 为成员自身 ID，确保与读路径查询一致
+		if s.RepositoryID != "" {
+			for _, a := range s.artifacts {
+				a.RepositoryID = s.RepositoryID
+			}
+		}
 		commitErr = s.metadataStore.BatchPut(ctx, s.artifacts)
 	}
 	if commitErr != nil {

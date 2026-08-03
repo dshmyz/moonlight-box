@@ -85,3 +85,6 @@ docs/superpower/
 
 # Claude web 子目录配置 (开发者本地)
 web/.claude/
+
+# workbuddy 本地工作日志
+.workbuddy/

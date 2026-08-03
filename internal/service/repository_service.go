@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	apperr "github.com/dshmyz/moonlight-box/internal/errors"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/proxy"
 	"github.com/dshmyz/moonlight-box/internal/repository"
@@ -149,6 +151,11 @@ func (s *RepositoryService) Create(repo *model.Repository, members []string) err
 				var memberRepo model.Repository
 				if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
 					return fmt.Errorf("member repository not found: %s", memberName)
+				}
+				if memberRepo.PackageType != repo.PackageType {
+					return apperr.NewAppError(http.StatusBadRequest, fmt.Sprintf(
+						"member repository %s format %q does not match virtual repository %s format %q",
+						memberName, memberRepo.PackageType, repo.Name, repo.PackageType), nil)
 				}
 				group := model.RepositoryMember{
 					RepositoryID: repo.ID,
@@ -301,6 +308,11 @@ func (s *RepositoryService) Update(name string, params *model.UpdateRepositoryPa
 				if err := tx.Where("name = ?", memberName).First(&memberRepo).Error; err != nil {
 					return fmt.Errorf("member repository not found: %s", memberName)
 				}
+				if memberRepo.PackageType != virtualRepo.PackageType {
+					return apperr.NewAppError(http.StatusBadRequest, fmt.Sprintf(
+						"member repository %s format %q does not match virtual repository %s format %q",
+						memberName, memberRepo.PackageType, name, virtualRepo.PackageType), nil)
+				}
 				group := model.RepositoryMember{
 					RepositoryID: virtualRepo.ID,
 					MemberID:     memberRepo.ID,
@@ -348,9 +360,18 @@ func (s *RepositoryService) AddMember(virtualRepoName, memberRepoName string, pr
 	if err != nil {
 		return err
 	}
+	if virtualRepo.Type != model.RepoTypeVirtual {
+		return apperr.NewAppError(http.StatusBadRequest,
+			fmt.Sprintf("repository %s is not a virtual (group) repository", virtualRepoName), nil)
+	}
 	memberRepo, err := s.repoRepo.FindByName(memberRepoName)
 	if err != nil {
 		return err
+	}
+	if memberRepo.PackageType != virtualRepo.PackageType {
+		return apperr.NewAppError(http.StatusBadRequest, fmt.Sprintf(
+			"member repository %s format %q does not match virtual repository %s format %q",
+			memberRepoName, memberRepo.PackageType, virtualRepoName, virtualRepo.PackageType), nil)
 	}
 	err = s.groupRepo.AddMember(virtualRepo.ID, memberRepo.ID, priority)
 	if err == nil {
