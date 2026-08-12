@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/plugins/pypi"
 	"github.com/dshmyz/moonlight-box/internal/plugins/raw"
 	"github.com/dshmyz/moonlight-box/internal/plugins/yum"
+	"github.com/dshmyz/moonlight-box/internal/mcp"
 	"github.com/dshmyz/moonlight-box/internal/proxy"
 	"github.com/dshmyz/moonlight-box/internal/repository"
 	"github.com/dshmyz/moonlight-box/internal/service"
@@ -36,6 +38,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/gin-gonic/gin"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
 // @title Moonlight Registry API
@@ -160,8 +163,11 @@ func main() {
 	auditSvc := service.NewAuditService()
 	authService := service.NewAuthService(userRepo, roleRepo, &cfg.Auth, auditSvc)
 
-	// 初始化仓库管理和缓存服务
 	db := database.GetDB()
+	apiTokenRepo := repository.NewAPITokenRepository(db)
+	apiTokenSvc := service.NewAPITokenService(apiTokenRepo)
+
+	// 初始化仓库管理和缓存服务
 	repoRepo := repository.NewRepositoryRepository(db)
 	groupRepo := repository.NewGroupRepository(db)
 	blockRuleRepo := repository.NewBlockRuleRepository(db)
@@ -431,7 +437,12 @@ func main() {
 	healthCheckHandler := handler.NewHealthCheckHandler(healthCheckSvc)
 
 	// 初始化包版本管理 handler（新架构，读取 artifacts 表）
-	packageVersionHandler := handler.NewPackageVersionHandlerWithArtifactService(db, artifactSvc)
+	classifiers := map[string]runtime.FileTypeClassifier{
+		"maven": mavenPlugin,
+		"pypi":  pypiPlugin,
+		"go":    goPlugin,
+	}
+	packageVersionHandler := handler.NewPackageVersionHandlerWithClassifiers(db, artifactSvc, classifiers)
 
 	// 初始化AI服务
 	var aiService *ai.AIService
@@ -501,6 +512,7 @@ func main() {
 
 	// 创建路由器上下文
 	routerCtx := NewRouterContext(cfg, authService, auditSvc, permCacheSvc, blockRuleSvc, repoSvc, repositoryRouter, webhookSvc)
+	routerCtx.Handlers.Auth.SetAPITokenService(apiTokenSvc)
 	routerCtx.RepoCache = repoCache
 	routerCtx.Handlers.Repo = repoHandler
 	routerCtx.Handlers.PublicRepo = publicRepoHandler
@@ -530,6 +542,33 @@ func main() {
 
 	router := routerCtx.SetupRouter(version)
 
+	// 挂载 MCP Server（共用主服务端口）
+	var rootHandler http.Handler = router
+	if cfg.MCP.Enabled {
+		mcpSrv := mcp.NewMCPServer(cfg, db, repoSvc, auditSvc, blockRuleSvc, permCacheSvc)
+		mcpPath := cfg.MCP.Path
+		if mcpPath == "" {
+			mcpPath = mcp.DefaultMCPServerPath
+		}
+
+		// 同时支持 SSE（旧协议）和 Streamable HTTP（新协议）
+		sseServer := mcpserver.NewSSEServer(
+			mcpSrv.GetMCPServer(),
+			mcpserver.WithStaticBasePath(mcpPath),
+			mcpserver.WithSSEDisableLocalhostProtection(true),
+		)
+		streamableServer := mcpserver.NewStreamableHTTPServer(
+			mcpSrv.GetMCPServer(),
+			mcpserver.WithEndpointPath(mcpPath),
+			mcpserver.WithDisableLocalhostProtection(true),
+		)
+
+		rootHandler = mcpDualHandler(sseServer, streamableServer, mcpPath, cfg.MCP.Token, authService, apiTokenSvc, router)
+		logrus.WithFields(logrus.Fields{
+			"path": mcpPath,
+		}).Info("MCP Server mounted (SSE + Streamable HTTP)")
+	}
+
 	// 启动健康检查服务
 	healthCheckSvc.Start()
 	defer healthCheckSvc.Stop()
@@ -550,7 +589,7 @@ func main() {
 	// 创建 HTTP 服务器
 	srv := &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
-		Handler:      router,
+		Handler:      rootHandler,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		IdleTimeout:  cfg.Server.IdleTimeout,
@@ -589,4 +628,94 @@ func main() {
 	util.CloseLoggers()
 
 	logrus.Info("Server exited")
+}
+
+// mcpDualHandler 同时支持 SSE 和 Streamable HTTP 两种 MCP 传输协议。
+// 认证方式（按优先级）：静态 token → API Token → 用户 JWT
+func mcpDualHandler(
+	sseServer *mcpserver.SSEServer,
+	streamableServer *mcpserver.StreamableHTTPServer,
+	mcpPath, staticToken string,
+	authSvc *service.AuthService,
+	apiTokenSvc *service.APITokenService,
+	ginEngine *gin.Engine,
+) http.HandlerFunc {
+	ssePrefix := strings.TrimRight(mcpPath, "/") + "/sse"
+	msgPrefix := strings.TrimRight(mcpPath, "/") + "/message"
+	mcpPrefix := strings.TrimRight(mcpPath, "/") + "/"
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+
+		isMCP := path == mcpPath ||
+			strings.HasPrefix(path, mcpPrefix) ||
+			path == ssePrefix ||
+			strings.HasPrefix(path, msgPrefix)
+
+		if !isMCP {
+			ginEngine.ServeHTTP(w, r)
+			return
+		}
+
+		// 认证并提取用户身份
+		user := mcpAuthenticate(r, staticToken, authSvc, apiTokenSvc)
+		if user == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+
+		// 将用户身份注入请求 context，MCP 工具处理器可从中读取
+		ctx := mcp.SetMCPUser(r.Context(), user)
+		r = r.WithContext(ctx)
+
+		if path == ssePrefix || strings.HasPrefix(path, msgPrefix) {
+			sseServer.ServeHTTP(w, r)
+			return
+		}
+		streamableServer.ServeHTTP(w, r)
+	}
+}
+
+// mcpAuthenticate 认证并返回用户信息；静态 token 返回 admin 身份
+func mcpAuthenticate(r *http.Request, staticToken string, authSvc *service.AuthService, apiTokenSvc *service.APITokenService) *mcp.MCPUser {
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		return nil
+	}
+	parts := strings.SplitN(auth, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return nil
+	}
+	token := parts[1]
+
+	// 1. 静态 token → admin 权限
+	if staticToken != "" && token == staticToken {
+		return &mcp.MCPUser{UserID: 0, Username: "static", Static: true}
+	}
+
+	// 2. API Token
+	if apiTokenSvc != nil {
+		if apiToken, err := apiTokenSvc.ValidateToken(token); err == nil {
+			return &mcp.MCPUser{
+				UserID:   apiToken.UserID,
+				Static:   false,
+			}
+		}
+	}
+
+	// 3. 用户 JWT
+	if authSvc != nil {
+		if claims, err := authSvc.ValidateToken(token); err == nil {
+			return &mcp.MCPUser{
+				UserID:   claims.UserID,
+				Username: claims.Username,
+				Roles:    claims.Roles,
+				Static:   false,
+			}
+		}
+	}
+
+	return nil
 }

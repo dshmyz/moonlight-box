@@ -170,7 +170,10 @@ async function fetchPackageDetail(type: string, name: string) {
         ...found,
         repository: found.repository_name && found.repository_name.trim() !== ''
           ? found.repository_name
-          : 'default'
+          : 'default',
+        group_repository: found.repository_group_name && found.repository_group_name.trim() !== ''
+          ? found.repository_group_name
+          : undefined
       }
       pkg.value = pkgData
 
@@ -245,7 +248,10 @@ async function fetchAndCachePackageDetail(type: string, name: string, showLoadin
         ...found,
         repository: found.repository_name && found.repository_name.trim() !== ''
           ? found.repository_name
-          : 'default'
+          : 'default',
+        group_repository: found.repository_group_name && found.repository_group_name.trim() !== ''
+          ? found.repository_group_name
+          : undefined
       }
 
       const versionList = versionResult.versions || []

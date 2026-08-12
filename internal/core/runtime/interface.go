@@ -138,6 +138,13 @@ type RemoteFetcher interface {
 	FetchRemote(ctx context.Context, remoteURL, path string) ([]*Artifact, error)
 }
 
+// FileTypeClassifier is an optional plugin capability that classifies an
+// artifact file into a semantic category (e.g. "pom", "sources", "primary",
+// "metadata", "other") based on protocol conventions.
+type FileTypeClassifier interface {
+	ClassifyFileType(filename string) string
+}
+
 var (
 	// ErrMetadataUnsupported indicates that a protocol cannot provide the
 	// conditional metadata required to evaluate a rule.

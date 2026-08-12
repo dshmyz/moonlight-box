@@ -351,6 +351,13 @@ func (p *GoPlugin) Name() string {
 	return "go"
 }
 
+func (p *GoPlugin) ClassifyFileType(filename string) string {
+	if strings.HasSuffix(filename, ".mod") {
+		return "metadata"
+	}
+	return "other"
+}
+
 func (p *GoPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
 	path := ctx.RepositoryPath
 	path = strings.TrimPrefix(path, "/")

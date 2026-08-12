@@ -12,7 +12,7 @@
       </el-descriptions-item>
       <el-descriptions-item label="最新版本">{{ pkg.latest_version || '-' }}</el-descriptions-item>
       <el-descriptions-item label="总下载量">{{ formatNumber(pkg.download_count || 0) }}</el-descriptions-item>
-      <el-descriptions-item label="仓库">{{ pkg.repository || '-' }}</el-descriptions-item>
+      <el-descriptions-item label="仓库">{{ pkg.group_repository || pkg.repository || '-' }}</el-descriptions-item>
       <el-descriptions-item label="许可证">{{ pkg.license || '-' }}</el-descriptions-item>
     </el-descriptions>
 
@@ -74,6 +74,7 @@ const props = defineProps<{
     latest_version?: string
     download_count?: number
     repository?: string
+    group_repository?: string
     license?: string
   }
   versions: PackageVersion[]
@@ -106,7 +107,7 @@ const protocolFields = computed(() => {
 
 const registryUrl = computed(() => {
   const base = window.location.origin
-  const repo = props.pkg.repository || 'default'
+  const repo = props.pkg.group_repository || props.pkg.repository || 'default'
   switch (normalizePackageType(props.pkg.type)) {
     case 'npm':
       return `${base}/repository/${repo}/`

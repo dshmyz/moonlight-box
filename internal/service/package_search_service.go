@@ -33,19 +33,20 @@ type SearchRequest struct {
 
 // SearchEntry groups artifacts by name for browse/search (one row per name in a repo).
 type SearchEntry struct {
-	ID             uint      `json:"id"`
-	RepositoryID   uint      `json:"repository_id"`
-	Format         string    `json:"format"`
-	Namespace      string    `json:"namespace,omitempty"`
-	Name           string    `json:"name"`
-	DisplayName    string    `json:"display_name"`
-	Description    string    `json:"description,omitempty"`
-	LatestVersion  string    `json:"latest_version,omitempty"`
-	VersionCount   int       `json:"version_count"`
-	DownloadCount  int64     `json:"download_count"`
-	RepositoryName string    `json:"repository_name,omitempty"`
-	License        string    `json:"license,omitempty"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID                 uint      `json:"id"`
+	RepositoryID       uint      `json:"repository_id"`
+	Format             string    `json:"format"`
+	Namespace          string    `json:"namespace,omitempty"`
+	Name               string    `json:"name"`
+	DisplayName        string    `json:"display_name"`
+	Description        string    `json:"description,omitempty"`
+	LatestVersion      string    `json:"latest_version,omitempty"`
+	VersionCount       int       `json:"version_count"`
+	DownloadCount      int64     `json:"download_count"`
+	RepositoryName     string    `json:"repository_name,omitempty"`
+	RepositoryGroupName string   `json:"repository_group_name,omitempty"`
+	License            string    `json:"license,omitempty"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type SearchResult struct {
@@ -213,40 +214,25 @@ func (s *PackageSearchService) searchFromPackages(ctx context.Context, req *Sear
 	for _, pkg := range packages {
 		repoIDs[pkg.RepositoryID] = true
 	}
-	repoIDList := make([]uint, 0, len(repoIDs))
-	for id := range repoIDs {
-		repoIDList = append(repoIDList, id)
-	}
-
-	repoNameMap := make(map[uint]string)
-	if len(repoIDList) > 0 {
-		type repoRow struct {
-			ID   uint
-			Name string
-		}
-		var repoRows []repoRow
-		s.db.Model(&model.Repository{}).Select("id, name").Where("id IN ?", repoIDList).Find(&repoRows)
-		for _, r := range repoRows {
-			repoNameMap[r.ID] = r.Name
-		}
-	}
+	repoNameMap, groupRepoNameMap := s.batchRepoInfo(ctx, repoIDs)
 
 	// 构建结果
 	list := make([]SearchEntry, len(packages))
 	for i, pkg := range packages {
 		list[i] = SearchEntry{
-			ID:             pkg.ID,
-			RepositoryID:   pkg.RepositoryID,
-			Format:         pkg.Format,
-			Name:           pkg.Name,
-			DisplayName:    pkg.DisplayName,
-			Description:    pkg.Description,
-			LatestVersion:  pkg.LatestVersion,
-			VersionCount:   pkg.VersionCount,
-			DownloadCount:  pkg.DownloadCount,
-			RepositoryName: repoNameMap[pkg.RepositoryID],
-			License:        pkg.License,
-			UpdatedAt:      pkg.UpdatedAt,
+			ID:                  pkg.ID,
+			RepositoryID:        pkg.RepositoryID,
+			Format:              pkg.Format,
+			Name:                pkg.Name,
+			DisplayName:         pkg.DisplayName,
+			Description:         pkg.Description,
+			LatestVersion:       pkg.LatestVersion,
+			VersionCount:        pkg.VersionCount,
+			DownloadCount:       pkg.DownloadCount,
+			RepositoryName:      repoNameMap[pkg.RepositoryID],
+			RepositoryGroupName: groupRepoNameMap[pkg.RepositoryID],
+			License:             pkg.License,
+			UpdatedAt:           pkg.UpdatedAt,
 		}
 	}
 
@@ -416,38 +402,23 @@ func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *Sea
 	for _, k := range pagedKeys {
 		repoIDs[k.repositoryID] = true
 	}
-	repoIDList := make([]uint, 0, len(repoIDs))
-	for id := range repoIDs {
-		repoIDList = append(repoIDList, id)
-	}
-
-	repoNameMap := make(map[uint]string)
-	if len(repoIDList) > 0 {
-		type repoRow struct {
-			ID   uint
-			Name string
-		}
-		var repoRows []repoRow
-		s.db.Model(&model.Repository{}).Select("id, name").Where("id IN ?", repoIDList).Find(&repoRows)
-		for _, r := range repoRows {
-			repoNameMap[r.ID] = r.Name
-		}
-	}
+	repoNameMap, groupRepoNameMap := s.batchRepoInfo(ctx, repoIDs)
 
 	// 步骤6：构建结果
 	list := make([]SearchEntry, len(pagedKeys))
 	for i, k := range pagedKeys {
 		acc := groups[k]
 		list[i] = SearchEntry{
-			ID:             acc.firstID,
-			RepositoryID:   acc.repositoryID,
-			Format:         acc.format,
-			Name:           acc.name,
-			Description:    acc.description,
-			VersionCount:   acc.versionCount,
-			UpdatedAt:      acc.latestTime,
-			RepositoryName: repoNameMap[acc.repositoryID],
-			License:        acc.license,
+			ID:                  acc.firstID,
+			RepositoryID:        acc.repositoryID,
+			Format:              acc.format,
+			Name:                acc.name,
+			Description:         acc.description,
+			VersionCount:        acc.versionCount,
+			UpdatedAt:           acc.latestTime,
+			RepositoryName:      repoNameMap[acc.repositoryID],
+			RepositoryGroupName: groupRepoNameMap[acc.repositoryID],
+			License:             acc.license,
 		}
 	}
 
@@ -529,24 +500,7 @@ func (s *PackageSearchService) searchFromArtifactsGrouped(ctx context.Context, r
 	for _, row := range rows {
 		repoIDs[row.RepositoryID] = true
 	}
-	repoIDList := make([]uint, 0, len(repoIDs))
-	for id := range repoIDs {
-		repoIDList = append(repoIDList, id)
-	}
-	repoNameMap := make(map[uint]string)
-	if len(repoIDList) > 0 {
-		type repoRow struct {
-			ID   uint
-			Name string
-		}
-		var repoRows []repoRow
-		if err := s.db.WithContext(ctx).Model(&model.Repository{}).Select("id, name").Where("id IN ?", repoIDList).Find(&repoRows).Error; err != nil {
-			return nil, err
-		}
-		for _, row := range repoRows {
-			repoNameMap[row.ID] = row.Name
-		}
-	}
+	repoNameMap, groupRepoNameMap := s.batchRepoInfo(ctx, repoIDs)
 
 	list := make([]SearchEntry, len(rows))
 	for i, row := range rows {
@@ -555,15 +509,16 @@ func (s *PackageSearchService) searchFromArtifactsGrouped(ctx context.Context, r
 			return nil, fmt.Errorf("parse grouped artifact updated_at %q: %w", row.UpdatedAt, err)
 		}
 		list[i] = SearchEntry{
-			ID:             row.ID,
-			RepositoryID:   row.RepositoryID,
-			Format:         row.Format,
-			Name:           row.Name,
-			Description:    row.Description,
-			VersionCount:   row.VersionCount,
-			UpdatedAt:      updatedAt,
-			RepositoryName: repoNameMap[row.RepositoryID],
-			License:        row.License,
+			ID:                  row.ID,
+			RepositoryID:        row.RepositoryID,
+			Format:              row.Format,
+			Name:                row.Name,
+			Description:         row.Description,
+			VersionCount:        row.VersionCount,
+			UpdatedAt:           updatedAt,
+			RepositoryName:      repoNameMap[row.RepositoryID],
+			RepositoryGroupName: groupRepoNameMap[row.RepositoryID],
+			License:             row.License,
 		}
 	}
 
@@ -776,20 +731,21 @@ type ListVersionEntry struct {
 
 // ListPackageEntry 包条目，内嵌完整版本列表。
 type ListPackageEntry struct {
-	ID             uint               `json:"id"`
-	RepositoryID   uint               `json:"repository_id"`
-	Format         string             `json:"format"`
-	Namespace      string             `json:"namespace,omitempty"`
-	Name           string             `json:"name"`
-	DisplayName    string             `json:"display_name,omitempty"`
-	Description    string             `json:"description,omitempty"`
-	LatestVersion  string             `json:"latest_version,omitempty"`
-	VersionCount   int                `json:"version_count"`
-	DownloadCount  int64              `json:"download_count"`
-	RepositoryName string             `json:"repository_name,omitempty"`
-	License        string             `json:"license,omitempty"`
-	UpdatedAt      time.Time          `json:"updated_at"`
-	Versions       []ListVersionEntry `json:"versions"`
+	ID                  uint               `json:"id"`
+	RepositoryID        uint               `json:"repository_id"`
+	Format              string             `json:"format"`
+	Namespace           string             `json:"namespace,omitempty"`
+	Name                string             `json:"name"`
+	DisplayName         string             `json:"display_name,omitempty"`
+	Description         string             `json:"description,omitempty"`
+	LatestVersion       string             `json:"latest_version,omitempty"`
+	VersionCount        int                `json:"version_count"`
+	DownloadCount       int64              `json:"download_count"`
+	RepositoryName      string             `json:"repository_name,omitempty"`
+	RepositoryGroupName string             `json:"repository_group_name,omitempty"`
+	License             string             `json:"license,omitempty"`
+	UpdatedAt           time.Time          `json:"updated_at"`
+	Versions            []ListVersionEntry `json:"versions"`
 }
 
 // ListResult List 响应。
@@ -856,20 +812,21 @@ func (s *PackageSearchService) List(ctx context.Context, req *ListRequest) (*Lis
 		for _, entry := range nameResult.List {
 			key := fmt.Sprintf("%d|%s|%s", entry.RepositoryID, entry.Format, entry.Name)
 			pkgEntry := ListPackageEntry{
-				ID:             entry.ID,
-				RepositoryID:   entry.RepositoryID,
-				Format:         entry.Format,
-				Namespace:      entry.Namespace,
-				Name:           entry.Name,
-				DisplayName:    entry.DisplayName,
-				Description:    entry.Description,
-				LatestVersion:  entry.LatestVersion,
-				VersionCount:   entry.VersionCount,
-				DownloadCount:  entry.DownloadCount,
-				RepositoryName: entry.RepositoryName,
-				License:        entry.License,
-				UpdatedAt:      entry.UpdatedAt,
-				Versions:       versionMap[key],
+				ID:                  entry.ID,
+				RepositoryID:        entry.RepositoryID,
+				Format:              entry.Format,
+				Namespace:           entry.Namespace,
+				Name:                entry.Name,
+				DisplayName:         entry.DisplayName,
+				Description:         entry.Description,
+				LatestVersion:       entry.LatestVersion,
+				VersionCount:        entry.VersionCount,
+				DownloadCount:       entry.DownloadCount,
+				RepositoryName:      entry.RepositoryName,
+				RepositoryGroupName: entry.RepositoryGroupName,
+				License:             entry.License,
+				UpdatedAt:           entry.UpdatedAt,
+				Versions:            versionMap[key],
 			}
 			packages = append(packages, pkgEntry)
 		}
@@ -983,7 +940,7 @@ func (s *PackageSearchService) listByVersionMatch(ctx context.Context, req *List
 	for _, r := range pkgRows {
 		repoIDs[r.RepositoryID] = true
 	}
-	repoNameMap := s.batchRepoNames(ctx, repoIDs)
+	repoNameMap, groupRepoNameMap := s.batchRepoInfo(ctx, repoIDs)
 
 	// 批量加载这些包的版本列表（1 次 SQL），再在内存按 q 子串过滤版本号
 	versionMap, err := s.batchLoadVersions(ctx, pkgRows, req.Version, req.FilesDownloaded)
@@ -1008,13 +965,14 @@ func (s *PackageSearchService) listByVersionMatch(ctx context.Context, req *List
 		}
 
 		pkgEntry := ListPackageEntry{
-			RepositoryID:   r.RepositoryID,
-			Format:         r.Format,
-			Name:           r.Name,
-			RepositoryName: repoNameMap[r.RepositoryID],
-			Versions:       filtered,
-			VersionCount:   len(filtered),
-			UpdatedAt:      parseSQLTime(r.LatestAt),
+			RepositoryID:        r.RepositoryID,
+			Format:              r.Format,
+			Name:                r.Name,
+			RepositoryName:      repoNameMap[r.RepositoryID],
+			RepositoryGroupName: groupRepoNameMap[r.RepositoryID],
+			Versions:            filtered,
+			VersionCount:        len(filtered),
+			UpdatedAt:           parseSQLTime(r.LatestAt),
 		}
 		if len(filtered) > 0 {
 			pkgEntry.LatestVersion = filtered[0].Version
@@ -1282,28 +1240,46 @@ func (s *PackageSearchService) batchLoadVersionsFromArtifacts(ctx context.Contex
 	return result, nil
 }
 
-// batchRepoNames 批量查询仓库名称。
-func (s *PackageSearchService) batchRepoNames(ctx context.Context, repoIDs map[uint]bool) map[uint]string {
-	result := make(map[uint]string)
+// batchRepoInfo 批量查询仓库名称及其所属 group（virtual）仓库名。
+// 返回两个 map：nameMap[repoID] = repoName, groupNameMap[repoID] = groupRepoName。
+func (s *PackageSearchService) batchRepoInfo(ctx context.Context, repoIDs map[uint]bool) (nameMap, groupNameMap map[uint]string) {
+	nameMap = make(map[uint]string)
+	groupNameMap = make(map[uint]string)
 	if len(repoIDs) == 0 {
-		return result
+		return
 	}
 	ids := make([]uint, 0, len(repoIDs))
 	for id := range repoIDs {
 		ids = append(ids, id)
 	}
+
 	type repoRow struct {
 		ID   uint
 		Name string
 	}
 	var rows []repoRow
-	if err := s.db.WithContext(ctx).Model(&model.Repository{}).Select("id, name").Where("id IN ?", ids).Find(&rows).Error; err != nil {
-		return result
+	if err := s.db.WithContext(ctx).Model(&model.Repository{}).Select("id, name").Where("id IN ?", ids).Find(&rows).Error; err == nil {
+		for _, r := range rows {
+			nameMap[r.ID] = r.Name
+		}
 	}
-	for _, r := range rows {
-		result[r.ID] = r.Name
+
+	type memberRow struct {
+		MemberID    uint   `gorm:"column:member_id"`
+		VirtualName string `gorm:"column:name"`
 	}
-	return result
+	var memberRows []memberRow
+	if err := s.db.WithContext(ctx).
+		Table("repository_members").
+		Select("repository_members.member_id, repositories.name").
+		Joins("JOIN repositories ON repositories.id = repository_members.repository_id").
+		Where("repository_members.member_id IN ? AND repositories.type = ?", ids, model.RepoTypeVirtual).
+		Find(&memberRows).Error; err == nil {
+		for _, r := range memberRows {
+			groupNameMap[r.MemberID] = r.VirtualName
+		}
+	}
+	return
 }
 
 // jsonbString 从 model.JSONB 中提取字符串字段。

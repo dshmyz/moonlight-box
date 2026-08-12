@@ -114,6 +114,13 @@ func (p *PyPIPlugin) Name() string {
 	return "pypi"
 }
 
+func (p *PyPIPlugin) ClassifyFileType(filename string) string {
+	if strings.Contains(filename, ".whl") || strings.Contains(filename, ".tar.gz") || strings.Contains(filename, ".tar.bz2") {
+		return "primary"
+	}
+	return "other"
+}
+
 // FetchRemote 实现 RemoteFetcher 接口。
 // Runtime 在本地缓存为空时回调此方法，Plugin 负责远端协议交互。
 func (p *PyPIPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {

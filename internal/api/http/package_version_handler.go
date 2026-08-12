@@ -23,6 +23,7 @@ import (
 type PackageVersionHandler struct {
 	db                       *gorm.DB
 	artifactSvc              *service.ArtifactService
+	classifiers              map[string]runtime.FileTypeClassifier
 	packageVersionTableOnce  sync.Once
 	packageVersionTableReady bool
 }
@@ -33,6 +34,10 @@ func NewPackageVersionHandler(db *gorm.DB) *PackageVersionHandler {
 
 func NewPackageVersionHandlerWithArtifactService(db *gorm.DB, artifactSvc *service.ArtifactService) *PackageVersionHandler {
 	return &PackageVersionHandler{db: db, artifactSvc: artifactSvc}
+}
+
+func NewPackageVersionHandlerWithClassifiers(db *gorm.DB, artifactSvc *service.ArtifactService, classifiers map[string]runtime.FileTypeClassifier) *PackageVersionHandler {
+	return &PackageVersionHandler{db: db, artifactSvc: artifactSvc, classifiers: classifiers}
 }
 
 type blobInfo struct {
@@ -220,22 +225,7 @@ func (h *PackageVersionHandler) respondVersionsFromArtifacts(c *gin.Context, pkg
 			allRepoIDs[id] = true
 		}
 	}
-	repoNameMap := make(map[uint]string)
-	if len(allRepoIDs) > 0 {
-		ids := make([]uint, 0, len(allRepoIDs))
-		for id := range allRepoIDs {
-			ids = append(ids, id)
-		}
-		var repos []struct {
-			ID   uint   `gorm:"column:id"`
-			Name string `gorm:"column:name"`
-		}
-		h.db.WithContext(c.Request.Context()).Model(&model.Repository{}).
-			Where("id IN ?", ids).Select("id", "name").Find(&repos)
-		for _, r := range repos {
-			repoNameMap[r.ID] = r.Name
-		}
-	}
+	repoNameMap, groupRepoNameMap := h.batchRepoInfo(c.Request.Context(), allRepoIDs)
 
 	for _, ver := range verOrder {
 		vp := verGroups[ver]
@@ -264,20 +254,21 @@ func (h *PackageVersionHandler) respondVersionsFromArtifacts(c *gin.Context, pkg
 		}
 
 		entry := gin.H{
-			"id":               vp.id,
-			"repository_id":    singleRepositoryID(vp.repoIDs),
-			"repository_name":  repositoryNames(vp.repoIDs, repoNameMap),
-			"version":          ver,
-			"name":             vp.name,
-			"namespace":        vp.namespace,
-			"identity_key":     vp.identityKey,
-			"status":           status,
-			"published_at":     publishedAt,
-			"size_bytes":       vp.sizeBytes,
-			"checksum_sha256":  vp.sha256,
-			"file_count":       vp.fileCount,
-			"files_downloaded": vp.filesDownloaded,
-			"download_count":   downloadCount,
+			"id":                    vp.id,
+			"repository_id":         singleRepositoryID(vp.repoIDs),
+			"repository_name":       repositoryNames(vp.repoIDs, repoNameMap),
+			"repository_group_name": repositoryGroupNames(vp.repoIDs, groupRepoNameMap),
+			"version":               ver,
+			"name":                  vp.name,
+			"namespace":             vp.namespace,
+			"identity_key":          vp.identityKey,
+			"status":                status,
+			"published_at":          publishedAt,
+			"size_bytes":            vp.sizeBytes,
+			"checksum_sha256":       vp.sha256,
+			"file_count":            vp.fileCount,
+			"files_downloaded":      vp.filesDownloaded,
+			"download_count":        downloadCount,
 		}
 		if vp.license != "" {
 			entry["license"] = vp.license
@@ -399,7 +390,7 @@ func (h *PackageVersionHandler) ListVersionFiles(c *gin.Context) {
 	files := make([]gin.H, 0, len(artifacts))
 	for _, a := range artifacts {
 		filename := a.Filename
-		fileType := classifyFileType(a.Format, filename)
+		fileType := classifyFileType(h.classifiers, a.Format, filename)
 		blobs := blobMap[a.ID]
 		repoName := repoNameMap[a.RepositoryID]
 		downloadURL := buildDownloadURL(repoName, a)
@@ -586,24 +577,64 @@ func repositoryNames(repoIDs map[uint]bool, nameMap map[uint]string) string {
 	return strings.Join(names, ",")
 }
 
-func classifyFileType(format, filename string) string {
-	if strings.HasSuffix(filename, ".pom") {
-		return "pom"
+// repositoryGroupNames 返回版本关联的 group（virtual）仓库名，多个时用逗号分隔
+func repositoryGroupNames(repoIDs map[uint]bool, nameMap map[uint]string) string {
+	if len(repoIDs) == 0 {
+		return ""
 	}
-	if strings.HasSuffix(filename, ".jar") {
-		return "primary"
+	names := make([]string, 0, len(repoIDs))
+	for id := range repoIDs {
+		if n, ok := nameMap[id]; ok && n != "" {
+			names = append(names, n)
+		}
 	}
-	if strings.Contains(filename, "-sources") {
-		return "sources"
+	return strings.Join(names, ",")
+}
+
+// batchRepoInfo 批量查询仓库名称及其所属 group（virtual）仓库名。
+func (h *PackageVersionHandler) batchRepoInfo(ctx context.Context, repoIDs map[uint]bool) (nameMap, groupNameMap map[uint]string) {
+	nameMap = make(map[uint]string)
+	groupNameMap = make(map[uint]string)
+	if len(repoIDs) == 0 {
+		return
 	}
-	if strings.Contains(filename, ".whl") || strings.Contains(filename, ".tar.gz") || strings.Contains(filename, ".tar.bz2") {
-		return "primary"
+	ids := make([]uint, 0, len(repoIDs))
+	for id := range repoIDs {
+		ids = append(ids, id)
 	}
-	if strings.HasSuffix(filename, ".mod") {
-		return "metadata"
+
+	type repoRow struct {
+		ID   uint   `gorm:"column:id"`
+		Name string `gorm:"column:name"`
 	}
-	if strings.HasSuffix(filename, ".zip") {
-		return "primary"
+	var rows []repoRow
+	if err := h.db.WithContext(ctx).Model(&model.Repository{}).Select("id, name").Where("id IN ?", ids).Find(&rows).Error; err == nil {
+		for _, r := range rows {
+			nameMap[r.ID] = r.Name
+		}
+	}
+
+	type memberRow struct {
+		MemberID    uint   `gorm:"column:member_id"`
+		VirtualName string `gorm:"column:name"`
+	}
+	var memberRows []memberRow
+	if err := h.db.WithContext(ctx).
+		Table("repository_members").
+		Select("repository_members.member_id, repositories.name").
+		Joins("JOIN repositories ON repositories.id = repository_members.repository_id").
+		Where("repository_members.member_id IN ? AND repositories.type = ?", ids, model.RepoTypeVirtual).
+		Find(&memberRows).Error; err == nil {
+		for _, r := range memberRows {
+			groupNameMap[r.MemberID] = r.VirtualName
+		}
+	}
+	return
+}
+
+func classifyFileType(classifiers map[string]runtime.FileTypeClassifier, format, filename string) string {
+	if c, ok := classifiers[format]; ok {
+		return c.ClassifyFileType(filename)
 	}
 	return "other"
 }

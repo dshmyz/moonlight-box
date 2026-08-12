@@ -404,6 +404,19 @@ func (p *MavenPlugin) Name() string {
 	return "maven"
 }
 
+func (p *MavenPlugin) ClassifyFileType(filename string) string {
+	if strings.HasSuffix(filename, ".pom") {
+		return "pom"
+	}
+	if strings.HasSuffix(filename, ".jar") {
+		return "primary"
+	}
+	if strings.Contains(filename, "-sources") {
+		return "sources"
+	}
+	return "other"
+}
+
 func (p *MavenPlugin) NormalizeAsset(ctx context.Context, input runtime.NormalizeInput) (*runtime.Artifact, error) {
 	path := strings.Trim(input.RemotePath, "/")
 	var key runtime.ArtifactKey
