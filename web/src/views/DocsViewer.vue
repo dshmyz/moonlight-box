@@ -100,7 +100,11 @@ const loadDoc = async () => {
     if (!response.ok) {
       throw new Error(`Document not found: ${response.status}`)
     }
-    markdownContent.value = await response.text()
+    let content = await response.text()
+    // 将占位符 your-registry 替换为用户实际访问的域名（含端口）
+    const host = window.location.host
+    content = content.replace(/your-registry(:9081)?/g, host)
+    markdownContent.value = content
     console.log('Content loaded, length:', markdownContent.value.length)
   } catch (err) {
     console.error('Failed to load document:', err)

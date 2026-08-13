@@ -43,6 +43,9 @@ func Success(c *gin.Context, data interface{}) {
 
 // SuccessWithPagination 返回分页成功响应
 func SuccessWithPagination(c *gin.Context, items interface{}, page, pageSize int, total int64) {
+	if pageSize <= 0 {
+		pageSize = 1
+	}
 	totalPages := int(total) / pageSize
 	if int(total)%pageSize > 0 {
 		totalPages++
