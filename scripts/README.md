@@ -252,8 +252,8 @@ lsof -ti:9081
 # 停止占用进程
 kill -9 <PID>
 
-# 或使用另一个端口启动
-./bin/registry serve --port 9082
+# 或使用另一个端口启动（修改 configs/config.yaml 的 server.port，或用环境变量覆盖）
+MOONLIGHT_SERVER_PORT=9082 ./bin/moonlight-box
 ```
 
 ## 相关文档

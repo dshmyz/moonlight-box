@@ -67,6 +67,26 @@ func main() {
 		return
 	}
 
+	// 程序无子命令体系，但保留历史用法中的 "serve" 位置参数（Makefile/start.sh
+	// 均使用 `moonlight-box serve` 启动）。flag 包在第一个位置参数处停止解析，
+	// 其后的参数（如 --port）会被静默忽略，这里显式校验让未知命令/失效参数显形。
+	if args := flag.Args(); len(args) > 0 {
+		if args[0] != "serve" {
+			fmt.Fprintf(os.Stderr, "unknown command %q\n", args[0])
+			flag.Usage()
+			os.Exit(2)
+		}
+		if len(args) > 1 {
+			if args[1] == "-h" || args[1] == "--help" {
+				flag.Usage()
+				os.Exit(0)
+			}
+			fmt.Fprintf(os.Stderr, "unexpected arguments after 'serve': %v (直接运行 moonlight-box 即可，无子命令)\n", args[1:])
+			flag.Usage()
+			os.Exit(2)
+		}
+	}
+
 	// 加载配置（先加载配置，再初始化日志）
 	// 使用临时日志记录配置加载过程
 	logrus.WithFields(logrus.Fields{
