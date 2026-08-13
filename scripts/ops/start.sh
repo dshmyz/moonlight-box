@@ -5,7 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 APP_NAME="moonlight-box"
 BIN_DIR="$PROJECT_DIR/bin"
 PID_FILE="$PROJECT_DIR/.moonlight-box.pid"
@@ -118,7 +118,9 @@ stop 2>/dev/null || true
 
 if [ "$MODE" = "daemon" ]; then
     echo "Starting $APP_NAME in daemon mode..."
-    nohup "$BIN_DIR/$APP_NAME" -config "$CONFIG" serve "${EXTRA_ARGS[@]}" \
+    # bash 3.2 (macOS 自带) 在 set -u 下空数组展开会报 unbound variable,
+    # 用 ${EXTRA_ARGS[@]+...} 惯用法兼容
+    nohup "$BIN_DIR/$APP_NAME" -config "$CONFIG" serve "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" \
         > "$LOG_DIR/$APP_NAME.log" 2>&1 &
     echo $! > "$PID_FILE"
     echo "Started (PID $(cat "$PID_FILE")), log: $LOG_DIR/$APP_NAME.log"
