@@ -69,7 +69,7 @@
               <input
                 v-model="form.password"
                 :type="showPassword ? 'text' : 'password'"
-                placeholder="密码"
+                placeholder="密码或令牌"
                 class="native-input"
                 @keyup.enter="handleLogin"
                 @blur="validatePassword"

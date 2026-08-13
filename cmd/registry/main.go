@@ -158,6 +158,7 @@ func main() {
 	userRepo := repository.NewUserRepository(database.GetDB())
 	roleRepo := repository.NewRoleRepository(database.GetDB())
 	downloadLogRepo := repository.NewDownloadLogRepository(database.GetDB())
+	dailyStatsRepo := repository.NewDownloadDailyStatsRepository(database.GetDB())
 
 	// 初始化服务
 	auditSvc := service.NewAuditService()
@@ -245,12 +246,13 @@ func main() {
 	defer countBatcher.Stop()
 
 	// 初始化日志批量处理器
-	logBatcher := service.NewLogBatcher(downloadLogRepo, 100, 5*time.Second)
+	logBatcher := service.NewLogBatcher(downloadLogRepo, dailyStatsRepo, 100, 5*time.Second)
 	defer logBatcher.Stop()
 
 	// 初始化日志清理服务
 	logCleanupSvc := service.NewLogCleanupService(
 		downloadLogRepo,
+		dailyStatsRepo,
 		cfg.Logging.LogRetentionDays,
 		cfg.Logging.CleanupInterval,
 	)
@@ -373,7 +375,7 @@ func main() {
 	artifactSvc.SetCacheInvalidationCallback(searchSvc.InvalidateCache)
 	searchHandler := handler.NewPackageSearchHandler(searchSvc)
 
-	dashboardSvc := service.NewDashboardService(db, repoRepo, healthCheckSvc, cfg.Storage.Local.BasePath)
+	dashboardSvc := service.NewDashboardService(db, repoRepo, dailyStatsRepo, healthCheckSvc, cfg.Storage.Local.BasePath)
 	dashboardHandler := handler.NewDashboardHandler(dashboardSvc)
 
 	// 初始化用户和审计日志管理

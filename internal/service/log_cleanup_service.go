@@ -10,10 +10,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// LogCleanupService 负责定期清理过期的下载日志。
+// LogCleanupService 负责定期清理过期的下载日志和聚合数据。
 // 支持通过 SystemConfigService 进行热更新，修改配置后调用 UpdateSchedule 即可生效。
 type LogCleanupService struct {
-	logRepo *repository.DownloadLogRepository
+	logRepo        *repository.DownloadLogRepository
+	dailyStatsRepo *repository.DownloadDailyStatsRepository
 	// configSvc 为 nil 时，回退到构造时传入的静态配置
 	configSvc *SystemConfigService
 
@@ -31,6 +32,7 @@ type LogCleanupService struct {
 
 func NewLogCleanupService(
 	logRepo *repository.DownloadLogRepository,
+	dailyStatsRepo *repository.DownloadDailyStatsRepository,
 	retentionDays int,
 	cleanupInterval time.Duration,
 ) *LogCleanupService {
@@ -43,6 +45,7 @@ func NewLogCleanupService(
 
 	return &LogCleanupService{
 		logRepo:              logRepo,
+		dailyStatsRepo:       dailyStatsRepo,
 		defaultRetentionDays: retentionDays,
 		defaultInterval:      cleanupInterval,
 		retentionDays:        retentionDays,
@@ -195,15 +198,25 @@ func (s *LogCleanupService) cleanup() {
 
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"module":   "log_cleanup",
-			"error":    err,
+			"module":      "log_cleanup",
+			"error":       err,
 			"duration_ms": duration,
 		}).Error("Failed to cleanup old logs")
 		return
 	}
 
+	// 聚合表保留 90 天（远大于 raw logs 的保留期）
+	if s.dailyStatsRepo != nil {
+		if err := s.dailyStatsRepo.CleanOldStats(90 * 24 * time.Hour); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"module": "log_cleanup",
+				"error":  err,
+			}).Error("Failed to cleanup old daily stats")
+		}
+	}
+
 	logrus.WithFields(logrus.Fields{
-		"module":   "log_cleanup",
+		"module":      "log_cleanup",
 		"duration_ms": duration,
 	}).Info("Log cleanup completed successfully")
 }

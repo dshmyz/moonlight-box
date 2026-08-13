@@ -94,14 +94,88 @@
           </el-card>
         </el-col>
       </el-row>
+
+      <!-- MCP 访问令牌 -->
+      <el-card id="tokens" class="settings-card" style="margin-top: 24px">
+        <template #header>
+          <div class="card-header">
+            <i class="fa-solid fa-key"></i>
+            <span>访问令牌</span>
+            <el-button type="primary" size="small" style="margin-left: auto" @click="showCreateToken = true">
+              <i class="fa-solid fa-plus"></i> 生成新令牌
+            </el-button>
+          </div>
+        </template>
+        <p style="color: #909399; font-size: 13px; margin-bottom: 16px">
+          用于 API 认证（CI/CD 发包、脚本自动化、MCP 客户端等）。生成后仅显示一次，请妥善保存。
+        </p>
+        <el-table :data="apiTokens" v-loading="tokensLoading" empty-text="暂无访问令牌">
+          <el-table-column prop="name" label="名称" min-width="120" />
+          <el-table-column prop="prefix" label="令牌前缀" min-width="140">
+            <template #default="{ row }">
+              <code style="background: #f5f7fa; padding: 2px 6px; border-radius: 4px">{{ row.prefix }}****</code>
+            </template>
+          </el-table-column>
+          <el-table-column prop="created_at" label="创建时间" min-width="160">
+            <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column prop="last_used_at" label="最后使用" min-width="160">
+            <template #default="{ row }">{{ row.last_used_at ? formatTime(row.last_used_at) : '未使用' }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="100" fixed="right">
+            <template #default="{ row }">
+              <el-popconfirm title="确定撤销此令牌？" @confirm="deleteToken(row.id)">
+                <template #reference>
+                  <el-button type="danger" size="small" link>撤销</el-button>
+                </template>
+              </el-popconfirm>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-card>
     </div>
+
+    <!-- 生成令牌弹窗 -->
+    <el-dialog v-model="showCreateToken" title="生成访问令牌" width="420px" @close="resetCreateToken">
+      <el-form :model="createForm" label-width="80px">
+        <el-form-item label="名称">
+          <el-input v-model="createForm.name" placeholder="如：Claude Desktop" />
+        </el-form-item>
+        <el-form-item label="有效期">
+          <el-select v-model="createForm.expires_in" placeholder="永久有效" clearable>
+            <el-option label="30 天" value="720h" />
+            <el-option label="90 天" value="2160h" />
+            <el-option label="1 年" value="8760h" />
+            <el-option label="永久" value="" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showCreateToken = false">取消</el-button>
+        <el-button type="primary" @click="createToken" :loading="creating">生成</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 显示生成的令牌 -->
+    <el-dialog v-model="showTokenResult" title="令牌已生成" width="480px" :close-on-click-modal="false">
+      <el-alert type="warning" :closable="false" style="margin-bottom: 16px">
+        请立即复制此令牌，关闭后将无法再次查看。
+      </el-alert>
+      <div style="background: #f5f7fa; padding: 12px; border-radius: 8px; word-break: break-all; font-family: monospace">
+        {{ generatedToken }}
+      </div>
+      <template #footer>
+        <el-button @click="copyToken">复制令牌</el-button>
+        <el-button type="primary" @click="showTokenResult = false">我已保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
-import { authApi, type UserProfile } from '@/api/auth'
+import { authApi, type UserProfile, type APIToken } from '@/api/auth'
 
 const loading = ref(false)
 const profile = ref<UserProfile | null>(null)
@@ -161,9 +235,77 @@ async function changePassword() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   loadProfile()
+  loadTokens()
+  if (window.location.hash === '#tokens') {
+    await nextTick()
+    document.getElementById('tokens')?.scrollIntoView({ behavior: 'smooth' })
+  }
 })
+
+// --- API Token 管理 ---
+const apiTokens = ref<APIToken[]>([])
+const tokensLoading = ref(false)
+const showCreateToken = ref(false)
+const showTokenResult = ref(false)
+const creating = ref(false)
+const generatedToken = ref('')
+const createForm = ref({ name: '', expires_in: '' })
+
+async function loadTokens() {
+  tokensLoading.value = true
+  try {
+    const res = await authApi.listTokens()
+    apiTokens.value = res || []
+  } catch {
+    console.error('Failed to load tokens')
+  } finally {
+    tokensLoading.value = false
+  }
+}
+
+async function createToken() {
+  if (!createForm.value.name) {
+    ElMessage.error('请输入令牌名称')
+    return
+  }
+  creating.value = true
+  try {
+    const res = await authApi.createToken(createForm.value)
+    generatedToken.value = res.token
+    showCreateToken.value = false
+    showTokenResult.value = true
+    loadTokens()
+  } catch {
+    ElMessage.error('生成令牌失败')
+  } finally {
+    creating.value = false
+  }
+}
+
+async function deleteToken(id: number) {
+  try {
+    await authApi.deleteToken(id)
+    ElMessage.success('令牌已撤销')
+    loadTokens()
+  } catch {
+    ElMessage.error('撤销令牌失败')
+  }
+}
+
+function resetCreateToken() {
+  createForm.value = { name: '', expires_in: '' }
+}
+
+function copyToken() {
+  navigator.clipboard.writeText(generatedToken.value)
+  ElMessage.success('已复制到剪贴板')
+}
+
+function formatTime(t: string) {
+  return new Date(t).toLocaleString('zh-CN')
+}
 </script>
 
 <style scoped>

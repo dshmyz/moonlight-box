@@ -41,6 +41,10 @@
         </span>
         <template #dropdown>
           <el-dropdown-menu>
+            <el-dropdown-item command="tokens">
+              <el-icon><Key /></el-icon>
+              访问令牌
+            </el-dropdown-item>
             <el-dropdown-item command="profile">
               <el-icon><User /></el-icon>
               个人设置
@@ -64,7 +68,7 @@
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { Fold, Expand, ArrowDown, User, SwitchButton, View, QuestionFilled } from '@element-plus/icons-vue'
+import { Fold, Expand, ArrowDown, User, SwitchButton, View, QuestionFilled, Key } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
 
 defineProps<{
@@ -128,6 +132,9 @@ async function handleCommand(command: string) {
       break
     case 'profile':
       router.push('/admin/profile')
+      break
+    case 'tokens':
+      router.push('/admin/profile#tokens')
       break
     case 'help':
       router.push('/admin/help')

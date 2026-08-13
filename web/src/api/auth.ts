@@ -36,6 +36,25 @@ export interface UpdateProfilePayload {
   avatar_url?: string
 }
 
+export interface APIToken {
+  id: number
+  name: string
+  prefix: string
+  last_used_at?: string
+  expires_at?: string
+  created_at: string
+}
+
+export interface CreateTokenPayload {
+  name: string
+  expires_in?: string
+}
+
+export interface CreateTokenResponse {
+  token: string
+  info: APIToken
+}
+
 export const authApi = {
   login(username: string, password: string) {
     return request.post<AuthResponse>('/auth/login', { username, password })
@@ -54,5 +73,14 @@ export const authApi = {
   },
   changePassword(payload: ChangePasswordPayload) {
     return request.put('/auth/password', payload)
+  },
+  listTokens() {
+    return request.get<APIToken[]>('/auth/tokens')
+  },
+  createToken(payload: CreateTokenPayload) {
+    return request.post<CreateTokenResponse>('/auth/tokens', payload)
+  },
+  deleteToken(id: number) {
+    return request.delete(`/auth/tokens/${id}`)
   },
 }

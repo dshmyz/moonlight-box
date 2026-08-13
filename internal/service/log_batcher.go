@@ -12,6 +12,7 @@ import (
 
 type LogBatcher struct {
 	logRepo       *repository.DownloadLogRepository
+	dailyStatsRepo *repository.DownloadDailyStatsRepository
 	batchSize     int
 	flushInterval time.Duration
 	stopCh        chan struct{}
@@ -20,7 +21,7 @@ type LogBatcher struct {
 	once          sync.Once
 }
 
-func NewLogBatcher(logRepo *repository.DownloadLogRepository, batchSize int, flushInterval time.Duration) *LogBatcher {
+func NewLogBatcher(logRepo *repository.DownloadLogRepository, dailyStatsRepo *repository.DownloadDailyStatsRepository, batchSize int, flushInterval time.Duration) *LogBatcher {
 	if batchSize <= 0 {
 		batchSize = 100
 	}
@@ -29,11 +30,12 @@ func NewLogBatcher(logRepo *repository.DownloadLogRepository, batchSize int, flu
 	}
 
 	batcher := &LogBatcher{
-		logRepo:       logRepo,
-		batchSize:     batchSize,
-		flushInterval: flushInterval,
-		stopCh:        make(chan struct{}),
-		doneCh:        make(chan struct{}),
+		logRepo:        logRepo,
+		dailyStatsRepo: dailyStatsRepo,
+		batchSize:      batchSize,
+		flushInterval:  flushInterval,
+		stopCh:         make(chan struct{}),
+		doneCh:         make(chan struct{}),
 		// 容量设为 batchSize 的 20 倍，避免高并发下载时 channel 打满丢日志。
 		// 每条 DownloadLog 结构体很小（几百字节），2000 条约 1MB 内存开销。
 		logCh: make(chan *model.DownloadLog, batchSize*20),
@@ -110,18 +112,39 @@ func (b *LogBatcher) flushLogs(logs []*model.DownloadLog) {
 		return
 	}
 
-	if err := b.logRepo.BatchCreate(logs); err != nil {
-		util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
-			util.LogKeyModule:  "service",
-			util.LogKeyPkgType: "go",
-			util.LogKeyError:   err,
-		}).Error("failed to batch create download logs")
-	} else {
-		util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
-			util.LogKeyModule:  "service",
-			util.LogKeyPkgType: "go",
-			"count":            len(logs),
-		}).Debug("batch created download logs")
+	// 分流：cached 日志不落 download_logs 表（量大、调试无用），
+	// 但仍送入聚合表统计缓存命中数。
+	persistLogs := make([]*model.DownloadLog, 0, len(logs))
+	for _, l := range logs {
+		if l.Status != model.DownloadStatusCached {
+			persistLogs = append(persistLogs, l)
+		}
+	}
+
+	if len(persistLogs) > 0 {
+		if err := b.logRepo.BatchCreate(persistLogs); err != nil {
+			util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
+				util.LogKeyModule:  "service",
+				util.LogKeyPkgType: "go",
+				util.LogKeyError:   err,
+			}).Error("failed to batch create download logs")
+		} else {
+			util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
+				util.LogKeyModule:  "service",
+				util.LogKeyPkgType: "go",
+				"count":            len(persistLogs),
+			}).Debug("batch created download logs")
+		}
+	}
+
+	// 同步增量更新每日聚合表（含 cached）
+	if b.dailyStatsRepo != nil {
+		if err := b.dailyStatsRepo.BatchIncrByLogs(logs); err != nil {
+			util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
+				util.LogKeyModule: "service",
+				util.LogKeyError:  err,
+			}).Error("failed to batch update daily stats")
+		}
 	}
 }
 

@@ -38,6 +38,7 @@ func AutoMigrate() error {
 		&model.WebhookDelivery{},
 		&model.Backup{},
 		&model.DownloadLog{},
+		&model.DownloadDailyStats{},
 		&model.Package{},
 		&model.PackageVersion{},
 		&domain.MigrationPlan{},
@@ -45,6 +46,7 @@ func AutoMigrate() error {
 		&domain.MigrationItem{},
 		&domain.MigrationConflict{},
 		&domain.MigrationEvent{},
+		&model.APIToken{},
 	); err != nil {
 		return err
 	}

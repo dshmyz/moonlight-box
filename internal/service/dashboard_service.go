@@ -60,6 +60,7 @@ type PackageTop struct {
 type DashboardService struct {
 	db             *gorm.DB
 	repoRepo       *repository.RepositoryRepository
+	dailyStatsRepo *repository.DownloadDailyStatsRepository
 	healthCheckSvc *proxy.HealthCheckService
 	storagePath    string
 
@@ -81,10 +82,11 @@ type DashboardService struct {
 }
 
 // NewDashboardService 创建仪表盘服务实例
-func NewDashboardService(db *gorm.DB, repoRepo *repository.RepositoryRepository, healthCheckSvc *proxy.HealthCheckService, storagePath string) *DashboardService {
+func NewDashboardService(db *gorm.DB, repoRepo *repository.RepositoryRepository, dailyStatsRepo *repository.DownloadDailyStatsRepository, healthCheckSvc *proxy.HealthCheckService, storagePath string) *DashboardService {
 	svc := &DashboardService{
 		db:             db,
 		repoRepo:       repoRepo,
+		dailyStatsRepo: dailyStatsRepo,
 		healthCheckSvc: healthCheckSvc,
 		storagePath:    storagePath,
 		cacheTTL:       30 * time.Second,
@@ -193,22 +195,12 @@ func (s *DashboardService) computeStats(ctx context.Context) (*DashboardStats, e
 		pkgCountMap[pc.RepositoryID] = pc.Count
 	}
 
-	var todayDownloads []struct {
-		RepositoryID uint
-		Count        int64
+	var todayDownloads map[uint]int64
+	if s.dailyStatsRepo != nil {
+		todayDownloads, _ = s.dailyStatsRepo.GetTodayDownloadsByRepo()
 	}
-	if len(repoIDs) > 0 {
-		todayStart := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 0, 0, 0, 0, time.Now().Location())
-		s.db.Model(&model.DownloadLog{}).
-			Select("repository_id, COUNT(*) as count").
-			Where("repository_id IN ? AND created_at >= ? AND status = ?", repoIDs, todayStart, model.DownloadStatusSuccess).
-			Group("repository_id").
-			Scan(&todayDownloads)
-	}
-
-	todayDownloadMap := make(map[uint]int64)
-	for _, td := range todayDownloads {
-		todayDownloadMap[td.RepositoryID] = td.Count
+	if todayDownloads == nil {
+		todayDownloads = make(map[uint]int64)
 	}
 
 	backendMap := s.getBackendMap(repos)
@@ -225,7 +217,7 @@ func (s *DashboardService) computeStats(ctx context.Context) (*DashboardStats, e
 			PackageType:        repo.PackageType,
 			Status:             s.getRepoHealthStatus(healthStatus),
 			PackageCount:       pkgCountMap[repo.ID],
-			DownloadCountToday: todayDownloadMap[repo.ID],
+			DownloadCountToday: todayDownloads[repo.ID],
 			StorageBytes:       s.getRepoStorageBytes(repo, backendMap),
 		}
 		repoStatuses = append(repoStatuses, status)
@@ -319,36 +311,23 @@ func (s *DashboardService) getDirStorageBytes(path string) int64 {
 	return calculateDirSize(path)
 }
 
-// getTopPackages 获取下载量最多的包
+// getTopPackages 获取下载量最多的包（从聚合表）
 func (s *DashboardService) getTopPackages(limit int) []PackageTop {
-	type DownloadStats struct {
-		PackageName   string `gorm:"column:package_name"`
-		PackageType   string `gorm:"column:package_type"`
-		DownloadCount int64  `gorm:"column:download_count"`
+	if s.dailyStatsRepo == nil {
+		return []PackageTop{}
 	}
-
-	var downloadStats []DownloadStats
-	err := s.db.Model(&model.DownloadLog{}).
-		Select("package_name, package_type, COUNT(*) as download_count").
-		Where("status = ?", model.DownloadStatusSuccess).
-		Group("package_name, package_type").
-		Order("download_count DESC").
-		Limit(limit).
-		Scan(&downloadStats)
-
+	rows, err := s.dailyStatsRepo.GetTopPackages(30, limit)
 	if err != nil {
 		return []PackageTop{}
 	}
-
 	topPackages := make([]PackageTop, 0, limit)
-	for _, ds := range downloadStats {
+	for _, ds := range rows {
 		topPackages = append(topPackages, PackageTop{
 			Name:          ds.PackageName,
 			Type:          ds.PackageType,
 			DownloadCount: ds.DownloadCount,
 		})
 	}
-
 	return topPackages
 }
 
@@ -420,58 +399,42 @@ func (s *DashboardService) getCacheInfo() CacheInfo {
 	return cacheInfo
 }
 
-// computeCacheInfo 实际计算缓存统计信息
+// computeCacheInfo 实际计算缓存统计信息（从聚合表）
 func (s *DashboardService) computeCacheInfo() CacheInfo {
+	if s.dailyStatsRepo == nil {
+		return CacheInfo{}
+	}
+	hitRate, err := s.dailyStatsRepo.GetCacheHitRate(7)
+	if err != nil {
+		return CacheInfo{}
+	}
 	var totalEntries int64
 	s.db.Model(&model.CacheEntry{}).Count(&totalEntries)
-
-	var totalLogs int64
-	s.db.Model(&model.DownloadLog{}).Count(&totalLogs)
-
-	var cachedLogs int64
-	s.db.Model(&model.DownloadLog{}).Where("status = ?", model.DownloadStatusCached).Count(&cachedLogs)
-
-	var hitRate float64
-	if totalLogs > 0 {
-		hitRate = float64(cachedLogs) / float64(totalLogs) * 100
-		hitRate = float64(int(hitRate*10)) / 10
-	}
-
 	return CacheInfo{
 		HitRate:      hitRate,
 		TotalEntries: totalEntries,
 	}
 }
 
-// getDownloadsLast7Days 获取最近 7 天每天的下载量
+// getDownloadsLast7Days 获取最近 7 天每天的下载量（从聚合表）
 func (s *DashboardService) getDownloadsLast7Days() []int64 {
 	result := make([]int64, 7)
+	if s.dailyStatsRepo == nil {
+		return result
+	}
+	rows, err := s.dailyStatsRepo.GetDailyTotals(7)
+	if err != nil {
+		return result
+	}
 	now := time.Now()
-
-	sevenDaysAgo := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -6)
-
-	type DailyCount struct {
-		Date  time.Time
-		Count int64
+	countMap := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		countMap[row.Date.Format("2006-01-02")] = row.Count
 	}
-
-	var dailyCounts []DailyCount
-	s.db.Model(&model.DownloadLog{}).
-		Select("DATE(created_at) as date, COUNT(*) as count").
-		Where("created_at >= ? AND status = ?", sevenDaysAgo, model.DownloadStatusSuccess).
-		Group("DATE(created_at)").
-		Scan(&dailyCounts)
-
-	countMap := make(map[string]int64)
-	for _, dc := range dailyCounts {
-		countMap[dc.Date.Format("2006-01-02")] = dc.Count
-	}
-
 	for i := 6; i >= 0; i-- {
 		day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -i)
 		dateKey := day.Format("2006-01-02")
 		result[6-i] = countMap[dateKey]
 	}
-
 	return result
 }
