@@ -1220,6 +1220,70 @@ func TestHandle_MetadataChecksumMatchesDynamicMetadataBytes(t *testing.T) {
 	}
 }
 
+// TestHandle_MetadataChecksumMatchesServedContentWithUploadedMetadata 复现 mvn deploy 场景：
+// 客户端上传制品后又上传 maven-metadata.xml（内容与聚合结果不同）。GET metadata 返回
+// 动态聚合内容，checksum 必须与 GET 返回的内容同源，而不是与上传的 metadata blob 同源，
+// 否则客户端会报 "Checksum validation failed" 警告。
+func TestHandle_MetadataChecksumMatchesServedContentWithUploadedMetadata(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	rt := newHostedMavenRuntime(t)
+
+	uploadCtx, uploadW := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", bytes.NewReader([]byte("jar-content")))
+	if err := p.Handle(uploadCtx, rt); err != nil {
+		t.Fatalf("upload Handle failed: %v", err)
+	}
+	if uploadW.Code != http.StatusCreated {
+		t.Fatalf("expected upload 201, got %d", uploadW.Code)
+	}
+
+	// deploy 会上传 maven-metadata.xml（及其 checksum），模拟一份与聚合内容不同的 blob
+	uploadedMeta := `<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+  <groupId>com.example</groupId>
+  <artifactId>app</artifactId>
+  <versioning>
+    <latest>1.0.0</latest>
+    <versions>
+      <version>1.0.0</version>
+    </versions>
+  </versioning>
+</metadata>`
+	metaCtx, metaW := newCtx("PUT", "com/example/app/maven-metadata.xml", strings.NewReader(uploadedMeta))
+	if err := p.Handle(metaCtx, rt); err != nil {
+		t.Fatalf("metadata upload Handle failed: %v", err)
+	}
+	if metaW.Code != http.StatusCreated {
+		t.Fatalf("expected metadata upload 201, got %d body=%q", metaW.Code, metaW.Body.String())
+	}
+
+	metaGetCtx, metaGetW := newCtx("GET", "com/example/app/maven-metadata.xml", nil)
+	if err := p.Handle(metaGetCtx, rt); err != nil {
+		t.Fatalf("metadata Handle failed: %v", err)
+	}
+	if metaGetW.Code != http.StatusOK {
+		t.Fatalf("expected metadata 200, got %d", metaGetW.Code)
+	}
+
+	checksumCtx, checksumW := newCtx("GET", "com/example/app/maven-metadata.xml.sha1", nil)
+	if err := p.Handle(checksumCtx, rt); err != nil {
+		t.Fatalf("metadata checksum Handle failed: %v", err)
+	}
+	if checksumW.Code != http.StatusOK {
+		t.Fatalf("expected checksum 200, got %d", checksumW.Code)
+	}
+
+	sum := sha1.Sum(metaGetW.Body.Bytes())
+	want := hex.EncodeToString(sum[:])
+	got := strings.TrimSpace(strings.Split(checksumW.Body.String(), " ")[0])
+	if got != want {
+		t.Fatalf("metadata sha1 = %s, want %s (must match served metadata content)", got, want)
+	}
+	uploadedSum := sha1.Sum([]byte(uploadedMeta))
+	if got == hex.EncodeToString(uploadedSum[:]) {
+		t.Fatalf("checksum must not be computed from the uploaded metadata blob")
+	}
+}
+
 func TestHandle_Metadata_ValidationApi(t *testing.T) {
 	p := NewMavenPlugin(http.DefaultClient)
 	arts := []*runtime.Artifact{

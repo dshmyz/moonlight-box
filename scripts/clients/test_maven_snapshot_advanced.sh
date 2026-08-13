@@ -152,6 +152,34 @@ done
 
 echo
 
+# ── deploy 场景:metadata blob 与制品同存 ──────────────
+# mvn deploy 会同时 PUT maven-metadata.xml 及其 checksum。GET metadata 应返回
+# 动态聚合内容(有制品时聚合优先),checksum 必须与聚合内容同源;此前 .sha1 按
+# 上传的 blob 计算 → 内容与 checksum 错位 → 客户端 "Checksum validation failed"。
+echo "═══ deploy 场景:metadata blob + 制品同存 ═══"
+UPLOADED_META='<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+  <groupId>com.smoke</groupId>
+  <artifactId>app</artifactId>
+  <versioning>
+    <release>9.9.9</release>
+    <versions>
+      <version>9.9.9</version>
+    </versions>
+  </versioning>
+</metadata>'
+BLOB_FILE="$TMP_DIR/uploaded-maven-metadata.xml"
+printf "%s" "$UPLOADED_META" > "$BLOB_FILE"
+BLOB_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  --data-binary "@$BLOB_FILE" \
+  "$REL_META_URL")
+if [ "$BLOB_CODE" = "200" ] || [ "$BLOB_CODE" = "201" ]; then
+  pass "deploy 上传 maven-metadata.xml → $BLOB_CODE"
+else
+  fail "deploy 上传 maven-metadata.xml → $BLOB_CODE"
+fi
+
 # ── checksum exactness ───────────────────────────────
 echo "═══ metadata checksum 精确性 ═══"
 META_FILE="$TMP_DIR/maven-metadata.xml"
@@ -164,6 +192,12 @@ if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
   pass "metadata sha1 与实际 metadata bytes 一致"
 else
   fail "metadata sha1 不一致: local=$LOCAL_SHA remote=$REMOTE_SHA body=$(cat "$SHA_FILE")"
+fi
+BLOB_SHA=$(shasum -a 1 "$BLOB_FILE" | awk '{print $1}')
+if [ -n "$REMOTE_SHA" ] && [ "$REMOTE_SHA" != "$BLOB_SHA" ]; then
+  pass "metadata sha1 未取自上传的 blob(与聚合内容同源)"
+else
+  fail "metadata sha1 错误地取自上传的 blob: $REMOTE_SHA"
 fi
 
 echo

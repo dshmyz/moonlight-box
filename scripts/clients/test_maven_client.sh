@@ -238,6 +238,14 @@ EOF
     if mvn deploy -DskipTests &> /tmp/maven-deploy.log 2>&1; then
         pass "mvn deploy 测试通过"
 
+        # Maven 对 checksum 校验失败只报 WARNING 不改变退出码,需显式检查日志
+        if grep -qi "checksum validation failed" /tmp/maven-deploy.log; then
+            fail "mvn deploy 日志出现 Checksum validation failed"
+            tail -5 /tmp/maven-deploy.log
+        else
+            pass "mvn deploy 无 checksum 校验警告"
+        fi
+
         # 验证 deploy 后可以通过代理仓库下载
         HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             "$BASE_URL/repository/maven-local/com/test/maven-client-test/1.0.0/maven-client-test-1.0.0.jar")

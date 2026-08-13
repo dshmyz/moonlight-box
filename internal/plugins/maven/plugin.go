@@ -696,16 +696,109 @@ type pomLicense struct {
 	Name string `xml:"name"`
 }
 
-func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
+// errInvalidMetadataPath 表示 maven-metadata.xml 路径格式不合法（少于两段），
+// 调用方（handleMetadata）应返回 400 而非交给 router 处理。
+var errInvalidMetadataPath = errors.New("invalid maven metadata path")
+
+// metadataContent 描述 GET maven-metadata.xml 的响应内容：
+// artifact 非空表示透传存储的原始文档（走 ServeArtifactContent）；
+// body 非空表示从已上传 artifacts 动态聚合生成的 XML（含 xml.Header）。
+type metadataContent struct {
+	artifact *runtime.Artifact
+	body     []byte
+}
+
+// renderArtifactMetadata 从已上传 artifacts 聚合生成 artifact 级 maven-metadata.xml（含 xml.Header）。
+// GET maven-metadata.xml 与其 checksum 请求共用，保证 checksum 与内容同源。
+// 无法生成（无有效版本）时返回 ok=false。
+func renderArtifactMetadata(group, artifact string, arts []*runtime.Artifact) ([]byte, bool) {
+	versionSet := map[string]struct{}{}
+	var lastTime time.Time
+	for _, a := range arts {
+		v := a.Version
+		if v == "" {
+			continue
+		}
+		versionSet[v] = struct{}{}
+		if a.CreatedAt.After(lastTime) {
+			lastTime = a.CreatedAt
+		}
+	}
+	versions := make([]string, 0, len(versionSet))
+	for v := range versionSet {
+		versions = append(versions, v)
+	}
+	sortMavenVersions(versions)
+	if len(versions) == 0 {
+		return nil, false
+	}
+	lastUpdated := lastTime.UTC().Format("20060102150405")
+	meta := mavenMetadata{
+		Model:      "1.1.0",
+		GroupID:    group,
+		ArtifactID: artifact,
+		Versioning: mavenVersioningXML{
+			Latest:   versions[len(versions)-1],
+			Release:  versions[len(versions)-1],
+			Versions: mavenVersionsXML{Items: versions},
+			LastU:    lastUpdated,
+		},
+	}
+	body, err := xml.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return nil, false
+	}
+	return append([]byte(xml.Header), body...), true
+}
+
+// renderSnapshotMetadata 从已上传 artifacts 聚合生成 SNAPSHOT version 级 maven-metadata.xml（含 xml.Header）。
+// GET maven-metadata.xml 与其 checksum 请求共用，保证 checksum 与内容同源。
+// 无法生成（无有效时间戳）时返回 ok=false。
+func renderSnapshotMetadata(group, artifact, version string, arts []*runtime.Artifact) ([]byte, bool) {
+	// 从文件名中提取 timestamp 和 buildNumber
+	// 格式: artifactId-version-timestamp-buildNumber.ext
+	snapBlock, snapVersionsBlock := buildSnapshotMetadata(artifact, version, arts, "")
+	if snapBlock == nil {
+		return nil, false
+	}
+	// lastUpdated 格式: YYYYMMDDHHmmss（14 位），由 timestamp 去掉点号得到
+	lastUpdated := strings.ReplaceAll(snapBlock.Timestamp, ".", "")
+	meta := mavenMetadata{
+		Model:      "1.1.0",
+		GroupID:    group,
+		ArtifactID: artifact,
+		Version:    version,
+		Versioning: mavenVersioningXML{
+			Latest:   version,
+			Release:  "",
+			Versions: mavenVersionsXML{Items: []string{version}},
+			LastU:    lastUpdated,
+			Snapshot: snapBlock,
+		},
+	}
+	meta.Versioning.SnapshotVersions = snapVersionsBlock
+
+	body, err := xml.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return nil, false
+	}
+	return append([]byte(xml.Header), body...), true
+}
+
+// resolveMetadataContent 解析 maven-metadata.xml 请求应返回的内容。
+// GET maven-metadata.xml 与其 checksum 请求共用此解析器，保证 checksum 与内容同源，
+// 否则客户端会报 "Checksum validation failed" 警告。
+//
+// 返回 (content, nil) 表示可响应；(nil, nil) 表示不存在（404）；
+// (nil, err) 表示应交给 router 处理的错误（如 ErrBlocked）。
+func (p *MavenPlugin) resolveMetadataContent(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) (*metadataContent, error) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) < 3 {
-		http.Error(ctx.Writer, "invalid maven metadata path", http.StatusBadRequest)
-		return nil
+		return nil, errInvalidMetadataPath
 	}
 	parts = parts[:len(parts)-1] // drop maven-metadata.xml
 	if len(parts) < 2 {
-		http.Error(ctx.Writer, "invalid maven metadata path", http.StatusBadRequest)
-		return nil
+		return nil, errInvalidMetadataPath
 	}
 
 	// 路径推断：artifact 级或 version 级 metadata
@@ -764,7 +857,7 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 			artifacts = nil
 		} else {
 			// 其他错误（含 ErrBlocked）交给 router 处理
-			return err
+			return nil, err
 		}
 	}
 
@@ -784,14 +877,7 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 		// runtime also has the original metadata document, serve it verbatim so
 		// proxy responses preserve upstream Maven semantics.
 		if metaArtifact, metaErr := repoRuntime.GetArtifact(ctx.Request.Context(), metaKey); metaErr == nil && metaArtifact.Content != nil {
-			defer metaArtifact.Content.Close()
-			ctx.FromCache = metaArtifact.FromCache
-			ctx.RemoteURL = metaArtifact.RemoteURL
-			ctx.SizeBytes = metaArtifact.SizeBytes
-			if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, metaArtifact, "", "application/xml", "inline"); err != nil {
-				logrus.WithError(err).Warn("failed to write maven metadata content to client")
-			}
-			return nil
+			return &metadataContent{artifact: metaArtifact}, nil
 		}
 	}
 
@@ -821,42 +907,13 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 				}).Warn("maven: query snapshot artifacts failed, fallback to GetArtifact")
 			}
 			if snapErr == nil && len(snapArtifacts) > 0 {
-				// 从文件名中提取 timestamp 和 buildNumber
-				// 格式: artifactId-version-timestamp-buildNumber.ext
-				snapBlock, snapVersionsBlock := buildSnapshotMetadata(artifact, version, snapArtifacts, "")
-				if snapBlock != nil {
-					// lastUpdated 格式: YYYYMMDDHHmmss（14 位），由 timestamp 去掉点号得到
-					lastUpdated := strings.ReplaceAll(snapBlock.Timestamp, ".", "")
-					meta := mavenMetadata{
-						Model:      "1.1.0",
-						GroupID:    group,
-						ArtifactID: artifact,
-						Version:    version,
-						Versioning: mavenVersioningXML{
-							Latest:   version,
-							Release:  "",
-							Versions: mavenVersionsXML{Items: []string{version}},
-							LastU:    lastUpdated,
-							Snapshot: snapBlock,
-						},
-					}
-					meta.Versioning.SnapshotVersions = snapVersionsBlock
-
-					body, err := xml.MarshalIndent(meta, "", "  ")
-					if err != nil {
-						{ logrus.WithError(err).Error("render metadata failed"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
-						return nil
-					}
-					ctx.Writer.Header().Set("Content-Type", "application/xml")
-					ctx.Writer.WriteHeader(http.StatusOK)
-					_, _ = ctx.Writer.Write([]byte(xml.Header))
-					_, _ = ctx.Writer.Write(body)
-					return nil
+				if body, ok := renderSnapshotMetadata(group, artifact, version, snapArtifacts); ok {
+					return &metadataContent{body: body}, nil
 				}
 			}
 		}
 
-		if !hasVersionArtifacts && version == "" {
+		if version == "" {
 			// Hosted/local fallback: aggregate uploaded artifacts to render
 			// artifact-level metadata when no fetched version metadata exists.
 			artifactArts, qErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
@@ -870,43 +927,8 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 				},
 			})
 			if qErr == nil && len(artifactArts) > 0 {
-				versionSet := map[string]struct{}{}
-				var lastTime time.Time
-				for _, a := range artifactArts {
-					v := a.Version
-					if v == "" {
-						continue
-					}
-					versionSet[v] = struct{}{}
-					if a.CreatedAt.After(lastTime) {
-						lastTime = a.CreatedAt
-					}
-				}
-				versions := make([]string, 0, len(versionSet))
-				for v := range versionSet {
-					versions = append(versions, v)
-				}
-				sortMavenVersions(versions)
-				if len(versions) > 0 {
-					lastUpdated := lastTime.UTC().Format("20060102150405")
-					meta := mavenMetadata{
-						Model:      "1.1.0",
-						GroupID:    group,
-						ArtifactID: artifact,
-						Version:    version,
-						Versioning: mavenVersioningXML{
-							Latest:   versions[len(versions)-1],
-							Release:  versions[len(versions)-1],
-							Versions: mavenVersionsXML{Items: versions},
-							LastU:    lastUpdated,
-						},
-					}
-					body, _ := xml.MarshalIndent(meta, "", "  ")
-					ctx.Writer.Header().Set("Content-Type", "application/xml")
-					ctx.Writer.WriteHeader(http.StatusOK)
-					_, _ = ctx.Writer.Write([]byte(xml.Header))
-					_, _ = ctx.Writer.Write(body)
-					return nil
+				if body, ok := renderArtifactMetadata(group, artifact, artifactArts); ok {
+					return &metadataContent{body: body}, nil
 				}
 			}
 		}
@@ -914,17 +936,9 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 		// For proxy repos: try fetching maven-metadata.xml as a cached artifact.
 		// GetArtifact on ProxyRuntime fetches from remote and caches locally.
 		if metaArtifact, metaErr := repoRuntime.GetArtifact(ctx.Request.Context(), metaKey); metaErr == nil && metaArtifact.Content != nil {
-			defer metaArtifact.Content.Close()
-			ctx.FromCache = metaArtifact.FromCache
-			ctx.RemoteURL = metaArtifact.RemoteURL
-			ctx.SizeBytes = metaArtifact.SizeBytes
-			if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, metaArtifact, "", "application/xml", "inline"); err != nil {
-				logrus.WithError(err).Warn("failed to write maven metadata content to client")
-			}
-			return nil
+			return &metadataContent{artifact: metaArtifact}, nil
 		}
-		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-		return nil
+		return nil, nil
 	}
 
 	versionSet := map[string]struct{}{}
@@ -949,8 +963,7 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 	}
 	sortMavenVersions(versions)
 	if len(versions) == 0 {
-		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-		return nil
+		return nil, nil
 	}
 
 	latest := versions[len(versions)-1]
@@ -985,13 +998,39 @@ func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime ru
 
 	body, err := xml.MarshalIndent(meta, "", "  ")
 	if err != nil {
-		{ logrus.WithError(err).Error("render metadata failed"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
+		return nil, nil
+	}
+	return &metadataContent{body: append([]byte(xml.Header), body...)}, nil
+}
+
+func (p *MavenPlugin) handleMetadata(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
+	content, err := p.resolveMetadataContent(ctx, repoRuntime, path)
+	if err != nil {
+		if errors.Is(err, errInvalidMetadataPath) {
+			http.Error(ctx.Writer, "invalid maven metadata path", http.StatusBadRequest)
+			return nil
+		}
+		return err
+	}
+	if content == nil {
+		http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		return nil
 	}
+	if content.artifact != nil {
+		// 透传存储的原始 metadata 文档（保留 HEAD/Range/ETag 语义）
+		defer content.artifact.Content.Close()
+		ctx.FromCache = content.artifact.FromCache
+		ctx.RemoteURL = content.artifact.RemoteURL
+		ctx.SizeBytes = content.artifact.SizeBytes
+		if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, content.artifact, "", "application/xml", "inline"); err != nil {
+			logrus.WithError(err).Warn("failed to write maven metadata content to client")
+		}
+		return nil
+	}
+	// 动态聚合生成的 metadata
 	ctx.Writer.Header().Set("Content-Type", "application/xml")
 	ctx.Writer.WriteHeader(http.StatusOK)
-	_, _ = ctx.Writer.Write([]byte(xml.Header))
-	_, _ = ctx.Writer.Write(body)
+	_, _ = ctx.Writer.Write(content.body)
 	return nil
 }
 
@@ -1309,20 +1348,50 @@ func (p *MavenPlugin) handleChecksumDownload(ctx *runtime.RequestContext, repoRu
 	originalKey.Extension = filepath.Ext(originalFile)
 	originalKey.RemotePath = strings.TrimSuffix(key.RemotePath, "/"+key.Filename) + "/" + originalFile
 
+	// maven-metadata.xml 的 checksum 必须与 GET maven-metadata.xml 返回的内容同源：
+	// hosted 仓库 GET 时返回动态聚合内容（而非存储的 blob），若 checksum 按 blob 计算，
+	// 客户端会报 "Checksum validation failed" 警告。共用 resolveMetadataContent 保证一致。
+	if originalFile == "maven-metadata.xml" {
+		content, resolveErr := p.resolveMetadataContent(ctx, repoRuntime, originalKey.RemotePath)
+		if resolveErr != nil {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return resolveErr
+		}
+		if content == nil {
+			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
+		var (
+			digest string
+			err    error
+		)
+		if content.artifact != nil {
+			defer content.artifact.Content.Close()
+			ctx.FromCache = content.artifact.FromCache
+			ctx.RemoteURL = content.artifact.RemoteURL
+			if len(content.artifact.BlobRefs) > 0 {
+				ctx.SizeBytes = content.artifact.BlobRefs[0].Size
+			}
+			digest, err = computeChecksum(content.artifact.Content, algo)
+		} else {
+			digest, err = computeChecksum(bytes.NewReader(content.body), algo)
+		}
+		if err != nil {
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"filename": key.Filename,
+				"algo":     string(algo),
+			}).Error("maven: compute metadata checksum failed")
+			http.Error(ctx.Writer, "internal error", http.StatusInternalServerError)
+			return nil
+		}
+		ctx.Writer.Header().Set("Content-Type", "text/plain")
+		ctx.Writer.WriteHeader(http.StatusOK)
+		_, _ = ctx.Writer.Write([]byte(formatMavenChecksum(digest, originalFile)))
+		return nil
+	}
+
 	artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), originalKey)
 	if err != nil {
-		if errors.Is(err, runtime.ErrNotFound) && originalFile == "maven-metadata.xml" {
-			metaXML := p.buildDynamicMetadata(ctx, repoRuntime, key)
-			if metaXML != nil {
-				digest, err := computeChecksum(strings.NewReader(string(metaXML)), algo)
-				if err == nil {
-					ctx.Writer.Header().Set("Content-Type", "text/plain")
-					ctx.Writer.WriteHeader(http.StatusOK)
-					_, _ = ctx.Writer.Write([]byte(formatMavenChecksum(digest, originalFile)))
-					return nil
-				}
-			}
-		}
 		if errors.Is(err, runtime.ErrNotFound) {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 		} else {
@@ -1357,65 +1426,6 @@ func (p *MavenPlugin) handleChecksumDownload(ctx *runtime.RequestContext, repoRu
 	ctx.Writer.WriteHeader(http.StatusOK)
 	_, _ = ctx.Writer.Write([]byte(formatMavenChecksum(digest, originalFile)))
 	return nil
-}
-
-func (p *MavenPlugin) buildDynamicMetadata(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) []byte {
-	group := key.Qualifiers["group"]
-	artifact := key.Qualifiers["artifact"]
-	if group == "" || artifact == "" {
-		return nil
-	}
-	// Hosted/local fallback only: build metadata from uploaded artifacts after
-	// direct metadata lookup failed.
-	arts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
-		RepositoryID: ctx.Repository.ID,
-		Format:       "maven",
-		Namespace:    group,
-		Name:         group + ":" + artifact,
-		Qualifiers: map[string]string{
-			"group":    group,
-			"artifact": artifact,
-		},
-	})
-	if err != nil || len(arts) == 0 {
-		return nil
-	}
-	versionSet := map[string]struct{}{}
-	var lastTime time.Time
-	for _, a := range arts {
-		if a.Version == "" {
-			continue
-		}
-		versionSet[a.Version] = struct{}{}
-		if a.CreatedAt.After(lastTime) {
-			lastTime = a.CreatedAt
-		}
-	}
-	versions := make([]string, 0, len(versionSet))
-	for v := range versionSet {
-		versions = append(versions, v)
-	}
-	sortMavenVersions(versions)
-	if len(versions) == 0 {
-		return nil
-	}
-	lastUpdated := lastTime.UTC().Format("20060102150405")
-	meta := mavenMetadata{
-		Model:      "1.1.0",
-		GroupID:    group,
-		ArtifactID: artifact,
-		Versioning: mavenVersioningXML{
-			Latest:   versions[len(versions)-1],
-			Release:  versions[len(versions)-1],
-			Versions: mavenVersionsXML{Items: versions},
-			LastU:    lastUpdated,
-		},
-	}
-	body, err := xml.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return nil
-	}
-	return append([]byte(xml.Header), body...)
 }
 
 func (p *MavenPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
