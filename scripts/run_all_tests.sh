@@ -263,6 +263,9 @@ case "$TEST_SUITE" in
 
         print_section "第十四阶段: Proxy 冒烟测试（HEAD/Range/ETag/metadata pass-through）"
         run_test "Proxy 冒烟测试" "$SCRIPT_DIR/clients/test_proxy_smoke.sh" "true"
+
+        print_section "第十五阶段: API Token 客户端鉴权（CI/CD 机器写路径）"
+        run_test "API Token 鉴权" "$SCRIPT_DIR/clients/test_api_token_client.sh" "true"
         ;;
     
     basic)
@@ -303,6 +306,11 @@ case "$TEST_SUITE" in
         print_section "Proxy 冒烟测试套件"
         run_test "Proxy 冒烟测试" "$SCRIPT_DIR/clients/test_proxy_smoke.sh" "true"
         ;;
+
+    token)
+        print_section "API Token 鉴权测试套件"
+        run_test "API Token 鉴权" "$SCRIPT_DIR/clients/test_api_token_client.sh" "true"
+        ;;
     
     group)
         print_section "仓库组测试套件"
@@ -331,6 +339,7 @@ case "$TEST_SUITE" in
         echo "  pypi        - PyPI 完整生命周期测试"
         echo "  proxy       - 代理仓库能力测试"
         echo "  proxy-smoke - Proxy 冒烟测试（HEAD/Range/ETag/条件请求/metadata 透传）"
+        echo "  token       - API Token 客户端鉴权测试（mlb_ 前缀写路径）"
         echo "  group       - 仓库组能力测试"
         echo "  performance - 性能与压力测试"
         echo "  exception   - 异常场景测试"

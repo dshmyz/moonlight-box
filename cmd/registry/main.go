@@ -548,6 +548,7 @@ func main() {
 
 	// 创建路由器上下文
 	routerCtx := NewRouterContext(cfg, authService, auditSvc, permCacheSvc, blockRuleSvc, repoSvc, repositoryRouter, webhookSvc)
+	routerCtx.APITokenSvc = apiTokenSvc
 	routerCtx.Handlers.Auth.SetAPITokenService(apiTokenSvc)
 	routerCtx.RepoCache = repoCache
 	routerCtx.Handlers.Repo = repoHandler

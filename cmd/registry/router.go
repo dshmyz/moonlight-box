@@ -19,6 +19,7 @@ import (
 type RouterContext struct {
 	Config           *config.Config
 	AuthSvc          *service.AuthService
+	APITokenSvc      *service.APITokenService
 	AuditSvc         *service.AuditService
 	PermCache        *service.PermissionCacheService
 	BlockRule        *service.BlockRuleService
@@ -149,7 +150,7 @@ func (ctx *RouterContext) setupAuthPublicRoutes(api *gin.RouterGroup) {
 
 func (ctx *RouterContext) setupProtectedRoutes(api *gin.RouterGroup) {
 	protected := api.Group("")
-	protected.Use(middleware.Auth(ctx.AuthSvc))
+	protected.Use(middleware.Auth(ctx.AuthSvc, ctx.APITokenSvc))
 	{
 		ctx.setupAuthProtectedRoutes(protected)
 		ctx.setupRepositoryRoutes(protected)
@@ -503,7 +504,7 @@ func (ctx *RouterContext) setupHealthRoutes(protected *gin.RouterGroup) {
 }
 
 func (ctx *RouterContext) setupRepoRoutes(r *gin.Engine, repoCache *proxy.RepositoryCache) {
-	authMw := middleware.Auth(ctx.AuthSvc)
+	authMw := middleware.Auth(ctx.AuthSvc, ctx.APITokenSvc)
 	permMw := ctx.requirePermission
 
 	// 使用新架构 RepositoryRouter

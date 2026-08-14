@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -554,6 +555,161 @@ func TestAuth_BasicAuth_InvalidCredentials(t *testing.T) {
 
 	if !aborted {
 		t.Error("should abort for invalid basic auth")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+// ---------- API token via Auth middleware (mlb_ 前缀分流) ----------
+
+// newAPITokenTestEnv 构造一个内存 DB 与 APITokenService，
+// 并向 userID=1 签发一个 token，返回 token 明文与服务。
+func newAPITokenTestEnv(t *testing.T) (*service.APITokenService, string) {
+	t.Helper()
+	gormDB, _ := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	requireAPITokenMigrate(t, gormDB)
+	apiRepo := repository.NewAPITokenRepository(gormDB)
+	apiSvc := service.NewAPITokenService(apiRepo)
+	raw, _, err := apiSvc.CreateToken(1, "ci", nil)
+	if err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	return apiSvc, raw
+}
+
+func requireAPITokenMigrate(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if err := db.AutoMigrate(&model.APIToken{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAuth_APIToken_Valid(t *testing.T) {
+	apiSvc, raw := newAPITokenTestEnv(t)
+	// 与 JWT/Basic 共用同一 AuthService，验证两组鉴权共存
+	authSvc := service.NewAuthService(nil, nil, &config.AuthConfig{JWTSecret: "test-secret"}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	c.Request.Header.Set("Authorization", "Bearer "+raw)
+
+	handler := Auth(authSvc, apiSvc)
+	var gotUserID uint
+	aborted := false
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		handler(c)
+		if c.IsAborted() {
+			aborted = true
+		}
+	})
+	r.GET("/", func(c *gin.Context) {
+		gotUserID = c.GetUint("userID")
+		c.Status(http.StatusOK)
+	})
+	r.ServeHTTP(w, c.Request)
+
+	if aborted {
+		t.Fatal("should not abort for valid api token")
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	// RBAC 依赖的 userID 必须等于 token 关联用户的 ID
+	if gotUserID != 1 {
+		t.Errorf("expected userID 1, got %d", gotUserID)
+	}
+}
+
+func TestAuth_APIToken_InvalidPrefixNotRouted(t *testing.T) {
+	// 非 mlb_ 前缀的 Bearer token 不应走 API token 分支，
+	// 而应走 JWT 校验（这里 JWTSecret 未知，应返回 401 而不是 panic 或假放行）
+	apiSvc, _ := newAPITokenTestEnv(t)
+	authSvc := service.NewAuthService(nil, nil, &config.AuthConfig{JWTSecret: "test-secret"}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	c.Request.Header.Set("Authorization", "Bearer not-a-mlb-token")
+
+	handler := Auth(authSvc, apiSvc)
+	aborted := false
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		handler(c)
+		if c.IsAborted() {
+			aborted = true
+		}
+	})
+	r.GET("/", func(c *gin.Context) {})
+	r.ServeHTTP(w, c.Request)
+
+	if !aborted {
+		t.Error("non-mlb token should fail JWT validation and abort")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestAuth_APIToken_Invalid_Aborts(t *testing.T) {
+	apiSvc, _ := newAPITokenTestEnv(t)
+	authSvc := service.NewAuthService(nil, nil, &config.AuthConfig{JWTSecret: "test-secret"}, nil)
+
+	// 构造一个 mlb_ 前缀但未签发的假 token
+	fake := "mlb_" + strings.Repeat("deadbeef", 6)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	c.Request.Header.Set("Authorization", "Bearer "+fake)
+
+	handler := Auth(authSvc, apiSvc)
+	aborted := false
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		handler(c)
+		if c.IsAborted() {
+			aborted = true
+		}
+	})
+	r.GET("/", func(c *gin.Context) {})
+	r.ServeHTTP(w, c.Request)
+
+	if !aborted {
+		t.Error("invalid mlb_ token should abort")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+// 未传入 apiTokenSvc 时，mlb_ 前缀 token 应退回 JWT 校验而非 panic（向后兼容）
+func TestAuth_NoAPITokenSvc_FallsBackToJWT(t *testing.T) {
+	authSvc := service.NewAuthService(nil, nil, &config.AuthConfig{JWTSecret: "test-secret"}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	c.Request.Header.Set("Authorization", "Bearer "+apiTokenPrefix+"abcd")
+
+	// 不传 apiTokenSvc —— 应与旧行为一致：当作 JWT 校验并失败
+	handler := Auth(authSvc)
+	aborted := false
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		handler(c)
+		if c.IsAborted() {
+			aborted = true
+		}
+	})
+	r.GET("/", func(c *gin.Context) {})
+	r.ServeHTTP(w, c.Request)
+
+	if !aborted {
+		t.Error("should abort when no apiTokenSvc configured (token treated as JWT)")
 	}
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", w.Code)

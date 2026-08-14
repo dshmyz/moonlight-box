@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"time"
@@ -26,7 +27,7 @@ func (s *APITokenService) CreateToken(userID uint, name string, expiresAt *time.
 		return "", nil, fmt.Errorf("生成 token 失败: %w", err)
 	}
 
-	hash := sha256Sum(raw)
+	hash := sha256Raw([]byte(raw))
 	prefix := raw[:12]
 
 	token := &model.APIToken{
@@ -57,9 +58,9 @@ func (s *APITokenService) ValidateToken(rawToken string) (*model.APIToken, error
 		return nil, fmt.Errorf("token 不存在")
 	}
 
-	// 完整哈希校验
-	hash := sha256Sum(rawToken)
-	if token.TokenHash != hash {
+	// 完整哈希校验（恒定时间比较，避免时序侧信道）
+	hash := sha256Raw([]byte(rawToken))
+	if !hashesEqual(token.TokenHash, hash) {
 		return nil, fmt.Errorf("token 无效")
 	}
 
@@ -92,7 +93,15 @@ func generateToken() (string, error) {
 	return "mlb_" + hex.EncodeToString(b), nil
 }
 
-func sha256Sum(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:])
+// sha256Raw 计算原始 SHA-256 摘要（32 字节），而非 hex 字符串。
+// 原始字节可配合 subtle.ConstantTimeCompare 做恒定时间比较。
+func sha256Raw(b []byte) []byte {
+	h := sha256.Sum256(b)
+	return h[:]
+}
+
+// hashesEqual 恒定时间比较两个摘要，防御时序侧信道。
+// 长度不同的输入直接返回 false（ConstantTimeCompare 长度不等即不相等，且不返回调用方长度信息）。
+func hashesEqual(a, b []byte) bool {
+	return subtle.ConstantTimeCompare(a, b) == 1
 }

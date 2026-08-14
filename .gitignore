@@ -90,3 +90,6 @@ web/.claude/
 
 # workbuddy 本地工作日志
 .workbuddy/
+
+# 运行时 PID 文件
+.moonlight-box.pid

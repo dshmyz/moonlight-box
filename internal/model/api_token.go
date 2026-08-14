@@ -7,7 +7,7 @@ type APIToken struct {
 	ID        uint       `gorm:"primaryKey" json:"id"`
 	UserID    uint       `gorm:"not null;index:idx_api_tokens_user" json:"user_id"`
 	Name      string     `gorm:"size:100;not null" json:"name"`
-	TokenHash string     `gorm:"size:255;not null;uniqueIndex" json:"-"`
+	TokenHash []byte     `gorm:"size:32;not null;uniqueIndex" json:"-"`
 	Prefix    string     `gorm:"size:12;not null;index" json:"prefix"`
 	LastUsed  *time.Time `json:"last_used_at,omitempty"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`

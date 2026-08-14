@@ -29,10 +29,39 @@ type basicAuthEntry struct {
 	expires  time.Time
 }
 
-func Auth(authService *service.AuthService) gin.HandlerFunc {
+// apiTokenPrefix 是 API token 的固定前缀（见 service.generateToken），
+// 用于在 Bearer 处与 JWT 分流：以该前缀开头的 token 走 API token 校验，否则走 JWT。
+const apiTokenPrefix = "mlb_"
+
+// Auth 是统一的 HTTP 鉴权中间件。
+// 支持三种凭据，按优先级依次尝试：
+//  1. API token（Bearer mlb_...）：通过 apiTokenSvc 校验，挂到 token 关联的用户
+//  2. 用户 JWT（Bearer xxx.yyy.zzz）：原有逻辑，原样保留
+//  3. Basic Auth（username:password）：原有一分钟缓存登录逻辑，原样保留
+//
+// apiTokenSvc 为可变参数：不传或传 nil 时退化为仅 JWT + Basic，与旧行为完全一致。
+func Auth(authService *service.AuthService, apiTokenSvc ...*service.APITokenService) gin.HandlerFunc {
+	hasAPITokenSvc := len(apiTokenSvc) > 0 && apiTokenSvc[0] != nil
 	return func(c *gin.Context) {
 		token := extractToken(c)
 		if token != "" {
+			// API token 专用前缀分流 —— 纯增量，不影响现有 JWT 分支
+			if hasAPITokenSvc && strings.HasPrefix(token, apiTokenPrefix) {
+				apiToken, err := apiTokenSvc[0].ValidateToken(token)
+				if err != nil {
+					response.Unauthorized(c, "invalid or expired api token")
+					c.Abort()
+					return
+				}
+				// RBAC 仅依赖 userID（见 RequirePermission → HasPermission），
+				// 补齐 username/roles 仅为避免下游对空值 panic。
+				c.Set("userID", apiToken.UserID)
+				c.Set("username", "api-token")
+				c.Set("roles", []string{})
+				c.Next()
+				return
+			}
+
 			claims, err := authService.ValidateToken(token)
 			if err != nil {
 				response.Unauthorized(c, "invalid or expired token")

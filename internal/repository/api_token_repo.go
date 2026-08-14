@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"gorm.io/gorm"
 )
@@ -41,8 +43,14 @@ func (r *APITokenRepository) FindByIDAndUserID(id, userID uint) (*model.APIToken
 	return &token, nil
 }
 
+// UpdateLastUsed 更新 token 最后使用时间。
+// 通过 model 字段更新，让 GORM 解析列名（LastUsed → last_used），
+// 避免硬编码列名与 schema 命名不一致。
+// 使用 Go 的 time.Now() 而非 SQL datetime('now')，保证 PostgreSQL 等非 SQLite 方言下同样可用。
 func (r *APITokenRepository) UpdateLastUsed(id uint) error {
-	return r.db.Model(&model.APIToken{}).Where("id = ?", id).Update("last_used_at", gorm.Expr("datetime('now')")).Error
+	now := time.Now()
+	return r.db.Model(&model.APIToken{}).Where("id = ?", id).
+		Updates(&model.APIToken{LastUsed: &now}).Error
 }
 
 func (r *APITokenRepository) Delete(id, userID uint) error {
