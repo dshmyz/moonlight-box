@@ -73,6 +73,9 @@ type HealthCheckService struct {
 	statuses       map[uint]*HealthStatus   // repoID -> HealthStatus
 	stopCh         chan struct{}
 	running        bool
+	// OnRecovery 在熔断器从 open 恢复到 closed 时触发，用于预热缓存。
+	// repoID 为恢复的仓库 ID。
+	OnRecovery func(repoID uint)
 }
 
 // NewHealthCheckService 创建健康检查服务
@@ -286,6 +289,9 @@ func (h *HealthCheckService) checkRepoHealth(repo *model.Repository) {
 	cb := h.GetOrCreateCircuitBreaker(repo.ID)
 	startTime := time.Now()
 
+	// 记录检查前的断路器状态，用于检测恢复（open→closed）
+ prevState := cb.GetState()
+
 	// 如果断路器处于熔断状态，跳过检查
 	if !cb.AllowRequest() {
 		retryAfter := cb.GetRetryAfter()
@@ -327,6 +333,12 @@ func (h *HealthCheckService) checkRepoHealth(repo *model.Repository) {
 		// 检查成功
 		cb.RecordSuccess()
 		h.updateStatus(repo, true, "", statusCode, responseTime)
+		// 检测恢复：断路器从 open/half_open 转为 closed，触发缓存预热
+		if (prevState == CircuitOpen || prevState == CircuitHalfOpen) && cb.GetState() == CircuitClosed {
+			if h.OnRecovery != nil {
+				go h.OnRecovery(repo.ID)
+			}
+		}
 		slog.Debug("health check passed",
 			"repo", repo.Name,
 			"type", repo.Type,

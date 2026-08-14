@@ -976,6 +976,7 @@ type fakeRemoteClient struct {
 	metadataErr   error
 	metadataCalls int
 	blob          io.ReadCloser
+	blobErr       error
 	openResponse  *RemoteResponse
 	openErr       error
 	openRequest   RemoteRequest
@@ -993,6 +994,9 @@ func (c *fakeRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (
 }
 
 func (c *fakeRemoteClient) FetchBlob(ctx context.Context, key ArtifactKey) (io.ReadCloser, error) {
+	if c.blobErr != nil {
+		return nil, c.blobErr
+	}
 	if c.blob != nil {
 		return c.blob, nil
 	}
@@ -2070,5 +2074,78 @@ func TestDoFlightLeaderSurvivesCallerCancel(t *testing.T) {
 	second, err := doFlight(secondCtx, &g, "k", base, run)
 	if err != nil || second != 42 {
 		t.Fatalf("second caller = (%v, %v), want (42, nil); leader must run on base, not caller ctx", second, err)
+	}
+}
+
+// TestGetArtifactServesStaleBlobWhenUpstreamUnavailable 验证：本地已有旧 blob 时，
+// 上游超时/不可达应返回旧版本（stale-while-revalidate），而非错误。
+func TestGetArtifactServesStaleBlobWhenUpstreamUnavailable(t *testing.T) {
+	store := newFakeMetadataStore()
+	store.artifact = &Artifact{
+		ID:           "cached",
+		RepositoryID: "repo",
+		Format:       "npm",
+		Name:         "pkg",
+		Version:      "1.0.0",
+		BlobRefs:     []BlobRef{{Digest: "cached", Size: 100}},
+	}
+	remote := &fakeRemoteClient{
+		blobErr: fmt.Errorf("connection refused"), // 上游不可达
+	}
+	rt := &ProxyRuntime{
+		MetadataStore: store,
+		BlobStore:     &fakeBlobStore{},
+		RemoteClient:  remote,
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
+	}
+
+	artifact, err := rt.GetArtifact(context.Background(), ArtifactKey{
+		Format:  "npm",
+		Name:    "pkg",
+		Version: "1.0.0",
+	})
+	if err != nil {
+		t.Fatalf("GetArtifact error = %v, want nil (stale blob should be served)", err)
+	}
+	if !artifact.FromCache {
+		t.Fatalf("FromCache = false, want true (serving stale blob)")
+	}
+	if len(artifact.BlobRefs) == 0 || artifact.BlobRefs[0].Digest != "cached" {
+		t.Fatalf("BlobRefs = %v, want cached blob ref", artifact.BlobRefs)
+	}
+}
+
+// TestGetArtifactReturnsErrorWhenNoLocalBlob 验证：本地没有旧 blob 时，
+// 上游不可达应返回错误（无法降级）。
+func TestGetArtifactReturnsErrorWhenNoLocalBlob(t *testing.T) {
+	store := newFakeMetadataStore()
+	store.artifact = &Artifact{
+		ID:           "not-cached",
+		RepositoryID: "repo",
+		Format:       "npm",
+		Name:         "pkg",
+		Version:      "2.0.0",
+		BlobRefs:     nil, // 本地没有 blob
+	}
+	remote := &fakeRemoteClient{
+		blobErr: fmt.Errorf("connection refused"),
+	}
+	rt := &ProxyRuntime{
+		MetadataStore: store,
+		BlobStore:     &fakeBlobStore{},
+		RemoteClient:  remote,
+		RemoteBaseURL: "https://example.test",
+		CachePolicy:   CachePolicy{MetadataTTL: time.Minute},
+	}
+
+	_, err := rt.GetArtifact(context.Background(), ArtifactKey{
+		Format:  "npm",
+		Name:    "pkg",
+		Version: "2.0.0",
+		Filename: "pkg-2.0.0.tgz",
+	})
+	if err == nil {
+		t.Fatal("GetArtifact error = nil, want error (no local blob to serve)")
 	}
 }

@@ -140,7 +140,7 @@ func (n *ProxyRuntime) OpenRemote(ctx context.Context, request RemoteOpenRequest
 	response, err := n.RemoteClient.Open(ctx, RemoteRequest{URL: remoteURL, Method: method, Headers: headers})
 	if err != nil {
 		metrics.RecordProxyFetch(n.Format, "error", time.Since(start).Seconds())
-		return nil, fmt.Errorf("%w: %w", ErrUpstreamUnavailable, err)
+		return nil, NewUpstreamUnavailableError(remoteURL, err)
 	}
 	if response == nil {
 		metrics.RecordProxyFetch(n.Format, "error", time.Since(start).Seconds())
@@ -504,6 +504,15 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 		}
 		hadBlob := len(artifact.BlobRefs) > 0
 		if ensureErr := n.ensureArtifactBlob(ctx, artifact, key); ensureErr != nil {
+			// 上游超时/不可达时，如果本地已有旧 blob，先返回旧版本（stale-while-revalidate）。
+			// 对包管理器来说，旧版本通常比完全拿不到要好得多。
+			if hadBlob {
+				logrus.WithFields(logrus.Fields{
+					"key":   key.String(),
+					"error": ensureErr.Error(),
+				}).Warn("proxy: ensureArtifactBlob failed, serving stale blob")
+				return getArtifactResult{artifact: artifact, fromCache: true, remoteURL: ""}, nil
+			}
 			return getArtifactResult{}, ensureErr
 		}
 		if len(artifact.BlobRefs) > 0 {
@@ -854,7 +863,7 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 				"duration_ms":  time.Since(start).Seconds(),
 				"error":     err.Error(),
 			}).Warn("proxy: ensureArtifactBlob upstream timeout")
-			return fmt.Errorf("%w: %w", ErrUpstreamTimeout, err)
+			return NewUpstreamTimeoutError(key.RemoteURL, 30, err)
 		}
 		logrus.WithFields(logrus.Fields{
 			"remote_url": key.RemoteURL,
@@ -1420,4 +1429,75 @@ func hasArtifactChanged(old, new *Artifact) bool {
 
 	// 没有可靠的信息可以比较，保守地认为有变更
 	return true
+}
+
+// WarmUp 在熔断器恢复后预热内存缓存：遍历 metadataCache，对每个过期条目
+// 异步触发 refreshStaleMetadata，使后续请求命中缓存而非重新回源。
+func (n *ProxyRuntime) WarmUp() {
+	if n.CachePolicy.MetadataTTL <= 0 {
+		return
+	}
+	n.metadataCacheMu.Lock()
+	now := time.Now()
+	type entry struct {
+		key   ArtifactKey
+		art   *Artifact
+		stale bool
+	}
+	var staleEntries []entry
+	for cacheKey, el := range n.metadataCache {
+		e := el.Value.(*cachedArtifactEntry)
+		if now.After(e.expiresAt) || e.negative {
+			continue
+		}
+		// 检查是否过期（距上次更新超过 TTL 的一半）
+		if now.Sub(e.artifact.UpdatedAt) > n.CachePolicy.MetadataTTL/2 {
+			key := parseArtifactCacheKey(cacheKey)
+			staleEntries = append(staleEntries, entry{key: key, art: e.artifact, stale: true})
+		}
+	}
+	n.metadataCacheMu.Unlock()
+
+	if len(staleEntries) == 0 {
+		return
+	}
+	logrus.WithFields(logrus.Fields{
+		"repo_id":  n.RepositoryID,
+		"staleCount": len(staleEntries),
+	}).Info("proxy: warm-up triggered, refreshing stale metadata")
+
+	for _, e := range staleEntries {
+		go func(key ArtifactKey, art *Artifact) {
+			refreshCtx, cancel := context.WithTimeout(context.Background(), backgroundRefreshTimeout)
+			defer cancel()
+			if err := n.refreshStaleMetadata(refreshCtx, art, key); err != nil {
+				logrus.WithFields(logrus.Fields{
+					"key":   key.String(),
+					"error": err.Error(),
+				}).Debug("proxy: warm-up refresh failed")
+			}
+		}(e.key, e.art)
+	}
+}
+
+// parseArtifactCacheKey 从缓存 key（格式 "repoID/format/.../name=value/..."）解析出 ArtifactKey。
+func parseArtifactCacheKey(cacheKey string) ArtifactKey {
+	key := ArtifactKey{}
+	parts := strings.Split(cacheKey, "/")
+	if len(parts) >= 2 {
+		key.RepositoryID = parts[0]
+		key.Format = parts[1]
+	}
+	for _, part := range parts[2:] {
+		if strings.HasPrefix(part, "name=") {
+			key.Name = strings.TrimPrefix(part, "name=")
+		} else if strings.HasPrefix(part, "version=") {
+			key.Version = strings.TrimPrefix(part, "version=")
+		} else if strings.HasPrefix(part, "namespace=") {
+			key.Namespace = strings.TrimPrefix(part, "namespace=")
+		} else if strings.HasPrefix(part, "identity=") {
+			key.IdentityKey = strings.TrimPrefix(part, "identity=")
+		}
+	}
+	return key
 }

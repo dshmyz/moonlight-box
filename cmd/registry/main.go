@@ -339,6 +339,21 @@ func main() {
 		&healthCheckLookup{svc: healthCheckSvc},
 	))
 
+	// 熔断器恢复后预热缓存：查找恢复的仓库，对其 ProxyRuntime 调用 WarmUp
+	healthCheckSvc.OnRecovery = func(repoID uint) {
+		repo, err := repoRepo.FindByIDContext(context.Background(), repoID)
+		if err != nil {
+			return
+		}
+		r := repoManager.Get(repo.Name)
+		if r == nil || r.Runtime == nil {
+			return
+		}
+		if pr, ok := r.Runtime.(*runtime.ProxyRuntime); ok {
+			pr.WarmUp()
+		}
+	}
+
 	// 预热所有仓库 Runtime（可选，避免首次请求冷启动）
 	initRepoRuntimes(repoManager, repoRepo)
 
