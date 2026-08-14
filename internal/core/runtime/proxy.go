@@ -90,6 +90,11 @@ func doFlight[T any](ctx context.Context, g *singleflight.Group, key string, bas
 	var zero T
 	resCh := make(chan flightResult[T], 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				resCh <- flightResult[T]{err: fmt.Errorf("panic in doFlight: %v", r)}
+			}
+		}()
 		raw, _, _ := g.Do(key, func() (interface{}, error) {
 			v, err := run(base)
 			return flightResult[T]{v: v, err: err}, nil

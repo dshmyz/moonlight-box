@@ -391,14 +391,18 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 		}
 		// 优先用 errors.As 提取结构化上游错误信息，返回 JSON 响应体
 		// （包含 remote_url、retry_after 等字段，便于客户端智能重试）。
+		// 502 与 503 的语义区别：
+		//   - 502：本次回源失败（timeout/unavailable），客户端可立即重试其他镜像
+		//   - 503：上游被判定为不可用（熔断），客户端应按 Retry-After 退避
 		var upstreamErr *UpstreamError
 		if errors.As(err, &upstreamErr) {
 			retryAfter := upstreamErr.RetryAfter
+			statusCode := http.StatusBadGateway // 502：本次失败，可重试
 			if upstreamErr.Cause == "timeout" {
 				retryAfter = 30
 			}
 			ctx.Writer.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			ctx.StatusCode = http.StatusServiceUnavailable
+			ctx.StatusCode = statusCode
 			ctx.Writer.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(ctx.Writer).Encode(map[string]interface{}{
 				"error":      upstreamErr.Error(),
