@@ -134,6 +134,25 @@ describe('PackageTable', () => {
     expect(wrapper.text()).toContain('react')
   })
 
+  it('聚合行在来源列展示所有实际仓库（不含组合仓库）', () => {
+    const pkg = {
+      id: 3, name: 'commons-lang3', display_name: 'commons-lang3', type: 'maven2',
+      description: 'Apache Commons', repository_type: 'local', versions_count: 1,
+      download_count: 20, updated_at: '2026-06-19T00:00:00Z',
+      repository_name: 'maven-local',
+      repositories: ['maven-local', 'maven-central-proxy'],
+      group_repositories: ['maven-group'],
+    }
+    const wrapper = mountIt({ packages: [pkg] })
+    const row = wrapper.find('.el-table__row')
+    expect(row.findAll('.source-repo').map((s) => s.text())).toEqual(['maven-local', 'maven-central-proxy'])
+  })
+
+  it('无仓库信息的行不渲染来源仓库名', () => {
+    const wrapper = mountIt({ packages: [{ id: 9, name: 'raw', display_name: 'raw', type: 'generic', repository_type: 'local' }] })
+    expect(wrapper.find('.source-repos').exists()).toBe(false)
+  })
+
   it('admin 模式显示批量选择列', () => {
     const wrapper = mountIt({ mode: 'admin' })
     expect(wrapper.find('.el-table-column--selection').exists()).toBe(true)

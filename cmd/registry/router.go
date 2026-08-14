@@ -49,10 +49,12 @@ type RouterContext struct {
 		MigrationV2      *migv2handler.MigrationV2Handler
 		AI               *handler.AIHandler
 		DownloadLog      *handler.DownloadLogHandler
-		LogCleanupConfig *handler.LogCleanupConfigHandler
+		LogCleanupConfig      *handler.LogCleanupConfigHandler
+		SnapshotCleanupConfig *handler.SnapshotCleanupConfigHandler
 		HealthCheck      *handler.HealthCheckHandler
 		VulnRule         *handler.VulnRuleHandler
 		PackageVersion   *handler.PackageVersionHandler
+		SystemRebuild    *handler.SystemRebuildHandler
 	}
 }
 
@@ -176,6 +178,11 @@ func (ctx *RouterContext) setupAuthProtectedRoutes(protected *gin.RouterGroup) {
 	protected.GET("/auth/profile", ctx.Handlers.Auth.Profile)
 	protected.PUT("/auth/profile", ctx.Handlers.Auth.UpdateProfile)
 	protected.PUT("/auth/password", ctx.Handlers.Auth.ChangePassword)
+
+	// API Token 管理
+	protected.GET("/auth/tokens", ctx.Handlers.Auth.ListTokens)
+	protected.POST("/auth/tokens", ctx.Handlers.Auth.CreateToken)
+	protected.DELETE("/auth/tokens/:id", ctx.Handlers.Auth.DeleteToken)
 }
 
 func (ctx *RouterContext) setupRepositoryRoutes(protected *gin.RouterGroup) {
@@ -375,6 +382,11 @@ func (ctx *RouterContext) setupAuditRoutes(protected *gin.RouterGroup) {
 	downloadLogs.GET("/cleanup/config", ctx.requirePermission("system", "admin"), ctx.Handlers.LogCleanupConfig.GetConfig)
 	downloadLogs.PUT("/cleanup/config", ctx.requirePermission("system", "admin"), ctx.Handlers.LogCleanupConfig.UpdateConfig)
 	downloadLogs.POST("/cleanup/now", ctx.requirePermission("system", "admin"), ctx.Handlers.LogCleanupConfig.CleanupNow)
+
+	// SNAPSHOT 清理配置
+	downloadLogs.GET("/snapshot-cleanup/config", ctx.requirePermission("system", "admin"), ctx.Handlers.SnapshotCleanupConfig.GetConfig)
+	downloadLogs.PUT("/snapshot-cleanup/config", ctx.requirePermission("system", "admin"), ctx.Handlers.SnapshotCleanupConfig.UpdateConfig)
+	downloadLogs.POST("/snapshot-cleanup/now", ctx.requirePermission("system", "admin"), ctx.Handlers.SnapshotCleanupConfig.CleanupNow)
 }
 
 func (ctx *RouterContext) setupCASAdminRoutes(protected *gin.RouterGroup) {
@@ -432,6 +444,15 @@ func (ctx *RouterContext) setupSystemRoutes(protected *gin.RouterGroup) {
 	}
 
 	protected.GET("/system/info", ctx.Handlers.SystemInfo.GetInfo)
+
+	// 重建类维护操作：packages / package_versions 是 artifacts 的可重建 read model，
+	// 数据异常时手动触发全量重建恢复
+	rebuild := protected.Group("/system/rebuild")
+	rebuild.Use(ctx.requirePermission("system", "admin"))
+	{
+		rebuild.POST("/versions", ctx.Handlers.SystemRebuild.RebuildPackageVersions)
+		rebuild.POST("/packages", ctx.Handlers.SystemRebuild.RebuildPackages)
+	}
 
 	files := protected.Group("/files")
 	files.Use(ctx.requirePermission("system", "admin"))

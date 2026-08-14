@@ -76,6 +76,12 @@ func (i *ConfigInitializer) InitializeDefaultConfigs() error {
 		{"log_cleanup.enabled", "true", "bool", "logging", "启用下载日志自动清理", false},
 		{"log_cleanup.retention_days", "30", "int", "logging", "下载日志保留天数", false},
 		{"log_cleanup.interval", "24h", "string", "logging", "清理执行间隔（如 24h, 12h, 1h）", false},
+
+		{"cleanup.interval", "24h", "string", "maven", "清理任务执行间隔（如 24h, 12h）", false},
+
+		{"maven_snapshot_cleanup.enabled", "true", "bool", "maven", "启用 Maven SNAPSHOT 自动清理", false},
+		{"maven_snapshot_cleanup.keep_last", "5", "int", "maven", "每个 SNAPSHOT 版本保留最近构建数", false},
+		{"maven_snapshot_cleanup.max_age_days", "90", "int", "maven", "SNAPSHOT 保留天数", false},
 	}
 
 	for _, config := range defaultConfigs {

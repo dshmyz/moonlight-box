@@ -1,10 +1,12 @@
 package config
 
 import (
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 )
 
@@ -19,6 +21,7 @@ type Config struct {
 	Service  ServiceConfig  `mapstructure:"service"` // 服务层配置
 	Proxy    ProxyConfig    `mapstructure:"proxy"`
 	AI       AIConfig       `mapstructure:"ai"`   // AI 配置
+	MCP      MCPConfig      `mapstructure:"mcp"`  // MCP Server 配置
 	Seed     SeedConfig     `mapstructure:"seed"` // 初始化数据配置
 }
 
@@ -93,19 +96,15 @@ type CacheConfig struct {
 type LoggingConfig struct {
 	Level  string `mapstructure:"level"`  // debug, info, warn, error
 	Format string `mapstructure:"format"` // json, console
-	Output string `mapstructure:"output"` // 主日志文件路径
-	// 分文件日志配置
-	// 启用后，不同类型日志写入不同文件，便于管理和轮转
-	EnableSplitFiles bool          `mapstructure:"enable_split_files"`
-	SqlLogFile       string        `mapstructure:"sql_log_file"`       // SQL日志文件，默认 ./logs/sql.log
-	ErrorLogFile     string        `mapstructure:"error_log_file"`     // 错误日志文件，默认 ./logs/error.log
-	AccessLogFile    string        `mapstructure:"access_log_file"`    // 访问日志文件，默认 ./logs/access.log
+	Output string `mapstructure:"output"` // 主日志输出：stdout / stderr / 文件路径（如 ./logs/app.log）
+	// 分文件日志——output 为文件路径时自动启用，无需手动配置以下字段
+	EnableSplitFiles bool          `mapstructure:"enable_split_files"` // 通常由 output 自动推导，无需显式设置
+	SqlLogFile       string        `mapstructure:"sql_log_file"`       // 自动推导为 output 同目录 sql.log
+	ErrorLogFile     string        `mapstructure:"error_log_file"`     // 自动推导为 output 同目录 error.log
+	AccessLogFile    string        `mapstructure:"access_log_file"`    // 自动推导为 output 同目录 access.log
 	LogRetentionDays int           `mapstructure:"log_retention_days"` // 日志保留天数
 	CleanupInterval  time.Duration `mapstructure:"cleanup_interval"`   // 清理间隔
 	// 日志采样配置（避免高频错误日志刷屏）
-	// sample_rate: 0=不采样(全部记录), 1=100%采样, 0.1=10%采样
-	// 仅对 Warn/Error 级别生效
-	// 按 module 配置不同采样率，格式: {"module_name": 0.1}
 	SampleRate     float64            `mapstructure:"sample_rate"`
 	SampleByModule map[string]float64 `mapstructure:"sample_by_module"`
 }
@@ -182,6 +181,14 @@ type AISessionConfig struct {
 	MaxMessages int           `mapstructure:"max_messages"`
 }
 
+// MCPConfig MCP Server 配置
+type MCPConfig struct {
+	Enabled bool   `mapstructure:"enabled"` // 是否启用 MCP Server
+	Path    string `mapstructure:"path"`    // SSE 端点路径，默认 /mcp
+	Token   string `mapstructure:"token"`   // 访问令牌，为空则不校验（仅限本地）
+	ReadOnly bool  `mapstructure:"read_only"` // 只读模式，禁用所有写操作
+}
+
 var globalConfig *Config
 
 func Load(configPath string) (*Config, error) {
@@ -208,20 +215,35 @@ func Load(configPath string) (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
+	// 文件大小字段（如 server.max_upload_size、proxy.large_file_threshold）支持带单位字符串。
+	// 注意 viper.DecodeHook 会覆盖默认 hook（duration/slice），必须 Compose 保留
 	var cfg Config
-	if err := v.Unmarshal(&cfg); err != nil {
+	if err := v.Unmarshal(&cfg, viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
+		mapstructure.StringToTimeDurationHookFunc(),
+		mapstructure.StringToSliceHookFunc(","),
+		stringToSizeHookFunc(),
+	))); err != nil {
 		return nil, err
-	}
-
-	// 解析带单位的文件大小字符串（如 "50MB", "1GB", "50m"）
-	if raw := v.GetString("proxy.large_file_threshold"); raw != "" {
-		if size, err := ParseSize(raw); err == nil {
-			cfg.Proxy.LargeFileThreshold = size
-		}
 	}
 
 	globalConfig = &cfg
 	return &cfg, nil
+}
+
+// stringToSizeHookFunc 将带单位的文件大小字符串（如 "50MB"、"1GB"、"52428800"）
+// 解码为 int64 字节数；非字符串源或非 int64 目标（如 time.Duration）原样放行。
+func stringToSizeHookFunc() mapstructure.DecodeHookFunc {
+	int64Type := reflect.TypeOf(int64(0))
+	return func(from, to reflect.Type, data interface{}) (interface{}, error) {
+		if from.Kind() != reflect.String || to != int64Type {
+			return data, nil
+		}
+		size, err := ParseSize(data.(string))
+		if err != nil {
+			return data, nil // 不是大小字符串，交给默认 hook / mapstructure 报原始错误
+		}
+		return size, nil
+	}
 }
 
 // ParseSize 解析带单位的文件大小字符串为字节数

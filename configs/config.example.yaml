@@ -1,45 +1,53 @@
+# Moonlight Box 配置文件参考
+# 列出所有可配置字段及默认值；实际使用只需覆盖需要修改的字段
+# 支持环境变量覆盖：MOONLIGHT_<SECTION>_<KEY>（如 MOONLIGHT_AUTH_JWT_SECRET）
+
 server:
   host: 0.0.0.0
   port: 9081
-  mode: debug  # debug / release / test
+  mode: debug           # debug / release —— 生产环境必须设为 "release"
   read_timeout: 30s
-  write_timeout: 0s
-  idle_timeout: 60s  # 空闲连接超时
-  static_dir: "./cmd/registry/front"  # 前端静态文件目录（为空则使用 embed 嵌入版本）
-  max_upload_size: 209715200  # 上传体积上限 (200MB)
+  write_timeout: 0      # 0 表示不限制
+  idle_timeout: 60s
+  static_dir: "./cmd/registry/front"
+  max_upload_size: 200MB
 
 database:
-  driver: sqlite  # sqlite / postgres / mysql
+  driver: sqlite         # sqlite / postgres / mysql
   dsn: "./data/registry.db"
-  log_level: warn  # silent / error / warn / info
-  max_open_conns: 100  # 最大打开连接数（sqlite 默认 4，由代码强制设置）
+  log_level: warn        # silent / error / warn / info
+  max_open_conns: 100
   max_idle_conns: 10
   conn_max_lifetime: 1h
   conn_max_idle_time: 30m
   # postgres:
-  #   host: localhost
-  #   port: 5432
-  #   database: moonlight
-  #   username: registry
-  #   password: your-password
+  #   dsn: "host=localhost port=5432 user=registry password=xxx dbname=moonlight sslmode=disable"
   # mysql:
   #   dsn: "registry:password@tcp(localhost:3306)/moonlight?charset=utf8mb4&parseTime=True&loc=Local"
 
 storage:
-  backend: local  # local / s3
+  backend: local         # 此处仅控制本地存储默认参数；S3/OBS 通过 API 动态管理（见存储后端管理页）
   local:
     base_path: "./data/packages"
     max_size_gb: 100
+  # S3 存储后端通过 API 配置，参数如下：
+  # s3:
+  #   endpoint: "s3.amazonaws.com"
+  #   region: "us-east-1"
+  #   access_key_id: ""
+  #   secret_access_key: ""
+  #   bucket: "my-bucket"
+  #   base_path: ""
+  #   max_size_gb: 100
+  #   use_ssl: true
 
 auth:
-  jwt_secret: change-me-in-production-use-random-string
+  jwt_secret: change-me-in-production-use-random-string  # 生产环境务必修改
   token_expiry: 24h
-  refresh_expiry: 168h
+  refresh_expiry: 168h  # 7 天
   min_password_len: 8
   max_login_attempts: 5
   lockout_duration: 15m
-  
-  # CAS 单点登录配置
   cas:
     enabled: false
     server_url: "https://cas.example.com/cas"
@@ -49,70 +57,52 @@ auth:
 
 security:
   enabled: true
-  scan_on_upload: false  # Phase 2 启用
+  scan_on_upload: false
   block_critical: true
   block_high: true
 
 cache:
   enabled: true
   default_ttl: 24h
-  max_size_gb: 10
-  eviction_policy: lru  # lru / fifo / ttl
+  max_size_gb: 2
+  eviction_policy: lru   # lru / fifo / ttl
 
 logging:
-  level: info  # debug / info / warn / error
-  format: console  # console / json
-  output: stdout  # stdout / stderr / 文件路径（如 ./logs/app.log）
-  # 分文件日志（启用后按类型拆分到不同文件，便于轮转和检索）
-  enable_split_files: false
-  sql_log_file: "./logs/sql.log"
-  error_log_file: "./logs/error.log"
-  access_log_file: "./logs/access.log"
-  log_retention_days: 30  # 日志保留天数（lumberjack 轮转依据）
-  cleanup_interval: 24h  # 日志清理检查间隔
-  # 日志采样配置（避免高频错误日志刷屏）
-  # sample_rate: 0=不记录, 1=全部记录, 0.1=10%记录
-  # 仅对 warn/error 级别生效
-  sample_rate: 1.0
-  # 按模块配置采样率（优先级高于全局配置）
-  sample_by_module:
-    # 示例：代理模块错误日志只记录10%
-    # proxy: 0.1
-    # 示例：健康检查警告日志只记录50%
-    # health: 0.5
+  level: debug           # debug / info / warn / error
+  format: console        # console / json
+  output: stdout         # stdout / stderr / 文件路径（如 ./logs/app.log）
+                         # 文件路径时自动启用分文件：sql.log、error.log、access.log 生成在同目录
+  enable_split_files: false  # 通常由 output 自动推导，无需显式设置
+  log_retention_days: 30
+  cleanup_interval: 24h
+  sample_rate: 1.0       # 0=全丢弃, 1=全记录, 0.1=10%记录
+  # sample_by_module:
+  #   proxy: 0.1
 
-# 代理仓库配置
 proxy:
   default_timeout: 30s
   connect_timeout: 10s
-  large_file_threshold: 52428800  # 大文件阈值 (50MB)
+  large_file_threshold: 50MB  # 支持 50MB / 1GB / 52428800 等格式
   max_redirects: 10
-  # insecure_skip_verify: true   # 是否跳过 SSL 证书校验（默认 true，对自签名上游生效；如需强制校验改为 false）
-
-  # DNS 映射（用于内网解析）
+  insecure_skip_verify: true
   # dns_mapping:
   #   "registry.npmjs.org": "10.0.0.1"
-  #   "repo.maven.apache.org": "10.0.0.2"
-  
-  # 健康检查配置
   health_check:
     enabled: true
     interval: 30s
     timeout: 5s
     failure_threshold: 3
-    block_on_unhealthy: false  # 健康检查不健康时是否阻断请求
+    block_on_unhealthy: false
 
-# AI 配置
 ai:
   enabled: false
-  provider: "chatglm"  # chatglm, qwen, custom
+  provider: "chatglm"    # chatglm / qwen / custom
   base_url: "http://localhost:8000/v1"
   api_key: ""
   model: "chatglm3-6b"
   max_tokens: 2048
   temperature: 0.7
   timeout: 30s
-  
   tools:
     enabled: true
     allowed_tools:
@@ -125,31 +115,36 @@ ai:
       - dependency_optimizer
     max_execution_time: 10
     enable_audit_log: true
-  
   rate_limit:
     requests_per_minute: 20
     requests_per_day: 500
     tokens_per_day: 100000
-  
   cache:
     enabled: true
     ttl: 1h
     max_size: 1000
-  
   session:
     max_age: 24h
     max_messages: 50
 
-# 初始化数据配置
-seed:
-  enabled: true  # 是否启用种子数据（角色、权限、管理员账号等）
-  load_test_data: false  # 是否加载测试包数据（生产环境建议设为 false）
+mcp:
+  enabled: true
+  path: /mcp
+  token: ""              # 为空则不校验，仅限本地开发
+  read_only: false
 
-# 服务层配置
+# Maven SNAPSHOT 自动清理（运行时通过管理界面热配置，以下仅为参考）
+# maven_snapshot_cleanup:
+#   enabled: true
+#   keep_last: 5          # 每个 SNAPSHOT 版本保留最近 N 个构建
+#   max_age_days: 90      # 超过 N 天的 SNAPSHOT 自动删除
+#   interval: 24h         # 清理执行间隔
+
+seed:
+  enabled: true
+  load_test_data: false  # 生产环境保持 false
+
 service:
-  # 依赖解析最大并发数（控制Maven/Go包下载后的异步依赖解析任务数）
   max_concurrent_dep_parse: 10
-  # 存储操作超时时间
   storage_op_timeout: 30s
-  # 数据库操作超时时间
   db_op_timeout: 10s

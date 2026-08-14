@@ -455,7 +455,7 @@ func TestHandle_PackageDownloadRangeReturnsPartialContent(t *testing.T) {
 	}
 }
 
-func TestHandle_PackageDownloadMissQueriesRemotePathBeforeRetry(t *testing.T) {
+func TestHandle_PackageDownloadMissQueriesPackageListBeforeMatch(t *testing.T) {
 	p := NewPyPIPlugin(http.DefaultClient)
 	rt := &queryThenGetRuntime{
 		artifact: testhelper.NewArtifact("pypi", "package-file", map[string]string{
@@ -478,9 +478,11 @@ func TestHandle_PackageDownloadMissQueriesRemotePathBeforeRetry(t *testing.T) {
 	if len(rt.queryCalls) != 1 {
 		t.Fatalf("expected one QueryArtifacts call, got %d", len(rt.queryCalls))
 	}
-	if got := rt.queryCalls[0].RemotePath; got != "packages/ab/cd/requests-2.28.0.tar.gz" {
-		t.Fatalf("RemotePath = %q", got)
+	// 应该用包列表路径回源，而不是文件路径
+	if got := rt.queryCalls[0].RemotePath; got != "simple/requests/" {
+		t.Fatalf("RemotePath = %q, want simple/requests/", got)
 	}
+	// QueryArtifacts 回源后仍用 GetArtifact 获取带 blob 的 artifact
 	if rt.getCalls != 2 {
 		t.Fatalf("expected two GetArtifact calls, got %d", rt.getCalls)
 	}

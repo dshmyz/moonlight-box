@@ -5,7 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 DB_PATH="${DB_PATH:-$PROJECT_DIR/data/registry.db}"
 STORAGE_DIR="${STORAGE_DIR:-$PROJECT_DIR/data}"
 DRY_RUN=false

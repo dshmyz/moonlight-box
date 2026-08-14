@@ -40,7 +40,11 @@
       <el-table-column prop="status" label="状态" width="140" align="center">
         <template #default="{ row }">
           <div class="status-cell">
-            <el-tag :type="getVersionStatusColor(row.status)" size="small">
+            <el-tag
+              :class="['cache-status-tag', `status-tag--${row.status || 'draft'}`]"
+              effect="plain"
+              size="small"
+            >
               {{ getVersionStatusLabel(row.status) }}
             </el-tag>
             <el-tooltip :content="row.files_downloaded ? '文件已下载到本地' : '仅元数据，文件未下载'" placement="top">
@@ -100,6 +104,8 @@
               </span>
               <span class="file-size">({{ formatSize(file.size_bytes) }})</span>
             </div>
+            <!-- 懒回源提示：代理仓库的文件首次被请求时才拉取，UI 只显示已缓存部分 -->
+            <span v-if="!row.files_downloaded" class="fetch-hint">未缓存，首次下载时自动回源</span>
             <button v-if="hiddenFileCount(row) > 0" class="more-files-hint" type="button" @click.stop="toggleFiles(row)">
               更多文件（{{ hiddenFileCount(row) }}）
             </button>
@@ -113,7 +119,10 @@
           >
             {{ loadingFiles.has(row.version) ? '加载中...' : `加载文件（${row.file_count}）` }}
           </button>
-          <span v-else class="no-files">-</span>
+          <span v-else class="no-files">
+            <span v-if="!row.files_downloaded" class="fetch-hint">首次下载时自动回源</span>
+            <span v-else>-</span>
+          </span>
         </template>
       </el-table-column>
       <el-table-column label="操作" :width="showAdminActions ? '200' : '80'" fixed="right" align="center">
@@ -180,7 +189,7 @@ import { ref, computed, watch } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
 import { formatNumber, formatSize, formatDate } from '@/utils/format'
-import { getVersionStatusColor, getVersionStatusLabel } from '@/constants/package'
+import { getVersionStatusLabel } from '@/constants/package'
 import { copyToClipboard } from '@/utils/clipboard'
 import { packageApi, type PackageVersion, PackageFile } from '@/api/package'
 
@@ -203,6 +212,7 @@ const emit = defineEmits<{
 
 const pageSize = 10
 const currentPage = ref(1)
+// 默认只显示已缓存的版本（文件已下载到本地），避免未缓存的仅元数据版本干扰
 const cacheFilter = ref<'all' | 'cached' | 'uncached'>('all')
 const versionSearch = ref('')
 const expandedFiles = ref<Set<string>>(new Set())
@@ -452,6 +462,27 @@ function copyChecksum(checksum: string) {
   color: var(--lunar-silver-dim);
 }
 
+/* 版本状态 tag：与缓存 tag 同款渐变体系（颜色跟版本状态走） */
+.status-tag--published {
+  background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+  color: #059669;
+}
+
+.status-tag--deprecated {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  color: #b45309;
+}
+
+.status-tag--yanked {
+  background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+  color: #dc2626;
+}
+
+.status-tag--draft {
+  background: var(--lunar-bg-glass);
+  color: var(--lunar-silver-dim);
+}
+
 .size-text,
 .downloads-text {
   color: var(--lunar-silver-muted);
@@ -520,6 +551,13 @@ function copyChecksum(checksum: string) {
 
 .no-files {
   color: var(--lunar-silver-dim);
+}
+
+/* 懒回源提示：文件未缓存，首次下载时自动从上游拉取 */
+.fetch-hint {
+  font-size: 12px;
+  color: var(--lunar-silver-dim);
+  font-style: italic;
 }
 
 .action-buttons {

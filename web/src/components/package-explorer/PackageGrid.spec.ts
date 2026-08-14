@@ -60,6 +60,25 @@ describe('PackageGrid', () => {
     expect(wrapper.emitted('view-detail')?.[0]).toEqual([samplePackages[0]])
   })
 
+  it('聚合行展示所有实际仓库 chips（不含组合仓库）', () => {
+    const pkg = {
+      id: 3, name: 'commons-lang3', display_name: 'commons-lang3', type: 'maven2',
+      description: 'Apache Commons', latest_version: '3.14.0', download_count: 20,
+      updated_at: '2026-06-19T00:00:00Z',
+      repository_name: 'maven-local',
+      repositories: ['maven-local', 'maven-central-proxy'],
+      group_repositories: ['maven-group'],
+    }
+    const wrapper = mountIt({ packages: [pkg], mode: 'public' })
+    const chips = wrapper.findAll('.card-repos .repo-chip')
+    expect(chips.map((c) => c.text())).toEqual(['maven-local', 'maven-central-proxy'])
+  })
+
+  it('无仓库信息的包不渲染 chips', () => {
+    const wrapper = mountIt({ packages: [{ id: 9, name: 'raw', display_name: 'raw', type: 'generic' }] })
+    expect(wrapper.find('.card-repos').exists()).toBe(false)
+  })
+
   it('复制按钮触发复制 type:name', async () => {
     const { copyToClipboard } = await import('@/utils/clipboard')
     const wrapper = mountIt()

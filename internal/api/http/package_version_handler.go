@@ -211,7 +211,7 @@ func (h *PackageVersionHandler) respondVersionsFromArtifacts(c *gin.Context, pkg
 		if !vp.hasSummary && vp.publishedAt == "" {
 			vp.publishedAt = jsonbString(a.Attributes, "published_at")
 		}
-		if !vp.hasSummary {
+		if !vp.hasSummary && isDownloadableArtifact(a, a.Filename, "", nil) {
 			vp.fileCount++
 		}
 	}
@@ -230,7 +230,7 @@ func (h *PackageVersionHandler) respondVersionsFromArtifacts(c *gin.Context, pkg
 	for _, ver := range verOrder {
 		vp := verGroups[ver]
 		publishedAt := vp.latestAt
-		if vp.publishedAtTime != nil {
+		if vp.publishedAtTime != nil && vp.publishedAtTime.After(vp.latestAt) {
 			publishedAt = *vp.publishedAtTime
 		} else if vp.publishedAt != "" {
 			if t, err := time.Parse(time.RFC3339, vp.publishedAt); err == nil {
@@ -688,7 +688,7 @@ func isDownloadableArtifact(a model.Artifact, filename, downloadURL string, blob
 	if filename == "" && downloadURL == "" && len(blobs) == 0 {
 		return false
 	}
-	if a.Kind == runtime.KindVersion || runtime.IsCatalogExcludedKind(a.Kind) || a.Kind == "release" {
+	if !runtime.IsCountableFileKind(a.Kind) {
 		return false
 	}
 	if filename != "" || downloadURL != "" || len(blobs) > 0 {

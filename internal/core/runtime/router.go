@@ -388,6 +388,12 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 			http.Error(ctx.Writer, "Service Unavailable: upstream circuit open", http.StatusServiceUnavailable)
 			return
 		}
+		if errors.Is(err, ErrUpstreamTimeout) {
+			ctx.Writer.Header().Set("Retry-After", "30")
+			ctx.StatusCode = http.StatusServiceUnavailable
+			http.Error(ctx.Writer, "Service Unavailable: upstream timeout", http.StatusServiceUnavailable)
+			return
+		}
 		if errors.Is(err, ErrUpstreamUnavailable) {
 			ctx.StatusCode = http.StatusBadGateway
 			http.Error(ctx.Writer, "Bad Gateway", http.StatusBadGateway)

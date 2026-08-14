@@ -220,7 +220,7 @@ func TestArtifactServicePackageVersionSummaryUsesArtifactStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 
@@ -254,7 +254,7 @@ func TestArtifactServiceUpdatePackageVersionStatusUpdatesAllArtifacts(t *testing
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 
@@ -321,7 +321,7 @@ func TestArtifactServiceDeleteRemovesPackageVersionWhenLastArtifactDeleted(t *te
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 
@@ -361,7 +361,7 @@ func TestArtifactServiceRebuildPackageVersionsFromArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 
@@ -484,7 +484,7 @@ func TestArtifactServiceDoesNotAggregateDirectoryAsPackage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Artifact{}, &model.Package{}, &model.ArtifactBlob{}, &model.Blob{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Package{}, &model.ArtifactBlob{}, &model.Blob{}); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 
@@ -514,7 +514,7 @@ func TestArtifactServiceAggregatesGoVersionMetadataEvenForRootModule(t *testing.
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Artifact{}, &model.Package{}, &model.ArtifactBlob{}, &model.Blob{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Package{}, &model.ArtifactBlob{}, &model.Blob{}); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 
@@ -543,7 +543,7 @@ func TestArtifactServiceDoesNotAggregateUncachedGoModuleFileAsPackage(t *testing
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Artifact{}, &model.Package{}, &model.ArtifactBlob{}, &model.Blob{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Package{}, &model.ArtifactBlob{}, &model.Blob{}); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
 
@@ -874,5 +874,137 @@ func TestArtifactServiceRepublishSameVersionIsIdempotent(t *testing.T) {
 	}
 	if pkgCount != 1 {
 		t.Fatalf("package rows = %d, want 1 (no duplicate on republish)", pkgCount)
+	}
+}
+
+// TestArtifactServiceSaveVirtualRepoCreatesNoPackage 验证虚拟（group）仓库
+// 不会创建独立的 packages/package_versions 记录：虚拟仓库只是路由层。
+func TestArtifactServiceSaveVirtualRepoCreatesNoPackage(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	local := model.Repository{Name: "maven-local", Type: model.RepoTypeLocal, PackageType: "maven"}
+	group := model.Repository{Name: "maven-group", Type: model.RepoTypeVirtual, PackageType: "maven"}
+	if err := db.Create(&local).Error; err != nil {
+		t.Fatalf("create local repo: %v", err)
+	}
+	if err := db.Create(&group).Error; err != nil {
+		t.Fatalf("create group repo: %v", err)
+	}
+
+	svc := NewArtifactService(db)
+	for _, repo := range []model.Repository{local, group} {
+		if err := svc.Save(context.Background(), runtime.NewArtifact(runtime.ArtifactSpec{
+			RepositoryID: fmt.Sprint(repo.ID),
+			Format:       "maven",
+			Kind:         runtime.KindArtifact,
+			Name:         "com.example:app",
+			Version:      "1.0.0",
+			Path:         "com/example/app/1.0.0",
+			Filename:     "app-1.0.0.jar",
+			RemotePath:   "com/example/app/1.0.0/app-1.0.0.jar",
+		})); err != nil {
+			t.Fatalf("save to %s: %v", repo.Name, err)
+		}
+	}
+
+	// 本地仓库有 packages 行
+	var localPkg model.Package
+	if err := db.Where("repository_id = ? AND format = ? AND name = ?", local.ID, "maven", "com.example:app").First(&localPkg).Error; err != nil {
+		t.Fatalf("load package for local repo: %v", err)
+	}
+
+	// 虚拟仓库没有 packages 行
+	var groupPkgCount int64
+	if err := db.Model(&model.Package{}).Where("repository_id = ?", group.ID).Count(&groupPkgCount).Error; err != nil {
+		t.Fatalf("count group packages: %v", err)
+	}
+	if groupPkgCount != 0 {
+		t.Fatalf("virtual repo package rows = %d, want 0", groupPkgCount)
+	}
+
+	// 虚拟仓库没有 package_versions 行
+	var groupVerCount int64
+	if err := db.Model(&model.PackageVersion{}).Where("repository_id = ?", group.ID).Count(&groupVerCount).Error; err != nil {
+		t.Fatalf("count group package_versions: %v", err)
+	}
+	if groupVerCount != 0 {
+		t.Fatalf("virtual repo package_versions rows = %d, want 0", groupVerCount)
+	}
+}
+
+// TestArtifactServiceRebuildPackagesExcludesVirtualRepo 验证 RebuildPackages
+// 不聚合虚拟仓库的 artifact，且会清掉历史遗留的虚拟仓库 packages 行。
+func TestArtifactServiceRebuildPackagesExcludesVirtualRepo(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	local := model.Repository{Name: "maven-local", Type: model.RepoTypeLocal, PackageType: "maven"}
+	group := model.Repository{Name: "maven-group", Type: model.RepoTypeVirtual, PackageType: "maven"}
+	if err := db.Create(&local).Error; err != nil {
+		t.Fatalf("create local repo: %v", err)
+	}
+	if err := db.Create(&group).Error; err != nil {
+		t.Fatalf("create group repo: %v", err)
+	}
+
+	// 两个仓库都有 artifact（虚拟仓库属于历史遗留脏数据）
+	for _, repo := range []model.Repository{local, group} {
+		if err := db.Create(&model.Artifact{
+			RepositoryID: repo.ID,
+			Format:       "maven",
+			Kind:         runtime.KindArtifact,
+			IdentityKey:  fmt.Sprintf("file/%d/com.example:app/1.0.0/app-1.0.0.jar", repo.ID),
+			Name:         "com.example:app",
+			Version:      "1.0.0",
+			Path:         "com/example/app/1.0.0",
+			Filename:     "app-1.0.0.jar",
+			RemotePath:   "com/example/app/1.0.0/app-1.0.0.jar",
+		}).Error; err != nil {
+			t.Fatalf("create artifact for %s: %v", repo.Name, err)
+		}
+	}
+
+	// 预置一条虚拟仓库的 packages 脏数据（模拟历史遗留）
+	stale := model.Package{
+		RepositoryID:  group.ID,
+		Format:        "maven",
+		Name:          "com.example:app",
+		LatestVersion: "1.0.0",
+		VersionCount:  1,
+		DownloadCount: 42,
+	}
+	if err := db.Create(&stale).Error; err != nil {
+		t.Fatalf("create stale package: %v", err)
+	}
+
+	svc := NewArtifactService(db)
+	if err := svc.RebuildPackages(context.Background()); err != nil {
+		t.Fatalf("rebuild packages: %v", err)
+	}
+
+	// 本地仓库有行
+	var localPkg model.Package
+	if err := db.Where("repository_id = ? AND format = ? AND name = ?", local.ID, "maven", "com.example:app").First(&localPkg).Error; err != nil {
+		t.Fatalf("load package for local repo: %v", err)
+	}
+
+	// 虚拟仓库脏行被清除
+	var groupPkgCount int64
+	if err := db.Model(&model.Package{}).Where("repository_id = ?", group.ID).Count(&groupPkgCount).Error; err != nil {
+		t.Fatalf("count group packages: %v", err)
+	}
+	if groupPkgCount != 0 {
+		t.Fatalf("virtual repo package rows after rebuild = %d, want 0", groupPkgCount)
 	}
 }

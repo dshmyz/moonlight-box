@@ -8,10 +8,10 @@ func setDefaults(v interface {
 	// Server
 	v.SetDefault("server.host", "0.0.0.0")
 	v.SetDefault("server.port", 9081)
-	v.SetDefault("server.mode", "debug")
+	v.SetDefault("server.mode", "debug") // 生产环境必须设为 "release"
 	v.SetDefault("server.read_timeout", 30*time.Second)
 	v.SetDefault("server.write_timeout", 0*time.Second)
-	v.SetDefault("server.idle_timeout", 60*time.Second) // 空闲连接超时，减少服务器关闭时等待时间
+	v.SetDefault("server.idle_timeout", 60*time.Second)
 	v.SetDefault("server.static_dir", "./cmd/registry/front")
 	v.SetDefault("server.max_upload_size", 200*1024*1024) // 200MB
 
@@ -56,6 +56,11 @@ func setDefaults(v interface {
 	v.SetDefault("logging.log_retention_days", 30)         // 默认保留30天
 	v.SetDefault("logging.cleanup_interval", 24*time.Hour) // 默认每24小时清理一次
 
+	// Service
+	v.SetDefault("service.max_concurrent_dep_parse", 10)
+	v.SetDefault("service.storage_op_timeout", 30*time.Second)
+	v.SetDefault("service.db_op_timeout", 10*time.Second)
+
 	// Proxy
 	v.SetDefault("proxy.default_timeout", 30*time.Second)
 	v.SetDefault("proxy.connect_timeout", 10*time.Second)
@@ -68,9 +73,14 @@ func setDefaults(v interface {
 	v.SetDefault("proxy.health_check.interval", 30*time.Second)
 	v.SetDefault("proxy.health_check.timeout", 5*time.Second)
 	v.SetDefault("proxy.health_check.failure_threshold", 3)
+	v.SetDefault("proxy.health_check.block_on_unhealthy", false)
 
 	// AI
 	v.SetDefault("ai.timeout", 60*time.Second)
+
+	// MCP
+	v.SetDefault("mcp.enabled", true)
+	v.SetDefault("mcp.path", "/mcp")
 
 	// Seed Data
 	v.SetDefault("seed.enabled", true)

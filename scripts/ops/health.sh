@@ -9,8 +9,9 @@ ERRORS=0
 
 check() {
     local name="$1" url="$2" expect_code="${3:-200}"
+    shift 3 || shift $#
     local code
-    code=$(curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+    code=$(curl -s -o /dev/null -w "%{http_code}" "$@" "$url" 2>/dev/null || echo "000")
     if [ "$code" = "$expect_code" ]; then
         echo "  ✓ $name (HTTP $code)"
     else
@@ -36,16 +37,15 @@ echo "[管理后台]"
 TOKEN=$(curl -s -X POST "$BASE_URL/api/v1/auth/login" \
     -H "Content-Type: application/json" \
     -d '{"username":"admin","password":"admin123"}' 2>/dev/null \
-    | grep -o '"token":"[^"]*"' | head -1 | cut -d'"' -f4)
+    | grep -o '"access_token":"[^"]*"' | head -1 | cut -d'"' -f4)
 
 if [ -z "$TOKEN" ]; then
     echo "  ✗ 无法获取 Token，跳过认证接口检查"
     ERRORS=$((ERRORS + 1))
 else
-    AUTH="-H Authorization:Bearer\ $TOKEN"
-    check "仪表盘" "$BASE_URL/api/v1/dashboard/stats"
-    check "仓库管理" "$BASE_URL/api/v1/repositories"
-    check "用户管理" "$BASE_URL/api/v1/users"
+    check "仪表盘" "$BASE_URL/api/v1/dashboard/stats" 200 -H "Authorization: Bearer $TOKEN"
+    check "仓库管理" "$BASE_URL/api/v1/repositories" 200 -H "Authorization: Bearer $TOKEN"
+    check "用户管理" "$BASE_URL/api/v1/users" 200 -H "Authorization: Bearer $TOKEN"
 fi
 
 echo ""

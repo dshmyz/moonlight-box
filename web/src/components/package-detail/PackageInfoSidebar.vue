@@ -12,7 +12,22 @@
       </el-descriptions-item>
       <el-descriptions-item label="最新版本">{{ pkg.latest_version || '-' }}</el-descriptions-item>
       <el-descriptions-item label="总下载量">{{ formatNumber(pkg.download_count || 0) }}</el-descriptions-item>
-      <el-descriptions-item label="仓库">{{ pkg.group_repository || pkg.repository || '-' }}</el-descriptions-item>
+      <el-descriptions-item label="仓库">
+        <template v-if="displayRepos.length > 0">
+          <span class="repo-chips">
+            <span
+              v-for="repo in displayRepos"
+              :key="repo"
+              class="repo-chip"
+              :class="{ 'repo-chip-group': displayGroups.includes(repo) }"
+              :title="displayGroups.includes(repo) ? '组合仓库（虚拟）' : undefined"
+            >
+              {{ repo }}
+            </span>
+          </span>
+        </template>
+        <template v-else>{{ pkg.group_repository || pkg.repository || '-' }}</template>
+      </el-descriptions-item>
       <el-descriptions-item label="许可证">{{ pkg.license || '-' }}</el-descriptions-item>
     </el-descriptions>
 
@@ -75,11 +90,23 @@ const props = defineProps<{
     download_count?: number
     repository?: string
     group_repository?: string
+    repositories?: string[]
+    group_repositories?: string[]
     license?: string
   }
   versions: PackageVersion[]
   selectedVersion: string
 }>()
+
+// 展示仓库：组合仓库在前，实际所在仓库在后（聚合行跨仓库时全部展示）
+const displayGroups = computed(() => props.pkg.group_repositories || [])
+const displayRepos = computed(() => {
+  const groups = displayGroups.value
+  const repos = props.pkg.repositories?.length
+    ? props.pkg.repositories
+    : (props.pkg.repository ? [props.pkg.repository] : [])
+  return [...groups.filter((g) => !repos.includes(g)), ...repos]
+})
 
 const activeVersion = computed(() => {
   return props.versions.find(v => v.version === props.selectedVersion) || null
@@ -215,6 +242,32 @@ function copyText(text: string) {
   margin-top: 16px;
   padding-top: 16px;
   border-top: 1px solid var(--lunar-border);
+}
+
+/* 仓库 chips */
+.repo-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.repo-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 160px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-family: var(--font-family-mono);
+  color: var(--lunar-silver-muted);
+  background: var(--lunar-bg-glass);
+  border: 1px solid var(--lunar-border);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repo-chip-group {
+  color: var(--lunar-accent);
+  border-style: dashed;
 }
 
 .config-item {

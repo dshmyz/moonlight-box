@@ -139,6 +139,14 @@ func (b *LogBatcher) flushLogs(logs []*model.DownloadLog) {
 
 	// 同步增量更新每日聚合表（含 cached）
 	if b.dailyStatsRepo != nil {
+		// 确保每条日志都有有效的 CreatedAt（cached 日志由调用方创建，
+		// 可能未设置时间戳，导致聚合到 0001-01-01）。
+		now := time.Now()
+		for _, l := range logs {
+			if l.CreatedAt.IsZero() {
+				l.CreatedAt = now
+			}
+		}
 		if err := b.dailyStatsRepo.BatchIncrByLogs(logs); err != nil {
 			util.GetLogger(util.LogTypeMain).WithFields(logrus.Fields{
 				util.LogKeyModule: "service",

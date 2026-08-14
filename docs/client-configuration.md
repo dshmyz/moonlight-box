@@ -8,9 +8,9 @@
 - [Maven 配置](#maven-配置)
 - [PyPI 配置](#pypi-配置)
 - [Go 配置](#go-配置)
-- [NuGet 配置](#nuget-配置)
 - [Yum 配置](#yum-配置)
 - [APT 配置](#apt-配置)
+- [通用仓库配置](#通用仓库配置)
 
 ---
 
@@ -18,26 +18,20 @@
 
 ### 方式一：使用配置文件（推荐）
 
-1. 下载配置模板：
-```bash
-# 下载 .npmrc 模板
-curl -o ~/.npmrc https://your-registry/docs/templates/.npmrc
-```
-
-2. 编辑配置文件：
+1. 编辑配置文件 `~/.npmrc`：
 ```ini
 # ~/.npmrc
-registry=http://your-registry:9081/repo/npm-virtual/
+registry=http://your-registry:9081/repository/npm-virtual/
 
-# 认证信息（如果需要）
-//your-registry:9081/repo/npm-virtual/:_authToken=your-token-here
+# 认证信息（通过 Web UI 个人设置 → 访问令牌 获取）
+//your-registry:9081/repository/npm-virtual/:_authToken=your-token-here
 
 # 或者使用 Basic 认证
-//your-registry:9081/repo/npm-virtual/:username=your-username
-//your-registry:9081/repo/npm-virtual/:_password=your-base64-password
+//your-registry:9081/repository/npm-virtual/:username=your-username
+//your-registry:9081/repository/npm-virtual/:_password=your-base64-password
 ```
 
-3. 验证配置：
+2. 验证配置：
 ```bash
 npm config list
 npm install test-package
@@ -47,10 +41,10 @@ npm install test-package
 
 ```bash
 # 设置仓库地址
-npm config set registry http://your-registry:9081/repo/npm-virtual/
+npm config set registry http://your-registry:9081/repository/npm-virtual/
 
 # 设置认证信息
-npm config set //your-registry:9081/repo/npm-virtual/:_authToken your-token-here
+npm config set //your-registry:9081/repository/npm-virtual/:_authToken your-token-here
 
 # 验证配置
 npm config get registry
@@ -62,31 +56,31 @@ npm config get registry
 
 ```ini
 # 项目级配置
-registry=http://your-registry:9081/repo/npm-virtual/
+registry=http://your-registry:9081/repository/npm-virtual/
 
 # 作用域包配置
-@mycompany:registry=http://your-registry:9081/repo/npm-local/
+@mycompany:registry=http://your-registry:9081/repository/npm-local/
 ```
 
 ### 发布包
 
 ```bash
 # 发布到本地仓库
-npm publish --registry=http://your-registry:9081/repo/npm-local/
+npm publish --registry=http://your-registry:9081/repository/npm-local/
 
 # 或在 package.json 中配置
 {
   "publishConfig": {
-    "registry": "http://your-registry:9081/repo/npm-local/"
+    "registry": "http://your-registry:9081/repository/npm-local/"
   }
 }
 ```
 
 ### 常见问题
 
-**Q: 为什么 `npm adduser` 不工作？**
+**Q: `npm adduser` 不工作怎么办？**
 
-A: 当前版本暂不支持 `npm adduser` 命令。请使用以下方式获取认证令牌：
+A: 请使用以下方式获取认证令牌：
 1. 通过 Web UI 登录获取令牌
 2. 联系管理员获取预配置的 `.npmrc` 文件
 
@@ -94,7 +88,7 @@ A: 当前版本暂不支持 `npm adduser` 命令。请使用以下方式获取�
 
 A: 配置虚拟仓库地址，系统会自动从上游仓库拉取：
 ```bash
-npm config set registry http://your-registry:9081/repo/npm-virtual/
+npm config set registry http://your-registry:9081/repository/npm-virtual/
 ```
 
 ---
@@ -103,13 +97,8 @@ npm config set registry http://your-registry:9081/repo/npm-virtual/
 
 ### 方式一：使用 settings.xml（推荐）
 
-1. 下载配置模板：
-```bash
-# 下载 settings.xml 模板
-curl -o ~/.m2/settings.xml https://your-registry/docs/templates/settings.xml
-```
+编辑 `~/.m2/settings.xml`：
 
-2. 编辑配置文件：
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
@@ -137,7 +126,7 @@ curl -o ~/.m2/settings.xml https://your-registry/docs/templates/settings.xml
       <id>moonlight-public</id>
       <mirrorOf>central</mirrorOf>
       <name>Moonlight Public</name>
-      <url>http://your-registry:9081/repo/maven-virtual/</url>
+      <url>http://your-registry:9081/repository/maven-virtual/</url>
     </mirror>
   </mirrors>
 
@@ -148,7 +137,7 @@ curl -o ~/.m2/settings.xml https://your-registry/docs/templates/settings.xml
       <repositories>
         <repository>
           <id>moonlight-releases</id>
-          <url>http://your-registry:9081/repo/maven-local/</url>
+          <url>http://your-registry:9081/repository/maven-virtual/</url>
           <releases>
             <enabled>true</enabled>
           </releases>
@@ -158,7 +147,7 @@ curl -o ~/.m2/settings.xml https://your-registry/docs/templates/settings.xml
         </repository>
         <repository>
           <id>moonlight-snapshots</id>
-          <url>http://your-registry:9081/repo/maven-local/</url>
+          <url>http://your-registry:9081/repository/maven-virtual/</url>
           <releases>
             <enabled>false</enabled>
           </releases>
@@ -187,7 +176,7 @@ curl -o ~/.m2/settings.xml https://your-registry/docs/templates/settings.xml
   <repositories>
     <repository>
       <id>moonlight-public</id>
-      <url>http://your-registry:9081/repo/maven-virtual/</url>
+      <url>http://your-registry:9081/repository/maven-virtual/</url>
     </repository>
   </repositories>
 
@@ -195,11 +184,11 @@ curl -o ~/.m2/settings.xml https://your-registry/docs/templates/settings.xml
   <distributionManagement>
     <repository>
       <id>moonlight-releases</id>
-      <url>http://your-registry:9081/repo/maven-local/</url>
+      <url>http://your-registry:9081/repository/maven-virtual/</url>
     </repository>
     <snapshotRepository>
       <id>moonlight-snapshots</id>
-      <url>http://your-registry:9081/repo/maven-local/</url>
+      <url>http://your-registry:9081/repository/maven-virtual/</url>
     </snapshotRepository>
   </distributionManagement>
 </project>
@@ -224,7 +213,7 @@ A: 使用虚拟仓库或配置多个 repository：
 <repositories>
   <repository>
     <id>moonlight-virtual</id>
-    <url>http://your-registry:9081/repo/maven-virtual/</url>
+    <url>http://your-registry:9081/repository/maven-virtual/</url>
   </repository>
 </repositories>
 ```
@@ -247,11 +236,11 @@ mvn clean deploy -DskipTests
 mkdir -p ~/.pip
 cat > ~/.pip/pip.conf << 'EOF'
 [global]
-index-url = http://your-registry:9081/repo/pypi-virtual/simple/
+index-url = http://your-registry:9081/repository/pypi-virtual/simple/
 trusted-host = your-registry
 
 [install]
-extra-index-url = http://your-registry:9081/repo/pypi-local/simple/
+extra-index-url = http://your-registry:9081/repository/pypi-local/simple/
 EOF
 ```
 
@@ -265,7 +254,7 @@ pip install test-package
 
 ```bash
 # 设置仓库地址
-export PIP_INDEX_URL=http://your-registry:9081/repo/pypi-virtual/simple/
+export PIP_INDEX_URL=http://your-registry:9081/repository/pypi-virtual/simple/
 export PIP_TRUSTED_HOST=your-registry
 
 # 安装包
@@ -282,7 +271,7 @@ index-servers =
     moonlight
 
 [moonlight]
-repository = http://your-registry:9081/repo/pypi-local/
+repository = http://your-registry:9081/repository/pypi-local/
 username = your-username
 password = your-password
 EOF
@@ -307,14 +296,14 @@ python setup.py upload -r moonlight
 
 A: 当前上传端点为 `/upload/`，请确保使用正确的 URL：
 ```bash
-twine upload --repository-url http://your-registry:9081/pypi/upload/ dist/*
+twine upload --repository-url http://your-registry:9081/repository/pypi-local/ dist/*
 ```
 
 **Q: 如何使用代理仓库？**
 
 A: 配置虚拟仓库地址，系统会自动从上游仓库拉取：
 ```bash
-pip config set global.index-url http://your-registry:9081/repo/pypi-virtual/simple/
+pip config set global.index-url http://your-registry:9081/repository/pypi-virtual/simple/
 ```
 
 ---
@@ -331,7 +320,7 @@ export GOPROXY=http://your-registry:9081/go,https://proxy.golang.org,direct
 export GOPRIVATE=your-registry,github.com/your-org
 
 # 配置校验和数据库（可选）
-export GOSUMDB=sum.golang.org
+export GOSUMDB=off
 ```
 
 ### 方式二：项目级配置
@@ -363,8 +352,8 @@ go env GOPROXY
 # 上传模块（需要认证）
 curl -X PUT \
   -H "Authorization: Bearer your-token" \
-  -F "module=@my-module-v1.0.0.zip" \
-  http://your-registry:9081/go/my-module/v1.0.0/upload
+  -T ./my-module-v1.0.0.zip \
+  http://your-registry:9081/go/my-module/v1.0.0.zip
 ```
 
 ### 常见问题
@@ -385,86 +374,29 @@ export GOPROXY=http://your-registry:9081/go,https://proxy.golang.org,direct
 
 ---
 
-## NuGet 配置
+## 通用仓库配置
 
-### 方式一：使用 NuGet CLI（推荐）
+Generic（通用）仓库支持任意类型的二进制文件和包，适用于 Docker 镜像层、安装包、文档等非标准格式。
 
-```powershell
-# 添加包源
-nuget sources add -name moonlight -source http://your-registry:9081/nuget/v3/index.json
-
-# 设置认证信息
-nuget sources update -name moonlight -username your-username -password your-password
-
-# 验证配置
-nuget sources list
-```
-
-### 方式二：使用配置文件
-
-创建或编辑 `NuGet.Config` 文件：
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<configuration>
-  <packageSources>
-    <clear />
-    <add key="moonlight" value="http://your-registry:9081/nuget/v3/index.json" />
-  </packageSources>
-  
-  <packageSourceCredentials>
-    <moonlight>
-      <add key="Username" value="your-username" />
-      <add key="ClearTextPassword" value="your-password" />
-    </moonlight>
-  </packageSourceCredentials>
-</configuration>
-```
-
-### 方式三：使用 .NET CLI
+### 下载文件
 
 ```bash
-# 添加包源
-dotnet nuget add source http://your-registry:9081/nuget/v3/index.json \
-  --name moonlight \
-  --username your-username \
-  --password your-password
+# 直接通过 HTTP 下载
+curl -O http://your-registry:9081/repository/generic-local/path/to/file.zip
 
-# 验证配置
-dotnet nuget list source
+# 带认证下载
+curl -H "Authorization: Bearer your-token" \
+  -O http://your-registry:9081/repository/generic-local/path/to/file.zip
 ```
 
-### 发布包
+### 上传文件
 
-```powershell
-# 使用 nuget.exe
-nuget push MyPackage.1.0.0.nupkg \
-  -Source http://your-registry:9081/nuget/v3/index.json \
-  -ApiKey your-api-key
-
-# 使用 dotnet CLI
-dotnet nuget push MyPackage.1.0.0.nupkg \
-  --source http://your-registry:9081/nuget/v3/index.json \
-  --api-key your-api-key
-```
-
-### 常见问题
-
-**Q: 为什么搜索包失败？**
-
-A: 当前版本搜索功能有限，建议使用包列表浏览：
-```powershell
-nuget list -Source moonlight
-```
-
-**Q: 如何配置多个包源？**
-
-A: 在配置文件中添加多个 source：
-```xml
-<packageSources>
-  <add key="moonlight" value="http://your-registry:9081/nuget/v3/index.json" />
-  <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
-</packageSources>
+```bash
+# 使用 curl 上传
+curl -X PUT \
+  -H "Authorization: Bearer your-token" \
+  -T ./myfile.zip \
+  http://your-registry:9081/repository/generic-local/path/to/file.zip
 ```
 
 ---
@@ -478,13 +410,13 @@ A: 在配置文件中添加多个 source：
 sudo cat > /etc/yum.repos.d/moonlight.repo << 'EOF'
 [moonlight]
 name=Moonlight Repository
-baseurl=http://your-registry:9081/repo/yum-local/
+baseurl=http://your-registry:9081/repository/yum-local/
 enabled=1
 gpgcheck=0
 
 [moonlight-proxy]
 name=Moonlight Proxy Repository
-baseurl=http://your-registry:9081/repo/yum-proxy/
+baseurl=http://your-registry:9081/repository/yum-proxy/
 enabled=1
 gpgcheck=0
 EOF
@@ -513,15 +445,10 @@ yum info package-name
 
 ```bash
 # 上传 RPM 包
-curl -X POST \
+curl -X PUT \
   -H "Authorization: Bearer your-token" \
-  -F "file=@package-1.0.0.rpm" \
-  http://your-registry:9081/yum/local/upload
-
-# 重新生成元数据
-curl -X POST \
-  -H "Authorization: Bearer your-token" \
-  http://your-registry:9081/yum/local/regenerate
+  -T ./package-1.0.0.rpm \
+  http://your-registry:9081/repository/yum-local/package-1.0.0.rpm
 ```
 
 ---
@@ -532,13 +459,13 @@ curl -X POST \
 
 1. 添加仓库密钥（如果需要）：
 ```bash
-wget -qO - http://your-registry:9081/apt/gpg.key | sudo apt-key add -
+wget -qO - http://your-registry:9081/repository/apt/gpg.key | sudo apt-key add -
 ```
 
 2. 添加仓库源：
 ```bash
 sudo cat > /etc/apt/sources.list.d/moonlight.list << 'EOF'
-deb [trusted=yes] http://your-registry:9081/apt stable main
+deb [trusted=yes] http://your-registry:9081/repository/apt stable main
 EOF
 ```
 
@@ -564,10 +491,10 @@ apt show package-name
 
 ```bash
 # 上传 DEB 包
-curl -X POST \
+curl -X PUT \
   -H "Authorization: Bearer your-token" \
-  -F "file=@package_1.0.0_amd64.deb" \
-  http://your-registry:9081/apt/upload
+  -T ./package_1.0.0_amd64.deb \
+  http://your-registry:9081/repository/apt/pool/main/package_1.0.0_amd64.deb
 ```
 
 ---
@@ -624,9 +551,8 @@ pip config set global.cache-dir ~/.pip-cache
 如果遇到问题：
 
 1. 查看 [常见问题解答](./faq.md)
-2. 联系管理员：admin@company.com
-3. 提交 Issue：https://github.com/your-org/moonlight-box/issues
+2. 提交 Issue：https://github.com/dshmyz/moonlight-box/issues
 
 ---
 
-**最后更新**：2026-05-03
+**最后更新**：2026-08-12

@@ -56,15 +56,44 @@ func InitLogger(cfg *LoggerConfig) error {
 	return initErr
 }
 
+// autoDeriveSplitFiles 当 output 是文件路径时，自动启用分文件并从同目录派生各日志路径。
+// 用户只需配置 logging.output，无需手动设置 enable_split_files / sql_log_file 等字段。
+func autoDeriveSplitFiles(cfg *LoggerConfig) {
+	empty := ""
+	stdout := "stdout"
+	stderr := "stderr"
+	if cfg.Output == empty || cfg.Output == stdout || cfg.Output == stderr {
+		return
+	}
+	dir := filepath.Dir(cfg.Output)
+	if !cfg.EnableSplitFiles {
+		cfg.EnableSplitFiles = true
+	}
+	sqlLog := filepath.Join(dir, "sql.log")
+	errLog := filepath.Join(dir, "error.log")
+	accLog := filepath.Join(dir, "access.log")
+	if cfg.SqlLogFile == empty {
+		cfg.SqlLogFile = sqlLog
+	}
+	if cfg.ErrorLogFile == empty {
+		cfg.ErrorLogFile = errLog
+	}
+	if cfg.AccessLogFile == empty {
+		cfg.AccessLogFile = accLog
+	}
+}
+
 func initLoggers(cfg *LoggerConfig) error {
 	if cfg == nil {
 		cfg = &LoggerConfig{
-			Level:            "info",
-			Format:           "console",
-			Output:           "stdout",
-			EnableSplitFiles: false,
+			Level:  "info",
+			Format: "console",
+			Output: "stdout",
 		}
 	}
+
+	// output 为文件路径时，自动启用分文件并派生各日志路径
+	autoDeriveSplitFiles(cfg)
 
 	level, err := logrus.ParseLevel(cfg.Level)
 	if err != nil {
@@ -72,7 +101,7 @@ func initLoggers(cfg *LoggerConfig) error {
 	}
 
 	// 配置 logrus 包级标准 logger——所有 logrus.XXX / util.XXX 调用都走这一个实例。
-	// 这样配置的 output/level/format 对全部代码生效，不再有“独立实例不生效”的分裂。
+	// 这样配置的 output/level/format 对全部代码生效，不再有"独立实例不生效"的分裂。
 	logrus.SetLevel(level)
 	logrus.SetFormatter(&samplingFormatter{base: newFormatter(cfg.Format)})
 	logrus.SetOutput(getWriter(cfg.Output, cfg.LogRetentionDays))

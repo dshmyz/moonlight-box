@@ -102,8 +102,8 @@ func TestListVersionsSkipsMetadataOnlyArtifacts(t *testing.T) {
 	if version.License != "MIT" {
 		t.Fatalf("license = %q", version.License)
 	}
-	if version.FileCount != 3 {
-		t.Fatalf("file_count = %d, want 3 (version + tarball + release artifacts are all aggregated in the fallback path)", version.FileCount)
+	if version.FileCount != 1 {
+		t.Fatalf("file_count = %d, want 1 (only the downloadable tarball counts; version placeholder and release metadata rows are excluded, consistent with ListVersionFiles)", version.FileCount)
 	}
 }
 
@@ -349,7 +349,7 @@ func TestDeprecateVersionSyncsPackageVersionSummaryStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -407,7 +407,7 @@ func TestDeprecatePackageVersionByCoordinateUpdatesAllArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -455,7 +455,7 @@ func TestLegacyDeprecateVersionUpdatesWholeVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 

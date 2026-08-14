@@ -321,6 +321,15 @@ func (p *PyPIPlugin) handleMetadataRequest(ctx *runtime.RequestContext, repoRunt
 		Filename:     filename,
 		RemotePath:   packageListPath,
 	})
+	if err != nil {
+		if errors.Is(err, runtime.ErrUpstreamTimeout) {
+			http.Error(ctx.Writer, "Service Unavailable: upstream timeout", http.StatusServiceUnavailable)
+			return nil
+		}
+		if !errors.Is(err, runtime.ErrNotFound) {
+			return err
+		}
+	}
 	if err != nil || len(artifacts) == 0 {
 		// Hosted/local fallback: uploaded files may not have a package-list
 		// RemotePath, so this query is only for local aggregation.
@@ -393,14 +402,20 @@ func (p *PyPIPlugin) handleHostedSimpleIndex(ctx *runtime.RequestContext, repoRu
 		Format:       "pypi",
 		RemotePath:   path,
 	})
-	if err != nil && !errors.Is(err, runtime.ErrNotFound) {
-		// 其他错误（含 ErrBlocked）交给 router 处理
-		return err
+	if err != nil {
+		if errors.Is(err, runtime.ErrUpstreamTimeout) {
+			http.Error(ctx.Writer, "Service Unavailable: upstream timeout", http.StatusServiceUnavailable)
+			return nil
+		}
+		if !errors.Is(err, runtime.ErrNotFound) {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
+		}
 	}
 
 	// 对 hosted 仓库：RemotePath 查询可能无结果（本地上传的包没有 RemotePath="simple/"），
 	// 尝试聚合所有已存储包的 Name。该查询只用于本地索引渲染，不作为 proxy 回源入口。
-	if len(artifacts) == 0 {
+	if err != nil || len(artifacts) == 0 {
 		allArts, qErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 			RepositoryID: ctx.Repository.ID,
 			Format:       "pypi",
@@ -547,12 +562,19 @@ func (p *PyPIPlugin) handlePackageList(ctx *runtime.RequestContext, repoRuntime 
 		Name:         packageName,
 		RemotePath:   path,
 	})
-	if err != nil && !errors.Is(err, runtime.ErrNotFound) {
-		// 其他错误（含 ErrBlocked）交给 router 处理
-		return err
+	if err != nil {
+		if errors.Is(err, runtime.ErrNotFound) {
+			// 继续走回退路径
+		} else if errors.Is(err, runtime.ErrUpstreamTimeout) {
+			http.Error(ctx.Writer, "Service Unavailable: upstream timeout", http.StatusServiceUnavailable)
+			return nil
+		} else {
+			// 其他错误（含 ErrBlocked）交给 router 处理
+			return err
+		}
 	}
 
-	if len(artifacts) == 0 {
+	if err != nil || len(artifacts) == 0 {
 		// Hosted/local 回退：本地上传的包文件其 RemotePath 形如 packages/<hash>/<file>，
 		// 不等于 simple/<name>/，故首查（按 RemotePath 精确匹配）为空。
 		// 由插件（而非 Runtime）发起按 Name 聚合的二次查询，避免协议路径知识泄漏到 Runtime 层。
@@ -561,7 +583,15 @@ func (p *PyPIPlugin) handlePackageList(ctx *runtime.RequestContext, repoRuntime 
 			Format:       "pypi",
 			Name:         packageName,
 		})
-		if qErr != nil && !errors.Is(qErr, runtime.ErrNotFound) {
+		if qErr != nil {
+			if errors.Is(qErr, runtime.ErrNotFound) {
+				http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+				return nil
+			}
+			if errors.Is(qErr, runtime.ErrUpstreamTimeout) {
+				http.Error(ctx.Writer, "Service Unavailable: upstream timeout", http.StatusServiceUnavailable)
+				return nil
+			}
 			return qErr
 		}
 		artifacts = arts
@@ -712,16 +742,57 @@ func (p *PyPIPlugin) handleFileMetadataRequest(ctx *runtime.RequestContext, repo
 	}
 
 	artifactPath := strings.TrimSuffix(path, ".metadata")
+	filename := filepath.Base(artifactPath)
 	artifacts, err := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "pypi",
 		RemotePath:   artifactPath,
 	})
-	if err != nil && !errors.Is(err, runtime.ErrNotFound) {
-		// 其他错误（含 ErrBlocked）交给 router 处理
-		return err
+	if err != nil {
+		if errors.Is(err, runtime.ErrNotFound) {
+			// Fallback: proxy 仓库首次访问时，用包列表路径回源
+			packageName := p.extractPackageNameFromFilename(filename)
+			if packageName != "" {
+				packageListPath := "simple/" + normalizePackageName(packageName) + "/"
+				_, fetchErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+					RepositoryID: ctx.Repository.ID,
+					Format:       "pypi",
+					RemotePath:   packageListPath,
+				})
+				if fetchErr != nil {
+					// 包列表回源失败：如果是超时，返回 503；否则继续用原始 ErrNotFound
+					if errors.Is(fetchErr, runtime.ErrUpstreamTimeout) {
+						http.Error(ctx.Writer, "Service Unavailable: upstream timeout", http.StatusServiceUnavailable)
+						return nil
+					}
+				} else {
+					// 包列表回源成功，重新查询具体文件
+					artifacts, err = repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+						RepositoryID: ctx.Repository.ID,
+						Format:       "pypi",
+						RemotePath:   artifactPath,
+					})
+				}
+			}
+			if err != nil {
+				if errors.Is(err, runtime.ErrNotFound) {
+					http.Error(ctx.Writer, "not found", http.StatusNotFound)
+					return nil
+				}
+				if errors.Is(err, runtime.ErrUpstreamTimeout) {
+					http.Error(ctx.Writer, "Service Unavailable: upstream timeout", http.StatusServiceUnavailable)
+					return nil
+				}
+				return err
+			}
+		} else if errors.Is(err, runtime.ErrUpstreamTimeout) {
+			http.Error(ctx.Writer, "Service Unavailable: upstream timeout", http.StatusServiceUnavailable)
+			return nil
+		} else {
+			return err
+		}
 	}
-	if err != nil || len(artifacts) == 0 {
+	if len(artifacts) == 0 {
 		http.Error(ctx.Writer, "not found", http.StatusNotFound)
 		return nil
 	}
@@ -774,30 +845,40 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 		artifact, err := repoRuntime.GetArtifact(ctx.Request.Context(), key)
 		if err != nil {
 			if !errors.Is(err, runtime.ErrNotFound) {
+				if errors.Is(err, runtime.ErrUpstreamTimeout) {
+					http.Error(ctx.Writer, "Service Unavailable: upstream timeout", http.StatusServiceUnavailable)
+					return nil
+				}
 				// 其他错误（含 ErrBlocked）交给 router 处理
 				return err
 			}
-			// ErrNotFound: 尝试 QueryArtifacts 回源后再 GetArtifact
-			artifacts, queryErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+			// ErrNotFound: 先拉包列表（simple/{name}/）到缓存，再重新 GetArtifact
+			packageListPath := "simple/" + normalizePackageName(packageName) + "/"
+			_, queryErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 				RepositoryID: ctx.Repository.ID,
 				Format:       "pypi",
-				RemotePath:   path,
+				RemotePath:   packageListPath,
 			})
 			if queryErr != nil {
 				if errors.Is(queryErr, runtime.ErrNotFound) {
 					http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 					return nil
 				}
+				if errors.Is(queryErr, runtime.ErrUpstreamTimeout) {
+					http.Error(ctx.Writer, "Service Unavailable: upstream timeout", http.StatusServiceUnavailable)
+					return nil
+				}
 				return queryErr
 			}
-			if len(artifacts) == 0 {
-				http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-				return nil
-			}
+			// 包列表已缓存，用文件路径的 key 重新查询（确保 blob 也被拉取）
 			artifact, err = repoRuntime.GetArtifact(ctx.Request.Context(), key)
 			if err != nil {
 				if errors.Is(err, runtime.ErrNotFound) {
 					http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+					return nil
+				}
+				if errors.Is(err, runtime.ErrUpstreamTimeout) {
+					http.Error(ctx.Writer, "Service Unavailable: upstream timeout", http.StatusServiceUnavailable)
 					return nil
 				}
 				return err
@@ -831,25 +912,53 @@ func (p *PyPIPlugin) handleChecksumRequest(ctx *runtime.RequestContext, repoRunt
 		Format:       "pypi",
 		RemotePath:   actualPath,
 	})
-	if err != nil && !errors.Is(err, runtime.ErrNotFound) {
-		// 其他错误（含 ErrBlocked）交给 router 处理
-		return err
+	if err != nil {
+		if errors.Is(err, runtime.ErrUpstreamTimeout) {
+			http.Error(ctx.Writer, "Service Unavailable: upstream timeout", http.StatusServiceUnavailable)
+			return nil
+		}
+		if !errors.Is(err, runtime.ErrNotFound) {
+			return err
+		}
 	}
 	if err != nil || len(artifacts) == 0 {
-		// Backward-compatible fallback for older metadata that did not store
-		// remote_path. Exact path remains preferred to avoid same-filename
-		// collisions across different hash directories. This local lookup is not
-		// a proxy refetch path.
+		// Fallback 1: proxy 仓库首次访问时，用包列表路径回源
+		packageName := p.extractPackageNameFromFilename(actualFilename)
+		if packageName != "" {
+			packageListPath := "simple/" + normalizePackageName(packageName) + "/"
+			if _, fetchErr := repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+				RepositoryID: ctx.Repository.ID,
+				Format:       "pypi",
+				RemotePath:   packageListPath,
+			}); fetchErr == nil {
+				// 包列表已缓存，重新按原始路径查询
+				artifacts, err = repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
+					RepositoryID: ctx.Repository.ID,
+					Format:       "pypi",
+					RemotePath:   actualPath,
+				})
+			}
+		}
+	}
+	if err != nil || len(artifacts) == 0 {
+		// Fallback 2: 兼容旧数据（无 remote_path 的 metadata）
 		artifacts, err = repoRuntime.QueryArtifacts(ctx.Request.Context(), runtime.ArtifactQuery{
 			RepositoryID: ctx.Repository.ID,
 			Format:       "pypi",
 			Filename:     actualFilename,
 		})
-		if err != nil && !errors.Is(err, runtime.ErrNotFound) {
-			// 其他错误（含 ErrBlocked）交给 router 处理
+		if err != nil {
+			if errors.Is(err, runtime.ErrNotFound) {
+				http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+				return nil
+			}
+			if errors.Is(err, runtime.ErrUpstreamTimeout) {
+				http.Error(ctx.Writer, "Service Unavailable: upstream timeout", http.StatusServiceUnavailable)
+				return nil
+			}
 			return err
 		}
-		if err != nil || len(artifacts) == 0 {
+		if len(artifacts) == 0 {
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
 			return nil
 		}
@@ -896,6 +1005,10 @@ func (p *PyPIPlugin) handleJsonAPI(ctx *runtime.RequestContext, repoRuntime runt
 		if errors.Is(err, runtime.ErrNotFound) {
 			// PEP 691: 包不存在返回 404
 			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
+			return nil
+		}
+		if errors.Is(err, runtime.ErrUpstreamTimeout) {
+			http.Error(ctx.Writer, "Service Unavailable: upstream timeout", http.StatusServiceUnavailable)
 			return nil
 		}
 		// 其他错误（含 ErrBlocked）交给 router 处理

@@ -713,6 +713,9 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 				}).Warn("proxy: serving cached artifacts after FetchRemote failure")
 				return n.filterBlockedArtifacts(artifacts), nil
 			}
+			if IsUpstreamTimeout(fetchErr) {
+				return nil, fmt.Errorf("%w: %w", ErrUpstreamTimeout, fetchErr)
+			}
 			return nil, fetchErr
 		}
 		metrics.RecordProxyFetch(n.Format, "success", fetchDuration)
@@ -791,6 +794,14 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 				"duration_ms":  time.Since(start).Seconds(),
 			}).Debug("proxy: ensureArtifactBlob blob not found, set negative cache")
 			return ErrNotFound
+		}
+		if IsUpstreamTimeout(err) {
+			logrus.WithFields(logrus.Fields{
+				"remote_url": key.RemoteURL,
+				"duration_ms":  time.Since(start).Seconds(),
+				"error":     err.Error(),
+			}).Warn("proxy: ensureArtifactBlob upstream timeout")
+			return fmt.Errorf("%w: %w", ErrUpstreamTimeout, err)
 		}
 		logrus.WithFields(logrus.Fields{
 			"remote_url": key.RemoteURL,

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { defineComponent, h } from 'vue'
+import { defineComponent, h, nextTick } from 'vue'
 import VersionTable from './VersionTable.vue'
 import type { PackageVersion } from '@/api/package'
 
@@ -209,5 +209,27 @@ describe('VersionTable', () => {
     await flushPromises()
 
     expect(apiMocks.getVersionFiles).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows dash placeholder for cached versions without files', () => {
+    const wrapper = mountVersionTable([{ ...versions[0], files: undefined, file_count: 0 }])
+
+    expect(wrapper.text()).toContain('-')
+  })
+
+  it('shows lazy fetch hint for uncached versions', async () => {
+    const wrapper = mountVersionTable([
+      { ...versions[0], files_downloaded: false, files: undefined, file_count: 0 },
+    ], {
+      pkgType: 'maven',
+      pkgName: 'com.example:lib',
+    })
+
+    // 默认筛选"已缓存"不会渲染未缓存行，切到"全部"再断言
+    const setupState = (wrapper.vm as any).$.setupState
+    setupState.cacheFilter = 'all'
+    await nextTick()
+
+    expect(wrapper.text()).toContain('首次下载时自动回源')
   })
 })

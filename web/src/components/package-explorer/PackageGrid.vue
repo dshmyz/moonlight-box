@@ -37,6 +37,16 @@
 
       <p class="card-desc">{{ pkg.description || '暂无描述' }}</p>
 
+      <div v-if="displayRepos(pkg).length > 0" class="card-repos">
+        <span
+          v-for="repo in displayRepos(pkg)"
+          :key="repo"
+          class="repo-chip"
+        >
+          {{ repo }}
+        </span>
+      </div>
+
       <div v-if="mode === 'admin'" class="card-actions" @click.stop>
         <el-button class="btn-view-versions" size="small" @click="$emit('view-versions', pkg)">
           查看版本
@@ -77,6 +87,9 @@ defineEmits<{
 function getTypeColor(type: string): string {
   return PACKAGE_TYPE_HEX_COLORS[type] || PACKAGE_TYPE_HEX_COLORS.generic
 }
+
+// 卡片只展示实际所在仓库；组合仓库仅是访问入口（见详情页配置命令）
+const displayRepos = (pkg: Package) => pkg.repositories?.length ? pkg.repositories : (pkg.repository_name ? [pkg.repository_name] : [])
 function formatVersion(v: string): string {
   if (!v) return ''
   return v.startsWith('v') ? v : `v${v}`
@@ -209,6 +222,29 @@ function copyName(pkg: Package) {
   -webkit-box-orient: vertical;
   overflow: hidden;
   flex: 1;
+}
+
+/* 仓库 chips：展示实际所在仓库 */
+.card-repos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 18px;
+}
+.repo-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 160px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-family: var(--font-family-mono);
+  color: var(--lunar-silver-muted);
+  background: var(--lunar-bg-glass);
+  border: 1px solid var(--lunar-border);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-actions {

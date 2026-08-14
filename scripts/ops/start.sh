@@ -126,5 +126,5 @@ if [ "$MODE" = "daemon" ]; then
     echo "Started (PID $(cat "$PID_FILE")), log: $LOG_DIR/$APP_NAME.log"
 else
     echo "Starting $APP_NAME..."
-    exec "$BIN_DIR/$APP_NAME" -config "$CONFIG" serve "${EXTRA_ARGS[@]}"
+    exec "$BIN_DIR/$APP_NAME" -config "$CONFIG" serve "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
 fi

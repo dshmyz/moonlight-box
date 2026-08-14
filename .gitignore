@@ -12,6 +12,7 @@ bin/
 /main
 /registry-test
 /moonlight-box
+/mcp-server
 
 # Build output directories
 cmd/registry/registry
@@ -60,6 +61,7 @@ logs/
 
 # Frontend
 web/node_modules/
+node_modules/
 web/dist/
 
 # Air live reload

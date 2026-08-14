@@ -41,6 +41,15 @@ func IsCatalogExcludedKind(kind string) bool {
 	return IsMetadataKind(kind) || kind == KindDirectory
 }
 
+// IsCountableFileKind 判断 Kind 是否属于"可下载文件"而非元数据/占位记录。
+// 口径：排除 version 占位行（go proxy 的版本存在性记录，无文件名无 blob）、
+// release 元数据行、以及 catalog 排除的 metadata/checksum/directory。
+// 所有 file_count 统计（package_versions 汇总、版本列表 fallback、搜索聚合）
+// 必须共用此谓词，避免各处统计口径漂移。
+func IsCountableFileKind(kind string) bool {
+	return kind != KindVersion && kind != "release" && !IsCatalogExcludedKind(kind)
+}
+
 // ValidateArtifactForStore 对写入存储的 Artifact 做合规检查。
 // MetadataStore 在 Put/BatchPut 时自动调用；Plugin 无需主动调用。
 func ValidateArtifactForStore(a *Artifact) error {

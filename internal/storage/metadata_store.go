@@ -29,6 +29,7 @@ type ArtifactServiceAdapter interface {
 	Save(ctx context.Context, artifact *runtime.Artifact) error
 	SaveBatch(ctx context.Context, artifacts []*runtime.Artifact) error
 	Delete(ctx context.Context, key runtime.ArtifactKey) error
+	BatchDelete(ctx context.Context, repoID uint, artifactIDs []uint) error
 }
 
 func NewMetadataStore(db *gorm.DB) *MetadataStore {
@@ -292,6 +293,23 @@ func (s *MetadataStore) Delete(ctx context.Context, key runtime.ArtifactKey) err
 			return err
 		}
 		return nil
+	})
+}
+
+// BatchDelete 批量删除指定 artifact，同步更新 packages/package_versions 聚合表。
+func (s *MetadataStore) BatchDelete(ctx context.Context, repoID uint, artifactIDs []uint) error {
+	if len(artifactIDs) == 0 {
+		return nil
+	}
+	if s.artifactSvc != nil {
+		return s.artifactSvc.BatchDelete(ctx, repoID, artifactIDs)
+	}
+	// 无 adapter 时直接批量删除（不更新聚合表）
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("artifact_id IN ?", artifactIDs).Delete(&model.ArtifactBlob{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id IN ?", artifactIDs).Delete(&model.Artifact{}).Error
 	})
 }
 

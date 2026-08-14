@@ -1,6 +1,10 @@
 package runtime
 
-import "errors"
+import (
+	"context"
+	"errors"
+	"net"
+)
 
 var (
 	ErrNotFound            = errors.New("not found")
@@ -11,12 +15,33 @@ var (
 	ErrBlocked             = errors.New("blocked by rule")
 	ErrRemoteUnsupported   = errors.New("remote open unsupported")
 	ErrUpstreamUnavailable = errors.New("upstream unavailable")
+	// ErrUpstreamTimeout 表示回源请求超时。
+	// 与 ErrUpstreamUnavailable 的区别：
+	//   - ErrUpstreamUnavailable：上游返回错误响应（如 5xx）或网络不可达
+	//   - ErrUpstreamTimeout：请求已发出但等待响应超时（context deadline / net timeout）
+	ErrUpstreamTimeout = errors.New("upstream timeout")
 	// ErrCircuitOpen 表示熔断器打开时拒绝请求。
 	// 与 ErrUpstreamUnavailable 的区别：
 	//   - ErrUpstreamUnavailable：本次回源失败（每次独立）
 	//   - ErrCircuitOpen：熔断器已积累足够失败，整个上游被判定为不可用，期间所有请求被短路
 	ErrCircuitOpen = errors.New("circuit open")
 )
+
+// IsUpstreamTimeout 判断错误是否为上游超时。
+// 覆盖三种场景：ErrUpstreamTimeout 哨兵、net.Error.Timeout()、context.DeadlineExceeded。
+func IsUpstreamTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrUpstreamTimeout) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded)
+}
 
 // BlockedError preserves a safe, user-facing rule reason while remaining
 // compatible with callers that use errors.Is(err, ErrBlocked).

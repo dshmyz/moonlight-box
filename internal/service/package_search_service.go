@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/cache"
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/database/dialect"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/util"
@@ -33,20 +35,23 @@ type SearchRequest struct {
 
 // SearchEntry groups artifacts by name for browse/search (one row per name in a repo).
 type SearchEntry struct {
-	ID                 uint      `json:"id"`
-	RepositoryID       uint      `json:"repository_id"`
-	Format             string    `json:"format"`
-	Namespace          string    `json:"namespace,omitempty"`
-	Name               string    `json:"name"`
-	DisplayName        string    `json:"display_name"`
-	Description        string    `json:"description,omitempty"`
-	LatestVersion      string    `json:"latest_version,omitempty"`
-	VersionCount       int       `json:"version_count"`
-	DownloadCount      int64     `json:"download_count"`
-	RepositoryName     string    `json:"repository_name,omitempty"`
-	RepositoryGroupName string   `json:"repository_group_name,omitempty"`
-	License            string    `json:"license,omitempty"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                  uint      `json:"id"`
+	RepositoryID        uint      `json:"repository_id"`
+	Format              string    `json:"format"`
+	Namespace           string    `json:"namespace,omitempty"`
+	Name                string    `json:"name"`
+	DisplayName         string    `json:"display_name"`
+	Description         string    `json:"description,omitempty"`
+	LatestVersion       string    `json:"latest_version,omitempty"`
+	VersionCount        int       `json:"version_count"`
+	DownloadCount       int64     `json:"download_count"`
+	RepositoryName      string    `json:"repository_name,omitempty"`
+	RepositoryGroupName string    `json:"repository_group_name,omitempty"`
+	// Repositories 包实际所在的全部仓库（聚合行跨仓库时列出所有，避免只显示代表仓库造成误解）
+	Repositories      []string  `json:"repositories,omitempty"`
+	GroupRepositories []string  `json:"group_repositories,omitempty"`
+	License           string    `json:"license,omitempty"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type SearchResult struct {
@@ -184,6 +189,157 @@ func (s *PackageSearchService) searchFromPackages(ctx context.Context, req *Sear
 		}
 	}
 
+	// 指定仓库时走原有的单仓库查询路径
+	if req.Repository != "" {
+		return s.searchPackagesSingleRepo(ctx, req, query, start)
+	}
+
+	// 跨仓库搜索：拉取匹配行后按 (format, name) 去重聚合，
+	// 避免同一包在 hosted/proxy/group 各出现一次。
+	// 限制最多加载 1000 行，防止全表扫描；前端分页在聚合后进行。
+	var allPackages []model.Package
+	if err := query.Order("updated_at DESC").Limit(1000).Find(&allPackages).Error; err != nil {
+		return nil, err
+	}
+
+	repoIDs := make(map[uint]bool)
+	for _, pkg := range allPackages {
+		repoIDs[pkg.RepositoryID] = true
+	}
+	repoNameMap, groupRepoNameMap := s.batchRepoInfo(ctx, repoIDs)
+
+	// 按 (format, name) 去重聚合
+	type aggKey struct{ format, name string }
+	type aggEntry struct {
+		format         string
+		name           string
+		displayName    string
+		description    string
+		latestVersion  string
+		versionCount   int
+		downloadCount  int64
+		license        string
+		updatedAt      time.Time
+		repositoryID   uint
+		repositoryName string
+		groupName      string
+		allRepoIDs     []uint
+		repoNames      []string
+		groupNames     []string
+	}
+	merged := make(map[aggKey]*aggEntry)
+	var mergedOrder []aggKey
+	for _, pkg := range allPackages {
+		k := aggKey{pkg.Format, pkg.Name}
+		e, ok := merged[k]
+		if !ok {
+			e = &aggEntry{
+				format:       pkg.Format,
+				name:         pkg.Name,
+				displayName:  pkg.DisplayName,
+				description:  pkg.Description,
+				repositoryID: pkg.RepositoryID,
+				allRepoIDs:   []uint{pkg.RepositoryID},
+			}
+			merged[k] = e
+			mergedOrder = append(mergedOrder, k)
+		}
+		e.downloadCount += pkg.DownloadCount
+		if pkg.VersionCount > e.versionCount {
+			e.versionCount = pkg.VersionCount
+		}
+		if pkg.UpdatedAt.After(e.updatedAt) {
+			e.updatedAt = pkg.UpdatedAt
+			e.latestVersion = pkg.LatestVersion
+		}
+		if e.license == "" {
+			e.license = pkg.License
+		}
+		e.allRepoIDs = append(e.allRepoIDs, pkg.RepositoryID)
+		rn := repoNameMap[pkg.RepositoryID]
+		gn := groupRepoNameMap[pkg.RepositoryID]
+		// 代表仓库取首次出现的仓库（按 updated_at DESC，即最近更新的）
+		if e.repositoryName == "" && rn != "" {
+			e.repositoryName = rn
+		}
+		// 包被组合仓库暴露时记录组合名（虚拟仓库自身无 packages 行，聚合行只来自成员仓库）
+		if gn != "" && e.groupName == "" {
+			e.groupName = gn
+		}
+		if rn != "" && !slices.Contains(e.repoNames, rn) {
+			e.repoNames = append(e.repoNames, rn)
+		}
+		if gn != "" && !slices.Contains(e.groupNames, gn) {
+			e.groupNames = append(e.groupNames, gn)
+		}
+	}
+
+	// 排序
+	switch req.Sort {
+	case "name":
+		sort.Slice(mergedOrder, func(i, j int) bool {
+			return merged[mergedOrder[i]].name < merged[mergedOrder[j]].name
+		})
+	case "download_count":
+		sort.Slice(mergedOrder, func(i, j int) bool {
+			return merged[mergedOrder[i]].downloadCount > merged[mergedOrder[j]].downloadCount
+		})
+	default:
+		sort.Slice(mergedOrder, func(i, j int) bool {
+			return merged[mergedOrder[i]].updatedAt.After(merged[mergedOrder[j]].updatedAt)
+		})
+	}
+
+	total := int64(len(mergedOrder))
+
+	// 分页
+	offset := (req.Page - 1) * req.PageSize
+	if offset > len(mergedOrder) {
+		offset = len(mergedOrder)
+	}
+	end := offset + req.PageSize
+	if end > len(mergedOrder) {
+		end = len(mergedOrder)
+	}
+	pageEntries := mergedOrder[offset:end]
+
+	list := make([]SearchEntry, len(pageEntries))
+	// 为合并行生成唯一 ID（使用大偏移量避免与真实 DB ID 冲突）
+	// 这些 ID 仅用于前端列表标识，不对应任何单个 packages 记录。
+	const mergedIDOffset uint = 0x80000000 // 2^31
+	for i, k := range pageEntries {
+		e := merged[k]
+		list[i] = SearchEntry{
+			ID:                  mergedIDOffset + uint(i),
+			RepositoryID:        e.repositoryID,
+			Format:              e.format,
+			Name:                e.name,
+			DisplayName:         e.displayName,
+			Description:         e.description,
+			LatestVersion:       e.latestVersion,
+			VersionCount:        e.versionCount,
+			DownloadCount:       e.downloadCount,
+			RepositoryName:      e.repositoryName,
+			RepositoryGroupName: e.groupName,
+			Repositories:        e.repoNames,
+			GroupRepositories:   e.groupNames,
+			License:             e.license,
+			UpdatedAt:           e.updatedAt,
+		}
+	}
+
+	return &SearchResult{
+		List:         list,
+		Total:        total,
+		Page:         req.Page,
+		PageSize:     req.PageSize,
+		SearchTimeMs: time.Since(start).Milliseconds(),
+		RawCount:     len(allPackages),
+	}, nil
+}
+
+// searchPackagesSingleRepo 在指定仓库内查询（无需跨仓库去重）。
+func (s *PackageSearchService) searchPackagesSingleRepo(ctx context.Context, req *SearchRequest, query *gorm.DB, start time.Time) (*SearchResult, error) {
 	// 查询总数
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
@@ -219,6 +375,15 @@ func (s *PackageSearchService) searchFromPackages(ctx context.Context, req *Sear
 	// 构建结果
 	list := make([]SearchEntry, len(packages))
 	for i, pkg := range packages {
+		repoName := repoNameMap[pkg.RepositoryID]
+		groupName := groupRepoNameMap[pkg.RepositoryID]
+		var repos, groups []string
+		if repoName != "" {
+			repos = []string{repoName}
+		}
+		if groupName != "" {
+			groups = []string{groupName}
+		}
 		list[i] = SearchEntry{
 			ID:                  pkg.ID,
 			RepositoryID:        pkg.RepositoryID,
@@ -229,8 +394,10 @@ func (s *PackageSearchService) searchFromPackages(ctx context.Context, req *Sear
 			LatestVersion:       pkg.LatestVersion,
 			VersionCount:        pkg.VersionCount,
 			DownloadCount:       pkg.DownloadCount,
-			RepositoryName:      repoNameMap[pkg.RepositoryID],
-			RepositoryGroupName: groupRepoNameMap[pkg.RepositoryID],
+			RepositoryName:      repoName,
+			RepositoryGroupName: groupName,
+			Repositories:        repos,
+			GroupRepositories:   groups,
 			License:             pkg.License,
 			UpdatedAt:           pkg.UpdatedAt,
 		}
@@ -408,6 +575,15 @@ func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *Sea
 	list := make([]SearchEntry, len(pagedKeys))
 	for i, k := range pagedKeys {
 		acc := groups[k]
+		repoName := repoNameMap[acc.repositoryID]
+		groupName := groupRepoNameMap[acc.repositoryID]
+		var repos, groups2 []string
+		if repoName != "" {
+			repos = []string{repoName}
+		}
+		if groupName != "" {
+			groups2 = []string{groupName}
+		}
 		list[i] = SearchEntry{
 			ID:                  acc.firstID,
 			RepositoryID:        acc.repositoryID,
@@ -416,8 +592,10 @@ func (s *PackageSearchService) searchFromArtifacts(ctx context.Context, req *Sea
 			Description:         acc.description,
 			VersionCount:        acc.versionCount,
 			UpdatedAt:           acc.latestTime,
-			RepositoryName:      repoNameMap[acc.repositoryID],
-			RepositoryGroupName: groupRepoNameMap[acc.repositoryID],
+			RepositoryName:      repoName,
+			RepositoryGroupName: groupName,
+			Repositories:        repos,
+			GroupRepositories:   groups2,
 			License:             acc.license,
 		}
 	}
@@ -508,6 +686,15 @@ func (s *PackageSearchService) searchFromArtifactsGrouped(ctx context.Context, r
 		if err != nil {
 			return nil, fmt.Errorf("parse grouped artifact updated_at %q: %w", row.UpdatedAt, err)
 		}
+		repoName := repoNameMap[row.RepositoryID]
+		groupName := groupRepoNameMap[row.RepositoryID]
+		var repos, groups []string
+		if repoName != "" {
+			repos = []string{repoName}
+		}
+		if groupName != "" {
+			groups = []string{groupName}
+		}
 		list[i] = SearchEntry{
 			ID:                  row.ID,
 			RepositoryID:        row.RepositoryID,
@@ -516,8 +703,10 @@ func (s *PackageSearchService) searchFromArtifactsGrouped(ctx context.Context, r
 			Description:         row.Description,
 			VersionCount:        row.VersionCount,
 			UpdatedAt:           updatedAt,
-			RepositoryName:      repoNameMap[row.RepositoryID],
-			RepositoryGroupName: groupRepoNameMap[row.RepositoryID],
+			RepositoryName:      repoName,
+			RepositoryGroupName: groupName,
+			Repositories:        repos,
+			GroupRepositories:   groups,
 			License:             row.License,
 		}
 	}
@@ -1197,7 +1386,11 @@ func (s *PackageSearchService) batchLoadVersionsFromArtifacts(ctx context.Contex
 		if downloadedArtifactIDs[a.ID] {
 			vp.filesDownloaded = true
 		}
-		vp.fileCount++
+		// FileCount 只统计可下载文件：go 包的 kind=version 占位行（远程元数据的版本记录，
+		// 无文件名）与 release 元数据行不算文件，口径与 ListVersionFiles 的可下载过滤一致
+		if runtime.IsCountableFileKind(a.Kind) {
+			vp.fileCount++
+		}
 	}
 
 	// 按 groupKey 输出，拆出包级 key 和 version

@@ -19,7 +19,9 @@ func NewDownloadDailyStatsRepository(db *gorm.DB) *DownloadDailyStatsRepository 
 // IncrByLog 增量更新某天某包的统计计数。
 // 使用 INSERT ON CONFLICT UPDATE 实现 upsert，避免并发 flush 时重复插入。
 func (r *DownloadDailyStatsRepository) IncrByLog(log *model.DownloadLog) error {
-	date := log.CreatedAt.Truncate(24 * time.Hour)
+	// 使用本地时区截断到当天零点，而非 UTC 零点
+	t := log.CreatedAt
+	date := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local)
 	onlyCache := log.Status == model.DownloadStatusCached
 	onlyFailed := log.Status == model.DownloadStatusFailed
 
@@ -53,12 +55,77 @@ func (r *DownloadDailyStatsRepository) IncrByLog(log *model.DownloadLog) error {
 }
 
 // BatchIncrByLogs 批量增量更新，供 LogBatcher flush 时调用。
+// 先按 (date, repository_id, package_type, package_name) 聚合，再批量 upsert，
+// 将最多 100 条日志压缩为 1-3 条 SQL 语句。
 func (r *DownloadDailyStatsRepository) BatchIncrByLogs(logs []*model.DownloadLog) error {
 	if len(logs) == 0 {
 		return nil
 	}
-	for _, log := range logs {
-		if err := r.IncrByLog(log); err != nil {
+
+	type aggKey struct {
+		date         time.Time
+		repositoryID uint
+		packageType  string
+		packageName  string
+	}
+	type aggVal struct {
+		downloadCount int
+		cachedCount   int
+		failedCount   int
+		totalSize     int64
+	}
+
+	// 按聚合键分组
+	groups := make(map[aggKey]*aggVal)
+	for _, l := range logs {
+		t := l.CreatedAt
+		date := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local)
+		k := aggKey{date: date, repositoryID: l.RepositoryID, packageType: l.PackageType, packageName: l.PackageName}
+		v, ok := groups[k]
+		if !ok {
+			v = &aggVal{}
+			groups[k] = v
+		}
+		switch l.Status {
+		case model.DownloadStatusCached:
+			v.cachedCount++
+		case model.DownloadStatusFailed:
+			v.failedCount++
+		default:
+			v.downloadCount++
+			v.totalSize += l.SizeBytes
+		}
+	}
+
+	// 批量 upsert
+	now := time.Now()
+	for k, v := range groups {
+		updates := map[string]interface{}{
+			"updated_at": now,
+		}
+		if v.downloadCount > 0 {
+			updates["download_count"] = gorm.Expr("download_count + ?", v.downloadCount)
+			updates["total_size_bytes"] = gorm.Expr("total_size_bytes + ?", v.totalSize)
+		}
+		if v.cachedCount > 0 {
+			updates["cached_count"] = gorm.Expr("cached_count + ?", v.cachedCount)
+		}
+		if v.failedCount > 0 {
+			updates["failed_count"] = gorm.Expr("failed_count + ?", v.failedCount)
+		}
+
+		if err := r.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "date"}, {Name: "repository_id"}, {Name: "package_type"}, {Name: "package_name"}},
+			DoUpdates: clause.Assignments(updates),
+		}).Create(&model.DownloadDailyStats{
+			Date:          k.date,
+			RepositoryID:  k.repositoryID,
+			PackageType:   k.packageType,
+			PackageName:   k.packageName,
+			DownloadCount: 0,
+			CachedCount:   0,
+			FailedCount:   0,
+		}).Error; err != nil {
 			return err
 		}
 	}

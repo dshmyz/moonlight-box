@@ -15,6 +15,8 @@ export interface Package {
   repository_type?: string
   repository_name?: string
   repository_group_name?: string
+  repositories?: string[]
+  group_repositories?: string[]
   homepage?: string
   license?: string
   created_by?: number

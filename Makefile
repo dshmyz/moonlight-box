@@ -12,6 +12,9 @@ LDFLAGS=-ldflags "-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIM
 build:
 	go build ${LDFLAGS} -o bin/${APP_NAME} ./cmd/registry
 
+build-mcp:
+	go build ${LDFLAGS} -o bin/${APP_NAME}-mcp ./cmd/mcp-server
+
 run:
 	go run ./cmd/registry serve
 

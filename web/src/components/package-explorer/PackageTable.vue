@@ -45,11 +45,16 @@
       </template>
     </el-table-column>
 
-    <el-table-column v-if="columns.source !== false" prop="repository_type" label="来源" width="90" align="center">
+    <el-table-column v-if="columns.source !== false" prop="repository_type" label="来源" width="170" align="center">
       <template #default="{ row }">
-        <el-tag :type="row.repository_type === 'proxy' ? 'warning' : 'success'" size="small">
-          {{ row.repository_type === 'proxy' ? '代理' : '本地' }}
-        </el-tag>
+        <div class="source-cell">
+          <el-tag :type="row.repository_type === 'proxy' ? 'warning' : 'success'" size="small">
+            {{ row.repository_type === 'proxy' ? '代理' : '本地' }}
+          </el-tag>
+          <span v-if="displayRepos(row).length > 0" class="source-repos">
+            <span v-for="repo in displayRepos(row)" :key="repo" class="source-repo">{{ repo }}</span>
+          </span>
+        </div>
       </template>
     </el-table-column>
 
@@ -137,6 +142,11 @@ function copyName(row: Package) {
   copyToClipboard(`${row.type}:${row.name}`)
 }
 
+// 来源列只展示实际所在仓库；组合仓库仅是访问入口，不在此列展示（见详情页配置命令）
+function displayRepos(row: Package): string[] {
+  return row.repositories?.length ? row.repositories : (row.repository_name ? [row.repository_name] : [])
+}
+
 function onSelectionChange(rows: Package[]) {
   emit('update:selectedIds', rows.map(r => r.id))
 }
@@ -160,4 +170,16 @@ function onSelectionChange(rows: Package[]) {
 .download-count { font-weight: 600; color: #6366f1; font-size: 14px; }
 .update-time { color: #94a3b8; font-size: 13px; }
 .action-buttons { display: flex; gap: 8px; flex-wrap: nowrap; }
+/* 上下结构：badge 一行、仓库名独占整行宽度，长仓库名不被 badge 挤压截断 */
+.source-cell { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.source-repos { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; width: 100%; }
+.source-repo {
+  font-size: 11px;
+  font-family: var(--font-family-mono);
+  color: var(--lunar-silver-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 </style>

@@ -34,6 +34,10 @@ type ArtifactService struct {
 	packageVersionTableOnce  sync.Once
 	packageVersionTableReady bool
 
+	// virtualRepoCache 缓存仓库类型查询结果，避免同一事务内重复查询。
+	// key: repoID (uint), value: bool (是否为虚拟仓库)
+	virtualRepoCache sync.Map
+
 	// packageRecalcWorker 相关字段用于异步重算 packages 聚合表。
 	// SaveBatch 事务提交后，把 seenPackages 投递到 recalcCh，
 	// worker goroutine 用独立 db 连接执行 recalcPackageVersions，
@@ -428,6 +432,58 @@ func (s *ArtifactService) Delete(ctx context.Context, key runtime.ArtifactKey) e
 	return err
 }
 
+// BatchDelete 批量删除指定 ID 的 artifact，同步更新 packages/package_versions 聚合表。
+func (s *ArtifactService) BatchDelete(ctx context.Context, repoID uint, artifactIDs []uint) error {
+	if len(artifactIDs) == 0 {
+		return nil
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var artifacts []model.Artifact
+		// 限制在指定仓库内，防止跨仓库删除
+		if err := tx.Where("id IN ? AND repository_id = ?", artifactIDs, repoID).Find(&artifacts).Error; err != nil {
+			return err
+		}
+		if len(artifacts) == 0 {
+			return nil
+		}
+
+		// 使用实际加载到的 ID（可能少于请求的 artifactIDs）
+		actualIDs := make([]uint, len(artifacts))
+		for i, a := range artifacts {
+			actualIDs[i] = a.ID
+		}
+
+		if err := tx.Where("artifact_id IN ?", actualIDs).Delete(&model.ArtifactBlob{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("id IN ?", actualIDs).Delete(&model.Artifact{}).Error; err != nil {
+			return err
+		}
+
+		type syncKey struct{ Format, Name, Version string }
+		seen := make(map[syncKey]bool)
+		for _, a := range artifacts {
+			k := syncKey{a.Format, a.Name, a.Version}
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			if err := s.recalcPackageVersionSummary(tx, a.RepositoryID, a.Format, a.Name, a.Version); err != nil {
+				return err
+			}
+			if err := s.syncPackageAfterDelete(tx, &a); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err == nil {
+		s.notifyCacheInvalidation()
+	}
+	return err
+}
+
 func (s *ArtifactService) DeletePackage(ctx context.Context, repoID uint, format, name string) error {
 	if repoID == 0 || format == "" || name == "" {
 		return runtime.ErrNotFound
@@ -612,6 +668,7 @@ func (s *ArtifactService) RebuildPackages(ctx context.Context) error {
 		      OR filename = 'repomd.xml'
 		    )
 		  )
+		  AND NOT EXISTS (SELECT 1 FROM repositories r WHERE r.id = a.repository_id AND r.type = 'virtual')
 		GROUP BY repository_id, format, name
 	`
 
@@ -661,6 +718,7 @@ func (s *ArtifactService) RebuildPackageVersions(ctx context.Context) error {
 		Where("(format != ? OR kind = ? OR EXISTS (SELECT 1 FROM artifact_blobs ab WHERE ab.artifact_id = artifacts.id))", "go", runtime.KindVersion).
 		Where("NOT (format = ? AND (remote_path LIKE ? OR remote_path LIKE ? OR path = ? OR path LIKE ? OR filename = ?))",
 			"yum", "repodata/%", "%/repodata/%", "repodata", "%/repodata", "repomd.xml").
+		Where("NOT EXISTS (SELECT 1 FROM repositories r WHERE r.id = artifacts.repository_id AND r.type = ?)", model.RepoTypeVirtual).
 		Group("repository_id, format, name, version").
 		Find(&rows).Error; err != nil {
 		return err
@@ -739,6 +797,30 @@ func (s *ArtifactService) UpdatePackageVersionStatus(ctx context.Context, repoID
 
 // ========== 内部辅助方法 ==========
 
+// isVirtualRepo 判断仓库是否为虚拟（group 组合）仓库。
+// 虚拟仓库只是路由层，不直接存储 artifact，不应有独立的 packages/package_versions 记录。
+func (s *ArtifactService) isVirtualRepo(tx *gorm.DB, repoID uint) (bool, error) {
+	if repoID == 0 {
+		return false, nil
+	}
+
+	// 先查缓存
+	if cached, ok := s.virtualRepoCache.Load(repoID); ok {
+		return cached.(bool), nil
+	}
+
+	var count int64
+	if err := tx.Model(&model.Repository{}).
+		Where("id = ? AND type = ?", repoID, model.RepoTypeVirtual).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+
+	isVirtual := count > 0
+	s.virtualRepoCache.Store(repoID, isVirtual)
+	return isVirtual, nil
+}
+
 // syncPackageAfterSave 在 artifact 创建/更新后同步 packages 表
 func (s *ArtifactService) syncPackageAfterSave(tx *gorm.DB, artifact *model.Artifact, isNew bool, hasBlobRefs bool) error {
 	name := artifact.Name
@@ -746,6 +828,14 @@ func (s *ArtifactService) syncPackageAfterSave(tx *gorm.DB, artifact *model.Arti
 		return nil
 	}
 	if !shouldAggregatePackageArtifact(artifact, hasBlobRefs) {
+		return nil
+	}
+	// 虚拟（group）仓库只是路由层，不维护独立的 packages 记录
+	virtual, err := s.isVirtualRepo(tx, artifact.RepositoryID)
+	if err != nil {
+		return err
+	}
+	if virtual {
 		return nil
 	}
 
@@ -857,6 +947,14 @@ func (s *ArtifactService) recalcPackageVersionSummary(tx *gorm.DB, repoID uint, 
 	if !s.hasPackageVersionTable(tx) {
 		return nil
 	}
+	// 虚拟（group）仓库只是路由层，不维护独立的 package_versions 记录
+	virtual, err := s.isVirtualRepo(tx, repoID)
+	if err != nil {
+		return err
+	}
+	if virtual {
+		return nil
+	}
 
 	var artifacts []model.Artifact
 	if err := tx.Model(&model.Artifact{}).
@@ -905,7 +1003,14 @@ func (s *ArtifactService) recalcPackageVersionSummary(tx *gorm.DB, repoID uint, 
 		PackageName:  name,
 		Version:      version,
 		Status:       packageVersionStatus(artifacts),
-		FileCount:    len(artifacts),
+	}
+	// FileCount 只统计可下载文件：go 包的 kind=version 占位行（远程元数据的版本记录，
+	// 无文件名无 blob）与 release 元数据行不算文件，口径与 ListVersionFiles 的可下载过滤一致
+	for _, artifact := range artifacts {
+		if !runtime.IsCountableFileKind(artifact.Kind) {
+			continue
+		}
+		summary.FileCount++
 	}
 	for _, artifact := range artifacts {
 		if summary.Namespace == "" {
@@ -940,7 +1045,7 @@ func (s *ArtifactService) recalcPackageVersionSummary(tx *gorm.DB, repoID uint, 
 	summary.FilesDownloaded = hasDownloadedFiles
 
 	var existing model.PackageVersion
-	err := tx.Where("repository_id = ? AND format = ? AND package_name = ? AND version = ?", repoID, format, name, version).
+	err = tx.Where("repository_id = ? AND format = ? AND package_name = ? AND version = ?", repoID, format, name, version).
 		First(&existing).Error
 	if err == gorm.ErrRecordNotFound {
 		return tx.Create(&summary).Error

@@ -16,6 +16,7 @@
 - **智能代理路由：** 支持本地仓库、代理仓库、虚拟仓库的智能路由，自动回源与缓存加速
 - **仓库分组：** 支持虚拟仓库组，聚合多个托管仓库，简化客户端配置
 - **多存储后端：** 支持本地文件系统与 Amazon S3 对象存储
+- **MCP Server：** 内置 Model Context Protocol 服务端，支持 SSE 与 Streamable HTTP 双协议，可被 AI 客户端直接调用
 
 ### 安全合规
 
@@ -89,6 +90,7 @@ cp configs/config.example.yaml configs/config.yaml
 | `database.driver` | 数据库驱动（sqlite / postgres / mysql） | sqlite |
 | `storage.backend` | 存储后端（local / s3） | local |
 | `ai.enabled` | 是否启用 AI 助手 | false |
+| `mcp.enabled` | 是否启用 MCP Server | true |
 | `cache.enabled` | 是否启用缓存 | true |
 | `security.enabled` | 是否启用安全扫描 | true |
 
@@ -116,8 +118,8 @@ cp configs/config.example.yaml configs/config.yaml
 │                              Moonlight Box                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
-│  │   Handler   │  │   Proxy     │  │     AI      │  │   Security  │        │
-│  │    Layer    │  │   Router    │  │   Service   │  │   Scanner   │        │
+│  │   Plugin    │  │  Repository │  │     AI      │  │   Security  │        │
+│  │    Layer    │  │    Router   │  │   Service   │  │   Scanner   │        │
 │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘        │
 │         │                │                │                │               │
 │  ┌──────┴────────────────┴────────────────┴────────────────┴──────┐        │
@@ -138,7 +140,7 @@ cp configs/config.example.yaml configs/config.yaml
 │  └───────────────────────────┬────────────────────────────────────┘        │
 │                              │                                              │
 │  ┌───────────────────────────┴────────────────────────────────────┐        │
-│  │                      Adapter Layer                              │        │
+│  │                      Plugin Layer                               │        │
 │  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐        │        │
 │  │  │  npm   │ │ Maven  │ │ PyPI   │ │  Go    │ │  Yum   │ ...    │        │
 │  │  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘        │        │
@@ -157,19 +159,19 @@ cp configs/config.example.yaml configs/config.yaml
 
 | 层级 | 职责 | 对应目录 |
 |------|------|----------|
-| **Presentation** | HTTP 请求处理、路由、参数校验 | `handler/`, `middleware/` |
-| **Business Logic** | 业务规则、流程编排 | `service/`, `proxy/` |
-| **Data Access** | 数据库操作、事务管理 | `repository/` |
-| **Domain** | 领域模型、值对象 | `model/`, `types/` |
-| **Infrastructure** | 存储、缓存、外部服务 | `storage/`, `cache/`, `adapter/` |
+| **ProtocolPlugin** | 协议语法：路径解析、metadata 解析/渲染、projection 渲染 | `plugins/` |
+| **Runtime** | 仓库行为：hosted/proxy/group、缓存策略、回源时机 | `core/runtime/` |
+| **Service** | 业务规则、流程编排 | `service/`, `proxy/` |
+| **Repository** | 数据库操作、事务管理 | `repository/` |
+| **Model** | 领域模型、值对象 | `model/`, `types/` |
+| **Infrastructure** | 存储、缓存、外部服务 | `storage/`, `cache/` |
 
 ### 核心设计模式
 
-- **适配器模式**：统一不同包仓库协议差异，支持 npm、Maven、PyPI、Go、YUM、APT、Generic
-- **策略模式**：根据仓库类型（Local/Proxy/Virtual）选择不同解析策略
-- **工厂模式**：存储后端（Local/S3）动态创建
+- **插件模式**：`ProtocolPlugin` 接口统一不同包协议，每个协议一个插件实现（npm/maven/pypi/go/yum/apt/generic）
+- **策略模式**：根据仓库类型（hosted/proxy/group）选择不同 Runtime 行为与回源策略
+- **工厂模式**：存储后端（Local/S3）与仓库 Runtime 动态创建
 - **熔断器模式**：远程仓库健康检查与熔断保护
-- **模板方法**：BaseAdapter 定义通用流程，子类实现特定逻辑
 
 ### 请求处理流程
 
@@ -177,57 +179,74 @@ cp configs/config.example.yaml configs/config.yaml
 Client Request
       ↓
 ┌─────────────┐
-│   Router    │ → 路由匹配
+│   Router    │ → 路径解析（Nexus3/Nexus2 兼容）
 └──────┬──────┘
        ↓
 ┌─────────────┐
-│   Handler   │ → 参数解析、权限校验
+│   Plugin    │ → 协议解析、请求语义识别
 └──────┬──────┘
        ↓
 ┌─────────────┐
-│   Service   │ → 业务逻辑处理
+│   Runtime   │ → 仓库行为：hosted/proxy/group、缓存策略、回源
 └──────┬──────┘
        ↓
 ┌─────────────┐
-│  Repository │ → 数据持久化
-└──────┬──────┘
-       ↓
-┌─────────────┐
-│   Storage   │ → 文件存储
+│   Storage   │ → 文件存储（Local / S3）
 └─────────────┘
 ```
 
 ### 代理路由机制
 
-Proxy Router 负责将包请求智能路由到正确的来源：
+Repository Router 负责将包请求智能路由到正确的来源：
 
-1. **本地优先**：优先从本地仓库查找
-2. **代理回源**：本地未命中时自动从配置的远程仓库拉取
-3. **缓存加速**：拉取结果自动缓存，减少重复请求
-4. **健康检查**：定期检测远程仓库可用性，熔断不可用源
-5. **虚拟仓库**：支持聚合多个仓库，按优先级遍历
+1. **路径解析**：通过 CompositeResolver 识别 Nexus3 / Nexus2 路径格式
+2. **本地优先**：hosted 仓库优先从本地存储查找
+3. **代理回源**：proxy 仓库本地未命中时自动从配置的远程仓库拉取
+4. **缓存加速**：拉取结果自动缓存，减少重复请求
+5. **健康检查与熔断**：定期检测远程仓库可用性，熔断不可用源
+6. **虚拟仓库**：group 仓库聚合多个仓库，按优先级遍历
 
 ## AI 助手
 
 系统内置 AI 智能助手，支持以下工具：
 
-| 工具 | 说明 |
-|------|------|
-| `log_query` | 查询系统日志 |
-| `db_query` | 执行数据库查询 |
-| `package_info` | 查询包信息与依赖关系 |
-| `security_analysis` | 安全漏洞分析 |
-| `code_generator` | 代码生成 |
+| 工具 | 说明 | 权限 |
+|------|------|------|
+| `log_query` | 查询系统日志 | 所有用户 |
+| `db_query` | 执行数据库查询 | 所有用户 |
+| `package_info` | 查询包信息与依赖关系 | 所有用户 |
+| `security_analysis` | 安全漏洞分析 | 管理员 |
+| `block_log_analyzer` | 阻断日志分析 | 管理员 |
+| `block_rule_generator` | 阻断规则生成（预览模式） | 管理员 |
+| `block_rule_optimizer` | 阻断规则优化建议 | 管理员 |
+| `code_generator` | 代码生成 | 所有用户 |
+| `dependency_optimizer` | 依赖优化分析 | 所有用户 |
 
 配置示例：
 
 ```yaml
 ai:
   enabled: true
-  provider: "openai"  # openai, chatglm, qwen, custom
+  provider: "chatglm"    # chatglm / qwen / custom
   base_url: "http://localhost:8000/v1"
   api_key: "your-api-key"
-  model: "gpt-4"
+  model: "chatglm3-6b"
+```
+
+## MCP Server
+
+Moonlight Box 内置 Model Context Protocol (MCP) 服务端，支持 AI 客户端（如 Claude Desktop、Cursor 等）直接与仓库系统交互。
+
+- 同时支持 **SSE**（旧协议）和 **Streamable HTTP**（新协议）
+- 认证方式：静态 Token → API Token → 用户 JWT
+- 可通过主服务端口挂载，也可独立部署
+
+```yaml
+mcp:
+  enabled: true
+  path: /mcp
+  token: ""              # 为空则不校验，仅限本地开发
+  read_only: false
 ```
 
 ## 开发指南
@@ -237,6 +256,9 @@ ai:
 ```bash
 # 编译
 make build
+
+# 编译 MCP Server（独立二进制）
+make build-mcp
 
 # 运行
 make run
@@ -269,6 +291,7 @@ moonlight-box/
 │   ├── router.go         # 路由配置
 │   ├── runtime_init.go   # 运行时层（Runtime/Plugin）组装
 │   └── frontend.go       # 前端静态文件服务（embed）
+├── cmd/mcp-server/       # MCP Server 独立入口（可选）
 ├── configs/               # 配置文件示例
 ├── internal/              # 核心业务代码
 │   ├── api/http/          # HTTP 处理器（Gin）
@@ -281,11 +304,12 @@ moonlight-box/
 │   ├── database/          # 数据库连接 + AutoMigrate
 │   ├── errors/            # 业务错误定义（ErrNotFound/ErrBlocked 等）
 │   ├── job/               # 后台任务
+│   ├── mcp/               # MCP Server 实现（Model Context Protocol）
 │   ├── metrics/           # Prometheus 指标
 │   ├── middleware/        # Gin 中间件（Auth/CORS/RBAC/Recovery 等）
 │   ├── migration/         # 数据迁移（v2 流水线架构）
 │   ├── model/             # 数据模型（GORM）
-│   ├── plugins/           # 协议插件（npm/maven/pypi/go/yum/apt/raw）
+│   ├── plugins/           # 协议插件（npm/maven/pypi/go/yum/apt/generic）
 │   ├── proxy/             # 代理下载、远程客户端、健康检查、熔断器
 │   ├── repository/        # 数据访问层
 │   ├── response/          # 统一响应封装
@@ -316,7 +340,7 @@ type ProtocolPlugin interface {
 
 ### 依赖注入
 
-系统使用显式依赖注入模式，在 `cmd/registry/router.go` 中集中管理：
+系统使用显式依赖注入模式，在 `cmd/registry/main.go` 中集中组装所有服务，通过 `RouterContext` 传递给路由层：
 
 ```go
 type RouterContext struct {
@@ -335,7 +359,8 @@ type RouterContext struct {
 - **存储**：Local Filesystem / Amazon S3
 - **缓存**：内存缓存 + Redis（可选）
 - **监控**：Prometheus + Grafana
-- **日志**：Logrus
+- **日志**：Logrus + lumberjack（日志轮转）
+- **AI**：LLM 集成 + MCP Server（SSE / Streamable HTTP）
 
 ## 贡献指南
 

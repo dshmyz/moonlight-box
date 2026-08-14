@@ -15,7 +15,7 @@ func TestDownloadCountBatcherUsesShardedCounters(t *testing.T) {
 }
 
 func TestLogBatcherUsesChannelQueue(t *testing.T) {
-	batcher := NewLogBatcher(nil, 100, time.Hour)
+	batcher := NewLogBatcher(nil, nil, 100, time.Hour)
 	defer batcher.Stop()
 
 	if batcher.logCh == nil {

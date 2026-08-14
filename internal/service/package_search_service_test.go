@@ -945,3 +945,118 @@ func TestListArtifactsFallbackReportsFilesDownloaded(t *testing.T) {
 		t.Fatalf("FilesDownloaded = false, want true for artifact with blob")
 	}
 }
+
+// TestSearchAggregatesRepositoriesAcrossRepos 验证跨仓库搜索时聚合行
+// 返回全部所在仓库（repositories）而非只显示代表仓库。
+func TestSearchAggregatesRepositoriesAcrossRepos(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	local := model.Repository{Name: "maven-local", Type: model.RepoTypeLocal, PackageType: "maven"}
+	proxy := model.Repository{Name: "maven-central", Type: model.RepoTypeProxy, PackageType: "maven"}
+	if err := db.Create(&local).Error; err != nil {
+		t.Fatalf("create local repo: %v", err)
+	}
+	if err := db.Create(&proxy).Error; err != nil {
+		t.Fatalf("create proxy repo: %v", err)
+	}
+
+	// 同一包在两个仓库各有独立 packages 行（per-repo 统计，合法）
+	for _, repo := range []model.Repository{local, proxy} {
+		if err := db.Create(&model.Package{
+			RepositoryID:  repo.ID,
+			Format:        "maven",
+			Name:          "com.example:app",
+			VersionCount:  2,
+			LatestVersion: "1.1.0",
+			DownloadCount: 10,
+			UpdatedAt:     time.Now(),
+		}).Error; err != nil {
+			t.Fatalf("create package in %s: %v", repo.Name, err)
+		}
+	}
+
+	svc := NewPackageSearchService(db)
+	got, err := svc.Search(context.Background(), &SearchRequest{
+		Type:     "maven",
+		Page:     1,
+		PageSize: 20,
+	})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if got.Total != 1 || len(got.List) != 1 {
+		t.Fatalf("expected one aggregated entry, got total=%d list=%#v", got.Total, got.List)
+	}
+	e := got.List[0]
+	if e.Name != "com.example:app" {
+		t.Fatalf("Name = %q, want com.example:app", e.Name)
+	}
+	if e.DownloadCount != 20 {
+		t.Fatalf("DownloadCount = %d, want 20 (sum across repos)", e.DownloadCount)
+	}
+	if len(e.Repositories) != 2 {
+		t.Fatalf("Repositories = %#v, want both repo names", e.Repositories)
+	}
+	want := map[string]bool{"maven-local": true, "maven-central": true}
+	for _, r := range e.Repositories {
+		if !want[r] {
+			t.Fatalf("Repositories contains unexpected %q, want maven-local + maven-central", r)
+		}
+		delete(want, r)
+	}
+	if len(want) != 0 {
+		t.Fatalf("Repositories missing: %#v", want)
+	}
+	if e.RepositoryName == "" {
+		t.Fatal("RepositoryName should be set to the representative repo")
+	}
+}
+
+// TestSearchSingleRepoReturnsOneRepository 验证单仓库搜索时 repositories 只含该仓库。
+func TestSearchSingleRepoReturnsOneRepository(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	repo := model.Repository{Name: "npm-local", Type: model.RepoTypeLocal, PackageType: "npm"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	if err := db.Create(&model.Package{
+		RepositoryID:  repo.ID,
+		Format:        "npm",
+		Name:          "left-pad",
+		VersionCount:  1,
+		LatestVersion: "1.0.0",
+		UpdatedAt:     time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("create package: %v", err)
+	}
+
+	svc := NewPackageSearchService(db)
+	got, err := svc.Search(context.Background(), &SearchRequest{
+		Repository: "npm-local",
+		Page:       1,
+		PageSize:   20,
+	})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(got.List) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(got.List))
+	}
+	e := got.List[0]
+	if len(e.Repositories) != 1 || e.Repositories[0] != "npm-local" {
+		t.Fatalf("Repositories = %#v, want [npm-local]", e.Repositories)
+	}
+}

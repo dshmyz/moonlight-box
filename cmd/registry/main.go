@@ -34,6 +34,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/proxy"
 	"github.com/dshmyz/moonlight-box/internal/repository"
 	"github.com/dshmyz/moonlight-box/internal/service"
+	"github.com/dshmyz/moonlight-box/internal/storage"
 	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 
@@ -455,6 +456,16 @@ func main() {
 	// 初始化日志清理配置 handler
 	logCleanupConfigHandler := handler.NewLogCleanupConfigHandler(systemConfigSvc, logCleanupSvc)
 
+	// 初始化清理任务编排器
+	snapshotMetaStore := storage.NewMetadataStoreWithArtifactService(db, artifactSvc)
+	mavenSnapshotCleanup := service.NewMavenSnapshotCleanup(db, repoRepo, snapshotMetaStore, systemConfigSvc)
+	mavenSnapshotCleanup.LoadConfig() // 启动时加载一次配置
+	cleanupSvc := service.NewCleanupService(systemConfigSvc)
+	cleanupSvc.Register(mavenSnapshotCleanup)
+	cleanupSvc.Start()
+	defer cleanupSvc.Stop()
+	snapshotCleanupConfigHandler := handler.NewSnapshotCleanupConfigHandler(systemConfigSvc, cleanupSvc)
+
 	// 初始化健康检查 handler
 	healthCheckHandler := handler.NewHealthCheckHandler(healthCheckSvc)
 
@@ -465,6 +476,9 @@ func main() {
 		"go":    goPlugin,
 	}
 	packageVersionHandler := handler.NewPackageVersionHandlerWithClassifiers(db, artifactSvc, classifiers)
+
+	// 重建类维护操作（packages / package_versions 可重建 read model 的手动恢复入口）
+	systemRebuildHandler := handler.NewSystemRebuildHandler(artifactSvc)
 
 	// 初始化AI服务
 	var aiService *ai.AIService
@@ -558,9 +572,11 @@ func main() {
 	routerCtx.Handlers.AI = aiHandler
 	routerCtx.Handlers.DownloadLog = downloadLogHandler
 	routerCtx.Handlers.LogCleanupConfig = logCleanupConfigHandler
+	routerCtx.Handlers.SnapshotCleanupConfig = snapshotCleanupConfigHandler
 	routerCtx.Handlers.HealthCheck = healthCheckHandler
 	routerCtx.Handlers.VulnRule = vulnRuleHandler
 	routerCtx.Handlers.PackageVersion = packageVersionHandler
+	routerCtx.Handlers.SystemRebuild = systemRebuildHandler
 
 	router := routerCtx.SetupRouter(version)
 
@@ -679,14 +695,28 @@ func mcpDualHandler(
 			return
 		}
 
+		// CORS 预检请求：直接返回允许的 headers，无需认证
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization, X-Request-ID")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
 		// 认证并提取用户身份
 		user := mcpAuthenticate(r, staticToken, authSvc, apiTokenSvc)
 		if user == nil {
 			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte(`{"error":"unauthorized"}`))
 			return
 		}
+
+		// 设置 CORS headers（允许浏览器 MCP 客户端访问）
+		w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
 
 		// 将用户身份注入请求 context，MCP 工具处理器可从中读取
 		ctx := mcp.SetMCPUser(r.Context(), user)

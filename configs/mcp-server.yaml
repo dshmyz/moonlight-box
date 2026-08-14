@@ -1,0 +1,11 @@
+# Moonlight Box MCP Server 配置（独立运行时使用）
+# 嵌入主服务时，在主配置中设置 mcp.enabled=true 即可
+
+server:
+  transport: stdio    # stdio | sse
+  port: 8081          # SSE 模式监听端口（仅独立运行时生效）
+
+moonlight:
+  url: "http://localhost:8000"  # moonlight-box 服务地址（仅独立运行时使用）
+  username: "admin"
+  password: "admin123"
