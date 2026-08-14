@@ -39,6 +39,15 @@
         </el-form-item>
       </template>
 
+      <template v-if="form.packageType === 'npm'">
+        <el-form-item label="包名称" prop="npmName">
+          <el-input v-model="form.npmName" placeholder="例如: my-pkg（scope 包如 @scope/pkg）" />
+        </el-form-item>
+        <el-form-item label="版本号">
+          <el-tag type="info">以 tarball 内 package.json 为准</el-tag>
+        </el-form-item>
+      </template>
+
       <template v-if="form.packageType === 'maven'">
         <el-alert
           v-if="mavenAutoDetected"
@@ -140,6 +149,7 @@ const form = ref({
   pypiName: '',
   pypiVersion: '',
   pypiSummary: '',
+  npmName: '',
   mavenGroupId: '',
   mavenArtifactId: '',
   mavenVersion: '',
@@ -154,6 +164,7 @@ const rules: FormRules = {
   repositoryId: [{ required: true, message: '请选择目标仓库', trigger: 'change' }],
   pypiName: [{ required: true, message: '请输入包名称', trigger: 'blur' }],
   pypiVersion: [{ required: true, message: '请输入版本号', trigger: 'blur' }],
+  npmName: [{ required: true, message: '请输入包名称', trigger: 'blur' }],
   mavenGroupId: [{ required: true, message: '请输入 Group ID', trigger: 'blur' }],
   mavenArtifactId: [{ required: true, message: '请输入 Artifact ID', trigger: 'blur' }],
   mavenVersion: [{ required: true, message: '请输入版本号', trigger: 'blur' }]
@@ -396,6 +407,12 @@ const handleUpload = async () => {
       case 'yum':
         await uploadYum(file.raw)
         break
+      case 'npm':
+        await uploadNpm(file.raw)
+        break
+      default:
+        // 未实现的包类型：明确报错，避免静默 fall-through 造成"假成功"
+        throw new Error(`暂不支持上传 ${form.value.packageType || '未知'} 类型`)
     }
 
     ElMessage.success('上传成功')
@@ -403,7 +420,8 @@ const handleUpload = async () => {
     emit('update:modelValue', false)
     handleClose()
   } catch (error: any) {
-    ElMessage.error(error.response?.data?.message || '上传失败')
+    // 优先取后端返回的错误信息；本地 throw 的 Error 则取 message
+    ElMessage.error(error?.response?.data?.message || error?.message || '上传失败')
   } finally {
     uploading.value = false
   }
@@ -450,6 +468,46 @@ const uploadMaven = async (file: File) => {
   await axios.put(path, file, {
     headers: {
       'Content-Type': 'application/octet-stream',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+    },
+    onUploadProgress: (progressEvent) => {
+      if (progressEvent.total) {
+        uploadProgress.value = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+      }
+    }
+  })
+}
+
+const uploadNpm = async (file: File) => {
+  // npm 采用标准 publish 协议：PUT /:package，body 为 packument（versions + base64 _attachments）。
+  // 网页上传只拿得到 .tgz，因此这里只把 tarball 作为 _attachments 的 base64 数据发送，
+  // 包名取自表单（UI 输入），版本/其它元数据由后端从 tarball 内 package.json 解析并规范成完整 packument。
+  const buf = await file.arrayBuffer()
+  const bytes = new Uint8Array(buf)
+  let binary = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk) as unknown as number[])
+  }
+  const b64 = btoa(binary)
+
+  // scoped 包（@scope/pkg）按 `/` 分段编码，保持路径层级；
+  // 非 scoped 包名直接编码。
+  const pathName = form.value.npmName
+    .split('/')
+    .map((seg) => encodeURIComponent(seg))
+    .join('/')
+
+  const body = {
+    _attachments: {
+      [file.name]: { content_type: 'application/octet-stream', data: b64 }
+    }
+  }
+  const token = localStorage.getItem('token')
+
+  await axios.put(`/repository/${form.value.repositoryName}/${pathName}`, body, {
+    headers: {
+      'Content-Type': 'application/json',
       ...(token ? { 'Authorization': `Bearer ${token}` } : {})
     },
     onUploadProgress: (progressEvent) => {
@@ -531,6 +589,7 @@ const handleClose = () => {
     pypiName: '',
     pypiVersion: '',
     pypiSummary: '',
+    npmName: '',
     mavenGroupId: '',
     mavenArtifactId: '',
     mavenVersion: '',

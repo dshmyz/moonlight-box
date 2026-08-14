@@ -22,6 +22,9 @@
 package npm
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -309,6 +312,117 @@ func extractNpmVersionFromTarball(packageName, filename string) string {
 		nameForTrim = packageName[idx+1:]
 	}
 	return strings.TrimSuffix(strings.TrimPrefix(filename, nameForTrim+"-"), ".tgz")
+}
+
+// hasVersions 判断 packument 是否已带标准 publish 的 versions 或顶层 version。
+func hasVersions(npmMeta map[string]interface{}) bool {
+	if versions, ok := npmMeta["versions"].(map[string]interface{}); ok && len(versions) > 0 {
+		return true
+	}
+	if topVersion, ok := npmMeta["version"].(string); ok && topVersion != "" {
+		return true
+	}
+	return false
+}
+
+// synthesizePackumentFromTarball 从只有 _attachments 的 UI 上传输入中，解出
+// 标准 packument：读取 tarball 的 package/package.json 得到 name/version，
+// 再把 attachments 的 key 规整为 <shortName>-<version>.tgz（否则下游按文件名
+// 提取版本会失败）。
+func (p *NpmPlugin) synthesizePackumentFromTarball(attachments map[string]interface{}) (map[string]interface{}, string, error) {
+	var data string
+	for _, att := range attachments {
+		attMap, ok := att.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if d, _ := attMap["data"].(string); d != "" {
+			data = d
+			break
+		}
+	}
+	if data == "" {
+		return nil, "", errors.New("no tarball attachment data")
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return nil, "", fmt.Errorf("decode attachment base64: %w", err)
+	}
+	name, version, pkgJSON, err := readNpmTarballPackageJSON(raw)
+	if err != nil {
+		return nil, "", err
+	}
+	if name == "" || version == "" {
+		return nil, "", errors.New("tarball package.json missing name or version")
+	}
+
+	versions := map[string]interface{}{version: pkgJSON}
+	distTags := map[string]interface{}{"latest": version}
+
+	// 把 attachment 文件名规整为标准 <shortName>-<version>.tgz。
+	// scoped 包取 "/" 后的短名称。UI 上传只带单个 tarball，规整第一个即可
+	// （版本由 package.json 决定，而非原始文件名的任意版本写法）。
+	shortName := name
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		shortName = name[idx+1:]
+	}
+	stdName := shortName + "-" + version + ".tgz"
+	if _, exists := attachments[stdName]; !exists {
+		for origName, att := range attachments {
+			delete(attachments, origName)
+			attachments[stdName] = att
+			break
+		}
+	}
+
+	result := map[string]interface{}{
+		"name":      name,
+		"versions":  versions,
+		"dist-tags": distTags,
+	}
+	return result, name, nil
+}
+
+// readNpmTarballPackageJSON 解压 npm tarball，读取 package/package.json。
+// 返回包名、版本和完整的 package.json 对象（不含由 registry 补充的字段）。
+func readNpmTarballPackageJSON(raw []byte) (string, string, map[string]interface{}, error) {
+	gz, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return "", "", nil, err
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", "", nil, err
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		// tarball 通常以 package/ 为前缀目录
+		name := strings.TrimPrefix(path.Clean(hdr.Name), "./")
+		if name != "package/package.json" && name != "package.json" {
+			continue
+		}
+		content, err := io.ReadAll(io.LimitReader(tr, 20<<20))
+		if err != nil {
+			return "", "", nil, err
+		}
+		var pkgJSON map[string]interface{}
+		if err := json.Unmarshal(content, &pkgJSON); err != nil {
+			return "", "", nil, err
+		}
+		data, _ := pkgJSON["name"].(string)
+		ver, _ := pkgJSON["version"].(string)
+		return data, ver, pkgJSON, nil
+	}
+	return "", "", nil, errors.New("package.json not found in tarball")
 }
 
 func (p *NpmPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
@@ -629,7 +743,17 @@ func (p *NpmPlugin) handlePackageGet(ctx *runtime.RequestContext, repoRuntime ru
 	for _, artifact := range artifacts {
 		if tag := artifact.Properties["dist-tag"]; tag != "" {
 			v := artifact.Version
-			if v != "" {
+			if v == "" {
+				continue
+			}
+			if tag == "latest" {
+				// 多次 publish/上传时，旧版本 artifact 不会自动摘除 dist-tag=latest，
+				// 多个版本都可能声明 latest。固定选 semver 最新，避免 map 遍历顺序
+				// 导致解析到旧版本（否则 npm install pkg 可能装到旧版）。
+				if cur, ok := distTags["latest"]; !ok || compareNpmVersions(v, cur) > 0 {
+					distTags["latest"] = v
+				}
+			} else {
 				distTags[tag] = v
 			}
 		}
@@ -863,6 +987,27 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 	attachmentsRaw, hasAttachments := npmMeta["_attachments"]
 	attachments, _ := attachmentsRaw.(map[string]interface{})
 	delete(npmMeta, "_attachments") // 存储 metadata 时移除 attachments 数据
+
+	// UI 上传适配（非 npm CLI publish 标准输入）：
+	// 标准 npm publish 会带上完整 versions/dist-tags；而网页上传只提供一个 tarball，
+	// 因此 packs 里只有 _attachments、缺少 versions（也没有顶层 version）。
+	// 此时从 tarball 的 package/package.json 解出 name/version，补全成标准 packument，
+	// 让下面的版本收集与落库逻辑（与 npm publish 完全同一主干）可复用。
+	if !hasVersions(npmMeta) && len(attachments) > 0 {
+		synthesized, nameFromTarball, err := p.synthesizePackumentFromTarball(attachments)
+		if err != nil {
+			logrus.WithError(err).WithField("packageName", packageName).Warn("npm: UI upload adapter failed")
+			http.Error(ctx.Writer, "unable to read package.json from tarball", http.StatusBadRequest)
+			return nil
+		}
+		npmMeta["versions"] = synthesized["versions"]
+		npmMeta["dist-tags"] = synthesized["dist-tags"]
+		// 用 tarball 里的包名校验/纠正 URL 中的包名
+		if nameFromTarball != "" && nameFromTarball != packageName {
+			logrus.WithField("from_url", packageName).WithField("from_tarball", nameFromTarball).Warn("npm: upload package name mismatch, using tarball name")
+			packageName = nameFromTarball
+		}
+	}
 
 	// 解析 dist-tags（用于 metadata artifact 的 Properties）
 	distTags := map[string]string{}

@@ -1,8 +1,11 @@
 package npm
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -2452,4 +2455,246 @@ func TestHandle_PublishWithAttachmentPathPrefix(t *testing.T) {
 	if tarballArt.Filename != "mypackage-1.0.0.tgz" {
 		t.Errorf("tarball.Filename: expected 'mypackage-1.0.0.tgz', got %q", tarballArt.Filename)
 	}
+}
+
+// TestHandle_UploadUIAdapterOnlyTarball 验证 UI 上传适配器：
+// 请求体只有 _attachments（无 versions、无顶层 version）时，后端应从 tarball
+// 内的 package.json 解析出 name/version，并写出标准的 tarball + metadata artifact。
+func TestHandle_UploadUIAdapterOnlyTarball(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	tgz := buildNpmTarball(t, "my-pkg", "1.0.0", map[string]interface{}{
+		"description": "from tarball",
+		"license":     "Apache-2.0",
+	})
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "my-pkg",
+		"_attachments": map[string]interface{}{
+			"uploaded-file.tgz": map[string]interface{}{
+				"content_type": "application/octet-stream",
+				"data":         base64.StdEncoding.EncodeToString(tgz),
+			},
+		},
+	})
+
+	ctx, w := newCtx("PUT", "my-pkg", bytes.NewReader(body))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	if len(rt.UploadedArts) != 2 {
+		t.Fatalf("expected 2 uploaded artifacts (tarball + metadata), got %d", len(rt.UploadedArts))
+	}
+
+	var tarballArt, metadataArt *runtime.Artifact
+	for _, a := range rt.UploadedArts {
+		switch a.Kind {
+		case runtime.KindArtifact:
+			tarballArt = a
+		case runtime.KindMetadata:
+			metadataArt = a
+		}
+	}
+	if tarballArt == nil || metadataArt == nil {
+		t.Fatalf("expected both tarball and metadata artifacts, got: %+v", rt.UploadedArts)
+	}
+
+	if metadataArt.Name != "my-pkg" {
+		t.Errorf("metadata name: expected 'my-pkg', got %q", metadataArt.Name)
+	}
+	if metadataArt.Version != "1.0.0" {
+		t.Errorf("metadata version: expected '1.0.0', got %q", metadataArt.Version)
+	}
+	if metadataArt.RemotePath != "my-pkg" {
+		t.Errorf("metadata remote_path: expected 'my-pkg', got %q", metadataArt.RemotePath)
+	}
+	if metadataArt.Attributes["license"] != "Apache-2.0" {
+		t.Errorf("metadata license: expected 'Apache-2.0', got %q", metadataArt.Attributes["license"])
+	}
+	if metadataArt.Attributes["description"] != "from tarball" {
+		t.Errorf("metadata description: expected 'from tarball', got %q", metadataArt.Attributes["description"])
+	}
+	// latest dist-tag 应由 adapter 从 tarball 推导
+	if metadataArt.Properties["dist-tag"] != "latest" {
+		t.Errorf("metadata dist-tag: expected 'latest', got %q", metadataArt.Properties["dist-tag"])
+	}
+	if tarballArt.Version != "1.0.0" {
+		t.Errorf("tarball version: expected '1.0.0', got %q", tarballArt.Version)
+	}
+	if tarballArt.Filename != "my-pkg-1.0.0.tgz" {
+		t.Errorf("tarball filename: expected 'my-pkg-1.0.0.tgz', got %q", tarballArt.Filename)
+	}
+}
+
+func buildNpmTarball(t *testing.T, name, version string, extra map[string]interface{}) []byte {
+	t.Helper()
+	pkg := map[string]interface{}{"name": name, "version": version}
+	for k, v := range extra {
+		pkg[k] = v
+	}
+	pkgJSON, _ := json.Marshal(pkg)
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	hdr := &tar.Header{Name: "package/package.json", Mode: 0o644, Size: int64(len(pkgJSON))}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatalf("WriteHeader: %v", err)
+	}
+	if _, err := tw.Write(pkgJSON); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestHandle_UploadUIAdapter_ScopedPrerelease 覆盖 scoped + prerelease 版本分支：
+// tarball 内 package.json 是 @scope/pkg 1.0.0-beta.2，attachment key 任意，
+// 后端应规整为标准短名 tarball 并正确提取 scoped/prerelease 版本。
+func TestHandle_UploadUIAdapter_ScopedPrerelease(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	tgz := buildNpmTarball(t, "@scope/pkg", "1.0.0-beta.2", nil)
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "@scope/pkg",
+		"_attachments": map[string]interface{}{
+			"arbitrary-upload.tgz": map[string]interface{}{
+				"content_type": "application/octet-stream",
+				"data":         base64.StdEncoding.EncodeToString(tgz),
+			},
+		},
+	})
+
+	ctx, w := newCtx("PUT", "@scope/pkg", bytes.NewReader(body))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d (body=%s)", w.Code, w.Body.String())
+	}
+
+	var metadataArt, tarballArt *runtime.Artifact
+	for _, a := range rt.UploadedArts {
+		switch a.Kind {
+		case runtime.KindMetadata:
+			metadataArt = a
+		case runtime.KindArtifact:
+			tarballArt = a
+		}
+	}
+	if metadataArt == nil || tarballArt == nil {
+		t.Fatalf("expected both artifacts, got: %+v", rt.UploadedArts)
+	}
+	if metadataArt.Name != "@scope/pkg" {
+		t.Errorf("metadata name: expected '@scope/pkg', got %q", metadataArt.Name)
+	}
+	if metadataArt.Version != "1.0.0-beta.2" {
+		t.Errorf("metadata version: expected '1.0.0-beta.2', got %q", metadataArt.Version)
+	}
+	if tarballArt.Filename != "pkg-1.0.0-beta.2.tgz" {
+		t.Errorf("tarball filename: expected 'pkg-1.0.0-beta.2.tgz', got %q", tarballArt.Filename)
+	}
+	if tarballArt.Version != "1.0.0-beta.2" {
+		t.Errorf("tarball version: expected '1.0.0-beta.2', got %q", tarballArt.Version)
+	}
+}
+
+// TestHandle_UploadUIAdapter_NameMismatch 覆盖 URL 包名与 tarball 包名不一致的分支：
+// 后端应以 tarball 内 package.json 的包名为准（纠正 URL 包名）。
+func TestHandle_UploadUIAdapter_NameMismatch(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	// URL 用 wrong-name，tarball 内是 real-pkg
+	tgz := buildNpmTarball(t, "real-pkg", "1.0.0", nil)
+	body, _ := json.Marshal(map[string]interface{}{
+		"name": "real-pkg",
+		"_attachments": map[string]interface{}{
+			"wrong-name-1.0.0.tgz": map[string]interface{}{
+				"content_type": "application/octet-stream",
+				"data":         base64.StdEncoding.EncodeToString(tgz),
+			},
+		},
+	})
+
+	ctx, w := newCtx("PUT", "wrong-name", bytes.NewReader(body))
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d (body=%s)", w.Code, w.Body.String())
+	}
+
+	var metadataArt *runtime.Artifact
+	for _, a := range rt.UploadedArts {
+		if a.Kind == runtime.KindMetadata {
+			metadataArt = a
+			break
+		}
+	}
+	if metadataArt == nil {
+		t.Fatalf("metadata artifact not found")
+	}
+	// 应纠正为 tarball 内的真实包名
+	if metadataArt.Name != "real-pkg" {
+		t.Errorf("metadata name: expected 'real-pkg' (corrected), got %q", metadataArt.Name)
+	}
+	if metadataArt.RemotePath != "real-pkg" {
+		t.Errorf("metadata remote_path: expected 'real-pkg', got %q", metadataArt.RemotePath)
+	}
+}
+
+// TestHandle_PackageGet_LatestPrefersNewestVersion 验证 GET 时若多个版本都带
+// dist-tag=latest（多次上传旧版本未自动摘除 tag），latest 固定解析为 semver 最新版本，
+// 不随 map 遍历顺序漂移。
+func TestHandle_PackageGet_LatestPrefersNewestVersion(t *testing.T) {
+	p := NewNpmPlugin(http.DefaultClient)
+	arts := []*runtime.Artifact{
+		newMetaWithDistTag("latest-pkg", "1.0.0", "latest"),
+		newMetaWithDistTag("latest-pkg", "2.0.0", "latest"),
+	}
+	rt := &testhelper.MockRuntime{Artifacts: arts}
+
+	ctx, w := newCtx("GET", "latest-pkg", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	distTags, ok := result["dist-tags"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected dist-tags, got %v", result["dist-tags"])
+	}
+	if got := distTags["latest"]; got != "2.0.0" {
+		t.Errorf("dist-tags.latest: expected '2.0.0' (newest), got %v", got)
+	}
+}
+
+func newMetaWithDistTag(name, version, tag string) *runtime.Artifact {
+	return runtime.NewArtifact(runtime.ArtifactSpec{
+		Format:     "npm",
+		Kind:       runtime.KindMetadata,
+		Name:       name,
+		Version:    version,
+		Path:       name + "/" + version,
+		RemotePath: name,
+		Attributes: map[string]string{},
+		Properties: map[string]string{"package": name, "version": version, "dist-tag": tag},
+		IdentityKey: "metadata/" + name + "/" + version,
+	})
 }
