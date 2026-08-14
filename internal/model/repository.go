@@ -183,4 +183,8 @@ type RepositoryConfig struct {
 	MaxRedirects       int              `json:"max_redirects,omitempty"`
 	InsecureSkipVerify bool             `json:"insecure_skip_verify,omitempty"`
 	FailureCacheRules  string           `json:"failure_cache_rules,omitempty"`
+
+	// SNAPSHOT 清理策略（仓库级覆盖，nil 表示使用全局默认值）
+	SnapshotKeepLast   *int `json:"snapshot_keep_last,omitempty"`
+	SnapshotMaxAgeDays *int `json:"snapshot_max_age_days,omitempty"`
 }
