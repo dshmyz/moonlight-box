@@ -153,7 +153,7 @@ func NewCircuitBreakerFetcherDecorator(inner RemoteFetcher, cb CircuitBreaker) *
 // FetchRemote 在熔断关闭时透传 inner，根据结果记录熔断状态。
 // 只在错误层面做分类，不感知协议内容，符合架构红线。
 func (d *CircuitBreakerFetcherDecorator) FetchRemote(ctx context.Context, remoteURL, path string) ([]*Artifact, error) {
-	if d.inner == nil || d.cb == nil {
+	if d.cb == nil {
 		return d.inner.FetchRemote(ctx, remoteURL, path)
 	}
 	if !d.cb.AllowRequest() {

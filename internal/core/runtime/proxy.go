@@ -736,7 +736,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 				// 保留触发请求的 client IP 用于审计，用调用方 ctx 而非上游上下文
 				n.stampTriggerIP(ctx, a)
 			}
-			if err := n.MetadataStore.BatchPut(ctx, fetched); err != nil {
+			if err := n.MetadataStore.BatchPut(runCtx, fetched); err != nil {
 				return queryResult{err: err}, nil
 			}
 			for _, a := range fetched {
