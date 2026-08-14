@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -386,6 +387,24 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 			ctx.Writer.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			ctx.StatusCode = http.StatusServiceUnavailable
 			http.Error(ctx.Writer, "Service Unavailable: upstream circuit open", http.StatusServiceUnavailable)
+			return
+		}
+		// 优先用 errors.As 提取结构化上游错误信息，返回 JSON 响应体
+		// （包含 remote_url、retry_after 等字段，便于客户端智能重试）。
+		var upstreamErr *UpstreamError
+		if errors.As(err, &upstreamErr) {
+			retryAfter := upstreamErr.RetryAfter
+			if upstreamErr.Cause == "timeout" {
+				retryAfter = 30
+			}
+			ctx.Writer.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			ctx.StatusCode = http.StatusServiceUnavailable
+			ctx.Writer.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(ctx.Writer).Encode(map[string]interface{}{
+				"error":      upstreamErr.Error(),
+				"remote_url": upstreamErr.RemoteURL,
+				"retry_after": retryAfter,
+			})
 			return
 		}
 		if errors.Is(err, ErrUpstreamTimeout) {

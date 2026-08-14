@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 )
 
@@ -92,4 +93,44 @@ func CircuitRetryAfter(err error) int {
 		return coe.RetryAfter
 	}
 	return 0
+}
+
+// UpstreamError 携带结构化上游错误信息，供 HTTP 层返回 JSON 响应体。
+// 与 CircuitOpenError 同样的模式：errors.Is(err, ErrUpstreamTimeout/ErrUpstreamUnavailable) 成立，
+// 同时可通过 errors.As 提取 RemoteURL、RetryAfter 等字段。
+type UpstreamError struct {
+	Cause      string // "timeout" / "unavailable"
+	RemoteURL  string // 上游地址
+	RetryAfter int    // 建议重试秒数（0 表示不建议重试）
+	Err        error  // 原始错误（保留完整错误链）
+}
+
+func (e *UpstreamError) Error() string {
+	if e.Cause == "timeout" {
+		return ErrUpstreamTimeout.Error()
+	}
+	return ErrUpstreamUnavailable.Error()
+}
+
+func (e *UpstreamError) Unwrap() error { return e.Err }
+
+// NewUpstreamTimeoutError 构造一个上游超时错误，携带上游地址和建议重试时间。
+// 内部用 fmt.Errorf 包装原始错误与 ErrUpstreamTimeout 哨兵，保证 errors.Is 对两者都成立。
+func NewUpstreamTimeoutError(remoteURL string, retryAfter int, err error) error {
+	return &UpstreamError{
+		Cause:      "timeout",
+		RemoteURL:  remoteURL,
+		RetryAfter: retryAfter,
+		Err:        fmt.Errorf("%w: %w", ErrUpstreamTimeout, err),
+	}
+}
+
+// NewUpstreamUnavailableError 构造一个上游不可达错误，携带上游地址。
+// 内部用 fmt.Errorf 包装原始错误与 ErrUpstreamUnavailable 哨兵，保证 errors.Is 对两者都成立。
+func NewUpstreamUnavailableError(remoteURL string, err error) error {
+	return &UpstreamError{
+		Cause:     "unavailable",
+		RemoteURL: remoteURL,
+		Err:       fmt.Errorf("%w: %w", ErrUpstreamUnavailable, err),
+	}
 }
