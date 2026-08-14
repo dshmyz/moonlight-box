@@ -125,7 +125,7 @@ func (n *ProxyRuntime) OpenRemote(ctx context.Context, request RemoteOpenRequest
 		return nil, ErrRemoteUnsupported
 	}
 	if n.RemoteClient == nil {
-		return nil, fmt.Errorf("%w: remote client is not configured", ErrUpstreamUnavailable)
+		return nil, NewUpstreamUnavailableError("", fmt.Errorf("remote client is not configured"))
 	}
 
 	headers := make(http.Header)
@@ -144,7 +144,7 @@ func (n *ProxyRuntime) OpenRemote(ctx context.Context, request RemoteOpenRequest
 	}
 	if response == nil {
 		metrics.RecordProxyFetch(n.Format, "error", time.Since(start).Seconds())
-		return nil, fmt.Errorf("%w: empty upstream response", ErrUpstreamUnavailable)
+		return nil, NewUpstreamUnavailableError(remoteURL, fmt.Errorf("empty upstream response"))
 	}
 	metrics.RecordProxyFetch(n.Format, "success", time.Since(start).Seconds())
 	response.Header = filterHopByHopHeaders(response.Header)
@@ -776,7 +776,10 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 				return n.filterBlockedArtifacts(artifacts), nil
 			}
 			if IsUpstreamTimeout(fetchErr) {
-				return nil, fmt.Errorf("%w: %w", ErrUpstreamTimeout, fetchErr)
+				return nil, NewUpstreamTimeoutError(
+					strings.TrimRight(n.RemoteBaseURL, "/")+"/"+query.RemotePath,
+					30, fetchErr,
+				)
 			}
 			return nil, fetchErr
 		}
