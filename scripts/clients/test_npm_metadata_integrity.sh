@@ -630,14 +630,14 @@ echo "════════════════════════�
 echo "  第三部分：元数据字段完整性对比"
 echo "════════════════════════════════════════"
 
-# ── 测试 11：对比代理仓库与官方 registry 的元数据字段 ──────────────────
+# ── 测试 11：对比代理仓库与阿里云 mirror registry 的元数据字段 ──────────────────
 echo
-echo "测试 11: 对比代理仓库与官方 registry 的元数据字段完整性..."
+echo "测试 11: 对比代理仓库与阿里云 mirror registry 的元数据字段完整性..."
 
 if [ -f /tmp/npm-semver-meta.json ]; then
-    # 获取官方 registry 的 semver 元数据
+    # 获取阿里云 mirror registry 的 semver 元数据
     OFFICIAL_HTTP=$(curl -s -o /tmp/npm-semver-official.json -w "%{http_code}" \
-        "https://registry.npmjs.org/semver" \
+        "https://registry.npmmirror.com/semver" \
         --connect-timeout 10 --max-time 30) || OFFICIAL_HTTP="000"
 
     if [ "$OFFICIAL_HTTP" = "200" ]; then
@@ -661,7 +661,7 @@ if [ -f /tmp/npm-semver-meta.json ]; then
             done
         fi
     else
-        warn "无法获取官方 registry 的 semver 元数据 (HTTP $OFFICIAL_HTTP)"
+        warn "无法获取阿里云 mirror registry 的 semver 元数据 (HTTP $OFFICIAL_HTTP)"
     fi
 fi
 
