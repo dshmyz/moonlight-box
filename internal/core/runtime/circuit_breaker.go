@@ -126,3 +126,78 @@ func (d *CircuitBreakerDecorator) recordFailure(err error) {
 	}
 	d.cb.RecordFailure()
 }
+
+// CircuitBreakerFetcherDecorator 包装 RemoteFetcher，在 metadata 回源边界应用熔断策略。
+//
+// 它与 CircuitBreakerDecorator 对称：后者守护 RemoteClient（GetArtifact 的下载路径），
+// 本装饰器守护 RemoteFetcher（QueryArtifacts 的 metadata 回源路径）——两条回源路径由此获得
+// 一致的熔断保护，否则 QueryArtifacts 的 FetchRemote 会绕过熔断器，慢上游上任何失败的请求
+// 都不会触发熔断，新请求持续堆积。
+//
+// 错误分类与 CircuitBreakerDecorator 保持一致：
+//   - err == nil: RecordSuccess（上游正常响应）
+//   - IsUpstreamTimeout(err): RecordTimeout（上游慢/挂起）
+//   - 其他 err != nil: RecordFailure（上游故障）
+//   - nil CircuitBreaker 时装饰器完全透传，便于测试和无熔断器场景向后兼容
+type CircuitBreakerFetcherDecorator struct {
+	inner RemoteFetcher
+	cb    CircuitBreaker
+}
+
+// NewCircuitBreakerFetcherDecorator 创建装饰器。inner 或 cb 为 nil 时返回的装饰器
+// 直接透传 inner，不进行任何熔断检查——调用方可以无条件调用，无需 nil 检查。
+func NewCircuitBreakerFetcherDecorator(inner RemoteFetcher, cb CircuitBreaker) *CircuitBreakerFetcherDecorator {
+	return &CircuitBreakerFetcherDecorator{inner: inner, cb: cb}
+}
+
+// FetchRemote 在熔断关闭时透传 inner，根据结果记录熔断状态。
+// 只在错误层面做分类，不感知协议内容，符合架构红线。
+func (d *CircuitBreakerFetcherDecorator) FetchRemote(ctx context.Context, remoteURL, path string) ([]*Artifact, error) {
+	if d.inner == nil || d.cb == nil {
+		return d.inner.FetchRemote(ctx, remoteURL, path)
+	}
+	if !d.cb.AllowRequest() {
+		return nil, NewCircuitOpenError(d.cb.GetRetryAfter())
+	}
+	artifacts, err := d.inner.FetchRemote(ctx, remoteURL, path)
+	if err == nil {
+		d.cb.RecordSuccess()
+		return artifacts, nil
+	}
+	if IsUpstreamTimeout(err) {
+		d.cb.RecordTimeout()
+		return artifacts, err
+	}
+	d.cb.RecordFailure()
+	return artifacts, err
+}
+
+// FetchArtifactMetadata 转发内层 Fetcher 的可选能力 ArtifactMetadataFetcher。
+//
+// 装饰器不能剥离被包裹对象的可选接口：maven/pypi/npm 插件实现了
+// ArtifactMetadataFetcher，若包装后类型断言 n.Fetcher.(ArtifactMetadataFetcher) 失败，
+// 基于 license/发布时间等的条件阻断规则会静默失效。因此这里恒实现该接口，
+// 内层不支持时返回 ErrMetadataUnsupported（语义与插件直接不支持一致）。
+func (d *CircuitBreakerFetcherDecorator) FetchArtifactMetadata(ctx context.Context, remoteURL string, key ArtifactKey) (*ArtifactMetadata, error) {
+	inner, ok := d.inner.(ArtifactMetadataFetcher)
+	if !ok {
+		return nil, ErrMetadataUnsupported
+	}
+	if d.cb == nil {
+		return inner.FetchArtifactMetadata(ctx, remoteURL, key)
+	}
+	if !d.cb.AllowRequest() {
+		return nil, NewCircuitOpenError(d.cb.GetRetryAfter())
+	}
+	meta, err := inner.FetchArtifactMetadata(ctx, remoteURL, key)
+	if err == nil {
+		d.cb.RecordSuccess()
+		return meta, nil
+	}
+	if IsUpstreamTimeout(err) {
+		d.cb.RecordTimeout()
+	} else {
+		d.cb.RecordFailure()
+	}
+	return meta, err
+}

@@ -158,17 +158,19 @@ func createRuntimeForRepo(
 				"format": repo.PackageType,
 			}).Warn("proxy repository remote URL is empty")
 		}
+		upstreamTimeout := upstreamTimeoutFor(repo, httpClient)
 		pr := &runtime.ProxyRuntime{
-			MetadataStore: metadataStore,
-			BlobStore:     blobStore,
-			RemoteClient:  newRemoteClientWithCircuitBreaker(httpClient, repo.ID, cbLookup),
-			RepositoryID:  fmt.Sprintf("%d", repo.ID),
-			RemoteBaseURL: remoteBaseURL,
-			CachePolicy:   cachePolicy,
-			Format:        repo.PackageType,
+			MetadataStore:   metadataStore,
+			BlobStore:       blobStore,
+			RemoteClient:    newRemoteClientWithCircuitBreaker(httpClient, repo.ID, cbLookup),
+			RepositoryID:    fmt.Sprintf("%d", repo.ID),
+			RemoteBaseURL:   remoteBaseURL,
+			CachePolicy:     cachePolicy,
+			Format:          repo.PackageType,
+			UpstreamTimeout: upstreamTimeout,
 		}
 		if f, ok := fetchers[repo.PackageType]; ok {
-			pr.Fetcher = f
+			pr.Fetcher = newFetcherWithCircuitBreaker(f, repo.ID, cbLookup)
 		}
 		pr.Blocker = blocker
 		if audit, ok := blocker.(runtime.ConditionAuditLogger); ok {
@@ -196,6 +198,32 @@ func newRemoteClientWithCircuitBreaker(httpClient *http.Client, repoID uint, cbL
 		return inner
 	}
 	return runtime.NewCircuitBreakerDecorator(inner, cb)
+}
+
+// upstreamTimeoutFor 解析仓库级回源超时：RepoConfig.TimeoutSeconds>0 用之，
+// 否则回退到全局默认 httpClient.Timeout（即 pluginHTTPClient 的固定超时）。
+func upstreamTimeoutFor(repo *model.Repository, httpClient *http.Client) time.Duration {
+	if repo.Config != nil && repo.Config.TimeoutSeconds > 0 {
+		return time.Duration(repo.Config.TimeoutSeconds) * time.Second
+	}
+	if httpClient != nil {
+		return httpClient.Timeout
+	}
+	return 0
+}
+
+// newFetcherWithCircuitBreaker 组装带熔断器的 RemoteFetcher，使 metadata 回源
+// （QueryArtifacts 的 FetchRemote）获得与下载路径一致的熔断保护。
+// fetcher 或 cbLookup 为 nil 时返回裸 fetcher，不包装熔断器。
+func newFetcherWithCircuitBreaker(fetcher runtime.RemoteFetcher, repoID uint, cbLookup proxy.CircuitBreakerLookup) runtime.RemoteFetcher {
+	if fetcher == nil || cbLookup == nil {
+		return fetcher
+	}
+	cb := cbLookup.GetOrCreateCircuitBreaker(repoID)
+	if cb == nil {
+		return fetcher
+	}
+	return runtime.NewCircuitBreakerFetcherDecorator(fetcher, cb)
 }
 
 // healthCheckLookup 把 *proxy.HealthCheckService 适配为 proxy.CircuitBreakerLookup。
@@ -294,16 +322,17 @@ func createGroupRuntime(
 					}).Warn("proxy member repository remote URL is empty")
 				}
 				n := &runtime.ProxyRuntime{
-					MetadataStore: memberMeta,
-					BlobStore:     memberBlob,
-					RemoteClient:  newRemoteClientWithCircuitBreaker(httpClient, memberRepo.ID, cbLookup),
-					RepositoryID:  memberID,
-					RemoteBaseURL: remoteBaseURL,
-					CachePolicy:   cachePolicy,
-					Format:        memberRepo.PackageType,
+					MetadataStore:   memberMeta,
+					BlobStore:       memberBlob,
+					RemoteClient:    newRemoteClientWithCircuitBreaker(httpClient, memberRepo.ID, cbLookup),
+					RepositoryID:    memberID,
+					RemoteBaseURL:   remoteBaseURL,
+					CachePolicy:     cachePolicy,
+					Format:          memberRepo.PackageType,
+					UpstreamTimeout: upstreamTimeoutFor(&memberRepo, httpClient),
 				}
 				if f, ok := fetchers[memberRepo.PackageType]; ok {
-					n.Fetcher = f
+					n.Fetcher = newFetcherWithCircuitBreaker(f, memberRepo.ID, cbLookup)
 				}
 				n.Blocker = blocker
 				if audit, ok := blocker.(runtime.ConditionAuditLogger); ok {

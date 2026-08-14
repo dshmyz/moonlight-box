@@ -26,6 +26,11 @@ const maxMetadataFailures = 5000   // 元数据失败缓存上限，防止 DoS
 // refreshingPaths 永不释放、该路径后续刷新全部失效以及 goroutine 泄漏。
 const backgroundRefreshTimeout = 30 * time.Second
 
+// defaultUpstreamTimeout 是回源请求（FetchRemote/FetchMetadata/FetchBlob）的兜底超时。
+// 与 cmd/registry 全局默认（pluginHTTPClient.Timeout，默认 60s）对齐，抑制上游 accept
+// 后不回包导致的长时间挂起。
+const defaultUpstreamTimeout = 60 * time.Second
+
 type ProxyRuntime struct {
 	MetadataStore        MetadataStore
 	BlobStore            BlobStore
@@ -39,6 +44,10 @@ type ProxyRuntime struct {
 	ConditionAudit       ConditionAuditLogger
 	MetadataFetchTimeout time.Duration
 	MetadataFailureTTL   time.Duration
+	// UpstreamTimeout 是回源请求的固定超时（仓库级覆盖，未配置时为 0，回退 defaultUpstreamTimeout）。
+	// 回源不再透传任意调用者的 ctx，统一用带此 deadline 的背景 ctx，保证共享回源不被单个
+	// 客户端断开而取消。
+	UpstreamTimeout time.Duration
 
 	metadataCacheMu   sync.RWMutex
 	metadataCache     map[string]*list.Element // LRU: 值为 *cachedArtifactEntry，链表队首为最久未访问
@@ -49,6 +58,51 @@ type ProxyRuntime struct {
 	refreshingPaths   map[string]struct{}
 	metadataFailureMu sync.Mutex
 	metadataFailures  map[string]time.Time
+}
+
+// upstreamContext 返回回源请求用的独立上下文：从 background 派生、带固定 deadline。
+// 回源（FetchRemote/FetchMetadata/FetchBlob）只用该上下文，不再透传首个调用者的 ctx，
+// 避免共享回源的存亡耦合到最先到达的那个客户端（其断连把等待同一 key 的所有人一起取消）。
+func (n *ProxyRuntime) upstreamContext() (context.Context, context.CancelFunc) {
+	to := n.UpstreamTimeout
+	if to <= 0 {
+		to = defaultUpstreamTimeout
+	}
+	return context.WithTimeout(context.Background(), to)
+}
+
+// flightResult[T] 是 doFlight 在 singleflight 内的统一结果载体。
+type flightResult[T any] struct {
+	v   T
+	err error
+}
+
+// doFlight 是 ctx-aware 的 singleflight 封装。
+//
+// 解决了标准库 singleflight.Group.Do 的两个问题：
+//   - 等待方 `call.Wait()` 不检查自身 ctx，会被动阻塞在慢 leader 上；
+//   - leader 透传第一个调用者的 ctx，其断连会把等待同一 key 的所有人一起取消。
+//
+// 用法：leader 用 base（调用方传入的上游独立 context，见 upstreamContext）执行 run，
+// 完成一次共享回源；等待方在自身 ctx 超时/取消时立即返回 ctx.Err()。由于结果通道带缓冲，
+// 等待方提前退出不会阻塞内部 goroutine，也不会中断共享回源（缓存仍会被填充）。
+func doFlight[T any](ctx context.Context, g *singleflight.Group, key string, base context.Context, run func(context.Context) (T, error)) (T, error) {
+	var zero T
+	resCh := make(chan flightResult[T], 1)
+	go func() {
+		raw, _, _ := g.Do(key, func() (interface{}, error) {
+			v, err := run(base)
+			return flightResult[T]{v: v, err: err}, nil
+		})
+		r, _ := raw.(flightResult[T])
+		resCh <- r
+	}()
+	select {
+	case <-ctx.Done():
+		return zero, ctx.Err()
+	case r := <-resCh:
+		return r.v, r.err
+	}
 }
 
 var hopByHopHeaders = map[string]struct{}{
@@ -220,10 +274,10 @@ func (n *ProxyRuntime) evaluateConditionalAccess(ctx context.Context, key Artifa
 	if timeout <= 0 {
 		timeout = 2 * time.Second
 	}
-	value, err, _ := n.fetchGroup.Do(failureKey, func() (interface{}, error) {
-		fetchCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		return fetcher.FetchArtifactMetadata(fetchCtx, n.RemoteBaseURL, key)
+	base, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	metadata, err := doFlight(ctx, &n.fetchGroup, failureKey, base, func(runCtx context.Context) (*ArtifactMetadata, error) {
+		return fetcher.FetchArtifactMetadata(runCtx, n.RemoteBaseURL, key)
 	})
 	if err != nil {
 		n.cacheMetadataFailure(failureKey)
@@ -236,7 +290,6 @@ func (n *ProxyRuntime) evaluateConditionalAccess(ctx context.Context, key Artifa
 		n.auditConditionUnverified(ctx, key, requirements, missing, reason)
 		return nil
 	}
-	metadata, _ := value.(*ArtifactMetadata)
 	if metadata == nil {
 		n.cacheMetadataFailure(failureKey)
 		n.auditConditionUnverified(ctx, key, requirements, missing, "unavailable")
@@ -399,23 +452,21 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 	}
 
 	sfKey := "get:" + key.String()
-	result, err, _ := n.fetchGroup.Do(sfKey, func() (interface{}, error) {
+	base, cancel := n.upstreamContext()
+	defer cancel()
+	res, err := doFlight(ctx, &n.fetchGroup, sfKey, base, func(runCtx context.Context) (getArtifactResult, error) {
 		if n.isNegativeCached(key) {
 			metrics.RecordProxyNegativeCacheHit(n.Format)
-			return nil, ErrNotFound
+			return getArtifactResult{}, ErrNotFound
 		}
 		if artifact, ok := n.getCachedArtifact(key); ok {
 			metrics.RecordCacheHit(n.RepositoryID, n.Format)
 			return getArtifactResult{artifact: artifact, fromCache: true}, nil
 		}
-		return n.loadArtifact(ctx, key, start)
+		return n.loadArtifact(runCtx, key, start)
 	})
 	if err != nil {
 		return nil, err
-	}
-	res, ok := result.(getArtifactResult)
-	if !ok {
-		return nil, fmt.Errorf("unexpected singleflight result type")
 	}
 	artifact := cloneArtifactForResponse(res.artifact)
 	if err := n.evaluateConditionalAccess(ctx, key, artifact); err != nil {
@@ -673,13 +724,16 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 			fetched []*Artifact
 			err     error
 		}
-		sgResult, sgErr, _ := n.fetchGroup.Do(sgKey, func() (interface{}, error) {
-			fetched, fetchErr := n.Fetcher.FetchRemote(ctx, n.RemoteBaseURL, query.RemotePath)
+		base, cancel := n.upstreamContext()
+		defer cancel()
+		res, sgErr := doFlight(ctx, &n.fetchGroup, sgKey, base, func(runCtx context.Context) (queryResult, error) {
+			fetched, fetchErr := n.Fetcher.FetchRemote(runCtx, n.RemoteBaseURL, query.RemotePath)
 			if fetchErr != nil {
 				return queryResult{err: fetchErr}, nil
 			}
 			for _, a := range fetched {
 				a.RepositoryID = n.RepositoryID
+				// 保留触发请求的 client IP 用于审计，用调用方 ctx 而非上游上下文
 				n.stampTriggerIP(ctx, a)
 			}
 			if err := n.MetadataStore.BatchPut(ctx, fetched); err != nil {
@@ -692,7 +746,6 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		})
 		fetchDuration := time.Since(fetchStart).Seconds()
 
-		res, _ := sgResult.(queryResult)
 		fetchErr := sgErr
 		if fetchErr == nil && res.err != nil {
 			fetchErr = res.err

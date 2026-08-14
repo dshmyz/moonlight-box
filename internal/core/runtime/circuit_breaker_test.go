@@ -429,3 +429,177 @@ func TestCircuitBreakerDecoratorConcurrentSafe(t *testing.T) {
 			totalCalls, int64(concurrency)*3, concurrency)
 	}
 }
+
+// --- CircuitBreakerFetcherDecorator 测试 ---
+
+// fakeRemoteFetcher 是测试用的 RemoteFetcher，记录调用次数与指定返回值。
+type fakeRemoteFetcher struct {
+	artifacts []*Artifact
+	err       error
+
+	remoteCalled int64
+}
+
+func (f *fakeRemoteFetcher) FetchRemote(ctx context.Context, remoteURL, path string) ([]*Artifact, error) {
+	atomic.AddInt64(&f.remoteCalled, 1)
+	return f.artifacts, f.err
+}
+
+func (f *fakeRemoteFetcher) RemoteCalls() int64 { return atomic.LoadInt64(&f.remoteCalled) }
+
+// fakeMetadataFetcher 同时实现 RemoteFetcher 与 ArtifactMetadataFetcher，
+// 用于验证装饰器不剥离可选能力。
+type fakeMetadataFetcher struct {
+	fakeRemoteFetcher
+	metadata *ArtifactMetadata
+	metaErr  error
+}
+
+func (f *fakeMetadataFetcher) FetchArtifactMetadata(ctx context.Context, remoteURL string, key ArtifactKey) (*ArtifactMetadata, error) {
+	return f.metadata, f.metaErr
+}
+
+// TestCircuitBreakerFetcherDecoratorBlocksWhenOpen 验证熔断打开时直接返回 ErrCircuitOpen，
+// 不调用内层 RemoteFetcher。
+func TestCircuitBreakerFetcherDecoratorBlocksWhenOpen(t *testing.T) {
+	cb := &fakeCircuitBreaker{allowRequest: false, retryAfterValue: 7}
+	inner := &fakeRemoteFetcher{artifacts: []*Artifact{{Name: "pkg"}}}
+	decorator := NewCircuitBreakerFetcherDecorator(inner, cb)
+
+	_, err := decorator.FetchRemote(context.Background(), "https://example.test", "pkg")
+	if !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("FetchRemote error = %v, want ErrCircuitOpen", err)
+	}
+	var coe *CircuitOpenError
+	if !errors.As(err, &coe) || coe.RetryAfter != 7 {
+		t.Fatalf("FetchRemote error should wrap *CircuitOpenError with RetryAfter=7, got %v", err)
+	}
+	if inner.RemoteCalls() != 0 {
+		t.Fatalf("inner calls = %d, want 0 (must not reach inner when open)", inner.RemoteCalls())
+	}
+}
+
+// TestCircuitBreakerFetcherDecoratorAllowsWhenClosed 验证熔断关闭时透传内层并记录成功。
+func TestCircuitBreakerFetcherDecoratorAllowsWhenClosed(t *testing.T) {
+	cb := &fakeCircuitBreaker{allowRequest: true}
+	want := []*Artifact{{Name: "pkg"}}
+	inner := &fakeRemoteFetcher{artifacts: want}
+	decorator := NewCircuitBreakerFetcherDecorator(inner, cb)
+
+	got, err := decorator.FetchRemote(context.Background(), "https://example.test", "pkg")
+	if err != nil {
+		t.Fatalf("FetchRemote error = %v, want nil", err)
+	}
+	if len(got) != 1 || got[0].Name != "pkg" {
+		t.Fatalf("FetchRemote = %v, want [pkg]", got)
+	}
+	if cb.SuccessCount() != 1 {
+		t.Fatalf("success recorded = %d, want 1", cb.SuccessCount())
+	}
+}
+
+// TestCircuitBreakerFetcherDecoratorTimeoutRecordsTimeout 验证超时错误记入 RecordTimeout。
+func TestCircuitBreakerFetcherDecoratorTimeoutRecordsTimeout(t *testing.T) {
+	cb := &fakeCircuitBreaker{allowRequest: true}
+	inner := &fakeRemoteFetcher{err: timeoutError{}}
+	decorator := NewCircuitBreakerFetcherDecorator(inner, cb)
+
+	if _, err := decorator.FetchRemote(context.Background(), "https://example.test", "pkg"); err == nil {
+		t.Fatal("FetchRemote error = nil, want timeout error")
+	}
+	if cb.TimeoutCount() != 1 {
+		t.Fatalf("timeout recorded = %d, want 1", cb.TimeoutCount())
+	}
+	if cb.FailureCount() != 0 {
+		t.Fatalf("failure recorded = %d, want 0", cb.FailureCount())
+	}
+}
+
+// TestCircuitBreakerFetcherDecoratorFailureRecordsFailure 验证普通失败记入 RecordFailure。
+func TestCircuitBreakerFetcherDecoratorFailureRecordsFailure(t *testing.T) {
+	cb := &fakeCircuitBreaker{allowRequest: true}
+	inner := &fakeRemoteFetcher{err: errors.New("connection refused")}
+	decorator := NewCircuitBreakerFetcherDecorator(inner, cb)
+
+	if _, err := decorator.FetchRemote(context.Background(), "https://example.test", "pkg"); err == nil {
+		t.Fatal("FetchRemote error = nil, want error")
+	}
+	if cb.FailureCount() != 1 {
+		t.Fatalf("failure recorded = %d, want 1", cb.FailureCount())
+	}
+	if cb.TimeoutCount() != 0 {
+		t.Fatalf("timeout recorded = %d, want 0", cb.TimeoutCount())
+	}
+}
+
+// TestCircuitBreakerFetcherDecoratorNilBreakerIsTransparent 验证 cb 为 nil 时装饰器完全透传，
+// 不调用任何熔断方法，也不报熔断错误。
+func TestCircuitBreakerFetcherDecoratorNilBreakerIsTransparent(t *testing.T) {
+	inner := &fakeRemoteFetcher{artifacts: []*Artifact{{Name: "pkg"}}}
+	decorator := NewCircuitBreakerFetcherDecorator(inner, nil)
+
+	got, err := decorator.FetchRemote(context.Background(), "https://example.test", "pkg")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("FetchRemote = (%v, %v), want (1 artifact, nil)", got, err)
+	}
+}
+
+// TestCircuitBreakerFetcherDecoratorForwardsMetadataCapability 验证装饰器不剥离
+// ArtifactMetadataFetcher 可选能力：类型断言必须成功，且透传内层实现。
+func TestCircuitBreakerFetcherDecoratorForwardsMetadataCapability(t *testing.T) {
+	cb := &fakeCircuitBreaker{allowRequest: true}
+	inner := &fakeMetadataFetcher{
+		metadata: &ArtifactMetadata{Attributes: map[string]string{"license": "MIT"}},
+	}
+	decorator := NewCircuitBreakerFetcherDecorator(inner, cb)
+
+	// 类型断言必须成功（这正是包装后条件阻断规则依赖的接口）。
+	fetcher, ok := interface{}(decorator).(ArtifactMetadataFetcher)
+	if !ok {
+		t.Fatal("decorator does not implement ArtifactMetadataFetcher, capability lost after wrapping")
+	}
+	meta, err := fetcher.FetchArtifactMetadata(context.Background(), "https://example.test", ArtifactKey{Name: "pkg"})
+	if err != nil || meta.Attributes["license"] != "MIT" {
+		t.Fatalf("FetchArtifactMetadata = (%v, %v), want (license=MIT, nil)", meta, err)
+	}
+	if cb.SuccessCount() != 1 {
+		t.Fatalf("success recorded = %d, want 1", cb.SuccessCount())
+	}
+}
+
+// TestCircuitBreakerFetcherDecoratorUnsupportedMetadata 验证被包裹对象不支持
+// ArtifactMetadataFetcher 时返回 ErrMetadataUnsupported（语义与插件不支持一致）。
+func TestCircuitBreakerFetcherDecoratorUnsupportedMetadata(t *testing.T) {
+	cb := &fakeCircuitBreaker{allowRequest: true}
+	inner := &fakeRemoteFetcher{}
+	decorator := NewCircuitBreakerFetcherDecorator(inner, cb)
+
+	_, err := decorator.FetchArtifactMetadata(context.Background(), "https://example.test", ArtifactKey{Name: "pkg"})
+	if !errors.Is(err, ErrMetadataUnsupported) {
+		t.Fatalf("FetchArtifactMetadata error = %v, want ErrMetadataUnsupported", err)
+	}
+}
+
+// TestCircuitBreakerFetcherDecoratorConcurrentSafe 验证并发安全（-race 下无 data race）。
+func TestCircuitBreakerFetcherDecoratorConcurrentSafe(t *testing.T) {
+	cb := &fakeCircuitBreaker{allowRequest: true}
+	inner := &fakeMetadataFetcher{fakeRemoteFetcher: fakeRemoteFetcher{artifacts: []*Artifact{{Name: "pkg"}}}}
+	decorator := NewCircuitBreakerFetcherDecorator(inner, cb)
+
+	const concurrency = 20
+	done := make(chan struct{})
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			ctx := context.Background()
+			_, _ = decorator.FetchRemote(ctx, "https://example.test", "pkg")
+			_, _ = decorator.FetchArtifactMetadata(ctx, "https://example.test", ArtifactKey{Name: "pkg"})
+		}()
+	}
+	for i := 0; i < concurrency; i++ {
+		<-done
+	}
+	if total := cb.SuccessCount(); total != int64(concurrency)*2 {
+		t.Fatalf("success recorded = %d, want %d (2 ops per goroutine)", total, int64(concurrency)*2)
+	}
+}

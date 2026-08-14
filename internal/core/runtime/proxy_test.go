@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 func TestProxyRuntimeOpenRemoteForwardsSafeHeadersWithoutMetadataAccess(t *testing.T) {
@@ -1954,4 +1956,119 @@ func (s *fakeMultiMetadataStore) Delete(ctx context.Context, key ArtifactKey) er
 
 func (s *fakeMultiMetadataStore) Query(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
 	return s.artifacts, nil
+}
+
+// TestQueryArtifactsWaiterReturnsOnOwnContextTimeout 验证 doFlight 的 ctx-aware 语义：
+// 等待方在自身 ctx 超时时快速返回，不会被动阻塞在慢 leader 的回源上；同时共享回源
+// 仍只触发一次（去重不被破坏）。
+func TestQueryArtifactsWaiterReturnsOnOwnContextTimeout(t *testing.T) {
+	var (
+		mu        sync.Mutex
+		fetchCount int
+		released  = make(chan struct{})
+	)
+	fetcher := &fakeFetcher{
+		fn: func() ([]*Artifact, error) {
+			mu.Lock()
+			fetchCount++
+			mu.Unlock()
+			<-released // 模拟慢上游：leader 一直挂起直到测试放行
+			return []*Artifact{{RepositoryID: "repo", Format: "npm", Name: "slow"}}, nil
+		},
+	}
+	rt := &ProxyRuntime{
+		MetadataStore: newFakeMetadataStore(),
+		RemoteBaseURL: "https://example.test",
+		Fetcher:       fetcher,
+		Format:        "npm",
+	}
+
+	// leader：后台 ctx，正常回源
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		rt.QueryArtifacts(context.Background(), ArtifactQuery{
+			Format: "npm", RemotePath: "dedup-waiter",
+		})
+	}()
+
+	// 确保 leader 已经进入回源
+	waitForFetch := func() {
+		for {
+			mu.Lock()
+			n := fetchCount
+			mu.Unlock()
+			if n >= 1 {
+				return
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	waitForFetch()
+
+	// 等待方：ctx 在 30ms 后超时，应快速返回，而非阻塞到 leader 放行
+	waiterCtx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	waiterStart := time.Now()
+	_, err := rt.QueryArtifacts(waiterCtx, ArtifactQuery{
+		Format: "npm", RemotePath: "dedup-waiter",
+	})
+	elapsed := time.Since(waiterStart)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiter error = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("waiter blocked too long: %v, want prompt return on own ctx timeout", elapsed)
+	}
+
+	// 放行 leader，验证共享回源只触发一次
+	close(released)
+	<-leaderDone
+	mu.Lock()
+	n := fetchCount
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("FetchRemote called %d times, want 1 (waiters must not start duplicate fetches)", n)
+	}
+}
+
+// TestDoFlightLeaderSurvivesCallerCancel 验证 doFlight 的 leader 用调用方传入的 base ctx
+// 执行 run，不受任一调用者 ctx 取消影响：首个调用者中途取消后，共享回源仍在 base 上完成，
+// 后续加入的等待方仍能拿到结果。
+func TestDoFlightLeaderSurvivesCallerCancel(t *testing.T) {
+	var g singleflight.Group
+
+	started := make(chan struct{})
+	base := context.Background()
+	run := func(runCtx context.Context) (int, error) {
+		close(started)
+		select {
+		case <-runCtx.Done():
+			return 0, runCtx.Err() // 若 run 用了 caller ctx，此分支会命中
+		case <-time.After(50 * time.Millisecond):
+			return 42, nil
+		}
+	}
+
+	// 首个调用者：启动 leader 后立刻取消自己的 ctx。
+	callerCtx, cancel := context.WithCancel(context.Background())
+	firstErr := make(chan error, 1)
+	go func() {
+		_, err := doFlight(callerCtx, &g, "k", base, run)
+		firstErr <- err
+	}()
+	<-started     // 确认 run 已开始
+	cancel()      // 首个调用者取消自己的 ctx
+	if err := <-firstErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first caller error = %v, want context.Canceled", err)
+	}
+
+	// 第二个调用者（未取消）加入同一 flight，应拿到 base run 的结果 42。
+	// 若 leader 被首个 caller 的 ctx 取消，这里会收到 runCtx.Err() 而非 42。
+	secondCtx, secondCancel := context.WithCancel(context.Background())
+	defer secondCancel()
+	second, err := doFlight(secondCtx, &g, "k", base, run)
+	if err != nil || second != 42 {
+		t.Fatalf("second caller = (%v, %v), want (42, nil); leader must run on base, not caller ctx", second, err)
+	}
 }
