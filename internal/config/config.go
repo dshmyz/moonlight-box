@@ -151,14 +151,21 @@ type AIConfig struct {
 	RateLimit   AIRateLimitConfig `mapstructure:"rate_limit"`
 	Cache       AICacheConfig     `mapstructure:"cache"`
 	Session     AISessionConfig   `mapstructure:"session"`
+	Prompts     AIPromptsConfig   `mapstructure:"prompts"`
+}
+
+// AI 提示词治理配置
+type AIPromptsConfig struct {
+	Enabled bool `mapstructure:"enabled"` // 启用集中式提示词模板（版本化 + A/B 测试）
 }
 
 // AI 工具配置
 type AIToolsConfig struct {
-	Enabled          bool     `mapstructure:"enabled"`
-	AllowedTools     []string `mapstructure:"allowed_tools"`
-	MaxExecutionTime int      `mapstructure:"max_execution_time"`
-	EnableAuditLog   bool     `mapstructure:"enable_audit_log"`
+	Enabled          bool          `mapstructure:"enabled"`
+	AllowedTools     []string      `mapstructure:"allowed_tools"`
+	MaxExecutionTime int           `mapstructure:"max_execution_time"`
+	EnableAuditLog   bool          `mapstructure:"enable_audit_log"`
+	AuditRetention   time.Duration `mapstructure:"audit_retention"`
 }
 
 // AI 限流配置

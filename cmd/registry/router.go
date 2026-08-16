@@ -490,6 +490,20 @@ func (ctx *RouterContext) setupAIRoutes(protected *gin.RouterGroup) {
 		ai.GET("/stats", ctx.requirePermission("system", "admin"), ctx.Handlers.AI.GetStats)
 		ai.GET("/cache/stats", ctx.requirePermission("system", "admin"), ctx.Handlers.AI.GetCacheStats)
 		ai.GET("/audit-logs", ctx.requirePermission("system", "admin"), ctx.Handlers.AI.GetAuditLogs)
+		ai.GET("/audit-logs/export", ctx.requirePermission("system", "admin"), ctx.Handlers.AI.ExportAuditLogs)
+		ai.GET("/audit-logs/verify", ctx.requirePermission("system", "admin"), ctx.Handlers.AI.VerifyAuditChain)
+
+		// 提示词模板治理（版本管理 + 变更评审 + A/B 测试）
+		prompts := ai.Group("/prompts")
+		prompts.Use(ctx.requirePermission("system", "admin"))
+		{
+			prompts.GET("", ctx.Handlers.AI.ListPrompts)
+			prompts.GET("/:id", ctx.Handlers.AI.GetPrompt)
+			prompts.POST("", ctx.Handlers.AI.CreatePrompt)
+			prompts.POST("/:id/activate", ctx.Handlers.AI.ActivatePrompt)
+			prompts.POST("/:id/retire", ctx.Handlers.AI.RetirePrompt)
+			prompts.DELETE("/:id", ctx.Handlers.AI.DeletePrompt)
+		}
 	}
 }
 

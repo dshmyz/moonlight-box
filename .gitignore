@@ -27,6 +27,9 @@ internal/adapter/yum/1
 *.test
 .bytro
 
+# Go build cache (may land in repo when GOCACHE is unset/unusual)
+.gocache/
+
 # Output
 *.out
 coverage.out

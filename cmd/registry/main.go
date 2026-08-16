@@ -546,6 +546,24 @@ func main() {
 		blockRuleOptimizerTool.SetContext(toolContext)
 		aiService.RegisterTool(blockRuleOptimizerTool, []string{"admin", "security_admin"})
 
+		// 供应链影响面分析工具 - 管理员和安全管理员可用
+		// 找出所有直接依赖被阻断/含漏洞包的上游项目（blast radius）
+		dependencyImpactTool := tools.NewDependencyImpactTool()
+		dependencyImpactTool.SetContext(toolContext)
+		aiService.RegisterTool(dependencyImpactTool, []string{"admin", "security_admin"})
+
+		// 下载异常检测工具 - 管理员和安全管理员可用
+		// 下载骤增/新包/IP集中/失败率异常（供应链投毒识别）
+		downloadAnomalyTool := tools.NewDownloadAnomalyTool()
+		downloadAnomalyTool.SetContext(toolContext)
+		aiService.RegisterTool(downloadAnomalyTool, []string{"admin", "security_admin"})
+
+		// 许可合规分析工具 - 管理员和安全管理员可用
+		// 按 license 分类包，识别 copyleft/未知许可风险
+		licenseAnalyzerTool := tools.NewLicenseAnalyzerTool()
+		licenseAnalyzerTool.SetContext(toolContext)
+		aiService.RegisterTool(licenseAnalyzerTool, []string{"admin", "security_admin"})
+
 		// 代码生成工具 - 所有用户可用
 		codeGenTool := tools.NewCodeGenTool()
 		codeGenTool.SetContext(toolContext)

@@ -60,15 +60,16 @@ type ProxyRuntime struct {
 	metadataFailures  map[string]time.Time
 }
 
-// upstreamContext 返回回源请求用的独立上下文：从 background 派生、带固定 deadline。
-// 回源（FetchRemote/FetchMetadata/FetchBlob）只用该上下文，不再透传首个调用者的 ctx，
-// 避免共享回源的存亡耦合到最先到达的那个客户端（其断连把等待同一 key 的所有人一起取消）。
-func (n *ProxyRuntime) upstreamContext() (context.Context, context.CancelFunc) {
+// upstreamTimeout 返回回源请求用的固定超时（仓库级 UpstreamTimeout，未配置时回退默认值）。
+// 回源（FetchRemote/FetchMetadata/FetchBlob）只在 leader 的共享回源内使用带此 deadline 的
+// background ctx（见 doFlight），不再透传任意调用者的 ctx，避免共享回源的存亡耦合到最先到达
+// 的那个客户端（其断连把等待同一 key 的所有人一起取消）。
+func (n *ProxyRuntime) upstreamTimeout() time.Duration {
 	to := n.UpstreamTimeout
 	if to <= 0 {
 		to = defaultUpstreamTimeout
 	}
-	return context.WithTimeout(context.Background(), to)
+	return to
 }
 
 // flightResult[T] 是 doFlight 在 singleflight 内的统一结果载体。
@@ -81,12 +82,13 @@ type flightResult[T any] struct {
 //
 // 解决了标准库 singleflight.Group.Do 的两个问题：
 //   - 等待方 `call.Wait()` 不检查自身 ctx，会被动阻塞在慢 leader 上；
-//   - leader 透传第一个调用者的 ctx，其断连会把等待同一 key 的所有人一起取消。
+//   - leader 被调用方的 ctx 取消时会把共享回源一起取消，连坐等待同一 key 的所有人。
 //
-// 用法：leader 用 base（调用方传入的上游独立 context，见 upstreamContext）执行 run，
-// 完成一次共享回源；等待方在自身 ctx 超时/取消时立即返回 ctx.Err()。由于结果通道带缓冲，
-// 等待方提前退出不会阻塞内部 goroutine，也不会中断共享回源（缓存仍会被填充）。
-func doFlight[T any](ctx context.Context, g *singleflight.Group, key string, base context.Context, run func(context.Context) (T, error)) (T, error) {
+// 回源上下文由 leader 在 g.Do 闭包内创建（background + 固定超时），生命周期等于共享回源本身，
+// 不依赖任何调用方 ctx：首个调用方断连只让它自己立即返回 ctx.Err()，正在进行的回源继续完成，
+// 等待方仍能拿到结果、缓存仍会被填充。timeout 由调用方传入（见 upstreamTimeout / MetadataFetchTimeout）。
+// 由于结果通道带缓冲，等待方提前退出不会阻塞内部 goroutine。
+func doFlight[T any](ctx context.Context, g *singleflight.Group, key string, timeout time.Duration, run func(context.Context) (T, error)) (T, error) {
 	var zero T
 	resCh := make(chan flightResult[T], 1)
 	go func() {
@@ -96,7 +98,9 @@ func doFlight[T any](ctx context.Context, g *singleflight.Group, key string, bas
 			}
 		}()
 		raw, _, _ := g.Do(key, func() (interface{}, error) {
-			v, err := run(base)
+			runCtx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			v, err := run(runCtx)
 			return flightResult[T]{v: v, err: err}, nil
 		})
 		r, _ := raw.(flightResult[T])
@@ -195,9 +199,10 @@ type cachedArtifact struct {
 	negative  bool
 }
 
-// cachedArtifactEntry 是 LRU 链表节点，持有缓存键以便 O(1) 从 map 删除。
+// cachedArtifactEntry 是 LRU 链表节点，持有原始 ArtifactKey 以便 O(1) 从 map 删除，
+// 也供 WarmUp 在无损耗地重放检索（保留 scoped 名称与 Qualifiers，无需从字符串反向解析）。
 type cachedArtifactEntry struct {
-	key       string
+	key       ArtifactKey
 	artifact  *Artifact
 	expiresAt time.Time
 	negative  bool
@@ -279,9 +284,7 @@ func (n *ProxyRuntime) evaluateConditionalAccess(ctx context.Context, key Artifa
 	if timeout <= 0 {
 		timeout = 2 * time.Second
 	}
-	base, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	metadata, err := doFlight(ctx, &n.fetchGroup, failureKey, base, func(runCtx context.Context) (*ArtifactMetadata, error) {
+	metadata, err := doFlight(ctx, &n.fetchGroup, failureKey, timeout, func(runCtx context.Context) (*ArtifactMetadata, error) {
 		return fetcher.FetchArtifactMetadata(runCtx, n.RemoteBaseURL, key)
 	})
 	if err != nil {
@@ -457,9 +460,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 	}
 
 	sfKey := "get:" + key.String()
-	base, cancel := n.upstreamContext()
-	defer cancel()
-	res, err := doFlight(ctx, &n.fetchGroup, sfKey, base, func(runCtx context.Context) (getArtifactResult, error) {
+	res, err := doFlight(ctx, &n.fetchGroup, sfKey, n.upstreamTimeout(), func(runCtx context.Context) (getArtifactResult, error) {
 		if n.isNegativeCached(key) {
 			metrics.RecordProxyNegativeCacheHit(n.Format)
 			return getArtifactResult{}, ErrNotFound
@@ -738,9 +739,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 			fetched []*Artifact
 			err     error
 		}
-		base, cancel := n.upstreamContext()
-		defer cancel()
-		res, sgErr := doFlight(ctx, &n.fetchGroup, sgKey, base, func(runCtx context.Context) (queryResult, error) {
+		res, sgErr := doFlight(ctx, &n.fetchGroup, sgKey, n.upstreamTimeout(), func(runCtx context.Context) (queryResult, error) {
 			fetched, fetchErr := n.Fetcher.FetchRemote(runCtx, n.RemoteBaseURL, query.RemotePath)
 			if fetchErr != nil {
 				return queryResult{err: fetchErr}, nil
@@ -1060,7 +1059,7 @@ func (n *ProxyRuntime) setCachedArtifact(key ArtifactKey, artifact *Artifact) {
 	}
 	cacheKey := key.String()
 	entry := &cachedArtifactEntry{
-		key:       cacheKey,
+		key:       key,
 		artifact:  cloneArtifactForCache(artifact),
 		expiresAt: time.Now().Add(n.CachePolicy.MetadataTTL),
 	}
@@ -1136,7 +1135,7 @@ func (n *ProxyRuntime) removeOldestLocked() {
 // 调用方必须持有 metadataCacheMu 写锁。
 func (n *ProxyRuntime) removeElementLocked(el *list.Element) {
 	entry := el.Value.(*cachedArtifactEntry)
-	delete(n.metadataCache, entry.key)
+	delete(n.metadataCache, entry.key.String())
 	n.metadataCacheLL.Remove(el)
 }
 
@@ -1453,15 +1452,14 @@ func (n *ProxyRuntime) WarmUp() {
 		stale bool
 	}
 	var staleEntries []entry
-	for cacheKey, el := range n.metadataCache {
+	for _, el := range n.metadataCache {
 		e := el.Value.(*cachedArtifactEntry)
 		if now.After(e.expiresAt) || e.negative {
 			continue
 		}
 		// 检查是否过期（距上次更新超过 TTL 的一半）
 		if now.Sub(e.artifact.UpdatedAt) > n.CachePolicy.MetadataTTL/2 {
-			key := parseArtifactCacheKey(cacheKey)
-			staleEntries = append(staleEntries, entry{key: key, art: e.artifact, stale: true})
+			staleEntries = append(staleEntries, entry{key: e.key, art: e.artifact, stale: true})
 		}
 	}
 	n.metadataCacheMu.Unlock()
@@ -1486,26 +1484,4 @@ func (n *ProxyRuntime) WarmUp() {
 			}
 		}(e.key, e.art)
 	}
-}
-
-// parseArtifactCacheKey 从缓存 key（格式 "repoID/format/.../name=value/..."）解析出 ArtifactKey。
-func parseArtifactCacheKey(cacheKey string) ArtifactKey {
-	key := ArtifactKey{}
-	parts := strings.Split(cacheKey, "/")
-	if len(parts) >= 2 {
-		key.RepositoryID = parts[0]
-		key.Format = parts[1]
-	}
-	for _, part := range parts[2:] {
-		if strings.HasPrefix(part, "name=") {
-			key.Name = strings.TrimPrefix(part, "name=")
-		} else if strings.HasPrefix(part, "version=") {
-			key.Version = strings.TrimPrefix(part, "version=")
-		} else if strings.HasPrefix(part, "namespace=") {
-			key.Namespace = strings.TrimPrefix(part, "namespace=")
-		} else if strings.HasPrefix(part, "identity=") {
-			key.IdentityKey = strings.TrimPrefix(part, "identity=")
-		}
-	}
-	return key
 }

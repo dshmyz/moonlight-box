@@ -41,6 +41,7 @@ func AutoMigrate() error {
 		&model.DownloadDailyStats{},
 		&model.Package{},
 		&model.PackageVersion{},
+		&model.AIPromptTemplate{},
 		&domain.MigrationPlan{},
 		&domain.MigrationJob{},
 		&domain.MigrationItem{},

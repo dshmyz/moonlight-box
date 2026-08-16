@@ -15,37 +15,16 @@ import (
 
 // ToolManager 工具管理器
 type ToolManager struct {
-	tools       map[string]*registeredTool
-	mu          sync.RWMutex
-	config      *config.AIToolsConfig
-	auditLogger *AuditLogger
+	tools      map[string]*registeredTool
+	mu         sync.RWMutex
+	config     *config.AIToolsConfig
+	auditStore *AuditStore
 }
 
 // registeredTool 注册的工具
 type registeredTool struct {
 	tool         tools.Tool
 	allowedRoles map[string]bool
-}
-
-// AuditLogger 审计日志记录器
-type AuditLogger struct {
-	entries []AuditEntry
-	mu      sync.RWMutex
-	enabled bool
-	maxSize int
-}
-
-// AuditEntry 审计日志条目
-type AuditEntry struct {
-	Timestamp time.Time              `json:"timestamp"`
-	ToolName  string                 `json:"tool_name"`
-	UserID    uint                   `json:"user_id"`
-	Username  string                 `json:"username"`
-	Params    map[string]interface{} `json:"params"`
-	Result    string                 `json:"result"`
-	Error     string                 `json:"error,omitempty"`
-	Duration  time.Duration          `json:"duration_ms"`
-	Success   bool                   `json:"success"`
 }
 
 // ToolInfo 工具信息
@@ -57,16 +36,15 @@ type ToolInfo struct {
 
 // NewToolManager 创建一个新的工具管理器
 func NewToolManager(cfg *config.AIToolsConfig) *ToolManager {
-	tm := &ToolManager{
+	return &ToolManager{
 		tools:  make(map[string]*registeredTool),
 		config: cfg,
-		auditLogger: &AuditLogger{
-			entries: make([]AuditEntry, 0),
-			enabled: cfg.EnableAuditLog,
-			maxSize: 10000, // 最多保留10000条审计日志
-		},
 	}
-	return tm
+}
+
+// SetAuditStore 设置审计存储（持久化 AI 工具调用审计）。
+func (tm *ToolManager) SetAuditStore(store *AuditStore) {
+	tm.auditStore = store
 }
 
 // RegisterTool 注册工具
@@ -213,9 +191,9 @@ func (tm *ToolManager) ToolCount() int {
 	return len(tm.tools)
 }
 
-// logAudit 记录审计日志
+// logAudit 记录审计日志（写入 AuditStore：内存缓冲 + 可选 DB 持久化）
 func (tm *ToolManager) logAudit(toolName string, user *model.User, params map[string]interface{}, result string, err error, duration time.Duration, success bool) {
-	if !tm.auditLogger.enabled {
+	if tm.auditStore == nil || !tm.config.EnableAuditLog {
 		return
 	}
 
@@ -243,61 +221,31 @@ func (tm *ToolManager) logAudit(toolName string, user *model.User, params map[st
 		Success:   success,
 	}
 
-	tm.auditLogger.Add(entry)
+	tm.auditStore.Add(entry)
 }
 
-// GetAuditLogs 获取审计日志
+// GetAuditLogs 获取最近审计日志。
 func (tm *ToolManager) GetAuditLogs(limit int) []AuditEntry {
-	return tm.auditLogger.Get(limit)
-}
-
-// AuditLogger 方法
-
-// Add 添加审计日志条目
-func (al *AuditLogger) Add(entry AuditEntry) {
-	al.mu.Lock()
-	defer al.mu.Unlock()
-
-	// 如果超过最大数量，删除最旧的条目
-	if al.maxSize > 0 && len(al.entries) >= al.maxSize {
-		al.entries = al.entries[1:]
+	if tm.auditStore == nil {
+		return nil
 	}
-
-	al.entries = append(al.entries, entry)
+	return tm.auditStore.Get(limit)
 }
 
-// Get 获取审计日志
-func (al *AuditLogger) Get(limit int) []AuditEntry {
-	al.mu.RLock()
-	defer al.mu.RUnlock()
-
-	if limit <= 0 || limit > len(al.entries) {
-		limit = len(al.entries)
+// QueryAuditLogs 按条件过滤查询审计日志。
+func (tm *ToolManager) QueryAuditLogs(filter AuditFilter) ([]AuditEntry, int64, error) {
+	if tm.auditStore == nil {
+		return nil, 0, nil
 	}
+	return tm.auditStore.Query(filter)
+}
 
-	// 返回最新的limit条记录
-	start := len(al.entries) - limit
-	if start < 0 {
-		start = 0
+// ExportAuditLogs 导出审计日志（json/csv）。
+func (tm *ToolManager) ExportAuditLogs(filter AuditFilter, format string) ([]byte, error) {
+	if tm.auditStore == nil {
+		return nil, nil
 	}
-
-	result := make([]AuditEntry, limit)
-	copy(result, al.entries[start:])
-	return result
-}
-
-// Clear 清空审计日志
-func (al *AuditLogger) Clear() {
-	al.mu.Lock()
-	defer al.mu.Unlock()
-	al.entries = make([]AuditEntry, 0)
-}
-
-// Count 获取审计日志数量
-func (al *AuditLogger) Count() int {
-	al.mu.RLock()
-	defer al.mu.RUnlock()
-	return len(al.entries)
+	return tm.auditStore.Export(filter, format)
 }
 
 // ParseToolCallParams 解析工具调用参数

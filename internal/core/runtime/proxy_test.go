@@ -2036,44 +2036,44 @@ func TestQueryArtifactsWaiterReturnsOnOwnContextTimeout(t *testing.T) {
 	}
 }
 
-// TestDoFlightLeaderSurvivesCallerCancel 验证 doFlight 的 leader 用调用方传入的 base ctx
-// 执行 run，不受任一调用者 ctx 取消影响：首个调用者中途取消后，共享回源仍在 base 上完成，
-// 后续加入的等待方仍能拿到结果。
+// TestDoFlightLeaderSurvivesCallerCancel 验证 doFlight 的 leader 自行创建回源上下文
+// （background + 固定超时），不受任一调用者 ctx 取消影响：首个调用者中途取消后，
+// 共享回源仍在 leader 自己的 ctx 上完成，后续加入的等待方仍能拿到结果。
 func TestDoFlightLeaderSurvivesCallerCancel(t *testing.T) {
 	var g singleflight.Group
 
 	started := make(chan struct{})
-	base := context.Background()
 	run := func(runCtx context.Context) (int, error) {
 		close(started)
 		select {
 		case <-runCtx.Done():
-			return 0, runCtx.Err() // 若 run 用了 caller ctx，此分支会命中
+			return 0, runCtx.Err() // 若 leader 用了 caller ctx，此分支会命中
 		case <-time.After(50 * time.Millisecond):
 			return 42, nil
 		}
 	}
 
-	// 首个调用者：启动 leader 后立刻取消自己的 ctx。
+	// 首个调用者：启动 leader 后立刻取消自己的 ctx。leader 用自身 background+timeout ctx 回源，
+	// 首个调用者退出时不会连带取消共享回源。
 	callerCtx, cancel := context.WithCancel(context.Background())
 	firstErr := make(chan error, 1)
 	go func() {
-		_, err := doFlight(callerCtx, &g, "k", base, run)
+		_, err := doFlight(callerCtx, &g, "k", 200*time.Millisecond, run)
 		firstErr <- err
 	}()
-	<-started     // 确认 run 已开始
-	cancel()      // 首个调用者取消自己的 ctx
+	<-started // 确认 run 已开始
+	cancel()  // 首个调用者取消自己的 ctx
 	if err := <-firstErr; !errors.Is(err, context.Canceled) {
 		t.Fatalf("first caller error = %v, want context.Canceled", err)
 	}
 
-	// 第二个调用者（未取消）加入同一 flight，应拿到 base run 的结果 42。
-	// 若 leader 被首个 caller 的 ctx 取消，这里会收到 runCtx.Err() 而非 42。
+	// 第二个调用者（未取消）加入同一 flight，应拿到 leader 回源的结果 42。
+	// 若共享回源被首个 caller 的 ctx 取消，这里会收到 runCtx.Err() 而非 42。
 	secondCtx, secondCancel := context.WithCancel(context.Background())
 	defer secondCancel()
-	second, err := doFlight(secondCtx, &g, "k", base, run)
+	second, err := doFlight(secondCtx, &g, "k", 200*time.Millisecond, run)
 	if err != nil || second != 42 {
-		t.Fatalf("second caller = (%v, %v), want (42, nil); leader must run on base, not caller ctx", second, err)
+		t.Fatalf("second caller = (%v, %v), want (42, nil); leader must run on its own ctx, not caller ctx", second, err)
 	}
 }
 

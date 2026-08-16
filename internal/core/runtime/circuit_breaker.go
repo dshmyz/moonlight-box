@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 )
@@ -144,9 +145,22 @@ type CircuitBreakerFetcherDecorator struct {
 	cb    CircuitBreaker
 }
 
-// NewCircuitBreakerFetcherDecorator 创建装饰器。inner 或 cb 为 nil 时返回的装饰器
-// 直接透传 inner，不进行任何熔断检查——调用方可以无条件调用，无需 nil 检查。
+// noopRemoteFetcher 兜底装饰器：inner 为 nil 时替代它返回错误，避免解放调用方后出现 nil panic。
+type noopRemoteFetcher struct{}
+
+func (noopRemoteFetcher) FetchRemote(ctx context.Context, remoteURL, path string) ([]*Artifact, error) {
+	return nil, fmt.Errorf("remote fetcher not configured")
+}
+
+// NewCircuitBreakerFetcherDecorator 创建装饰器：
+//   - cb 为 nil 时装饰器完全透传 inner，不进行任何熔断检查；
+//   - inner 为 nil 时被 noopRemoteFetcher 兜底，FetchRemote 返回明确错误而非 panic。
+//
+// 两种场景调用方都可以无条件调用，无需 nil 检查。
 func NewCircuitBreakerFetcherDecorator(inner RemoteFetcher, cb CircuitBreaker) *CircuitBreakerFetcherDecorator {
+	if inner == nil {
+		inner = noopRemoteFetcher{}
+	}
 	return &CircuitBreakerFetcherDecorator{inner: inner, cb: cb}
 }
 

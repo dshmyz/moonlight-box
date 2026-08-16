@@ -58,6 +58,9 @@ ai:
     # - code_generator: 生成示例代码
     # - block_log_analyzer: 阻断日志分析
     # - dependency_optimizer: 依赖优化建议
+    # - dependency_impact: 供应链影响面分析（blast radius，admin）
+    # - download_anomaly: 下载异常检测（admin）
+    # - license_analyzer: 许可合规分析（admin）
     allowed_tools:
       - log_query
       - db_query
@@ -66,13 +69,33 @@ ai:
       - code_generator
       - block_log_analyzer
       - dependency_optimizer
+      - dependency_impact
+      - download_anomaly
+      - license_analyzer
 
     # 工具最大执行时间（秒）
     max_execution_time: 10
 
     # 是否启用审计日志
     # 记录所有工具调用，用于安全审计
+    #
+    # 注意：提示词治理事件（创建/激活/下线/删除模板，ActionAIPromptChange）
+    # 属于治理动作，总是写入审计哈希链，不受本开关控制。
     enable_audit_log: true
+
+    # AI 工具审计日志保留时长（哈希链防篡改，定期清理过期记录）
+    # 默认 720h（30 天）。建议满足内部审计/合规要求
+    audit_retention: 720h
+
+  # ========================================
+  # 提示词治理（集中式模板 + A/B 测试）
+  # ========================================
+  prompts:
+    # 启用集中式系统提示词模板管理（版本化 + 评审 + A/B 测试）
+    # 模板存储于 ai_prompt_templates 表，可通过 API 管理：
+    #   GET/POST /api/v1/ai/prompts, POST /:id/activate|retire, DELETE /:id
+    # 禁用时使用内置默认提示词
+    enabled: true
 
   # ========================================
   # 限流配置
