@@ -63,6 +63,7 @@ func (i *ConfigInitializer) InitializeDefaultConfigs() error {
 		{"cas.service_url", "", "string", "login", "Service URL", false},
 		{"cas.login_path", DefaultCASLoginPath, "string", "login", "CAS 登录路径", false},
 		{"cas.validate_path", DefaultCASValidatePath, "string", "login", "CAS 验证路径", false},
+		{"cas.allowed_hosts", "", "string", "login", "允许自动推导 Service URL 的域名白名单（逗号分隔，如 repo-a.corp.com,*.corp.com）", false},
 
 		{"metrics.enabled", "true", "bool", "general", "启用Prometheus监控", false},
 		{"metrics.path", "/metrics", "string", "general", "Prometheus监控路径", false},

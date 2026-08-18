@@ -365,6 +365,7 @@ func main() {
 	repoSvc := service.NewRepositoryService(repoRepo, groupRepo, db)
 	repoSvc.SetRepoCache(repoCache)
 	repoSvc.SetRepoManager(repoManager)
+	repoSvc.SetArtifactService(artifactSvc)
 
 	// Wire block rules and audit logging into the repository router
 	repositoryRouter.Blocker = blocker

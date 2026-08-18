@@ -212,6 +212,52 @@ func (h *RepositoryHandler) Delete(c *gin.Context) {
 	response.Success(c, gin.H{"message": "Repository deleted"})
 }
 
+// MigrateCache 把 proxy 仓库的缓存内容整体迁移到指定的 local 仓库。
+// 请求体: {"target_repository": "<local 仓库名>"}
+func (h *RepositoryHandler) MigrateCache(c *gin.Context) {
+	name := c.Param("name")
+	var req struct {
+		TargetRepository string `json:"target_repository" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request", err.Error())
+		return
+	}
+
+	result, err := h.svc.MigrateCacheToRepo(c.Request.Context(), name, req.TargetRepository)
+	if err != nil {
+		response.WriteAppError(c, err)
+		return
+	}
+	if result.TotalConflicts > 0 {
+		// 截断到前 20 条，避免响应体过大
+		const maxShown = 20
+		names := make([]string, 0, maxShown)
+		for _, conf := range result.Conflicts {
+			display := conf.Name
+			if conf.Kind == "version" {
+				display = conf.Name + "@" + conf.Version
+			}
+			names = append(names, display)
+			if len(names) >= maxShown {
+				break
+			}
+		}
+		msg := fmt.Sprintf("目标仓库 %s 存在 %d 处重叠内容（如：%s），请先清理目标仓库或改用空仓库",
+			req.TargetRepository, result.TotalConflicts, strings.Join(names, ", "))
+		response.Conflict(c, msg)
+		return
+	}
+
+	response.Success(c, gin.H{
+		"source_repository": name,
+		"target_repository": req.TargetRepository,
+		"moved_artifacts":   result.MovedArtifacts,
+		"moved_packages":    result.MovedPackages,
+		"moved_versions":    result.MovedVersions,
+	})
+}
+
 // GetMembers 获取虚拟仓库的成员列表
 func (h *RepositoryHandler) GetMembers(c *gin.Context) {
 	name := c.Param("name")

@@ -51,9 +51,13 @@ auth:
   cas:
     enabled: false
     server_url: "https://cas.example.com/cas"
-    service_url: "http://localhost:9081"
+    # 前端登录页完整回调地址（单域名必填）；留空则按请求 Host 自动推导，
+    # 此时需在 allowed_hosts 配置允许的域名，并在 CAS 服务端注册对应 service。
+    service_url: "http://localhost:9081/login"
     login_path: "/cas/login"
     validate_path: "/cas/serviceValidate"
+    # 自动推导 service URL 时的域名白名单，支持 *.example.com 通配
+    allowed_hosts: []
 
 security:
   enabled: true

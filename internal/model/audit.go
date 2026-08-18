@@ -138,9 +138,10 @@ type SystemConfig struct {
 }
 
 type CASConfig struct {
-	Enabled      bool   `json:"enabled"`
-	ServerURL    string `json:"server_url"`
-	ServiceURL   string `json:"service_url"`
-	LoginPath    string `json:"login_path"`
-	ValidatePath string `json:"validate_path"`
+	Enabled      bool     `json:"enabled"`
+	ServerURL    string   `json:"server_url"`
+	ServiceURL   string   `json:"service_url"`
+	LoginPath    string   `json:"login_path"`
+	ValidatePath string   `json:"validate_path"`
+	AllowedHosts []string `json:"allowed_hosts"`
 }

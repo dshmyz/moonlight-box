@@ -36,6 +36,7 @@ type RepositoryService struct {
 	healthCheckSvc *proxy.HealthCheckService
 	db             *gorm.DB
 	repoMgr        *runtime.DefaultRepositoryManager
+	artifactSvc    *ArtifactService
 
 	// 列表缓存
 	listCacheMu  sync.RWMutex
@@ -72,6 +73,11 @@ func (s *RepositoryService) SetHealthCheckService(svc *proxy.HealthCheckService)
 // SetRepoManager 设置运行时仓库管理器
 func (s *RepositoryService) SetRepoManager(mgr *runtime.DefaultRepositoryManager) {
 	s.repoMgr = mgr
+}
+
+// SetArtifactService 注入 ArtifactService，用于缓存迁移等需要行级数据操作的功能。
+func (s *RepositoryService) SetArtifactService(as *ArtifactService) {
+	s.artifactSvc = as
 }
 
 // invalidateCache 失效缓存
@@ -352,6 +358,53 @@ func (s *RepositoryService) Delete(name string) error {
 		s.cascadeInvalidateParents(name)
 	}
 	return err
+}
+
+// MigrateCacheToRepo 把 proxy 仓库的缓存内容整体迁移到指定的 local 仓库。
+// 返回 ArtifactService 的迁移结果；目标仓库存在重叠内容时 Conflicts 非空，由调用方转 409。
+func (s *RepositoryService) MigrateCacheToRepo(ctx context.Context, sourceName, targetName string) (*MigrateResult, error) {
+	source, err := s.repoRepo.FindByNameContext(ctx, sourceName)
+	if err != nil {
+		return nil, err
+	}
+	target, err := s.repoRepo.FindByNameContext(ctx, targetName)
+	if err != nil {
+		return nil, err
+	}
+
+	if source.Type != model.RepoTypeProxy {
+		return nil, apperr.NewAppError(http.StatusBadRequest,
+			fmt.Sprintf("repository %s is not a proxy repository (type=%s)", sourceName, source.Type), nil)
+	}
+	if target.Type != model.RepoTypeLocal {
+		return nil, apperr.NewAppError(http.StatusBadRequest,
+			fmt.Sprintf("target repository %s must be a local repository (type=%s)", targetName, target.Type), nil)
+	}
+	if source.PackageType != target.PackageType {
+		return nil, apperr.NewAppError(http.StatusBadRequest, fmt.Sprintf(
+			"package format mismatch: source %q vs target %q", source.PackageType, target.PackageType), nil)
+	}
+	if source.ID == target.ID {
+		return nil, apperr.NewAppError(http.StatusBadRequest,
+			fmt.Sprintf("source and target repository must differ (%s)", sourceName), nil)
+	}
+
+	if s.artifactSvc == nil {
+		return nil, fmt.Errorf("artifact service not injected")
+	}
+	result, err := s.artifactSvc.MigrateArtifactsToRepo(ctx, source.ID, target.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 迁移（或冲突检查）后源/目标仓库的缓存与运行时均需失效。
+	// 级联失效包含它们的虚拟仓库：源仓库内容被清空、目标仓库内容被填充，
+	// 持有任一 Runtime 引用的 GroupRuntime 都必须重建。
+	s.invalidateCache(sourceName)
+	s.invalidateCache(targetName)
+	s.cascadeInvalidateParents(sourceName)
+	s.cascadeInvalidateParents(targetName)
+	return result, nil
 }
 
 // AddMember 向虚拟仓库添加成员

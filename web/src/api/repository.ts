@@ -153,6 +153,17 @@ export const repositoryApi = {
     return request.delete(`/repositories/${name}/members/${memberName}`)
   },
 
+  // 迁移 proxy 缓存到本地仓库
+  migrateCache(name: string, data: { target_repository: string }) {
+    return request.post<{
+      source_repository: string
+      target_repository: string
+      moved_artifacts: number
+      moved_packages: number
+      moved_versions: number
+    }>(`/repositories/${name}/migrate-cache`, data)
+  },
+
   // 健康检查相关 API
   getAllHealthStatuses() {
     return request.get<{ total: number; items: RepositoryHealthInfo[] }>('/health/repos')

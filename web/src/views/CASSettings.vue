@@ -38,13 +38,22 @@
           <span class="form-hint">CAS 服务端基础 URL，不含路径</span>
         </el-form-item>
 
-        <el-form-item label="服务回调地址" required>
+        <el-form-item label="服务回调地址">
           <el-input
             v-model="config.service_url"
-            placeholder="https://your-moonlight-domain/api/v1/auth/cas/callback"
+            placeholder="https://your-moonlight-domain/login"
             :disabled="!config.enabled"
           />
-          <span class="form-hint">本系统的 CAS 回调地址，需在 CAS 服务端注册</span>
+          <span class="form-hint">本系统的 CAS 回调地址（前端登录页），需在 CAS 服务端注册。留空则按请求域名自动推导，此时请配置下方"允许的域名"</span>
+        </el-form-item>
+
+        <el-form-item label="允许的域名">
+          <el-input
+            v-model="config.allowed_hosts"
+            placeholder="repo-a.corp.com, *.corp.com"
+            :disabled="!config.enabled"
+          />
+          <span class="form-hint">service_url 留空时，按请求域名自动推导回跳地址的白名单（逗号分隔，支持 *.corp.com 通配）；需在 CAS 服务端注册对应 service</span>
         </el-form-item>
 
         <el-form-item label="登录路径">
@@ -84,12 +93,14 @@ const saving = ref(false)
 const testing = ref(false)
 const testResult = ref<{ success: boolean; message: string } | null>(null)
 
-const config = reactive<CASConfig>({
+const config = reactive({
   enabled: false,
   server_url: '',
   service_url: '',
   login_path: '/cas/login',
   validate_path: '/cas/serviceValidate',
+  // 逗号分隔的域名白名单文本，提交时转换为数组
+  allowed_hosts: '',
 })
 
 async function loadConfig() {
@@ -97,7 +108,9 @@ async function loadConfig() {
   try {
     const data = await casConfigApi.getConfig()
     if (data) {
-      Object.assign(config, data)
+      const { allowed_hosts, ...rest } = data
+      Object.assign(config, rest)
+      config.allowed_hosts = Array.isArray(allowed_hosts) ? allowed_hosts.join(', ') : ''
     }
   } catch (e: any) {
     error(e?.message || '加载 CAS 配置失败')
@@ -107,14 +120,29 @@ async function loadConfig() {
 }
 
 async function saveConfig() {
-  if (config.enabled && (!config.server_url || !config.service_url)) {
-    error('启用 CAS 时，服务器地址和回调地址为必填项')
-    return
+  if (config.enabled) {
+    if (!config.server_url) {
+      error('启用 CAS 时，服务器地址为必填项')
+      return
+    }
+    // 与后端不变量一致：静态 service_url 与动态 Host 白名单至少配置其一，
+    // 否则 CAS 无法推导回跳地址，登录必然失败。
+    if (!config.service_url && !config.allowed_hosts.trim()) {
+      error('启用 CAS 时，服务回调地址与允许的域名至少填写一项')
+      return
+    }
   }
 
   saving.value = true
   try {
-    await casConfigApi.updateConfig({ ...config })
+    const payload: CASConfig = {
+      ...config,
+      allowed_hosts: config.allowed_hosts
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    }
+    await casConfigApi.updateConfig(payload)
     success('CAS 配置已保存')
   } catch (e: any) {
     error(e?.message || '保存 CAS 配置失败')

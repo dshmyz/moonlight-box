@@ -201,6 +201,7 @@ func (ctx *RouterContext) setupRepositoryRoutes(protected *gin.RouterGroup) {
 		reposWrite.POST("", ctx.Handlers.Repo.Create)
 		reposWrite.PUT("/:name", ctx.Handlers.Repo.Update)
 		reposWrite.POST("/:name/members", ctx.Handlers.Repo.AddMember)
+		reposWrite.POST("/:name/migrate-cache", ctx.Handlers.Repo.MigrateCache)
 	}
 
 	reposDelete := protected.Group("/repositories")

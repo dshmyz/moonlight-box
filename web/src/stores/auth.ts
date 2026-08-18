@@ -31,8 +31,8 @@ export const useAuthStore = defineStore('auth', () => {
     return data
   }
 
-  async function casLogin(ticket: string): Promise<AuthResponse> {
-    const data = await casAuthApi.casCallback(ticket)
+  async function casLogin(ticket: string, redirect?: string): Promise<AuthResponse> {
+    const data = await casAuthApi.casCallback(ticket, redirect)
     if (!data || !data.access_token) {
       throw new Error('CAS 登录失败')
     }

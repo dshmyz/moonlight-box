@@ -4,6 +4,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/response"
 	"github.com/dshmyz/moonlight-box/internal/service"
+	"github.com/sirupsen/logrus"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,7 +24,11 @@ func (h *CASHandler) Login(c *gin.Context) {
 	}
 
 	redirect := c.Query("redirect")
-	loginURL := h.casService.GetLoginURL(redirect)
+	loginURL, err := h.casService.GetLoginURL(c, redirect)
+	if err != nil {
+		response.BadRequest(c, "failed to build CAS login URL", err.Error())
+		return
+	}
 	c.Redirect(302, loginURL)
 }
 
@@ -39,7 +44,7 @@ func (h *CASHandler) Callback(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.casService.LoginByTicket(ticket)
+	resp, err := h.casService.LoginByTicket(c, ticket)
 	if err != nil {
 		response.Unauthorized(c, err.Error())
 		return
@@ -49,10 +54,17 @@ func (h *CASHandler) Callback(c *gin.Context) {
 }
 
 func (h *CASHandler) Config(c *gin.Context) {
-	response.Success(c, gin.H{
-		"enabled":   h.casService.IsEnabled(),
-		"login_url": h.casService.GetLoginURL(""),
-	})
+	// enabled 反映全局配置是否可完成登录（IsEnabled 已保证 service 可解析）。
+	// login_url 只在当前请求可解析时给出：动态模式命中非白名单 Host 时为缺省，
+	// 避免出现 "enabled=true 但 login_url=''" 的误导性死字段。
+	enabled := h.casService.IsEnabled()
+	payload := gin.H{"enabled": enabled}
+	if loginURL, err := h.casService.GetLoginURL(c, ""); err == nil && loginURL != "" {
+		payload["login_url"] = loginURL
+	} else if err != nil {
+		logrus.WithError(err).Warn("CAS: failed to resolve login url for config probe")
+	}
+	response.Success(c, payload)
 }
 
 // GetAdminConfig 返回完整 CAS 配置（管理端用）
@@ -69,9 +81,17 @@ func (h *CASHandler) UpdateAdminConfig(c *gin.Context) {
 		return
 	}
 
-	if req.Enabled && (req.ServerURL == "" || req.ServiceURL == "") {
-		response.BadRequest(c, "validation failed", "server_url and service_url are required when CAS is enabled")
-		return
+	// service_url 可选：留空时按请求 Host 动态推导（多域名场景），需配合 allowed_hosts 白名单。
+	// 启用时二者至少配置其一，保证 IsEnabled 的不变量 "enabled ⟹ service 可解析" 成立。
+	if req.Enabled {
+		if req.ServerURL == "" {
+			response.BadRequest(c, "validation failed", "server_url is required when CAS is enabled")
+			return
+		}
+		if req.ServiceURL == "" && len(req.AllowedHosts) == 0 {
+			response.BadRequest(c, "validation failed", "CAS requires service_url or allowed_hosts when enabled")
+			return
+		}
 	}
 
 	if req.LoginPath == "" {

@@ -23,6 +23,15 @@
           <el-icon><Edit /></el-icon>
           编辑
         </el-button>
+        <el-button
+          v-if="repo?.type === 'proxy'"
+          type="warning"
+          plain
+          @click="openMigrateDialog"
+        >
+          <el-icon><Download /></el-icon>
+          迁移缓存到本地仓库
+        </el-button>
       </div>
     </div>
 
@@ -242,13 +251,50 @@
         <el-button type="primary" @click="addMember" :disabled="!newMemberName">确定</el-button>
       </template>
     </el-dialog>
+    <el-dialog v-model="showMigrateDialog" title="迁移缓存到本地仓库" width="520px">
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="将把当前代理仓库缓存的全部包迁移到目标本地仓库（零拷贝，仅改归属）。迁移后请验证目标仓库可正常下载，再删除当前代理仓库。"
+        style="margin-bottom: 16px"
+      />
+      <el-form label-width="90px">
+        <el-form-item label="目标仓库">
+          <el-select
+            v-model="migrateTarget"
+            placeholder="选择本地仓库（同包类型）"
+            filterable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="r in migrateTargetRepos"
+              :key="r.name"
+              :label="r.display_name || r.name"
+              :value="r.name"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showMigrateDialog = false">取消</el-button>
+        <el-button
+          type="warning"
+          :disabled="!migrateTarget || migrating"
+          :loading="migrating"
+          @click="doMigrateCache"
+        >
+          迁移
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Edit, Plus } from '@element-plus/icons-vue'
+import { ArrowLeft, Edit, Plus, Download } from '@element-plus/icons-vue'
 import { repositoryApi, type Repository, type RepositoryWithHealth, type RepositoryMember } from '@/api/repository'
 import RepositoryFormDialog from '@/components/repository/RepositoryFormDialog.vue'
 import { success, error } from '@/utils/message'
@@ -265,6 +311,15 @@ const editingRepo = ref<Repository | null>(null)
 const availableRepos = ref<Repository[]>([])
 const newMemberName = ref('')
 const newMemberPosition = ref(1)
+const showMigrateDialog = ref(false)
+const migrating = ref(false)
+const migrateTarget = ref('')
+
+// 迁移目标：同包类型的本地仓库，排除自身
+const migrateTargetRepos = computed(() => {
+  const curType = repo.value?.package_type
+  return availableRepos.value.filter((r) => r.type === 'local' && r.package_type === curType)
+})
 
 const getRepoIcon = (type: string) => {
   switch (type) {
@@ -425,13 +480,36 @@ async function addMember() {
 async function removeMember(memberName: string) {
   const name = route.params.name as string
   if (!name || !memberName) return
-  
+
   try {
     await repositoryApi.removeMember(name, memberName)
     success('删除成功')
     loadMembers()
   } catch (e) {
     error('删除失败')
+  }
+}
+
+function openMigrateDialog() {
+  migrateTarget.value = ''
+  showMigrateDialog.value = true
+}
+
+async function doMigrateCache() {
+  const name = route.params.name as string
+  if (!name || !migrateTarget.value) return
+
+  migrating.value = true
+  try {
+    const res = (await repositoryApi.migrateCache(name, { target_repository: migrateTarget.value })) as any
+    showMigrateDialog.value = false
+    success(`已迁移 ${res.moved_artifacts} 个文件、${res.moved_packages} 个包到 ${res.target_repository}。请验证目标仓库可下载后，再删除代理仓库 ${name}。`)
+    loadRepo()
+  } catch (e) {
+    // 拦截器已展示具体错误（如 409 冲突列表）
+    console.error('迁移缓存失败', e)
+  } finally {
+    migrating.value = false
   }
 }
 

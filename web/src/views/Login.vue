@@ -149,7 +149,11 @@ onMounted(async () => {
 async function handleCASCallback(ticket: string) {
   loading.value = true
   try {
-    await authStore.casLogin(ticket)
+    // redirect 必须原样传回后端：CAS 校验 ticket 时的 service 参数需与登录时完全一致
+    await authStore.casLogin(
+      ticket,
+      typeof route.query.redirect === 'string' ? route.query.redirect : undefined,
+    )
     ElMessage.success('CAS 登录成功')
     const redirect = (route.query.redirect as string) || '/admin/dashboard'
     router.push(redirect)

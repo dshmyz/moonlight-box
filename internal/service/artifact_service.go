@@ -10,6 +10,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/database/dialect"
+	apperr "github.com/dshmyz/moonlight-box/internal/errors"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
@@ -744,6 +745,184 @@ func (s *ArtifactService) RebuildPackageVersions(ctx context.Context) error {
 	}).Info("Package versions table rebuilt successfully")
 
 	return nil
+}
+
+// MigrateResult 描述一次缓存迁移的结果。
+type MigrateResult struct {
+	MovedArtifacts int64
+	MovedPackages  int64
+	MovedVersions  int64
+	// Conflicts 非空表示目标仓库存在重叠内容，迁移未执行，由调用方转 409。
+	// 仅含采样（见 maxConflictSamples），完整数量见 TotalConflicts。
+	Conflicts []MigrateConflict
+	// TotalConflicts 是预检查发现的重叠总数，供 409 提示文案使用。
+	TotalConflicts int64
+}
+
+// MigrateConflict 迁移预检查发现的与目标仓库重叠的包/版本/文件。
+type MigrateConflict struct {
+	Kind string // "package" | "version" | "artifact"
+	Name string // package 名 / artifact identity_key
+	// Version 仅 Kind == "version" 时非空。
+	Version string
+}
+
+// maxConflictSamples 迁移冲突采样上限，与 handler 展示的前 20 条对齐，
+// 避免预检查把全量重叠物化到内存（迁移实盘场景可到千级）。
+const maxConflictSamples = 20
+
+// MigrateArtifactsToRepo 把 source 仓库的缓存内容（artifacts/packages/package_versions 三表）
+// 整体迁移到 target 仓库。底层 blob 为全局共享 CAS（内容寻址），无需复制文件，
+// 仅把三表的 repository_id 从 source 改为 target。
+//
+// 调用方（RepositoryService）须先校验：source 为 proxy、target 为 local、
+// format 一致、source != target。此处只做内容级预检查与行迁移。
+//
+// 预检查与行迁移在同一个事务内完成：SQLite 下写锁使检查与搬移原子；
+// 即便并发写入在窗口内恰好命中唯一索引，错误也会被识别并在下方
+// 回扫目标现状转为 409 重叠语义，而不是让调用方收到裸 500。
+func (s *ArtifactService) MigrateArtifactsToRepo(ctx context.Context, sourceRepoID, targetRepoID uint) (*MigrateResult, error) {
+	result := &MigrateResult{}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		total, conflicts, err := scanRepoOverlaps(tx, sourceRepoID, targetRepoID, maxConflictSamples)
+		if err != nil {
+			return err
+		}
+		if total > 0 {
+			result.TotalConflicts = total
+			result.Conflicts = conflicts
+			return nil // 无需写库，空事务提交；调用方见 Conflicts 转 409
+		}
+
+		res := tx.Model(&model.Artifact{}).Where("repository_id = ?", sourceRepoID).Update("repository_id", targetRepoID)
+		if res.Error != nil {
+			return res.Error
+		}
+		result.MovedArtifacts = res.RowsAffected
+
+		res = tx.Model(&model.Package{}).Where("repository_id = ?", sourceRepoID).Update("repository_id", targetRepoID)
+		if res.Error != nil {
+			return res.Error
+		}
+		result.MovedPackages = res.RowsAffected
+
+		res = tx.Model(&model.PackageVersion{}).Where("repository_id = ?", sourceRepoID).Update("repository_id", targetRepoID)
+		if res.Error != nil {
+			return res.Error
+		}
+		result.MovedVersions = res.RowsAffected
+		return nil
+	})
+	if err != nil {
+		// 并发写入在预检查与 UPDATE 之间把 target 填进了窗口：唯一索引冲突 →
+		// 重新扫描目标现状并转成 409 重叠；扫描异常或查无重叠则退回原始错误。
+		if apperr.IsDuplicate(err) {
+			total, conflicts, scanErr := scanRepoOverlaps(s.db.WithContext(ctx), sourceRepoID, targetRepoID, maxConflictSamples)
+			if scanErr == nil && total > 0 {
+				result.TotalConflicts = total
+				result.Conflicts = conflicts
+				return result, nil
+			}
+		}
+		return nil, fmt.Errorf("migrate artifacts to repo: %w", err)
+	}
+
+	// 预检查发现重叠：未执行迁移，由调用方转 409。
+	if len(result.Conflicts) > 0 {
+		return result, nil
+	}
+
+	// 行数据迁走后，packages 聚合与上游搜索缓存均已变化，通知搜索缓存失效，
+	// 避免旧投影/旧计数继续对外服务。
+	s.notifyCacheInvalidation()
+
+	logrus.WithFields(logrus.Fields{
+		util.LogKeyModule: "artifact-service",
+		"source_repo_id":  sourceRepoID,
+		"target_repo_id":  targetRepoID,
+		"artifacts":       result.MovedArtifacts,
+		"packages":        result.MovedPackages,
+		"versions":        result.MovedVersions,
+	}).Info("Migrated proxy cache to local repo")
+
+	return result, nil
+}
+
+// overlapRow 是冲突预检查的统一输出行：各表的"名称"列被投影为 name。
+type overlapRow struct {
+	Format  string
+	Name    string
+	Version string
+}
+
+// overlapSpec 描述一张内容表如何判断 source 与 target 仓库的重叠。
+type overlapSpec struct {
+	table   string   // 表名
+	joinOn  []string // source=target 全等列（与表唯一索引一致）
+	kind    string   // 冲突类型："package" / "version" / "artifact"
+}
+
+// overlapSpecs 迁移预检查覆盖的三张内容表。joinOn 与各表唯一索引一致，
+// 同一仓库内按 joinOn 无重复行，因此无需 DISTINCT，COUNT 即重叠数。
+var overlapSpecs = []overlapSpec{
+	{table: "packages", joinOn: []string{"format", "name"}, kind: "package"},
+	{table: "package_versions", joinOn: []string{"format", "package_name", "version"}, kind: "version"},
+	{table: "artifacts", joinOn: []string{"format", "identity_key"}, kind: "artifact"},
+}
+
+// aliasOverlapCol 把各表的逻辑键列统一投影为 format/name/version 三个输出列。
+func aliasOverlapCol(col string) string {
+	switch col {
+	case "package_name", "identity_key":
+		return "name"
+	default:
+		return col
+	}
+}
+
+// scanRepoOverlaps 汇总三张内容表与目标仓库的重叠，返回重叠总数与最多 limit 条采样。
+func scanRepoOverlaps(db *gorm.DB, sourceRepoID, targetRepoID uint, limit int) (int64, []MigrateConflict, error) {
+	var total int64
+	var conflicts []MigrateConflict
+	for _, spec := range overlapSpecs {
+		n, rows, err := findOverlaps(db, spec.table, spec.joinOn, sourceRepoID, targetRepoID, limit)
+		if err != nil {
+			return 0, nil, fmt.Errorf("check %s conflicts: %w", spec.kind, err)
+		}
+		total += n
+		for _, r := range rows {
+			conflicts = append(conflicts, MigrateConflict{Kind: spec.kind, Name: r.Name, Version: r.Version})
+		}
+	}
+	return total, conflicts, nil
+}
+
+// findOverlaps 统计 source 仓库与 target 仓库在单张表上的重叠记录数，并采样前 limit 条。
+// 判定条件：src 的 joinOn 中所有列与 target 同名列相等。
+func findOverlaps(db *gorm.DB, table string, joinOn []string, sourceRepoID, targetRepoID uint, limit int) (int64, []overlapRow, error) {
+	on := make([]string, 0, len(joinOn))
+	proj := make([]string, 0, len(joinOn))
+	for _, col := range joinOn {
+		on = append(on, "src."+col+" = target."+col)
+		proj = append(proj, "target."+col+" AS "+aliasOverlapCol(col))
+	}
+	base := db.Table(table+" AS target").
+		Joins("JOIN "+table+" AS src ON "+strings.Join(on, " AND ")+" AND src.repository_id = ?", sourceRepoID).
+		Where("target.repository_id = ?", targetRepoID)
+
+	var total int64
+	if err := base.Count(&total).Error; err != nil {
+		return 0, nil, err
+	}
+	if total == 0 {
+		return 0, nil, nil
+	}
+	var rows []overlapRow
+	if err := base.Select(proj).Limit(limit).Scan(&rows).Error; err != nil {
+		return 0, nil, err
+	}
+	return total, rows, nil
 }
 
 func (s *ArtifactService) RefreshPackageVersionSummary(ctx context.Context, repoID uint, format, name, version string) error {

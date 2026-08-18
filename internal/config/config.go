@@ -72,11 +72,12 @@ type AuthConfig struct {
 }
 
 type CASConfig struct {
-	Enabled      bool   `mapstructure:"enabled"`
-	ServerURL    string `mapstructure:"server_url"`
-	ServiceURL   string `mapstructure:"service_url"`
-	LoginPath    string `mapstructure:"login_path"`
-	ValidatePath string `mapstructure:"validate_path"`
+	Enabled      bool     `mapstructure:"enabled"`
+	ServerURL    string   `mapstructure:"server_url"`
+	ServiceURL   string   `mapstructure:"service_url"`
+	LoginPath    string   `mapstructure:"login_path"`
+	ValidatePath string   `mapstructure:"validate_path"`
+	AllowedHosts []string `mapstructure:"allowed_hosts"`
 }
 
 type SecurityConfig struct {

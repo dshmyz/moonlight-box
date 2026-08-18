@@ -7,14 +7,17 @@ export interface CASConfig {
   service_url: string
   login_path: string
   validate_path: string
+  allowed_hosts: string[]
 }
 
 export const casAuthApi = {
   getCASConfig() {
     return request.get<{ enabled: boolean; login_url: string }>('/auth/cas/config')
   },
-  casCallback(ticket: string) {
-    return request.get<AuthResponse>('/auth/cas/callback', { params: { ticket } })
+  casCallback(ticket: string, redirect?: string) {
+    return request.get<AuthResponse>('/auth/cas/callback', {
+      params: { ticket, redirect: redirect || undefined },
+    })
   },
 }
 
