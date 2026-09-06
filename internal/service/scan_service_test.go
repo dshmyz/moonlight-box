@@ -302,3 +302,71 @@ func TestBlockByVulnerabilityNoVulnerabilityDataReturnsError(t *testing.T) {
 		t.Fatalf("expected 0 block rules, got %d", len(rules))
 	}
 }
+
+// TestMaybeAutoBlock 验证自动阻断：开启时对命中严重/高危生成规则、去重；关闭时不生成。
+func TestMaybeAutoBlock(t *testing.T) {
+	db := newScanTestDB(t)
+	scanner := NewSecurityScanner(repository.NewScanRepository(db), db, repository.NewBlockRuleRepository(db))
+	scanner.SetBlockRuleService(NewBlockRuleService(repository.NewBlockRuleRepository(db), nil))
+	scanner.SetSecurityDefaults(false, true, false) // scan_on_upload=false, block_critical=true, block_high=false
+
+	criticalVuln := []model.Vulnerability{{CVEID: "CVE-2021-44228", Severity: model.SeverityCritical, Title: "Log4Shell"}}
+	highVuln := []model.Vulnerability{{CVEID: "CVE-2021-23337", Severity: model.SeverityHigh, Title: "Prototype pollution"}}
+
+	// critical 命中（block_critical=true）→ 生成规则
+	scanner.maybeAutoBlock("npm", "lodash", "4.17.18", criticalVuln)
+	var rules []model.BlockRule
+	db.Find(&rules)
+	if len(rules) != 1 {
+		t.Fatalf("critical 自动阻断 rules = %d, want 1", len(rules))
+	}
+	if rules[0].PackageName != "lodash" || rules[0].Version != "4.17.18" || rules[0].MatchType != model.BlockMatchExact {
+		t.Errorf("rule = %+v", rules[0])
+	}
+
+	// 再次调用 → 去重，仍 1 条
+	scanner.maybeAutoBlock("npm", "lodash", "4.17.18", criticalVuln)
+	db.Find(&rules)
+	if len(rules) != 1 {
+		t.Errorf("重复自动阻断 rules = %d, want 1 (去重)", len(rules))
+	}
+
+	// high 命中但 block_high=false → 不生成
+	scanner.maybeAutoBlock("npm", "lodash", "4.17.18", highVuln)
+	db.Find(&rules)
+	if len(rules) != 1 {
+		t.Errorf("high 未开启却生成规则: %d", len(rules))
+	}
+}
+
+// TestScanPackageIdempotent 验证扫描幂等：同组件重扫复用同一 ScanResult 并替换漏洞明细。
+func TestScanPackageIdempotent(t *testing.T) {
+	db := newScanTestDB(t)
+	scanner := NewSecurityScanner(repository.NewScanRepository(db), db, repository.NewBlockRuleRepository(db))
+	scanner.SetSecurityDefaults(false, false, false) // 关闭自动阻断，聚焦幂等
+
+	// lodash 命中内置规则 CVE-2021-23337（MaxVersion 4.17.21）
+	r1 := scanner.ScanPackage(context.Background(), 42, "npm", "lodash", "4.17.18")
+	if r1 == nil || r1.ScanStatus != model.ScanStatusCompleted {
+		t.Fatalf("first scan result: %+v", r1)
+	}
+	if r1.TotalVulnerabilities == 0 {
+		t.Fatal("expected lodash 4.17.18 to be vulnerable")
+	}
+
+	r2 := scanner.ScanPackage(context.Background(), 42, "npm", "lodash", "4.17.18")
+
+	var results []model.ScanResult
+	db.Where("component_id = ?", 42).Find(&results)
+	if len(results) != 1 {
+		t.Fatalf("scan_results for component = %d, want 1 (幂等)", len(results))
+	}
+	if r2.ID != r1.ID {
+		t.Errorf("rescan should reuse same scan result: %d vs %d", r1.ID, r2.ID)
+	}
+	var vulns []model.Vulnerability
+	db.Where("scan_result_id = ?", r1.ID).Find(&vulns)
+	if len(vulns) != 1 {
+		t.Errorf("vulnerabilities = %d, want 1", len(vulns))
+	}
+}

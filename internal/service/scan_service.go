@@ -6,8 +6,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
 	"github.com/sirupsen/logrus"
@@ -18,15 +20,37 @@ type SecurityScanner struct {
 	scanRepo        *repository.ScanRepository
 	db              *gorm.DB
 	blockRepo       *repository.BlockRuleRepository
+	blockRuleSvc    *BlockRuleService
 	vulnRuleService *VulnRuleService
 	logger          *logrus.Logger
 	scanSem         chan struct{}
-	scanPackage     func(ctx context.Context, versionID uint, pkgType, name, version string) *model.ScanResult
+	// scanSlots 扫描投递的总量上限（排队 + 在途）：非阻塞投递满时丢弃并告警，
+	// 防止一次大批量写入瞬间创建海量等锁 goroutine。nil 表示退化为无界投递（直接构造的测试场景）。
+	scanSlots   chan struct{}
+	scanPackage func(ctx context.Context, versionID uint, pkgType, name, version string) *model.ScanResult
+
+	// scanLocks 按组件串行化并发扫描（versionID -> *sync.Mutex），
+	// 避免上传自动扫描与定时全量扫描同时扫同一组件时产生重复 scan_result。
+	scanLocks sync.Map
+
+	// 安全扫描自动化配置（读取 system_configs，回退到 YAML 默认值）
+	configSvc     *SystemConfigService
+	cfgMu         sync.RWMutex
+	scanOnUpload  bool
+	blockCritical bool
+	blockHigh     bool
+	blockMedium   bool
+
+	// autoBlockMu 串行化自动阻断规则的"查重+创建"，避免并发扫描下的重复规则
+	autoBlockMu sync.Mutex
 }
 
 const (
 	defaultMaxConcurrentScans = 8
 	scanAllPackagesBatchSize  = 500
+	// maxQueuedScans 扫描投递队列上限（排队 + 在途）。超出时非阻塞投递直接丢弃并告警，
+	// 防止一次大批量上传瞬间创建海量等锁 goroutine 挤爆内存。
+	maxQueuedScans = 1024
 )
 
 type ScanRule struct {
@@ -140,6 +164,7 @@ func NewSecurityScanner(scanRepo *repository.ScanRepository, db *gorm.DB, blockR
 		blockRepo: blockRepo,
 		logger:    logrus.New(),
 		scanSem:   make(chan struct{}, defaultMaxConcurrentScans),
+		scanSlots: make(chan struct{}, maxQueuedScans),
 	}
 	scanner.scanPackage = scanner.ScanPackage
 	return scanner
@@ -149,21 +174,157 @@ func (s *SecurityScanner) SetVulnRuleService(vulnRuleService *VulnRuleService) {
 	s.vulnRuleService = vulnRuleService
 }
 
-func (s *SecurityScanner) ScanPackage(ctx context.Context, versionID uint, pkgType, name, version string) *model.ScanResult {
-	s.logger.Infof("Scanning %s@%s (type: %s, versionID: %d)", name, version, pkgType, versionID)
+// SetBlockRuleService 注入阻断规则服务，用于扫描命中后自动生成阻断规则（会失效运行时缓存）。
+func (s *SecurityScanner) SetBlockRuleService(blockRuleSvc *BlockRuleService) {
+	s.blockRuleSvc = blockRuleSvc
+}
 
-	scanResult := &model.ScanResult{
-		ComponentID:    versionID,
-		ScanStatus:     model.ScanStatusScanning,
-		ScannerVersion: "1.0.0",
-		ScannedAt:      time.Now(),
+// SetSecurityDefaults 设置 YAML 提供的自动化扫描默认值，作为 system_configs 缺失时的回退。
+func (s *SecurityScanner) SetSecurityDefaults(scanOnUpload, blockCritical, blockHigh bool) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	s.scanOnUpload = scanOnUpload
+	s.blockCritical = blockCritical
+	s.blockHigh = blockHigh
+}
+
+// SetConfigService 注入系统配置服务，启用热更新。必须在 LoadSecurityConfig 之前调用。
+func (s *SecurityScanner) SetConfigService(configSvc *SystemConfigService) {
+	s.configSvc = configSvc
+}
+
+// LoadSecurityConfig 从 system_configs 加载安全扫描配置，失败时回退到 YAML 默认值。
+func (s *SecurityScanner) LoadSecurityConfig() {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	if s.configSvc == nil {
+		return
+	}
+	if v, err := s.configSvc.Get("security.scan_on_upload"); err == nil {
+		s.scanOnUpload = v.Value == "true" || v.Value == "1"
+	}
+	if v, err := s.configSvc.Get("security.block_critical"); err == nil {
+		s.blockCritical = v.Value == "true" || v.Value == "1"
+	}
+	if v, err := s.configSvc.Get("security.block_high"); err == nil {
+		s.blockHigh = v.Value == "true" || v.Value == "1"
+	}
+	if v, err := s.configSvc.Get("security.block_medium"); err == nil {
+		s.blockMedium = v.Value == "true" || v.Value == "1"
+	}
+}
+
+// ShouldScanOnUpload 是否启用上传时自动扫描。
+func (s *SecurityScanner) ShouldScanOnUpload() bool {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.scanOnUpload
+}
+
+// Reload 实现 ScheduledTask.Reload，热更新扫描配置。
+func (s *SecurityScanner) Reload() {
+	s.LoadSecurityConfig()
+}
+
+// Name 实现 ScheduledTask：任务标识，由 TaskScheduler 统一调度（每日全量扫描）。
+func (s *SecurityScanner) Name() string { return "security_scan" }
+
+// Run 实现 ScheduledTask：执行一次全量扫描。
+func (s *SecurityScanner) Run(ctx context.Context) (int, error) {
+	s.ScanAllPackages(ctx)
+	return 0, nil
+}
+
+// Stop 实现 ScheduledTask：扫描为无状态短任务，无需释放资源。
+func (s *SecurityScanner) Stop() {}
+
+// maybeAutoBlock 扫描命中后按配置自动生成阻断规则（严重/高危/中危可选）。
+// 通过 blockRuleSvc 创建以失效运行时缓存；同名同版本精确规则已存在时跳过。
+func (s *SecurityScanner) maybeAutoBlock(pkgType, name, version string, vulns []model.Vulnerability) {
+	if s.blockRuleSvc == nil {
+		return
+	}
+	s.cfgMu.RLock()
+	blockCritical, blockHigh, blockMedium := s.blockCritical, s.blockHigh, s.blockMedium
+	s.cfgMu.RUnlock()
+
+	var rules []*model.BlockRule
+	for i := range vulns {
+		v := &vulns[i]
+		shouldBlock := (v.Severity == model.SeverityCritical && blockCritical) ||
+			(v.Severity == model.SeverityHigh && blockHigh) ||
+			(v.Severity == model.SeverityMedium && blockMedium)
+		if !shouldBlock {
+			continue
+		}
+		rules = append(rules, &model.BlockRule{
+			PackageName: name,
+			PackageType: pkgType,
+			Version:     version,
+			MatchType:   model.BlockMatchExact,
+			Reason:      fmt.Sprintf("安全扫描自动阻断：%s (%s)", v.CVEID, v.Title),
+			Enabled:     true,
+		})
+	}
+	if len(rules) == 0 {
+		return
 	}
 
-	if err := s.scanRepo.CreateScanResult(scanResult); err != nil {
-		s.logger.Errorf("Failed to create scan result: %v", err)
-		scanResult.ScanStatus = model.ScanStatusFailed
-		scanResult.ErrorMessage = err.Error()
-		return scanResult
+	// 串行化查重+创建，避免 8 路并发扫描同时判断"规则不存在"导致重复创建
+	s.autoBlockMu.Lock()
+	defer s.autoBlockMu.Unlock()
+	for _, rule := range rules {
+		var count int64
+		if err := s.db.Model(&model.BlockRule{}).
+			Where("package_name = ? AND package_type = ? AND version = ? AND match_type = ?",
+				rule.PackageName, rule.PackageType, rule.Version, rule.MatchType).
+			Count(&count).Error; err == nil && count > 0 {
+			continue
+		}
+		if err := s.blockRuleSvc.Create(rule); err != nil {
+			s.logger.Warnf("自动阻断 %s@%s 失败: %v", name, version, err)
+		} else {
+			s.logger.Infof("安全扫描自动阻断: %s@%s (%s)", name, version, rule.Reason)
+		}
+	}
+}
+
+func (s *SecurityScanner) ScanPackage(ctx context.Context, versionID uint, pkgType, name, version string) *model.ScanResult {
+	// 按组件串行化：上传自动扫描与定时全量扫描可能同时扫同一组件，
+	// 并发执行会产生两条 scan_result（FindCreate 与 BulkCreate 均非原子）。
+	lockAny, _ := s.scanLocks.LoadOrStore(versionID, &sync.Mutex{})
+	lock := lockAny.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+
+	s.logger.Infof("Scanning %s@%s (type: %s, versionID: %d)", name, version, pkgType, versionID)
+
+	// 幂等：已存在扫描结果则就地重扫，避免定时全量扫描造成表膨胀
+	scanResult, err := s.scanRepo.FindScanResultByComponentID(versionID)
+	if err != nil {
+		s.logger.Errorf("Failed to find scan result: %v", err)
+		scanResult = &model.ScanResult{}
+	}
+	if scanResult == nil || scanResult.ID == 0 {
+		scanResult = &model.ScanResult{
+			ComponentID:    versionID,
+			ScanStatus:     model.ScanStatusScanning,
+			ScannerVersion: "1.0.0",
+			ScannedAt:      time.Now(),
+		}
+		if err := s.scanRepo.CreateScanResult(scanResult); err != nil {
+			s.logger.Errorf("Failed to create scan result: %v", err)
+			scanResult.ScanStatus = model.ScanStatusFailed
+			scanResult.ErrorMessage = err.Error()
+			return scanResult
+		}
+	} else {
+		scanResult.ScanStatus = model.ScanStatusScanning
+		scanResult.ScannedAt = time.Now()
+		s.scanRepo.UpdateScanResult(scanResult.ID, map[string]interface{}{
+			"scan_status": scanResult.ScanStatus,
+			"scanned_at":  scanResult.ScannedAt,
+		})
 	}
 
 	vulnerabilities, err := s.detectVulnerabilities(pkgType, name, version)
@@ -207,21 +368,62 @@ func (s *SecurityScanner) ScanPackage(ctx context.Context, versionID uint, pkgTy
 		"low_count":             scanResult.LowCount,
 	})
 
+	// 重扫时替换旧的漏洞明细
+	if err := s.db.WithContext(ctx).Where("scan_result_id = ?", scanResult.ID).Delete(&model.Vulnerability{}).Error; err != nil {
+		s.logger.Warnf("清理旧漏洞记录失败: %v", err)
+	}
 	for i := range vulnerabilities {
 		vulnerabilities[i].ScanResultID = scanResult.ID
 	}
 	s.scanRepo.BulkCreateVulnerabilities(vulnerabilities)
 
+	// 按配置自动生成阻断规则
+	s.maybeAutoBlock(pkgType, name, version, vulnerabilities)
+
 	s.logger.Infof("Scan completed for %s@%s: %d vulnerabilities found", name, version, len(vulnerabilities))
 	return scanResult
 }
 
+// TriggerScan 异步触发一次扫描（非阻塞）：队列满时丢弃并告警，适用于上传自动扫描
+// ——丢一次扫描可接受（下次定时全量扫描会补上），但不能拖慢上传请求。
 func (s *SecurityScanner) TriggerScan(ctx context.Context, versionID uint, pkgType, name, version string) {
+	s.dispatchScan(ctx, versionID, pkgType, name, version, false)
+}
+
+// TriggerScanWait 等待扫描进入队列后返回（阻塞），供全量扫描做背压：
+// 队列满时阻塞到有空位，避免瞬间投递十万级任务撑爆内存。ctx 取消时放弃投递。
+func (s *SecurityScanner) TriggerScanWait(ctx context.Context, versionID uint, pkgType, name, version string) {
+	s.dispatchScan(ctx, versionID, pkgType, name, version, true)
+}
+
+// dispatchScan 投递扫描任务。scanSlots 限制排队+在途总量；scanSem 限制实际并发数。
+// scanSlots 为 nil（测试直接构造 scanner）时退化为旧的"无界 goroutine + 信号量"行为。
+func (s *SecurityScanner) dispatchScan(ctx context.Context, versionID uint, pkgType, name, version string, wait bool) {
+	if s.scanSlots != nil {
+		if wait {
+			select {
+			case s.scanSlots <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+		} else {
+			select {
+			case s.scanSlots <- struct{}{}:
+			default:
+				s.logger.Warnf("scan queue full, dropping scan for %s@%s", name, version)
+				return
+			}
+		}
+	}
 	scanPackage := s.scanPackage
 	if scanPackage == nil {
 		scanPackage = s.ScanPackage
 	}
 	go func() {
+		if s.scanSlots != nil {
+			// ctx 在等 scanSem 时取消也要释放队列槽位
+			defer func() { <-s.scanSlots }()
+		}
 		if s.scanSem != nil {
 			select {
 			case s.scanSem <- struct{}{}:
@@ -326,7 +528,10 @@ func (s *SecurityScanner) ScanAllPackages(ctx context.Context) {
 		query := s.db.WithContext(ctx).Model(&model.Artifact{}).
 			Where("format = ?", pkgType).
 			Where("name != ''").
-			Where("version != ''")
+			Where("version != ''").
+			// metadata/checksum/directory 不是可扫组件，只按 artifact/version 行扫描，
+			// 否则同一版本的 checksum 行会重复扫描并污染组件扫描计数
+			Where("kind NOT IN ?", []string{runtime.KindMetadata, runtime.KindChecksum, runtime.KindDirectory})
 		if err := query.Count(&total).Error; err != nil {
 			s.logger.Errorf("Failed to count %s packages for scan: %v", pkgType, err)
 			continue
@@ -341,7 +546,8 @@ func (s *SecurityScanner) ScanAllPackages(ctx context.Context) {
 					return ctx.Err()
 				default:
 				}
-				s.TriggerScan(ctx, a.ID, pkgType, a.Name, a.Version)
+				// 阻塞式投递：队列满时等待空位，全量扫描对投递量做背压而非无界堆积
+				s.TriggerScanWait(ctx, a.ID, pkgType, a.Name, a.Version)
 			}
 			return nil
 		}).Error; err != nil {
