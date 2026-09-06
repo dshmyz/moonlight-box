@@ -83,9 +83,7 @@ func NewRepositoryFactory(
 
 // buildRuntimeRepo 将 model.Repository + RepositoryRuntime 转换为 runtime.Repository
 func buildRuntimeRepo(repo *model.Repository, repoRuntime runtime.RepositoryRuntime) *runtime.Repository {
-	config := map[string]interface{}{
-		"allow_overwrite": repo.AllowOverwrite,
-	}
+	config := map[string]interface{}{}
 	if repo.Config != nil {
 		config["remote_url"] = repo.Config.RemoteURL
 		config["auth_type"] = repo.Config.AuthType
@@ -128,11 +126,13 @@ func createRuntimeForRepo(
 	switch repo.Type {
 	case model.RepoTypeLocal:
 		hosted := &runtime.HostedRuntime{
-			MetadataStore: metadataStore,
-			BlobStore:     blobStore,
-			RepositoryID:  fmt.Sprintf("%d", repo.ID),
-			Blocker:       blocker,
-			Format:        repo.PackageType,
+			MetadataStore:  metadataStore,
+			BlobStore:      blobStore,
+			RepositoryID:   fmt.Sprintf("%d", repo.ID),
+			Blocker:        blocker,
+			Format:         repo.PackageType,
+			AllowOverwrite: repo.AllowOverwrite,
+			AllowDelete:    repo.AllowDelete,
 		}
 		if audit, ok := blocker.(runtime.ConditionAuditLogger); ok {
 			hosted.ConditionAudit = audit
@@ -294,11 +294,13 @@ func createGroupRuntime(
 			switch memberRepo.Type {
 			case model.RepoTypeLocal:
 				n := &runtime.HostedRuntime{
-					MetadataStore: memberMeta,
-					BlobStore:     memberBlob,
-					RepositoryID:  memberID,
-					Blocker:       blocker,
-					Format:        memberRepo.PackageType,
+					MetadataStore:  memberMeta,
+					BlobStore:      memberBlob,
+					RepositoryID:   memberID,
+					Blocker:        blocker,
+					Format:         memberRepo.PackageType,
+					AllowOverwrite: memberRepo.AllowOverwrite,
+					AllowDelete:    memberRepo.AllowDelete,
 				}
 				if audit, ok := blocker.(runtime.ConditionAuditLogger); ok {
 					n.ConditionAudit = audit
@@ -374,8 +376,10 @@ func createGroupRuntime(
 	}).Debug("createGroupRuntime: group runtime created")
 
 	return &runtime.GroupRuntime{
-		Members:  nodes,
-		Writable: writable,
+		Members:        nodes,
+		Writable:       writable,
+		AllowOverwrite: repo.AllowOverwrite,
+		AllowDelete:    repo.AllowDelete,
 	}, nil
 }
 

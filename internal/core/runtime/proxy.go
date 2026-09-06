@@ -679,7 +679,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 							oldMap := buildArtifactMap(artifacts)
 							toUpdate := n.prepareArtifactsForUpdate(refreshCtx, fetched, oldMap)
 							if len(toUpdate) > 0 {
-								if err := n.MetadataStore.BatchPut(refreshCtx, toUpdate); err != nil {
+								if err := n.MetadataStore.BatchPut(refreshCtx, toUpdate, false); err != nil {
 									logrus.WithFields(logrus.Fields{
 										"remote_base_url": n.RemoteBaseURL,
 										"remote_path":    query.RemotePath,
@@ -749,7 +749,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 				// 保留触发请求的 client IP 用于审计，用调用方 ctx 而非上游上下文
 				n.stampTriggerIP(ctx, a)
 			}
-			if err := n.MetadataStore.BatchPut(runCtx, fetched); err != nil {
+			if err := n.MetadataStore.BatchPut(runCtx, fetched, false); err != nil {
 				return queryResult{err: err}, nil
 			}
 			for _, a := range fetched {

@@ -13,6 +13,8 @@ var (
 	ErrReadOnly            = errors.New("read only")
 	ErrNotMatched          = errors.New("not matched")
 	ErrInvalidUpload       = errors.New("invalid upload session state")
+	ErrOverwriteNotAllowed = errors.New("overwrite not allowed")
+	ErrDeleteNotAllowed    = errors.New("delete not allowed")
 	ErrBlocked             = errors.New("blocked by rule")
 	ErrRemoteUnsupported   = errors.New("remote open unsupported")
 	ErrUpstreamUnavailable = errors.New("upstream unavailable")

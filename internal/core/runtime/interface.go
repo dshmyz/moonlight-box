@@ -35,7 +35,7 @@ type RepositoryNode interface {
 type MetadataStore interface {
 	Get(ctx context.Context, key ArtifactKey) (*Artifact, error)
 	Put(ctx context.Context, artifact *Artifact) error
-	BatchPut(ctx context.Context, artifacts []*Artifact) error
+	BatchPut(ctx context.Context, artifacts []*Artifact, rejectOverwrite bool) error
 	Delete(ctx context.Context, key ArtifactKey) error
 	Query(ctx context.Context, query ArtifactQuery) ([]*Artifact, error)
 }
@@ -164,6 +164,15 @@ type ArtifactMetadata struct {
 // to obtain semantic attributes for a direct artifact download.
 type ArtifactMetadataFetcher interface {
 	FetchArtifactMetadata(ctx context.Context, remoteURL string, key ArtifactKey) (*ArtifactMetadata, error)
+}
+
+// DependencyResolver is an optional plugin capability for reverse-dependency
+// discovery. The protocol owns its dependency key shape and version-constraint
+// semantics; callers only pass normalized attributes and get back the matching
+// dependency constraints. Plugins must not write HTTP responses or invoke
+// repository runtime behavior.
+type DependencyResolver interface {
+	ResolveDependencies(attrs map[string]string, name, version string) []string
 }
 
 // ConditionRequirement describes one rule that requires an artifact attribute.

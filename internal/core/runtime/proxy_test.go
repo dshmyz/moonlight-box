@@ -372,7 +372,7 @@ func (s *fakeMetadataStore) Put(ctx context.Context, artifact *Artifact) error {
 	return nil
 }
 
-func (s *fakeMetadataStore) BatchPut(ctx context.Context, artifacts []*Artifact) error {
+func (s *fakeMetadataStore) BatchPut(ctx context.Context, artifacts []*Artifact, rejectOverwrite bool) error {
 	if s.batchErr != nil {
 		return s.batchErr
 	}
@@ -1949,7 +1949,7 @@ func (s *fakeMultiMetadataStore) Put(ctx context.Context, artifact *Artifact) er
 	return nil
 }
 
-func (s *fakeMultiMetadataStore) BatchPut(ctx context.Context, artifacts []*Artifact) error {
+func (s *fakeMultiMetadataStore) BatchPut(ctx context.Context, artifacts []*Artifact, rejectOverwrite bool) error {
 	s.putCalls += len(artifacts)
 	return nil
 }

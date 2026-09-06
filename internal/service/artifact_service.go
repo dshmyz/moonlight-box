@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -32,6 +33,7 @@ const existingQueryChunkSize = 500
 type ArtifactService struct {
 	db                       *gorm.DB
 	onCacheInvalid           func() // 可选：packages 表变更后清除搜索缓存的回调
+	scanTrigger              *SecurityScanner
 	packageVersionTableOnce  sync.Once
 	packageVersionTableReady bool
 
@@ -151,6 +153,53 @@ func (s *ArtifactService) SetCacheInvalidationCallback(fn func()) {
 	s.onCacheInvalid = fn
 }
 
+// SetSecurityScanner 注入安全扫描器，启用上传新制品时自动扫描。
+func (s *ArtifactService) SetSecurityScanner(scanner *SecurityScanner) {
+	s.scanTrigger = scanner
+}
+
+// enqueueAutoScan 将新保存的可扫描制品异步投递到安全扫描器（幂等、并发受限、不阻塞保存）。
+// 仅针对 hosted（local）仓库：代理回源写入的制品来自上游缓存，不属于"上传"，
+// 不扫描也不自动阻断（否则代理同步大元数据会瞬间投递成千上万扫描，并可能阻断正常代理内容）。
+func (s *ArtifactService) enqueueAutoScan(ctx context.Context, created ...*model.Artifact) {
+	if s.scanTrigger == nil || !s.scanTrigger.ShouldScanOnUpload() || len(created) == 0 {
+		return
+	}
+	var candidates []*model.Artifact
+	repoIDs := make(map[uint]bool)
+	for _, ma := range created {
+		if ma == nil || ma.ID == 0 || ma.Name == "" || ma.Version == "" || runtime.IsCatalogExcludedKind(ma.Kind) {
+			continue
+		}
+		candidates = append(candidates, ma)
+		repoIDs[ma.RepositoryID] = true
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	// 一次查询仓库类型，过滤掉 proxy 等非 hosted 仓库的写入
+	var ids []uint
+	for id := range repoIDs {
+		ids = append(ids, id)
+	}
+	var hostedIDs []uint
+	if err := s.db.WithContext(ctx).Model(&model.Repository{}).
+		Where("id IN ? AND type IN ?", ids, []model.RepositoryType{model.RepoTypeLocal}).
+		Pluck("id", &hostedIDs).Error; err != nil {
+		return
+	}
+	hosted := make(map[uint]bool, len(hostedIDs))
+	for _, id := range hostedIDs {
+		hosted[id] = true
+	}
+	for _, ma := range candidates {
+		if !hosted[ma.RepositoryID] {
+			continue
+		}
+		s.scanTrigger.TriggerScan(context.Background(), ma.ID, ma.Format, ma.Name, ma.Version)
+	}
+}
+
 func (s *ArtifactService) notifyCacheInvalidation() {
 	if s.onCacheInvalid != nil {
 		s.onCacheInvalid()
@@ -166,9 +215,9 @@ func (s *ArtifactService) Save(ctx context.Context, artifact *runtime.Artifact) 
 
 	modelArtifact := s.toModelArtifact(artifact)
 
+	var isNew bool
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.Artifact
-		isNew := false
 
 		err := tx.Where("repository_id = ?", modelArtifact.RepositoryID).
 			Where("format = ?", artifact.Format).
@@ -215,12 +264,17 @@ func (s *ArtifactService) Save(ctx context.Context, artifact *runtime.Artifact) 
 	})
 	if err == nil {
 		s.notifyCacheInvalidation()
+		if isNew {
+			s.enqueueAutoScan(ctx, modelArtifact)
+		}
 	}
 	return err
 }
 
 // SaveBatch 批量创建或更新 artifacts，自动同步 packages 聚合表。
-func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Artifact) error {
+// rejectOverwrite 为 true 时，拒绝覆盖已存在 identity_key 的内容 artifact
+// （metadata/checksum/directory 类仍允许更新，它们是聚合元数据的合法重写）。
+func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Artifact, rejectOverwrite bool) error {
 	if len(artifacts) == 0 {
 		return nil
 	}
@@ -233,6 +287,7 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 
 	// seenPackages 提升到事务外，事务提交后供异步 worker 使用。
 	seenPackages := make(map[string]bool) // 用于批量更新 packages 去重
+	var createdModel []*model.Artifact     // 事务内新建的制品，提交后投递自动扫描
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		seenPackageVersions := make(map[string]bool)
@@ -280,6 +335,9 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 
 		for i, ma := range modelArtifacts {
 			if existing, ok := existingMap[ma.IdentityKey]; ok {
+				if rejectOverwrite && !runtime.IsCatalogExcludedKind(artifacts[i].Kind) {
+					return runtime.ErrOverwriteNotAllowed
+				}
 				ma.ID = existing.ID
 				toUpdate = append(toUpdate, indexedArtifact{model: ma, index: i})
 			} else {
@@ -294,9 +352,15 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 				createBatch[i] = ia.model
 			}
 			if err := tx.CreateInBatches(createBatch, 100).Error; err != nil {
+				// 并发同版本上传时，守卫预检之外仍可能撞上唯一索引 idx_artifact_identity；
+				// 把唯一键冲突映射为覆盖冲突，避免客户端收到裸 DB 错误/500。
+				if rejectOverwrite && errors.Is(err, gorm.ErrDuplicatedKey) {
+					return runtime.ErrOverwriteNotAllowed
+				}
 				return err
 			}
 			for _, ia := range toCreate {
+				createdModel = append(createdModel, ia.model)
 				if err := s.syncBlobRefs(tx, ia.model.ID, artifacts[ia.index].BlobRefs); err != nil {
 					return err
 				}
@@ -351,6 +415,7 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 	})
 	if err == nil {
 		s.notifyCacheInvalidation()
+		s.enqueueAutoScan(ctx, createdModel...)
 		// 投递 seenPackages 副本到异步 worker。channel 满时阻塞最多 100ms，
 		// 超时则降级为同步执行，保证 packages 聚合表最终一致。
 		if len(seenPackages) > 0 {

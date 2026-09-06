@@ -227,7 +227,7 @@ func (s *hostedTestMetadataStore) Get(context.Context, ArtifactKey) (*Artifact, 
 	return s.artifact, nil
 }
 func (s *hostedTestMetadataStore) Put(context.Context, *Artifact) error        { return nil }
-func (s *hostedTestMetadataStore) BatchPut(context.Context, []*Artifact) error { return nil }
+func (s *hostedTestMetadataStore) BatchPut(context.Context, []*Artifact, bool) error { return nil }
 func (s *hostedTestMetadataStore) Delete(context.Context, ArtifactKey) error   { return nil }
 func (s *hostedTestMetadataStore) Query(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
 	s.queryCalls++
@@ -244,3 +244,75 @@ func (s *hostedTestBlobStore) Open(BlobRef) (io.ReadCloser, error) {
 }
 func (*hostedTestBlobStore) Stat(BlobRef) (*BlobMetadata, error) { return nil, nil }
 func (*hostedTestBlobStore) Delete(BlobRef) error                { return nil }
+
+type hostedTestDeleteTrackingStore struct {
+	hostedTestMetadataStore
+	deleteCalls int
+}
+
+func (s *hostedTestDeleteTrackingStore) Delete(ctx context.Context, key ArtifactKey) error {
+	s.deleteCalls++
+	return nil
+}
+
+// TestHostedRuntimeDeleteArtifactBlockedWhenNotAllowed 验证 AllowDelete=false 时
+// DeleteArtifact 返回 ErrDeleteNotAllowed，且不触碰 metadata store。
+func TestHostedRuntimeDeleteArtifactBlockedWhenNotAllowed(t *testing.T) {
+	store := &hostedTestDeleteTrackingStore{
+		hostedTestMetadataStore: hostedTestMetadataStore{artifact: &Artifact{}},
+	}
+	hosted := &HostedRuntime{MetadataStore: store, BlobStore: &hostedTestBlobStore{}, RepositoryID: "1"}
+
+	err := hosted.DeleteArtifact(context.Background(), ArtifactKey{IdentityKey: "file/pkg/a.txt"})
+	if !errors.Is(err, ErrDeleteNotAllowed) {
+		t.Fatalf("DeleteArtifact error = %v, want ErrDeleteNotAllowed", err)
+	}
+	if store.deleteCalls != 0 {
+		t.Fatalf("metadataStore.Delete called %d times, want 0", store.deleteCalls)
+	}
+}
+
+// TestHostedRuntimeDeleteArtifactAllowed 验证 AllowDelete=true 时删除正常执行。
+func TestHostedRuntimeDeleteArtifactAllowed(t *testing.T) {
+	store := &hostedTestDeleteTrackingStore{
+		hostedTestMetadataStore: hostedTestMetadataStore{artifact: &Artifact{}},
+	}
+	hosted := &HostedRuntime{
+		MetadataStore: store,
+		BlobStore:     &hostedTestBlobStore{},
+		RepositoryID:  "1",
+		AllowDelete:   true,
+	}
+
+	if err := hosted.DeleteArtifact(context.Background(), ArtifactKey{IdentityKey: "file/pkg/a.txt"}); err != nil {
+		t.Fatalf("DeleteArtifact: %v", err)
+	}
+	if store.deleteCalls != 1 {
+		t.Fatalf("metadataStore.Delete called %d times, want 1", store.deleteCalls)
+	}
+}
+
+// TestHostedRuntimeBeginUploadOverwritePolicy 验证 BeginUpload 把仓库 AllowOverwrite
+// 注入为 session 的覆盖策略。
+func TestHostedRuntimeBeginUploadOverwritePolicy(t *testing.T) {
+	store := &hostedTestMetadataStore{}
+	blobStore := &hostedTestBlobStore{}
+
+	blocked := &HostedRuntime{MetadataStore: store, BlobStore: blobStore, RepositoryID: "1"}
+	session, err := blocked.BeginUpload(context.Background(), UploadRequest{})
+	if err != nil {
+		t.Fatalf("BeginUpload: %v", err)
+	}
+	if got := session.(*HostedUploadSession).allowOverwrite; got {
+		t.Fatalf("allowOverwrite = %v, want false when repo AllowOverwrite=false", got)
+	}
+
+	permitted := &HostedRuntime{MetadataStore: store, BlobStore: blobStore, RepositoryID: "1", AllowOverwrite: true}
+	session, err = permitted.BeginUpload(context.Background(), UploadRequest{})
+	if err != nil {
+		t.Fatalf("BeginUpload: %v", err)
+	}
+	if got := session.(*HostedUploadSession).allowOverwrite; !got {
+		t.Fatalf("allowOverwrite = %v, want true when repo AllowOverwrite=true", got)
+	}
+}

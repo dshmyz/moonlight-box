@@ -15,9 +15,11 @@ type HostedUploadSession struct {
 	// 与读路径（HostedRuntime.QueryArtifacts/GetArtifact 强制使用成员 ID）保持一致，
 	// 写路径也必须把 artifact 归到成员自身的 ID，否则发布成功却无法按成员 ID 查询到。
 	RepositoryID string // 为空表示不覆写
-	artifacts   []*Artifact  // 支持多个 artifact（如 npm 的 tarball + metadata）
-	createdBlobs []BlobRef
-	aborted      bool
+	// allowOverwrite 为 false 时，Commit 会拒绝覆盖已存在 identity_key 的 artifact。
+	allowOverwrite bool
+	artifacts      []*Artifact // 支持多个 artifact（如 npm 的 tarball + metadata）
+	createdBlobs   []BlobRef
+	aborted        bool
 }
 
 func NewHostedUploadSession(metadataStore MetadataStore, blobStore BlobStore) *HostedUploadSession {
@@ -71,7 +73,10 @@ func (s *HostedUploadSession) Commit(ctx context.Context) error {
 				a.RepositoryID = s.RepositoryID
 			}
 		}
-		commitErr = s.metadataStore.BatchPut(ctx, s.artifacts)
+		// 覆盖策略由 MetadataStore.BatchPut 在事务内原子执行（先查后写同一事务，
+		// 避免预检与写入之间的 TOCTOU），仅对内容 artifact 生效，
+		// metadata/checksum/directory 类聚合元数据的重写始终放行。
+		commitErr = s.metadataStore.BatchPut(ctx, s.artifacts, !s.allowOverwrite)
 	}
 	if commitErr != nil {
 		// Abort 会清理 createdBlobs 并标记 aborted，忽略其错误（清理失败无法恢复，只能记录）。

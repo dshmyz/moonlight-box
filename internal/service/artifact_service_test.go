@@ -2,11 +2,15 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/repository"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -853,7 +857,7 @@ func TestArtifactServiceRepublishSameVersionIsIdempotent(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		if err := svc.SaveBatch(context.Background(), []*runtime.Artifact{
 			runtime.NewArtifact(spec),
-		}); err != nil {
+		}, false); err != nil {
 			t.Fatalf("republish #%d: %v", i+1, err)
 		}
 	}
@@ -874,6 +878,67 @@ func TestArtifactServiceRepublishSameVersionIsIdempotent(t *testing.T) {
 	}
 	if pkgCount != 1 {
 		t.Fatalf("package rows = %d, want 1 (no duplicate on republish)", pkgCount)
+	}
+}
+
+// TestArtifactServiceSaveBatchRejectOverwriteBlocksContentRepublish 验证
+// rejectOverwrite=true 时重复发布内容 artifact 返回 ErrOverwriteNotAllowed。
+func TestArtifactServiceSaveBatchRejectOverwriteBlocksContentRepublish(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	repo := model.Repository{Name: "npm-local", Type: model.RepoTypeLocal, PackageType: "npm"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	svc := NewArtifactService(db)
+	spec := runtime.ArtifactSpec{
+		RepositoryID: fmt.Sprint(repo.ID),
+		Format:       "npm",
+		Kind:         runtime.KindVersion,
+		Name:         "left-pad",
+		Version:      "1.0.0",
+	}
+	if err := svc.SaveBatch(context.Background(), []*runtime.Artifact{runtime.NewArtifact(spec)}, false); err != nil {
+		t.Fatalf("first publish: %v", err)
+	}
+	err = svc.SaveBatch(context.Background(), []*runtime.Artifact{runtime.NewArtifact(spec)}, true)
+	if !errors.Is(err, runtime.ErrOverwriteNotAllowed) {
+		t.Fatalf("republish with rejectOverwrite = %v, want ErrOverwriteNotAllowed", err)
+	}
+}
+
+// TestArtifactServiceSaveBatchRejectOverwriteAllowsMetadataRewrite 验证
+// rejectOverwrite=true 时重复写入 metadata 类 artifact 仍放行（聚合元数据的合法重写）。
+func TestArtifactServiceSaveBatchRejectOverwriteAllowsMetadataRewrite(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	repo := model.Repository{Name: "npm-local", Type: model.RepoTypeLocal, PackageType: "npm"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	svc := NewArtifactService(db)
+	spec := runtime.ArtifactSpec{
+		RepositoryID: fmt.Sprint(repo.ID),
+		Format:       "npm",
+		Kind:         runtime.KindMetadata,
+		Name:         "left-pad",
+		Version:      "1.0.0",
+		IdentityKey:  "metadata/left-pad/1.0.0",
+	}
+	for i := 0; i < 2; i++ {
+		if err := svc.SaveBatch(context.Background(), []*runtime.Artifact{runtime.NewArtifact(spec)}, true); err != nil {
+			t.Fatalf("metadata rewrite #%d with rejectOverwrite: %v", i+1, err)
+		}
 	}
 }
 
@@ -1006,5 +1071,108 @@ func TestArtifactServiceRebuildPackagesExcludesVirtualRepo(t *testing.T) {
 	}
 	if groupPkgCount != 0 {
 		t.Fatalf("virtual repo package rows after rebuild = %d, want 0", groupPkgCount)
+	}
+}
+
+// TestArtifactServiceSaveBatchTriggersAutoScan 验证新制品保存时按配置触发自动扫描，
+// 且同一 identity 重复保存（更新路径）不会重复触发。
+// 自动扫描仅针对 hosted（local）仓库：proxy 回源写入属于上游缓存，不扫描不阻断。
+func TestArtifactServiceSaveBatchTriggersAutoScan(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	repo := model.Repository{Name: "npm-hosted", Type: model.RepoTypeLocal, PackageType: "npm"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+
+	scanner := NewSecurityScanner(repository.NewScanRepository(db), db, repository.NewBlockRuleRepository(db))
+	scanner.SetSecurityDefaults(true, false, false) // 启用上传扫描
+	scanned := make(chan string, 2)
+	scanner.scanPackage = func(ctx context.Context, versionID uint, pkgType, name, version string) *model.ScanResult {
+		scanned <- fmt.Sprintf("%d|%s|%s|%s", versionID, pkgType, name, version)
+		return nil
+	}
+
+	svc := NewArtifactService(db)
+	svc.SetSecurityScanner(scanner)
+
+	spec := runtime.ArtifactSpec{
+		RepositoryID: fmt.Sprint(repo.ID),
+		Format:       "npm",
+		Kind:         runtime.KindVersion,
+		Name:         "left-pad",
+		Version:      "1.0.0",
+	}
+	if err := svc.SaveBatch(context.Background(), []*runtime.Artifact{runtime.NewArtifact(spec)}, false); err != nil {
+		t.Fatalf("save batch: %v", err)
+	}
+
+	select {
+	case got := <-scanned:
+		if !strings.HasSuffix(got, "|npm|left-pad|1.0.0") {
+			t.Errorf("auto scan payload = %s", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("auto scan not triggered on new artifact")
+	}
+
+	// 同一 identity 重复保存 → 更新路径，不应再次触发扫描
+	if err := svc.SaveBatch(context.Background(), []*runtime.Artifact{runtime.NewArtifact(spec)}, false); err != nil {
+		t.Fatalf("re-save batch: %v", err)
+	}
+	select {
+	case got := <-scanned:
+		t.Errorf("resave should not trigger scan, got %s", got)
+	case <-time.After(300 * time.Millisecond):
+		// 期望：不触发
+	}
+}
+
+// TestArtifactServiceSaveBatchSkipsProxyRepos 验证 proxy 仓库回源写入不触发自动扫描：
+// 代理同步大元数据会瞬间产生海量写入，扫描它们既无意义也可能阻断正常代理内容。
+func TestArtifactServiceSaveBatchSkipsProxyRepos(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	repo := model.Repository{Name: "npm-proxy", Type: model.RepoTypeProxy, PackageType: "npm"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+
+	scanner := NewSecurityScanner(repository.NewScanRepository(db), db, repository.NewBlockRuleRepository(db))
+	scanner.SetSecurityDefaults(true, false, false) // 启用上传扫描
+	scanned := make(chan string, 2)
+	scanner.scanPackage = func(ctx context.Context, versionID uint, pkgType, name, version string) *model.ScanResult {
+		scanned <- fmt.Sprintf("%d|%s|%s|%s", versionID, pkgType, name, version)
+		return nil
+	}
+
+	svc := NewArtifactService(db)
+	svc.SetSecurityScanner(scanner)
+
+	spec := runtime.ArtifactSpec{
+		RepositoryID: fmt.Sprint(repo.ID),
+		Format:       "npm",
+		Kind:         runtime.KindVersion,
+		Name:         "left-pad",
+		Version:      "1.0.0",
+	}
+	if err := svc.SaveBatch(context.Background(), []*runtime.Artifact{runtime.NewArtifact(spec)}, false); err != nil {
+		t.Fatalf("save batch: %v", err)
+	}
+	select {
+	case got := <-scanned:
+		t.Errorf("proxy repo write should not trigger scan, got %s", got)
+	case <-time.After(300 * time.Millisecond):
+		// 期望：不触发
 	}
 }

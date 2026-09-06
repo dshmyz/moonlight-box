@@ -198,10 +198,11 @@ func TestHostedUploadSessionPutBlobUsesContextAwareBlobStore(t *testing.T) {
 }
 
 type uploadSessionMetadataStore struct {
-	putCalls   int
-	batchCalls int
-	batchErr   error
-	artifacts  []*Artifact
+	putCalls    int
+	batchCalls  int
+	batchErr    error
+	rejectFlags []bool
+	artifacts   []*Artifact
 }
 
 func (s *uploadSessionMetadataStore) Get(ctx context.Context, key ArtifactKey) (*Artifact, error) {
@@ -214,8 +215,9 @@ func (s *uploadSessionMetadataStore) Put(ctx context.Context, artifact *Artifact
 	return nil
 }
 
-func (s *uploadSessionMetadataStore) BatchPut(ctx context.Context, artifacts []*Artifact) error {
+func (s *uploadSessionMetadataStore) BatchPut(ctx context.Context, artifacts []*Artifact, rejectOverwrite bool) error {
 	s.batchCalls++
+	s.rejectFlags = append(s.rejectFlags, rejectOverwrite)
 	if s.batchErr != nil {
 		return s.batchErr
 	}
@@ -324,5 +326,49 @@ func TestHostedUploadSessionCommitKeepsRepositoryIDWhenEmpty(t *testing.T) {
 	}
 	if got := store.artifacts[0].RepositoryID; got != "7" {
 		t.Fatalf("artifact RepositoryID = %q, want 7", got)
+	}
+}
+
+// TestHostedUploadSessionCommitPassesRejectOverwriteFlag 验证 Commit 把覆盖策略
+// 以 rejectOverwrite 标志传给 MetadataStore.BatchPut（实际拒绝由 store 在事务内原子执行）。
+func TestHostedUploadSessionCommitPassesRejectOverwriteFlag(t *testing.T) {
+	store := &uploadSessionMetadataStore{}
+	session := NewHostedUploadSession(store, &uploadSessionBlobStore{}) // allowOverwrite=false
+
+	if err := session.PutArtifact(context.Background(), NewArtifact(ArtifactSpec{
+		Format:      "generic",
+		Kind:        KindFile,
+		Name:        "a.txt",
+		Filename:    "a.txt",
+		RemotePath:  "pkg/a.txt",
+		IdentityKey: "file/pkg/a.txt",
+	})); err != nil {
+		t.Fatalf("put artifact: %v", err)
+	}
+	if err := session.Commit(context.Background()); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if len(store.rejectFlags) != 1 || store.rejectFlags[0] != true {
+		t.Fatalf("rejectOverwrite flags = %v, want [true]", store.rejectFlags)
+	}
+
+	// allowOverwrite=true → rejectOverwrite=false
+	session2 := NewHostedUploadSession(store, &uploadSessionBlobStore{})
+	session2.allowOverwrite = true
+	if err := session2.PutArtifact(context.Background(), NewArtifact(ArtifactSpec{
+		Format:      "generic",
+		Kind:        KindFile,
+		Name:        "a.txt",
+		Filename:    "a.txt",
+		RemotePath:  "pkg/a.txt",
+		IdentityKey: "file/pkg/a.txt",
+	})); err != nil {
+		t.Fatalf("put artifact: %v", err)
+	}
+	if err := session2.Commit(context.Background()); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if len(store.rejectFlags) != 2 || store.rejectFlags[1] != false {
+		t.Fatalf("rejectOverwrite flags = %v, want [true false]", store.rejectFlags)
 	}
 }

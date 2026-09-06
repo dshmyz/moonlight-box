@@ -16,6 +16,10 @@ type HostedRuntime struct {
 	Blocker        PackageBlocker
 	Format         string
 	ConditionAudit ConditionAuditLogger
+	// AllowOverwrite 为 true 时允许上传覆盖已存在 identity_key 的 artifact（部署策略）。
+	AllowOverwrite bool
+	// AllowDelete 为 true 时允许协议层删除 artifact（maven/raw 的 DELETE）。
+	AllowDelete bool
 }
 
 func (n *HostedRuntime) checkBlocked(name, version string) error {
@@ -175,14 +179,20 @@ func (n *HostedRuntime) BeginUpload(ctx context.Context, request UploadRequest) 
 	session := NewHostedUploadSession(n.MetadataStore, n.BlobStore)
 	// 强制 artifact 归属到本 hosted 成员自身 ID（见 HostedUploadSession.RepositoryID 注释）
 	session.RepositoryID = n.RepositoryID
+	session.allowOverwrite = n.AllowOverwrite
 	return session, nil
 }
 
 func (n *HostedRuntime) DeleteArtifact(ctx context.Context, key ArtifactKey) error {
 	key.RepositoryID = n.RepositoryID
+	// 先查存在性：不存在的 artifact 优先返回 ErrNotFound（404），
+	// 与 AllowDelete=true 时的行为一致，客户端能区分"不存在"与"无权限"。
 	artifact, err := n.MetadataStore.Get(ctx, key)
 	if err != nil {
 		return err
+	}
+	if !n.AllowDelete {
+		return ErrDeleteNotAllowed
 	}
 	if err := n.MetadataStore.Delete(ctx, key); err != nil {
 		return err

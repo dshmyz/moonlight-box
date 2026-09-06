@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -27,7 +28,7 @@ const existingQueryChunkSize = 500
 // 使用接口避免循环依赖。
 type ArtifactServiceAdapter interface {
 	Save(ctx context.Context, artifact *runtime.Artifact) error
-	SaveBatch(ctx context.Context, artifacts []*runtime.Artifact) error
+	SaveBatch(ctx context.Context, artifacts []*runtime.Artifact, rejectOverwrite bool) error
 	Delete(ctx context.Context, key runtime.ArtifactKey) error
 	BatchDelete(ctx context.Context, repoID uint, artifactIDs []uint) error
 }
@@ -124,9 +125,9 @@ func (s *MetadataStore) Put(ctx context.Context, artifact *runtime.Artifact) err
 	})
 }
 
-func (s *MetadataStore) BatchPut(ctx context.Context, artifacts []*runtime.Artifact) error {
+func (s *MetadataStore) BatchPut(ctx context.Context, artifacts []*runtime.Artifact, rejectOverwrite bool) error {
 	if s.artifactSvc != nil {
-		return s.artifactSvc.SaveBatch(ctx, artifacts)
+		return s.artifactSvc.SaveBatch(ctx, artifacts, rejectOverwrite)
 	}
 
 	// 回退：直接操作 DB（无 packages 同步）
@@ -186,6 +187,9 @@ func (s *MetadataStore) BatchPut(ctx context.Context, artifacts []*runtime.Artif
 
 		for i, ma := range modelArtifacts {
 			if existing, ok := existingMap[ma.IdentityKey]; ok {
+				if rejectOverwrite && !runtime.IsCatalogExcludedKind(artifacts[i].Kind) {
+					return runtime.ErrOverwriteNotAllowed
+				}
 				ma.ID = existing.ID
 				toUpdate = append(toUpdate, indexedArtifact{model: ma, index: i})
 			} else {
@@ -200,6 +204,9 @@ func (s *MetadataStore) BatchPut(ctx context.Context, artifacts []*runtime.Artif
 				createBatch[i] = ia.model
 			}
 			if err := tx.CreateInBatches(createBatch, 100).Error; err != nil {
+				if rejectOverwrite && errors.Is(err, gorm.ErrDuplicatedKey) {
+					return runtime.ErrOverwriteNotAllowed
+				}
 				return err
 			}
 			// 为新建的记录同步 blob 关联（CreateInBatches 后 model.ID 已被填充）

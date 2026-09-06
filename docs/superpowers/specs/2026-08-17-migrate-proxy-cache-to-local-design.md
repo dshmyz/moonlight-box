@@ -96,8 +96,8 @@ Response 200:
 
 - 迁移后，local 仓库里老构建（文件名时间戳超出 `max_age_days`，默认 90 天）会在下一次清理执行时被删除——**这正是"2000+ 瘦身"的机制**，无需手动逐条删
 - 想多保留 → 调 target 仓库级配置 `snapshot_keep_last` / `snapshot_max_age_days`（[repository.go:188-189](file:///Users/gracegaoya/work/project/moonlight-box/internal/model/repository.go#L188)）
-- 想尽快清空历史 → 调小 `max_age_days`（如 7）或手动 `POST /download-logs/snapshot-cleanup/now`
-- ⚠️ 迁移执行期间避免并发触发 `snapshot-cleanup/now`（事务保证单次一致性，但推荐串行执行）
+- 想尽快清空历史 → 调小 `max_age_days`（如 7）或手动 `POST /scheduler/tasks/maven_snapshot/run`
+- ⚠️ 迁移执行期间避免并发触发 `maven_snapshot/run`（事务保证单次一致性，但推荐串行执行）
 
 ## 前端设计
 

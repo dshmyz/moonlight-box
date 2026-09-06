@@ -146,7 +146,7 @@ func TestBatchPutHandlesManyIdentityKeys(t *testing.T) {
 		}
 	}
 
-	if err := store.BatchPut(context.Background(), artifacts); err != nil {
+	if err := store.BatchPut(context.Background(), artifacts, false); err != nil {
 		t.Fatalf("BatchPut with %d identity keys failed: %v", count, err)
 	}
 
@@ -163,7 +163,7 @@ func TestBatchPutHandlesManyIdentityKeys(t *testing.T) {
 	}
 
 	// 再次 BatchPut（全部命中 existing，走 UPDATE 分支）也应成功
-	if err := store.BatchPut(context.Background(), artifacts); err != nil {
+	if err := store.BatchPut(context.Background(), artifacts, false); err != nil {
 		t.Fatalf("BatchPut (update path) with %d identity keys failed: %v", count, err)
 	}
 }

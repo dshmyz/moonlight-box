@@ -10,6 +10,9 @@ import (
 type GroupRuntime struct {
 	Members  []RepositoryNode
 	Writable RepositoryNode
+	// 组合仓库自身的部署策略：与可写成员策略取交集（两者都允许才放行）。
+	AllowOverwrite bool
+	AllowDelete    bool
 }
 
 func (g *GroupRuntime) OpenRemote(ctx context.Context, request RemoteOpenRequest) (*RemoteResponse, error) {
@@ -155,12 +158,27 @@ func (g *GroupRuntime) BeginUpload(ctx context.Context, request UploadRequest) (
 	if g.Writable == nil {
 		return nil, ErrReadOnly
 	}
-	return g.Writable.BeginUpload(ctx, request)
+	session, err := g.Writable.BeginUpload(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	// 组合仓库策略与可写成员策略取交集：组合库不允许覆盖时，即便成员允许也拒绝。
+	if hosted, ok := session.(*HostedUploadSession); ok {
+		hosted.allowOverwrite = hosted.allowOverwrite && g.AllowOverwrite
+	}
+	return session, nil
 }
 
 func (g *GroupRuntime) DeleteArtifact(ctx context.Context, key ArtifactKey) error {
 	if g.Writable == nil {
 		return ErrReadOnly
+	}
+	// 与 hosted 成员的删除守卫一致：先确认存在性（404 优先），再判组合库策略。
+	if _, err := g.GetArtifact(ctx, key); err != nil {
+		return err
+	}
+	if !g.AllowDelete {
+		return ErrDeleteNotAllowed
 	}
 	return g.Writable.DeleteArtifact(ctx, key)
 }
