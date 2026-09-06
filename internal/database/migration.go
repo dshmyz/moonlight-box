@@ -3,6 +3,7 @@ package database
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/config"
 	"github.com/dshmyz/moonlight-box/internal/database/dialect"
@@ -34,6 +35,8 @@ func AutoMigrate() error {
 		&model.Vulnerability{},
 		&model.VulnRule{},
 		&model.VulnDataSource{},
+		&model.RiskAssessment{},
+		&model.RiskAssessmentItem{},
 		&model.Webhook{},
 		&model.WebhookDelivery{},
 		&model.Backup{},
@@ -97,7 +100,75 @@ func legacyColumnExists(tableName, columnName string) (bool, error) {
 	return count > 0, nil
 }
 
+// backfillRepositoryPolicies 一次性迁移：仓库部署策略（allow_overwrite/allow_delete）
+// 此前是死配置未强制执行，存量 hosted/virtual 仓库此前一律允许覆盖与删除。
+// 策略激活后回填为 true 以保持升级前行为；新建仓库仍按 UI 默认 false。
+// 用 system_configs 标记守卫保证只执行一次。
+func backfillRepositoryPolicies() error {
+	const repoPolicyBackfillMarker = "migration.repo_policy_backfill_20260902"
+	var marker model.SystemConfig
+	if DB.Where("key = ?", repoPolicyBackfillMarker).First(&marker).Error == nil {
+		return nil
+	}
+	logrus.WithField("step", "repo_policy_backfill").Info("Running one-time repository policy backfill")
+	if err := DB.Model(&model.Repository{}).
+		Where("type IN ?", []string{string(model.RepoTypeLocal), string(model.RepoTypeVirtual)}).
+		Updates(map[string]interface{}{"allow_overwrite": true, "allow_delete": true}).Error; err != nil {
+		return err
+	}
+	return DB.Create(&model.SystemConfig{
+		Key:         repoPolicyBackfillMarker,
+		Value:       "true",
+		ValueType:   "bool",
+		Category:    "migration",
+		Description: "标记存量仓库部署策略已回填为允许覆盖/删除",
+	}).Error
+}
+
+// migrateLogCleanupSchedule 一次性迁移：旧 log_cleanup.interval 键迁移到 scheduler.cron.log_cleanup。
+// 调度统一后 log_cleanup.interval 不再被调度器读取，存量自定义节奏若不迁移会静默回退到全局间隔。
+func migrateLogCleanupSchedule() error {
+	const marker = "migration.log_cleanup_schedule_migrated"
+	var m model.SystemConfig
+	if DB.Where("key = ?", marker).First(&m).Error == nil {
+		return nil
+	}
+	var old model.SystemConfig
+	if DB.Where("key = ?", "log_cleanup.interval").First(&old).Error == nil {
+		// 仅迁移自定义值（跳过默认 24h，避免把默认当专属配置）
+		if d, err := time.ParseDuration(old.Value); err == nil && d > 0 && d != 24*time.Hour {
+			var target model.SystemConfig
+			if DB.Where("key = ?", "scheduler.cron.log_cleanup").First(&target).Error != nil {
+				if err := DB.Create(&model.SystemConfig{
+					Key:         "scheduler.cron.log_cleanup",
+					Value:       "@every " + old.Value,
+					ValueType:   "string",
+					Category:    "scheduler",
+					Description: "下载日志清理调度（cron 或 @every 间隔）",
+				}).Error; err != nil {
+					return err
+				}
+				logrus.WithField("interval", old.Value).Info("Migrated log_cleanup.interval to scheduler.cron.log_cleanup")
+			}
+		}
+	}
+	return DB.Create(&model.SystemConfig{
+		Key:         marker,
+		Value:       "true",
+		ValueType:   "bool",
+		Category:    "migration",
+		Description: "标记 log_cleanup.interval 已迁移",
+	}).Error
+}
+
 func SeedData() error {
+	if err := backfillRepositoryPolicies(); err != nil {
+		return err
+	}
+	if err := migrateLogCleanupSchedule(); err != nil {
+		return err
+	}
+
 	// 清理废弃角色/权限是一次性数据迁移，用 system_configs 中的标记守卫，确保只在首次启动执行一次。
 	// 之前这段逻辑每次启动都跑，而 developer 既是"废弃角色"又是当前系统角色，
 	// 导致每次重启都会删除所有用户的 developer 角色关联后重建空角色 -> 用户角色信息丢失。

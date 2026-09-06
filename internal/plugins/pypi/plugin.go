@@ -1132,6 +1132,9 @@ func (p *PyPIPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runti
 	}
 
 	if err := session.Commit(ctx.Request.Context()); err != nil {
+		if runtime.WritePolicyError(ctx.Writer, err) {
+			return nil
+		}
 		logrus.WithError(err).Error("pypi: failed to commit upload")
 		http.Error(ctx.Writer, "upload failed", http.StatusInternalServerError)
 		return nil
@@ -1261,6 +1264,9 @@ func (p *PyPIPlugin) handleLegacyUpload(ctx *runtime.RequestContext, repoRuntime
 		return nil
 	}
 	if err := session.Commit(ctx.Request.Context()); err != nil {
+		if runtime.WritePolicyError(ctx.Writer, err) {
+			return nil
+		}
 		logrus.WithError(err).Error("pypi: failed to commit legacy upload")
 		http.Error(ctx.Writer, "upload failed", http.StatusInternalServerError)
 		return nil

@@ -75,6 +75,7 @@ package maven
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -87,6 +88,7 @@ import (
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	ver "github.com/dshmyz/moonlight-box/internal/version"
 	"github.com/sirupsen/logrus"
 )
 
@@ -191,11 +193,18 @@ func (p *MavenPlugin) FetchArtifactMetadata(ctx context.Context, remoteURL strin
 	if err != nil {
 		return nil, err
 	}
-	license := parsePOMLicense(body)
-	if license == "" {
+	attrs := map[string]string{}
+	if license := parsePOMLicense(body); license != "" {
+		attrs["license"] = license
+	}
+	if deps := parsePOMDependencies(body); len(deps) > 0 {
+		depJSON, _ := json.Marshal(deps)
+		attrs["dependencies"] = string(depJSON)
+	}
+	if len(attrs) == 0 {
 		return nil, runtime.ErrMetadataUnavailable
 	}
-	return &runtime.ArtifactMetadata{Attributes: map[string]string{"license": license}}, nil
+	return &runtime.ArtifactMetadata{Attributes: attrs}, nil
 }
 
 // fetchMetadata fetches maven-metadata.xml from the remote repository and extracts versions.
@@ -689,11 +698,40 @@ func buildSnapshotMetadata(artifact, version string, artifacts []*runtime.Artifa
 }
 
 type pomProject struct {
-	Licenses []pomLicense `xml:"licenses>license"`
+	Licenses     []pomLicense    `xml:"licenses>license"`
+	Dependencies []pomDependency `xml:"dependencies>dependency"`
 }
 
 type pomLicense struct {
 	Name string `xml:"name"`
+}
+
+type pomDependency struct {
+	GroupID    string `xml:"groupId"`
+	ArtifactID string `xml:"artifactId"`
+	Version    string `xml:"version"`
+	Scope      string `xml:"scope"`
+}
+
+// parsePOMDependencies 解析 POM 声明的直接依赖，返回 "groupId:artifactId" → version 映射。
+// 跳过 test scope（开发期依赖，不随制品分发）；版本为空或占位符/区间时仍计入（尽力而为）。
+func parsePOMDependencies(body []byte) map[string]string {
+	var pom pomProject
+	if err := xml.NewDecoder(bytes.NewReader(body)).Decode(&pom); err != nil {
+		return nil
+	}
+	deps := make(map[string]string)
+	for _, d := range pom.Dependencies {
+		g, a := strings.TrimSpace(d.GroupID), strings.TrimSpace(d.ArtifactID)
+		if g == "" || a == "" || strings.EqualFold(strings.TrimSpace(d.Scope), "test") {
+			continue
+		}
+		deps[g+":"+a] = strings.TrimSpace(d.Version)
+	}
+	if len(deps) == 0 {
+		return nil
+	}
+	return deps
 }
 
 // errInvalidMetadataPath 表示 maven-metadata.xml 路径格式不合法（少于两段），
@@ -1215,16 +1253,11 @@ func compareNumericString(a, b string) int {
 }
 
 func (p *MavenPlugin) handleDelete(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
-	err := repoRuntime.DeleteArtifact(ctx.Request.Context(), key)
-	if err != nil {
-		switch {
-		case errors.Is(err, runtime.ErrNotFound):
-			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-		case errors.Is(err, runtime.ErrReadOnly):
-			http.Error(ctx.Writer, "Repository is read only", http.StatusMethodNotAllowed)
-		default:
-			{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
+	if err := repoRuntime.DeleteArtifact(ctx.Request.Context(), key); err != nil {
+		if runtime.WritePolicyError(ctx.Writer, err) {
+			return nil
 		}
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 	ctx.Writer.WriteHeader(http.StatusNoContent)
@@ -1506,6 +1539,11 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 			attributes["license"] = license
 			properties["license"] = license
 		}
+		if deps := parsePOMDependencies(bodyBytes); len(deps) > 0 {
+			depJSON, _ := json.Marshal(deps)
+			attributes["dependencies"] = string(depJSON)
+			properties["dependencies"] = string(depJSON)
+		}
 	}
 
 	blobRef, err := session.PutBlob(ctx.Request.Context(), body)
@@ -1544,6 +1582,9 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 	}
 
 	if err := session.Commit(ctx.Request.Context()); err != nil {
+		if runtime.WritePolicyError(ctx.Writer, err) {
+			return nil
+		}
 		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
@@ -1570,4 +1611,65 @@ func (p *MavenPlugin) handleChecksumUpload(ctx *runtime.RequestContext, repoRunt
 		key.Extension = filepath.Ext(key.Filename)
 	}
 	return p.handleUpload(ctx, repoRuntime, key)
+}
+
+// ResolveDependencies 实现 runtime.DependencyResolver：
+// 从 maven 归一化 attributes.dependencies（POM 解析结果）反查声明了 name 的依赖条目。
+// 依赖键为 "groupId:artifactId"，完整 g:a 精确匹配，裸 artifactId 按后缀启发式匹配；
+// 可解析的声明版本按风险版本门控，占位符/区间/特殊版本视为潜在命中。
+func (p *MavenPlugin) ResolveDependencies(attrs map[string]string, name, version string) []string {
+	raw, ok := attrs["dependencies"]
+	if !ok || raw == "" {
+		return nil
+	}
+	var deps map[string]string
+	if err := json.Unmarshal([]byte(raw), &deps); err != nil {
+		return nil
+	}
+	var out []string
+	for key, ver := range deps {
+		if !mavenDepMatches(key, name) {
+			continue
+		}
+		if !mavenDeclaredCovers(ver, version) {
+			continue
+		}
+		out = append(out, ver)
+	}
+	return out
+}
+
+// mavenDepMatches 判断依赖键是否命中。name 含 ":"（完整 g:a）时必须精确相等，
+// 否则 "x:g:a" 这类不同组的同名构件会被后缀误伤；name 为裸 artifactId 时退化为
+// 后缀启发式（裸名本身跨组有歧义，风险清单应写完整 g:a 来精确匹配）。
+func mavenDepMatches(key, name string) bool {
+	if key == name {
+		return true
+	}
+	return !strings.Contains(name, ":") && strings.HasSuffix(key, ":"+name)
+}
+
+// mavenDeclaredCovers 判断声明的 maven 版本是否覆盖风险版本。
+// 占位符/特殊版本（${...}、LATEST、RELEASE）无法判断，按潜在命中；
+// 硬区间（[1.0,2.0)）/非 semver（1.0.0.Final、时间戳快照）同样按潜在命中；
+// 风险版本为版本族时不精确门控；其余用 semver 约束覆盖或精确/前缀匹配。
+func mavenDeclaredCovers(declared, risky string) bool {
+	declared = strings.TrimSpace(declared)
+	if declared == "" || strings.HasPrefix(declared, "${") {
+		return true
+	}
+	if strings.EqualFold(declared, "LATEST") || strings.EqualFold(declared, "RELEASE") {
+		return true
+	}
+	if ver.IsFamily(risky) {
+		return true
+	}
+	if ver.ConstraintCovers(declared, risky) {
+		return true
+	}
+	if ver.Matches(risky, declared) {
+		return true
+	}
+	// 既不能被 semver 覆盖判定、也不精确/前缀命中时，无法证明无关，保守按潜在命中
+	return !ver.ConstraintParseable(declared)
 }

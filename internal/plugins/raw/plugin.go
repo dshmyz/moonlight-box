@@ -421,6 +421,9 @@ func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime ru
 	}
 
 	if err := session.Commit(ctx.Request.Context()); err != nil {
+		if runtime.WritePolicyError(ctx.Writer, err) {
+			return nil
+		}
 		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
@@ -430,16 +433,11 @@ func (p *GenericPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime ru
 }
 
 func (p *GenericPlugin) handleDelete(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, key runtime.ArtifactKey) error {
-	err := repoRuntime.DeleteArtifact(ctx.Request.Context(), key)
-	if err != nil {
-		switch {
-		case errors.Is(err, runtime.ErrNotFound):
-			http.Error(ctx.Writer, "Not found", http.StatusNotFound)
-		case errors.Is(err, runtime.ErrReadOnly):
-			http.Error(ctx.Writer, "Repository is read only", http.StatusMethodNotAllowed)
-		default:
-			{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
+	if err := repoRuntime.DeleteArtifact(ctx.Request.Context(), key); err != nil {
+		if runtime.WritePolicyError(ctx.Writer, err) {
+			return nil
 		}
+		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
 		return nil
 	}
 	ctx.Writer.WriteHeader(http.StatusNoContent)

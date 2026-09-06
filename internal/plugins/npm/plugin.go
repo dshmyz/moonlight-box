@@ -40,6 +40,7 @@ import (
 	"unicode"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	ver "github.com/dshmyz/moonlight-box/internal/version"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/mod/semver"
 )
@@ -1181,6 +1182,9 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 	}
 
 	if err := session.Commit(ctx.Request.Context()); err != nil {
+		if runtime.WritePolicyError(ctx.Writer, err) {
+			return nil
+		}
 		logrus.WithFields(logrus.Fields{
 			"packageName": packageName,
 			"error":       err.Error(),
@@ -1191,4 +1195,31 @@ func (p *NpmPlugin) handlePackagePut(ctx *runtime.RequestContext, repoRuntime ru
 
 	ctx.Writer.WriteHeader(http.StatusCreated)
 	return nil
+}
+
+// ResolveDependencies 实现 runtime.DependencyResolver：
+// 从 npm 归一化 attributes 的 dependencies/devDependencies 中反查声明了 name 的依赖条目。
+// 版本约束语义（semver 范围覆盖）由 npm 协议自行负责。
+func (p *NpmPlugin) ResolveDependencies(attrs map[string]string, name, version string) []string {
+	var out []string
+	for _, kind := range []string{"dependencies", "devDependencies"} {
+		raw, ok := attrs[kind]
+		if !ok {
+			continue
+		}
+		var deps map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &deps); err != nil {
+			continue
+		}
+		constraint, ok := deps[name].(string)
+		if !ok {
+			continue // LIKE 候选可能误匹配子串，需精确键确认
+		}
+		// 精确风险版本时用 semver 判断约束是否覆盖；约束不可解析（file:/link:/git 等）或版本族按名称命中
+		if !ver.IsFamily(version) && constraint != "" && ver.ConstraintParseable(constraint) && !ver.ConstraintCovers(constraint, version) {
+			continue
+		}
+		out = append(out, constraint)
+	}
+	return out
 }

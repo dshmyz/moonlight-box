@@ -48,6 +48,10 @@ func newCtx(method, path string, body io.Reader) (*runtime.RequestContext, *http
 }
 
 func newHostedMavenRuntime(t *testing.T) runtime.RepositoryRuntime {
+	return newHostedMavenRuntimeWithFlags(t, true, true)
+}
+
+func newHostedMavenRuntimeWithFlags(t *testing.T, allowOverwrite, allowDelete bool) runtime.RepositoryRuntime {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -64,9 +68,11 @@ func newHostedMavenRuntime(t *testing.T) runtime.RepositoryRuntime {
 	}
 	blobStore := storage.NewCASBlobStore(backend, db)
 	return &runtime.HostedRuntime{
-		MetadataStore: metadataStore,
-		BlobStore:     blobStore,
-		RepositoryID:  "1",
+		MetadataStore:  metadataStore,
+		BlobStore:      blobStore,
+		RepositoryID:   "1",
+		AllowOverwrite: allowOverwrite,
+		AllowDelete:    allowDelete,
 	}
 }
 
@@ -1662,6 +1668,68 @@ func TestHandle_ReuploadReleaseKeepsCurrentCompatibleOverwriteBehavior(t *testin
 	}
 }
 
+// TestHandle_ReuploadRejectedWhenOverwriteNotAllowed 验证 AllowOverwrite=false 时
+// 重复上传同一 artifact 返回 409，而非覆盖。
+func TestHandle_ReuploadRejectedWhenOverwriteNotAllowed(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	rt := newHostedMavenRuntimeWithFlags(t, false, true)
+
+	firstCtx, firstW := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", strings.NewReader("old"))
+	if err := p.Handle(firstCtx, rt); err != nil {
+		t.Fatalf("first upload Handle failed: %v", err)
+	}
+	if firstW.Code != http.StatusCreated {
+		t.Fatalf("first upload status = %d body=%q", firstW.Code, firstW.Body.String())
+	}
+
+	secondCtx, secondW := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", strings.NewReader("new"))
+	if err := p.Handle(secondCtx, rt); err != nil {
+		t.Fatalf("second upload Handle failed: %v", err)
+	}
+	if secondW.Code != http.StatusConflict {
+		t.Fatalf("second upload status = %d body=%q, want 409", secondW.Code, secondW.Body.String())
+	}
+}
+
+// TestHandle_DeleteRejectedWhenNotAllowed 验证 AllowDelete=false 时，
+// 已存在 artifact 的协议 DELETE 返回 403。
+func TestHandle_DeleteRejectedWhenNotAllowed(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	rt := newHostedMavenRuntimeWithFlags(t, true, false)
+
+	// 先上传，让 artifact 存在
+	putCtx, putW := newCtx("PUT", "com/example/app/1.0.0/app-1.0.0.jar", strings.NewReader("data"))
+	if err := p.Handle(putCtx, rt); err != nil {
+		t.Fatalf("upload Handle failed: %v", err)
+	}
+	if putW.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d body=%q", putW.Code, putW.Body.String())
+	}
+
+	ctx, w := newCtx("DELETE", "com/example/app/1.0.0/app-1.0.0.jar", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("delete status = %d body=%q, want 403", w.Code, w.Body.String())
+	}
+}
+
+// TestHandle_DeleteMissingArtifactReturns404EvenWhenNotAllowed 验证 AllowDelete=false 时，
+// 删除不存在的 artifact 仍返回 404（存在性优先于策略，避免与"无权限"混淆）。
+func TestHandle_DeleteMissingArtifactReturns404EvenWhenNotAllowed(t *testing.T) {
+	p := NewMavenPlugin(http.DefaultClient)
+	rt := newHostedMavenRuntimeWithFlags(t, true, false)
+
+	ctx, w := newCtx("DELETE", "com/example/app/1.0.0/missing.jar", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("delete status = %d body=%q, want 404", w.Code, w.Body.String())
+	}
+}
+
 func TestHandle_UploadArtifactLevelMetadataUsesStructuredFields(t *testing.T) {
 	p := NewMavenPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
@@ -1887,5 +1955,63 @@ func TestHandle_ChecksumDownloadGetBlockedPropagatesErrBlocked(t *testing.T) {
 	err := p.Handle(ctx, rt)
 	if !errors.Is(err, runtime.ErrBlocked) {
 		t.Fatalf("Handle err = %v, want ErrBlocked (must propagate to router for audit log)", err)
+	}
+}
+
+func TestParsePOMDependencies(t *testing.T) {
+	pom := `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>my-app</artifactId>
+  <version>1.0.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.logging.log4j</groupId>
+      <artifactId>log4j-core</artifactId>
+      <version>2.14.1</version>
+    </dependency>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>${guava.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.9.0</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-lang3</artifactId>
+      <version>[3.0,3.12)</version>
+    </dependency>
+  </dependencies>
+</project>`
+	deps := parsePOMDependencies([]byte(pom))
+	if deps == nil {
+		t.Fatal("deps should not be nil")
+	}
+	// log4j-core 精确版本
+	if v, ok := deps["org.apache.logging.log4j:log4j-core"]; !ok || v != "2.14.1" {
+		t.Errorf("log4j-core dep = %q, %v", v, ok)
+	}
+	// 占位符版本仍计入
+	if _, ok := deps["com.google.guava:guava"]; !ok {
+		t.Error("guava (placeholder version) should be included")
+	}
+	// test scope 跳过
+	if _, ok := deps["org.junit.jupiter:junit-jupiter"]; ok {
+		t.Error("test-scope dependency should be skipped")
+	}
+	// 区间版本仍计入
+	if _, ok := deps["org.apache.commons:commons-lang3"]; !ok {
+		t.Error("range-version dependency should be included")
+	}
+
+	// 无效 XML 返回 nil
+	if deps := parsePOMDependencies([]byte("not xml")); deps != nil {
+		t.Errorf("invalid xml should return nil, got %v", deps)
 	}
 }

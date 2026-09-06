@@ -901,3 +901,34 @@ type ServiceStats struct {
 	CacheStats    *CacheStats `json:"cache_stats,omitempty"`
 	AuditLogCount int         `json:"audit_log_count"`
 }
+
+// Complete 直接调用 LLM 完成一次补全（不走工具循环），
+// 用于风险研判的 AI 解析/报告等单次任务。未启用 AI 时返回错误。
+func (s *AIService) Complete(ctx context.Context, system, user string) (string, error) {
+	if s == nil || s.client == nil {
+		return "", fmt.Errorf("AI 服务未启用")
+	}
+	temperature := s.config.Temperature
+	maxTokens := s.config.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 2048
+	}
+	req := &models.ChatRequest{
+		Model: s.config.Model,
+		Messages: []models.Message{
+			{Role: "system", Content: system},
+			{Role: "user", Content: user},
+		},
+		Temperature: &temperature,
+		MaxTokens:   &maxTokens,
+		Stream:      false,
+	}
+	resp, err := s.client.Call(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		return "", fmt.Errorf("AI 返回为空")
+	}
+	return resp.Choices[0].Message.Content, nil
+}
