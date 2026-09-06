@@ -1,85 +1,93 @@
 package service
 
 import (
+	"context"
+	"fmt"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/repository"
-	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 )
 
-// LogCleanupService 负责定期清理过期的下载日志和聚合数据。
-// 支持通过 SystemConfigService 进行热更新，修改配置后调用 UpdateSchedule 即可生效。
+// LogCleanupService 实现 ScheduledTask，定期清理过期的下载日志和聚合数据。
+// 由 TaskScheduler 统一调度，自身不维护 ticker。
 type LogCleanupService struct {
 	logRepo        *repository.DownloadLogRepository
 	dailyStatsRepo *repository.DownloadDailyStatsRepository
-	// configSvc 为 nil 时，回退到构造时传入的静态配置
-	configSvc *SystemConfigService
+	configSvc      *SystemConfigService
 
 	// 静态默认值（YAML 配置），作为系统配置缺失时的回退
 	defaultRetentionDays int
-	defaultInterval      time.Duration
 
-	mu              sync.RWMutex
-	retentionDays   int
-	cleanupInterval time.Duration
-	enabled         bool
-	stopCh          chan struct{}
-	reloadCh        chan struct{} // 触发 ticker 重建
+	mu            sync.RWMutex
+	retentionDays int
+	enabled       bool
 }
 
 func NewLogCleanupService(
 	logRepo *repository.DownloadLogRepository,
 	dailyStatsRepo *repository.DownloadDailyStatsRepository,
 	retentionDays int,
-	cleanupInterval time.Duration,
 ) *LogCleanupService {
 	if retentionDays <= 0 {
 		retentionDays = 30
-	}
-	if cleanupInterval <= 0 {
-		cleanupInterval = 24 * time.Hour
 	}
 
 	return &LogCleanupService{
 		logRepo:              logRepo,
 		dailyStatsRepo:       dailyStatsRepo,
 		defaultRetentionDays: retentionDays,
-		defaultInterval:      cleanupInterval,
 		retentionDays:        retentionDays,
-		cleanupInterval:      cleanupInterval,
 		enabled:              true,
-		stopCh:               make(chan struct{}),
-		reloadCh:             make(chan struct{}, 1),
 	}
 }
 
-// SetConfigService 注入系统配置服务，启用热更新能力。
-// 必须在 Start 之前调用。
+// SetConfigService 注入系统配置服务，启用热更新能力。必须在 Register 之前调用。
 func (s *LogCleanupService) SetConfigService(configSvc *SystemConfigService) {
 	s.configSvc = configSvc
 }
 
-// Start 启动清理循环。会先尝试从系统配置加载最新参数。
-func (s *LogCleanupService) Start() {
+// LoadConfig 启动时调用一次，从 SystemConfigService 加载持久化配置。
+// 否则重启后会以 YAML 默认值运行（enabled=true/默认保留期），忽略管理员配置。
+func (s *LogCleanupService) LoadConfig() {
 	s.loadConfigFromSystem()
+}
 
+func (s *LogCleanupService) Name() string { return "log_cleanup" }
+
+// ConfigFields 实现 ConfigurableTask，声明可配置参数。
+func (s *LogCleanupService) ConfigFields() []TaskConfigField {
 	s.mu.RLock()
-	retention := s.retentionDays
-	interval := s.cleanupInterval
-	enabled := s.enabled
-	s.mu.RUnlock()
+	defer s.mu.RUnlock()
+	return []TaskConfigField{
+		{Key: "enabled", Label: "启用自动清理", Kind: ConfigKindBool, Value: s.enabled},
+		{Key: "retention_days", Label: "下载日志保留天数", Kind: ConfigKindInt, Value: s.retentionDays},
+	}
+}
 
-	logrus.WithFields(logrus.Fields{
-		"module":         "log_cleanup",
-		"retention_days": retention,
-		"interval":       interval,
-		"enabled":        enabled,
-	}).Info("Log cleanup service started")
-
-	util.SafeGo("log-cleanup", s.cleanupLoop)
+// UpdateConfig 实现 ConfigurableTask，校验并持久化配置。
+func (s *LogCleanupService) UpdateConfig(values map[string]any, updatedBy uint) error {
+	if s.configSvc == nil {
+		return fmt.Errorf("log cleanup: config service unavailable")
+	}
+	enabled, err := configBoolField(values, "enabled")
+	if err != nil {
+		return err
+	}
+	retentionDays, err := configIntField(values, "retention_days")
+	if err != nil {
+		return err
+	}
+	if err := s.configSvc.Set("log_cleanup.enabled", strconv.FormatBool(enabled), "boolean", "logging", "启用下载日志自动清理", false, updatedBy); err != nil {
+		return fmt.Errorf("set log_cleanup.enabled: %w", err)
+	}
+	if err := s.configSvc.Set("log_cleanup.retention_days", strconv.Itoa(retentionDays), "int", "logging", "下载日志保留天数", false, updatedBy); err != nil {
+		return fmt.Errorf("set log_cleanup.retention_days: %w", err)
+	}
+	s.loadConfigFromSystem()
+	return nil
 }
 
 // loadConfigFromSystem 从 SystemConfigService 读取配置，失败时回退到默认值。
@@ -99,90 +107,30 @@ func (s *LogCleanupService) loadConfigFromSystem() {
 			s.retentionDays = d
 		}
 	}
-	if interval, err := s.configSvc.Get("log_cleanup.interval"); err == nil {
-		if d, err := time.ParseDuration(interval.Value); err == nil && d > 0 {
-			s.cleanupInterval = d
-		}
-	}
 }
 
-// UpdateSchedule 热更新清理计划。重新从系统配置加载参数并重建 ticker。
-func (s *LogCleanupService) UpdateSchedule() {
+// Reload 实现 ScheduledTask.Reload，热更新配置。
+func (s *LogCleanupService) Reload() {
 	s.loadConfigFromSystem()
-
 	s.mu.RLock()
-	retention := s.retentionDays
-	interval := s.cleanupInterval
-	enabled := s.enabled
-	s.mu.RUnlock()
-
+	defer s.mu.RUnlock()
 	logrus.WithFields(logrus.Fields{
 		"module":         "log_cleanup",
-		"retention_days": retention,
-		"interval":       interval,
-		"enabled":        enabled,
-	}).Info("Log cleanup schedule updated")
-
-	// 非阻塞发送 reload 信号
-	select {
-	case s.reloadCh <- struct{}{}:
-	default:
-	}
+		"enabled":        s.enabled,
+		"retention_days": s.retentionDays,
+	}).Info("Log cleanup config reloaded")
 }
 
-func (s *LogCleanupService) cleanupLoop() {
-	s.runCleanupCycle()
-
-	for {
-		s.mu.RLock()
-		interval := s.cleanupInterval
-		enabled := s.enabled
-		s.mu.RUnlock()
-
-		if !enabled {
-			// 已禁用：等待 reload 或 stop
-			select {
-			case <-s.reloadCh:
-				continue
-			case <-s.stopCh:
-				return
-			}
-		}
-
-		ticker := time.NewTicker(interval)
-		reloaded := false
-
-		for !reloaded {
-			select {
-			case <-ticker.C:
-				s.cleanup()
-			case <-s.reloadCh:
-				reloaded = true
-			case <-s.stopCh:
-				ticker.Stop()
-				return
-			}
-		}
-
-		ticker.Stop()
-	}
-}
-
-// runCleanupCycle 在启动时立即执行一次清理（仅在启用时）。
-func (s *LogCleanupService) runCleanupCycle() {
+// Run 实现 ScheduledTask.Run，执行一次日志清理。
+func (s *LogCleanupService) Run(ctx context.Context) (int, error) {
 	s.mu.RLock()
 	enabled := s.enabled
-	s.mu.RUnlock()
-
-	if enabled {
-		s.cleanup()
-	}
-}
-
-func (s *LogCleanupService) cleanup() {
-	s.mu.RLock()
 	retentionDays := s.retentionDays
 	s.mu.RUnlock()
+
+	if !enabled {
+		return 0, nil
+	}
 
 	maxAge := time.Duration(retentionDays) * 24 * time.Hour
 
@@ -202,7 +150,7 @@ func (s *LogCleanupService) cleanup() {
 			"error":       err,
 			"duration_ms": duration,
 		}).Error("Failed to cleanup old logs")
-		return
+		return 0, fmt.Errorf("clean old logs: %w", err)
 	}
 
 	// 聚合表保留 90 天（远大于 raw logs 的保留期）
@@ -219,26 +167,7 @@ func (s *LogCleanupService) cleanup() {
 		"module":      "log_cleanup",
 		"duration_ms": duration,
 	}).Info("Log cleanup completed successfully")
+	return 0, nil
 }
 
-func (s *LogCleanupService) Stop() {
-	logrus.WithField("module", "log_cleanup").Info("Stopping log cleanup service")
-	close(s.stopCh)
-}
-
-// CleanupNow 立即执行一次清理，使用当前配置的保留天数。
-func (s *LogCleanupService) CleanupNow() error {
-	s.mu.RLock()
-	retentionDays := s.retentionDays
-	s.mu.RUnlock()
-
-	maxAge := time.Duration(retentionDays) * 24 * time.Hour
-	return s.logRepo.CleanOldLogs(maxAge)
-}
-
-// GetConfig 返回当前清理配置快照，供 API 查询使用。
-func (s *LogCleanupService) GetConfig() (enabled bool, retentionDays int, interval time.Duration) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.enabled, s.retentionDays, s.cleanupInterval
-}
+func (s *LogCleanupService) Stop() {}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// MavenSnapshotCleanup 实现 CleanupTask，清理过期的 Maven SNAPSHOT 构建。
+// MavenSnapshotCleanup 实现 ScheduledTask，清理过期的 Maven SNAPSHOT 构建。
 // 策略：每个 GAV 保留最近 N 个构建 + 保留 M 天内的，满足任一条件即保留。
 type MavenSnapshotCleanup struct {
 	db        *gorm.DB
@@ -28,6 +29,7 @@ type MavenSnapshotCleanup struct {
 	enabled    bool
 	keepLast   int
 	maxAgeDays int
+	dryRun     bool
 }
 
 func NewMavenSnapshotCleanup(
@@ -44,6 +46,7 @@ func NewMavenSnapshotCleanup(
 		enabled:    true,
 		keepLast:   5,
 		maxAgeDays: 90,
+		dryRun:     true, // 默认仅预览：先看会删什么，确认后再关闭 dry_run 真正执行
 	}
 }
 
@@ -54,7 +57,7 @@ func (t *MavenSnapshotCleanup) LoadConfig() {
 	t.loadConfig()
 }
 
-// Reload 实现 CleanupTask.Reload，热更新配置。
+// Reload 实现 ScheduledTask.Reload，热更新配置。
 func (t *MavenSnapshotCleanup) Reload() {
 	t.loadConfig()
 	cfg := t.getConfig()
@@ -70,23 +73,66 @@ func (t *MavenSnapshotCleanup) Stop() {
 	logrus.WithField("module", "maven_snapshot").Info("Maven snapshot cleanup stopped")
 }
 
-// GetConfig 返回当前配置，供 API 查询使用。
-func (t *MavenSnapshotCleanup) GetConfig() (enabled bool, keepLast int, maxAgeDays int) {
+// ConfigFields 实现 ConfigurableTask，声明可配置参数。
+func (t *MavenSnapshotCleanup) ConfigFields() []TaskConfigField {
 	cfg := t.getConfig()
-	return cfg.Enabled, cfg.KeepLast, cfg.MaxAgeDays
+	return []TaskConfigField{
+		{Key: "enabled", Label: "启用自动清理", Kind: ConfigKindBool, Value: cfg.Enabled},
+		{Key: "dry_run", Label: "仅预览不删除", Kind: ConfigKindBool, Value: cfg.DryRun},
+		{Key: "keep_last", Label: "每个 SNAPSHOT 保留构建数", Kind: ConfigKindInt, Value: cfg.KeepLast},
+		{Key: "max_age_days", Label: "SNAPSHOT 保留天数", Kind: ConfigKindInt, Value: cfg.MaxAgeDays},
+	}
 }
 
-// Cleanup 实现 CleanupTask.Cleanup，执行一次 SNAPSHOT 清理。
-func (t *MavenSnapshotCleanup) Cleanup(ctx context.Context) (int, error) {
+// UpdateConfig 实现 ConfigurableTask，校验并持久化配置。
+func (t *MavenSnapshotCleanup) UpdateConfig(values map[string]any, updatedBy uint) error {
+	if t.configSvc == nil {
+		return fmt.Errorf("maven snapshot cleanup: config service unavailable")
+	}
+	enabled, err := configBoolField(values, "enabled")
+	if err != nil {
+		return err
+	}
+	dryRun, err := configBoolField(values, "dry_run")
+	if err != nil {
+		return err
+	}
+	keepLast, err := configIntField(values, "keep_last")
+	if err != nil {
+		return err
+	}
+	maxAgeDays, err := configIntField(values, "max_age_days")
+	if err != nil {
+		return err
+	}
+	if err := t.configSvc.Set("maven_snapshot_cleanup.enabled", strconv.FormatBool(enabled), "bool", "maven", "启用 Maven SNAPSHOT 自动清理", false, updatedBy); err != nil {
+		return fmt.Errorf("set maven_snapshot_cleanup.enabled: %w", err)
+	}
+	if err := t.configSvc.Set("maven_snapshot_cleanup.dry_run", strconv.FormatBool(dryRun), "bool", "maven", "仅预览不删除（确认后关闭再真正执行）", false, updatedBy); err != nil {
+		return fmt.Errorf("set maven_snapshot_cleanup.dry_run: %w", err)
+	}
+	if err := t.configSvc.Set("maven_snapshot_cleanup.keep_last", strconv.Itoa(keepLast), "int", "maven", "每个 SNAPSHOT 版本保留最近构建数", false, updatedBy); err != nil {
+		return fmt.Errorf("set maven_snapshot_cleanup.keep_last: %w", err)
+	}
+	if err := t.configSvc.Set("maven_snapshot_cleanup.max_age_days", strconv.Itoa(maxAgeDays), "int", "maven", "SNAPSHOT 保留天数", false, updatedBy); err != nil {
+		return fmt.Errorf("set maven_snapshot_cleanup.max_age_days: %w", err)
+	}
+	t.loadConfig()
+	return nil
+}
+
+// Run 实现 ScheduledTask.Run，执行一次 SNAPSHOT 清理。
+func (t *MavenSnapshotCleanup) Run(ctx context.Context) (int, error) {
 	cfg := t.getConfig()
 	if !cfg.Enabled {
 		return 0, nil
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"module":      "maven_snapshot",
-		"keep_last":   cfg.KeepLast,
+		"module":       "maven_snapshot",
+		"keep_last":    cfg.KeepLast,
 		"max_age_days": cfg.MaxAgeDays,
+		"dry_run":      cfg.DryRun,
 	}).Info("Starting Maven snapshot cleanup")
 
 	startTime := time.Now()
@@ -103,7 +149,7 @@ func (t *MavenSnapshotCleanup) Cleanup(ctx context.Context) (int, error) {
 
 	for _, repo := range repos {
 		keepLast, maxAgeDays := t.resolveRepoConfig(&repo, cfg)
-		deleted, err := t.cleanupRepo(ctx, repo.ID, repo.Name, keepLast, maxAgeDays)
+		deleted, err := t.cleanupRepo(ctx, repo.ID, repo.Name, keepLast, maxAgeDays, cfg.DryRun)
 		if err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{
 				"module": "maven_snapshot",
@@ -129,6 +175,7 @@ type snapshotCleanupConfig struct {
 	Enabled    bool
 	KeepLast   int
 	MaxAgeDays int
+	DryRun     bool
 }
 
 func (t *MavenSnapshotCleanup) loadConfig() {
@@ -140,6 +187,9 @@ func (t *MavenSnapshotCleanup) loadConfig() {
 
 	if v, err := t.configSvc.Get("maven_snapshot_cleanup.enabled"); err == nil {
 		t.enabled = v.Value == "true" || v.Value == "1"
+	}
+	if v, err := t.configSvc.Get("maven_snapshot_cleanup.dry_run"); err == nil {
+		t.dryRun = v.Value == "true" || v.Value == "1"
 	}
 	if v, err := t.configSvc.Get("maven_snapshot_cleanup.keep_last"); err == nil {
 		if n, err := strconv.Atoi(v.Value); err == nil && n > 0 {
@@ -160,6 +210,7 @@ func (t *MavenSnapshotCleanup) getConfig() snapshotCleanupConfig {
 		Enabled:    t.enabled,
 		KeepLast:   t.keepLast,
 		MaxAgeDays: t.maxAgeDays,
+		DryRun:     t.dryRun,
 	}
 }
 
@@ -189,15 +240,21 @@ type snapshotArtifact struct {
 	CreatedAt    time.Time
 }
 
-func (t *MavenSnapshotCleanup) cleanupRepo(ctx context.Context, repoID uint, repoName string, keepLast, maxAgeDays int) (int, error) {
+func (t *MavenSnapshotCleanup) cleanupRepo(ctx context.Context, repoID uint, repoName string, keepLast, maxAgeDays int, dryRun bool) (int, error) {
 	var artifacts []snapshotArtifact
 	// 同时选中 artifact 与 checksum 两类行：一个 SNAPSHOT 构建的 jar 和它的 .sha1/.md5 走
 	// 同一条保留判定（文件名都能解析出相同的时间戳+构建号），删除时一并删掉，避免留下
 	// 指向已删除 jar 的孤儿 checksum 行。
+	//
+	// 候选 = 两种存储布局的并集（精确判定仍由 Go 侧 ParseSnapshotBuild 把关，SQL 只做候选过滤）：
+	//   - 常规布局：目录是 <base>-SNAPSHOT/（version 列为基础形式 "1.0-SNAPSHOT"）
+	//   - 唯一快照布局：目录/version 都是时间戳形式 "1.0-20260703.033633-1"
+	// Maven 定义：时间戳形式只存在于快照构建（release 版本不会用该命名），故按版本形状亦为快照语义。
+	versionFilter := mavenSnapshotTimestampedFilter(t.db.Dialector.Name())
 	err := t.db.WithContext(ctx).
 		Model(&model.Artifact{}).
-		Where("repository_id = ? AND format = ? AND kind IN ? AND version LIKE ? AND remote_path != ''",
-			repoID, "maven", []string{"artifact", "checksum"}, "%-SNAPSHOT").
+		Where("repository_id = ? AND format = ? AND kind IN ? AND (remote_path LIKE ? OR "+versionFilter+")",
+			repoID, "maven", []string{"artifact", "checksum"}, "%-SNAPSHOT/%").
 		Select("id, repository_id, name, version, filename, remote_path, created_at").
 		Find(&artifacts).Error
 	if err != nil {
@@ -207,52 +264,89 @@ func (t *MavenSnapshotCleanup) cleanupRepo(ctx context.Context, repoID uint, rep
 		return 0, nil
 	}
 
-	// 按 (name, version) 分组
+	// 按 (name, baseVersion) 分组：时间戳版本与基础版本归到同一组，
+	// 避免每个时间戳版本成为单例组（单例组永远满足不了 i >= keepLast，永不清理）。
 	type gavKey struct {
-		Name    string
-		Version string
+		Name        string
+		BaseVersion string
 	}
-	groups := make(map[gavKey][]snapshotArtifact)
+	type parsedArtifact struct {
+		artifact snapshotArtifact
+		build    mavenutil.SnapshotBuild
+	}
+	groups := make(map[gavKey][]parsedArtifact)
 	for _, a := range artifacts {
-		key := gavKey{Name: a.Name, Version: a.Version}
-		groups[key] = append(groups[key], a)
+		b, ok := mavenutil.ParseSnapshotBuild(a.Name, a.Version, a.Filename)
+		if !ok {
+			continue // 无法解析的文件保留（安全起见）
+		}
+		key := gavKey{Name: a.Name, BaseVersion: b.BaseVersion}
+		groups[key] = append(groups[key], parsedArtifact{artifact: a, build: b})
 	}
 
 	var toDelete []snapshotArtifact
 	cutoff := time.Now().Add(-time.Duration(maxAgeDays) * 24 * time.Hour)
 
 	for _, group := range groups {
-		type indexedBuild struct {
-			artifact snapshotArtifact
-			build    mavenutil.SnapshotBuild
+		// 按构建（timestamp+buildnum）分桶：一个构建的 jar/checksum/pom 视为整体，
+		// 同保留同删除，保证 keepLast 按"构建数"计数而非行数。
+		type buildKey struct {
+			Timestamp string
+			BuildNum  int
 		}
-		var builds []indexedBuild
-		for _, a := range group {
-			b, ok := mavenutil.ParseSnapshotBuild(a.Name, a.Version, a.Filename)
-			if !ok {
-				continue // 无法解析的文件保留（安全起见）
+		buckets := make(map[buildKey][]parsedArtifact)
+		var ordered []buildKey
+		for _, pa := range group {
+			k := buildKey{Timestamp: pa.build.Timestamp, BuildNum: pa.build.BuildNum}
+			if _, ok := buckets[k]; !ok {
+				ordered = append(ordered, k)
 			}
-			builds = append(builds, indexedBuild{artifact: a, build: b})
+			buckets[k] = append(buckets[k], pa)
 		}
-
-		// 按时间戳+构建号降序排序（最新在前）
-		sort.Slice(builds, func(i, j int) bool {
-			if builds[i].build.Timestamp != builds[j].build.Timestamp {
-				return builds[i].build.Timestamp > builds[j].build.Timestamp
+		sort.Slice(ordered, func(i, j int) bool {
+			if ordered[i].Timestamp != ordered[j].Timestamp {
+				return ordered[i].Timestamp > ordered[j].Timestamp
 			}
-			return builds[i].build.BuildNum > builds[j].build.BuildNum
+			return ordered[i].BuildNum > ordered[j].BuildNum
 		})
 
-		// 保留：前 keepLast 个 或 在 maxAgeDays 天内
-		for i, b := range builds {
-			if i >= keepLast && !b.build.TimestampT.After(cutoff) {
-				toDelete = append(toDelete, b.artifact)
+		// 保留：前 keepLast 个构建 或 在 maxAgeDays 天内
+		for i, k := range ordered {
+			if i >= keepLast && !buckets[k][0].build.TimestampT.After(cutoff) {
+				for _, pa := range buckets[k] {
+					toDelete = append(toDelete, pa.artifact)
+				}
 			}
 		}
 	}
 
 	if len(toDelete) == 0 {
 		return 0, nil
+	}
+
+	// dry-run 模式：只预览会删除的行，不真正删除。默认开启，确认无误后关闭 dry_run 再启用。
+	if dryRun {
+		previewLog := make([]string, 0, len(toDelete))
+		for _, a := range toDelete {
+			previewLog = append(previewLog, a.Filename)
+		}
+		const previewLimit = 30
+		if len(previewLog) > previewLimit {
+			logrus.WithFields(logrus.Fields{
+				"module":  "maven_snapshot",
+				"repo":    repoName,
+				"would_delete": len(toDelete),
+				"preview": strings.Join(previewLog[:previewLimit], ", ") + " …",
+			}).Info("Maven snapshot cleanup dry-run: 以下行将被删除（未执行）")
+		} else {
+			logrus.WithFields(logrus.Fields{
+				"module":       "maven_snapshot",
+				"repo":         repoName,
+				"would_delete": len(toDelete),
+				"preview":      strings.Join(previewLog, ", "),
+			}).Info("Maven snapshot cleanup dry-run: 以下行将被删除（未执行）")
+		}
+		return len(toDelete), nil
 	}
 
 	// 收集 ID，一次性批量删除
@@ -273,4 +367,17 @@ func (t *MavenSnapshotCleanup) cleanupRepo(ctx context.Context, repoID uint, rep
 	}).Info("Cleaned up snapshot artifacts")
 
 	return len(toDelete), nil
+}
+
+// mavenSnapshotTimestampedFilter 生成识别"时间戳形式版本"的 SQL 候选过滤表达式，
+// 用于唯一快照布局（version 列形如 "1.0-20260703.033633-1"）的兜底选中。
+func mavenSnapshotTimestampedFilter(dialectName string) string {
+	switch strings.ToLower(dialectName) {
+	case "postgres", "postgresql":
+		return "version ~ '\\-[0-9]{8}\\.[0-9]{6}\\-[0-9]+$'"
+	case "mysql":
+		return "version REGEXP '-[0-9]{8}\\.[0-9]{6}-[0-9]+$'"
+	default: // sqlite
+		return "version GLOB '*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9]*'"
+	}
 }

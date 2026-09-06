@@ -39,7 +39,7 @@ func setDefaults(v interface {
 
 	// Security
 	v.SetDefault("security.enabled", true)
-	v.SetDefault("security.scan_on_upload", false) // MVP 暂不启用
+	v.SetDefault("security.scan_on_upload", false) // YAML 默认关闭；实际生效以 system_configs 为准（初始种子为 true）
 	v.SetDefault("security.block_critical", true)
 	v.SetDefault("security.block_high", true)
 
@@ -53,8 +53,7 @@ func setDefaults(v interface {
 	v.SetDefault("logging.level", "debug")
 	v.SetDefault("logging.format", "console")
 	v.SetDefault("logging.output", "stdout")
-	v.SetDefault("logging.log_retention_days", 30)         // 默认保留30天
-	v.SetDefault("logging.cleanup_interval", 24*time.Hour) // 默认每24小时清理一次
+	v.SetDefault("logging.log_retention_days", 30) // 默认保留30天
 
 	// Service
 	v.SetDefault("service.max_concurrent_dep_parse", 10)

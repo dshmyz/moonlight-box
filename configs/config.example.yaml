@@ -78,7 +78,6 @@ logging:
                          # 文件路径时自动启用分文件：sql.log、error.log、access.log 生成在同目录
   enable_split_files: false  # 通常由 output 自动推导，无需显式设置
   log_retention_days: 30
-  cleanup_interval: 24h
   sample_rate: 1.0       # 0=全丢弃, 1=全记录, 0.1=10%记录
   # sample_by_module:
   #   proxy: 0.1

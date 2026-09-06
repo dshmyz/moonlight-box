@@ -42,6 +42,7 @@ func (i *ConfigInitializer) InitializeDefaultConfigs() error {
 		{"security.block_critical", "true", "bool", "security", "阻止严重漏洞包", false},
 		{"security.block_high", "true", "bool", "security", "阻止高危漏洞包", false},
 		{"security.block_medium", "false", "bool", "security", "阻止中危漏洞包", false},
+		{"scheduler.cron.security_scan", "0 23 * * *", "string", "security", "全量安全扫描计划（默认每天23点）", false},
 
 		{"cache.enabled", "true", "bool", "cache", "启用代理缓存", false},
 		{"cache.default_ttl", "24h", "string", "cache", "默认缓存时间", false},
@@ -76,7 +77,6 @@ func (i *ConfigInitializer) InitializeDefaultConfigs() error {
 
 		{"log_cleanup.enabled", "true", "bool", "logging", "启用下载日志自动清理", false},
 		{"log_cleanup.retention_days", "30", "int", "logging", "下载日志保留天数", false},
-		{"log_cleanup.interval", "24h", "string", "logging", "清理执行间隔（如 24h, 12h, 1h）", false},
 
 		{"cleanup.interval", "24h", "string", "maven", "清理任务执行间隔（如 24h, 12h）", false},
 

@@ -98,8 +98,9 @@ func TestMavenSnapshotCleanupDeletesChecksumWithArtifact(t *testing.T) {
 	}
 
 	_, db, task := newSnapshotCleanupFixture(t, builds)
+	task.dryRun = false // 本测试验证真实删除，显式关闭预览模式
 
-	deleted, err := task.Cleanup(context.Background())
+	deleted, err := task.Run(context.Background())
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
@@ -150,6 +151,7 @@ func TestMavenSnapshotCleanupKeepsUnparseableBasePom(t *testing.T) {
 	}
 
 	repoID, db, task := newSnapshotCleanupFixture(t, builds)
+	task.dryRun = false // 本测试验证真实删除 + base .pom 保留，显式关闭预览模式
 
 	pom := model.Artifact{
 		RepositoryID: repoID,
@@ -166,7 +168,7 @@ func TestMavenSnapshotCleanupKeepsUnparseableBasePom(t *testing.T) {
 		t.Fatalf("create pom: %v", err)
 	}
 
-	deleted, err := task.Cleanup(context.Background())
+	deleted, err := task.Run(context.Background())
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}

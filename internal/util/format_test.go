@@ -1,11 +1,11 @@
-package http
+package util
 
 import (
 	"testing"
 	"time"
 )
 
-func TestFormatDurationClock(t *testing.T) {
+func TestCompactDuration(t *testing.T) {
 	cases := []struct {
 		in   time.Duration
 		want string
@@ -20,8 +20,8 @@ func TestFormatDurationClock(t *testing.T) {
 		{30 * time.Second, "30s"},
 	}
 	for _, c := range cases {
-		if got := formatDurationClock(c.in); got != c.want {
-			t.Errorf("formatDurationClock(%v) = %q, want %q", c.in, got, c.want)
+		if got := CompactDuration(c.in); got != c.want {
+			t.Errorf("CompactDuration(%v) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

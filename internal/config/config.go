@@ -104,7 +104,6 @@ type LoggingConfig struct {
 	ErrorLogFile     string        `mapstructure:"error_log_file"`     // 自动推导为 output 同目录 error.log
 	AccessLogFile    string        `mapstructure:"access_log_file"`    // 自动推导为 output 同目录 access.log
 	LogRetentionDays int           `mapstructure:"log_retention_days"` // 日志保留天数
-	CleanupInterval  time.Duration `mapstructure:"cleanup_interval"`   // 清理间隔
 	// 日志采样配置（避免高频错误日志刷屏）
 	SampleRate     float64            `mapstructure:"sample_rate"`
 	SampleByModule map[string]float64 `mapstructure:"sample_by_module"`
