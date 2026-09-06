@@ -1,4 +1,4 @@
-import request from './request'
+import request, { rawRequest } from './request'
 
 export type BlockMatchType = 'exact' | 'wildcard' | 'range'
 
@@ -43,8 +43,9 @@ export const blockRuleApi = {
     return request.post<{ success: number; failed: number; total: number }>('/block-rules/batch-import', data)
   },
 
-  downloadTemplate() {
-    return request.get('/block-rules/template', { responseType: 'blob' })
+  async downloadTemplate() {
+    const res = await rawRequest.get('/block-rules/template', { responseType: 'blob' })
+    return res.data as Blob
   },
 
   update(id: number, data: Partial<BlockRule>) {

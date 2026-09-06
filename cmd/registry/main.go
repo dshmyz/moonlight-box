@@ -275,11 +275,11 @@ func main() {
 		downloadLogRepo,
 		dailyStatsRepo,
 		cfg.Logging.LogRetentionDays,
-		cfg.Logging.CleanupInterval,
 	)
 	logCleanupSvc.SetConfigService(systemConfigSvc)
-	logCleanupSvc.Start()
-	defer logCleanupSvc.Stop()
+	logCleanupSvc.LoadConfig() // 启动时加载持久化配置（enabled/retention_days）
+	// 注意：logCleanupSvc 作为 ScheduledTask 注册进 taskScheduler（见下方编排器初始化），
+	// 由统一调度器驱动，不再自行启动 ticker。
 
 	// 初始化缓存管理器
 	cacheMgr := cache.NewCacheManager()
@@ -429,6 +429,11 @@ func main() {
 	// 初始化安全扫描服务
 	scanRepo := repository.NewScanRepository(db)
 	scanner := service.NewSecurityScanner(scanRepo, db, blockRuleRepo)
+	scanner.SetSecurityDefaults(cfg.Security.ScanOnUpload, cfg.Security.BlockCritical, cfg.Security.BlockHigh)
+	scanner.SetConfigService(systemConfigSvc)
+	scanner.LoadSecurityConfig()
+	scanner.SetBlockRuleService(blockRuleSvc)
+	artifactSvc.SetSecurityScanner(scanner)
 	securityHandler := handler.NewSecurityHandler(scanner)
 
 	vulnRuleRepo := repository.NewVulnRuleRepository(db)
@@ -436,6 +441,17 @@ func main() {
 	vulnRuleService := service.NewVulnRuleService(vulnRuleRepo, vulnDataSourceRepo)
 	vulnRuleHandler := handler.NewVulnRuleHandler(vulnRuleService)
 	scanner.SetVulnRuleService(vulnRuleService)
+
+	// 初始化风险组件研判服务
+	riskAssessmentService := service.NewRiskAssessmentService(db)
+	riskAssessmentService.SetBlockRuleService(blockRuleSvc)
+	riskAssessmentService.SetArtifactService(artifactSvc)
+	// 依赖反查能力由各协议插件提供（协议语义归插件，服务层只按格式分发）
+	riskAssessmentService.SetDependencyResolvers(map[string]runtime.DependencyResolver{
+		"npm":   npmPlugin,
+		"maven": mavenPlugin,
+	})
+	riskAssessmentHandler := handler.NewRiskAssessmentHandler(riskAssessmentService)
 
 	// 初始化备份服务 handler
 	backupHandler := handler.NewBackupHandler(backupSvc)
@@ -469,18 +485,22 @@ func main() {
 	// 初始化下载日志 handler
 	downloadLogHandler := handler.NewDownloadLogHandler(downloadLogRepo)
 
-	// 初始化日志清理配置 handler
-	logCleanupConfigHandler := handler.NewLogCleanupConfigHandler(systemConfigSvc, logCleanupSvc)
-
-	// 初始化清理任务编排器
+	// 初始化定时任务编排器
 	snapshotMetaStore := storage.NewMetadataStoreWithArtifactService(db, artifactSvc)
 	mavenSnapshotCleanup := service.NewMavenSnapshotCleanup(db, repoRepo, snapshotMetaStore, systemConfigSvc)
 	mavenSnapshotCleanup.LoadConfig() // 启动时加载一次配置
-	cleanupSvc := service.NewCleanupService(systemConfigSvc)
-	cleanupSvc.Register(mavenSnapshotCleanup)
-	cleanupSvc.Start()
-	defer cleanupSvc.Stop()
-	snapshotCleanupConfigHandler := handler.NewSnapshotCleanupConfigHandler(systemConfigSvc, cleanupSvc)
+	proxyCacheGC := service.NewProxyMetadataCacheGC(db, artifactSvc, systemConfigSvc)
+	proxyCacheGC.LoadConfig()
+	taskScheduler := service.NewTaskScheduler(systemConfigSvc)
+	taskScheduler.Register(mavenSnapshotCleanup)
+	taskScheduler.Register(proxyCacheGC)
+	taskScheduler.Register(logCleanupSvc)
+	taskScheduler.Register(scanner) // security_scan：定时全量安全扫描（配置见 system_configs）
+	taskScheduler.Start()
+	defer taskScheduler.Stop()
+	// 日志清理配置 handler（依赖 taskScheduler 做热更新与手动触发）
+	logCleanupConfigHandler := handler.NewLogCleanupConfigHandler(systemConfigSvc, taskScheduler)
+	schedulerHandler := handler.NewSchedulerHandler(systemConfigSvc, taskScheduler)
 
 	// 初始化健康检查 handler
 	healthCheckHandler := handler.NewHealthCheckHandler(healthCheckSvc)
@@ -579,6 +599,7 @@ func main() {
 
 		fmt.Println("AI服务已启用")
 	}
+	riskAssessmentService.SetAIService(aiService)
 
 	// 创建路由器上下文
 	routerCtx := NewRouterContext(cfg, authService, auditSvc, permCacheSvc, blockRuleSvc, repoSvc, repositoryRouter, webhookSvc)
@@ -607,9 +628,10 @@ func main() {
 	routerCtx.Handlers.AI = aiHandler
 	routerCtx.Handlers.DownloadLog = downloadLogHandler
 	routerCtx.Handlers.LogCleanupConfig = logCleanupConfigHandler
-	routerCtx.Handlers.SnapshotCleanupConfig = snapshotCleanupConfigHandler
+	routerCtx.Handlers.Scheduler = schedulerHandler
 	routerCtx.Handlers.HealthCheck = healthCheckHandler
 	routerCtx.Handlers.VulnRule = vulnRuleHandler
+	routerCtx.Handlers.RiskAssessment = riskAssessmentHandler
 	routerCtx.Handlers.PackageVersion = packageVersionHandler
 	routerCtx.Handlers.SystemRebuild = systemRebuildHandler
 

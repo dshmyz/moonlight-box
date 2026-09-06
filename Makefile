@@ -1,5 +1,5 @@
 # Makefile
-.PHONY: build run clean test lint
+.PHONY: build run clean test lint test-e2e-policy test-e2e-scheduler
 
 APP_NAME=moonlight-box
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -24,6 +24,14 @@ test:
 test-coverage:
 	go test -v -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
+
+# 仓库部署策略（allow_overwrite/allow_delete）隔离实例 E2E 回归测试
+test-e2e-policy:
+	bash scripts/core/test_policy_flags.sh
+
+# 定时任务（调度/cron/配置/全局间隔）隔离实例 E2E 回归测试
+test-e2e-scheduler:
+	bash scripts/core/test_scheduler.sh
 
 lint:
 	golangci-lint run ./...

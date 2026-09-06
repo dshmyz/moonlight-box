@@ -51,9 +51,10 @@ type RouterContext struct {
 		AI               *handler.AIHandler
 		DownloadLog      *handler.DownloadLogHandler
 		LogCleanupConfig      *handler.LogCleanupConfigHandler
-		SnapshotCleanupConfig *handler.SnapshotCleanupConfigHandler
+		Scheduler             *handler.SchedulerHandler
 		HealthCheck      *handler.HealthCheckHandler
 		VulnRule         *handler.VulnRuleHandler
+		RiskAssessment   *handler.RiskAssessmentHandler
 		PackageVersion   *handler.PackageVersionHandler
 		SystemRebuild    *handler.SystemRebuildHandler
 	}
@@ -160,6 +161,7 @@ func (ctx *RouterContext) setupProtectedRoutes(api *gin.RouterGroup) {
 		ctx.setupSecurityRoutes(protected)
 		ctx.setupUserRoutes(protected)
 		ctx.setupAuditRoutes(protected)
+		ctx.setupSchedulerRoutes(protected)
 		ctx.setupBackupRoutes(protected)
 		ctx.setupCASAdminRoutes(protected)
 		ctx.setupWebhookRoutes(protected)
@@ -331,6 +333,28 @@ func (ctx *RouterContext) setupSecurityRoutes(protected *gin.RouterGroup) {
 		vulnSourcesWrite.POST("/sync-all", ctx.Handlers.VulnRule.SyncAllDataSources)
 		vulnSourcesWrite.POST("/test", ctx.Handlers.VulnRule.TestDataSource)
 	}
+
+	riskAssessments := protected.Group("/security/risk-assessments")
+	riskAssessments.Use(ctx.requirePermission("security", "read"))
+	{
+		riskAssessments.GET("", ctx.Handlers.RiskAssessment.ListAssessments)
+		riskAssessments.GET("/template", ctx.Handlers.RiskAssessment.DownloadTemplate)
+		riskAssessments.GET("/:id", ctx.Handlers.RiskAssessment.GetAssessment)
+		riskAssessments.GET("/:id/export", ctx.Handlers.RiskAssessment.ExportAssessment)
+		riskAssessments.GET("/:id/dispose-stats", ctx.Handlers.RiskAssessment.DisposeStats)
+		riskAssessments.POST("/:id/ai-report", ctx.Handlers.RiskAssessment.AIReport)
+	}
+
+	riskAssessmentsWrite := protected.Group("/security/risk-assessments")
+	riskAssessmentsWrite.Use(ctx.requirePermission("security", "write"))
+	{
+		riskAssessmentsWrite.POST("/upload", ctx.Handlers.RiskAssessment.UploadAssessment)
+		riskAssessmentsWrite.POST("/analyze", ctx.Handlers.RiskAssessment.AnalyzeComponents)
+		riskAssessmentsWrite.POST("/ai-parse", ctx.Handlers.RiskAssessment.AIParse)
+		riskAssessmentsWrite.POST("/:id/block-rules", ctx.Handlers.RiskAssessment.CreateBlockRules)
+		riskAssessmentsWrite.POST("/dispose", ctx.Handlers.RiskAssessment.Dispose)
+		riskAssessmentsWrite.DELETE("/:id", ctx.Handlers.RiskAssessment.DeleteAssessment)
+	}
 }
 
 func (ctx *RouterContext) setupUserRoutes(protected *gin.RouterGroup) {
@@ -384,11 +408,18 @@ func (ctx *RouterContext) setupAuditRoutes(protected *gin.RouterGroup) {
 	downloadLogs.GET("/cleanup/config", ctx.requirePermission("system", "admin"), ctx.Handlers.LogCleanupConfig.GetConfig)
 	downloadLogs.PUT("/cleanup/config", ctx.requirePermission("system", "admin"), ctx.Handlers.LogCleanupConfig.UpdateConfig)
 	downloadLogs.POST("/cleanup/now", ctx.requirePermission("system", "admin"), ctx.Handlers.LogCleanupConfig.CleanupNow)
+}
 
-	// SNAPSHOT 清理配置
-	downloadLogs.GET("/snapshot-cleanup/config", ctx.requirePermission("system", "admin"), ctx.Handlers.SnapshotCleanupConfig.GetConfig)
-	downloadLogs.PUT("/snapshot-cleanup/config", ctx.requirePermission("system", "admin"), ctx.Handlers.SnapshotCleanupConfig.UpdateConfig)
-	downloadLogs.POST("/snapshot-cleanup/now", ctx.requirePermission("system", "admin"), ctx.Handlers.SnapshotCleanupConfig.CleanupNow)
+// setupSchedulerRoutes 定时任务管理（需 system admin 权限）。
+func (ctx *RouterContext) setupSchedulerRoutes(protected *gin.RouterGroup) {
+	scheduler := protected.Group("/scheduler")
+	scheduler.Use(ctx.requirePermission("system", "admin"))
+	{
+		scheduler.GET("/tasks", ctx.Handlers.Scheduler.List)
+		scheduler.PUT("/tasks/:name", ctx.Handlers.Scheduler.Update)
+		scheduler.POST("/tasks/:name/run", ctx.Handlers.Scheduler.Run)
+		scheduler.PUT("/interval", ctx.Handlers.Scheduler.UpdateInterval)
+	}
 }
 
 func (ctx *RouterContext) setupCASAdminRoutes(protected *gin.RouterGroup) {

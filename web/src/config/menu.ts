@@ -52,6 +52,12 @@ export const menuConfig: MenuItem[] = [
         permission: { resource: 'security', action: 'read' },
       },
       {
+        index: '/admin/risk-assessment',
+        title: '风险组件研判',
+        icon: 'fa-solid fa-clipboard-check',
+        permission: { resource: 'security', action: 'read' },
+      },
+      {
         index: '/admin/block-rules',
         title: '阻断规则',
         icon: 'fa-solid fa-ban',
@@ -147,6 +153,12 @@ export const menuConfig: MenuItem[] = [
         index: '/admin/backups',
         title: '备份管理',
         icon: 'fa-solid fa-download',
+        permission: { resource: 'system', action: 'admin' },
+      },
+      {
+        index: '/admin/scheduler',
+        title: '定时任务',
+        icon: 'fa-solid fa-clock',
         permission: { resource: 'system', action: 'admin' },
       },
       {

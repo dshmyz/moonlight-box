@@ -133,6 +133,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '漏洞规则', permission: { resource: 'security', action: 'read' } },
       },
       {
+        path: 'risk-assessment',
+        name: 'RiskAssessment',
+        component: () => import('@/views/RiskAssessment.vue'),
+        meta: { title: '风险组件研判', permission: { resource: 'security', action: 'read' } },
+      },
+      {
         path: 'users',
         name: 'UserManagement',
         component: () => import('@/views/UserManagement.vue'),
@@ -179,6 +185,12 @@ const routes: RouteRecordRaw[] = [
         name: 'BackupManagement',
         component: () => import('@/views/BackupManagement.vue'),
         meta: { title: '备份管理', permission: { resource: 'system', action: 'admin' } },
+      },
+      {
+        path: 'scheduler',
+        name: 'ScheduledTasks',
+        component: () => import('@/views/ScheduledTasks.vue'),
+        meta: { title: '定时任务', permission: { resource: 'system', action: 'admin' } },
       },
       {
         path: 'webhooks',

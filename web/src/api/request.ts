@@ -71,4 +71,8 @@ const api: RequestWrapper = {
   },
 }
 
+// rawRequest 是带拦截器（token/401/错误提示）的原生 Axios 实例，
+// 用于 blob 下载等不能走 data.data 解包的场景。
+export const rawRequest = request
+
 export default api
