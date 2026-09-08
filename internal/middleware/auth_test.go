@@ -99,9 +99,7 @@ func TestBasicAuthCacheKey_DifferentInputs(t *testing.T) {
 
 func TestBasicAuthCache_SetAndGet(t *testing.T) {
 	// 清空全局缓存，避免污染其他测试
-	basicAuthCacheMu.Lock()
-	basicAuthCache = make(map[string]*basicAuthEntry)
-	basicAuthCacheMu.Unlock()
+	basicAuthCache.Clear()
 
 	key := basicAuthCacheKey("test", "test")
 	setBasicAuthCache(key, &basicAuthEntry{
@@ -120,17 +118,12 @@ func TestBasicAuthCache_SetAndGet(t *testing.T) {
 }
 
 func TestBasicAuthCache_Expired(t *testing.T) {
-	basicAuthCacheMu.Lock()
-	basicAuthCache = make(map[string]*basicAuthEntry)
-	basicAuthCacheMu.Unlock()
+	basicAuthCache.Clear()
 
 	key := basicAuthCacheKey("expired", "test")
-	basicAuthCacheMu.Lock()
-	basicAuthCache[key] = &basicAuthEntry{
-		userID:  99,
-		expires: time.Now().Add(-time.Second), // 已过期
-	}
-	basicAuthCacheMu.Unlock()
+	// 以极短 TTL 写入并等待过期（MemoryCache 中 ttl<=0 表示永不过期）
+	basicAuthCache.Set(key, &basicAuthEntry{userID: 99}, 5*time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
 
 	_, ok := getBasicAuthCache(key)
 	if ok {
@@ -138,32 +131,8 @@ func TestBasicAuthCache_Expired(t *testing.T) {
 	}
 }
 
-func TestBasicAuthCache_Eviction(t *testing.T) {
-	basicAuthCacheMu.Lock()
-	basicAuthCache = make(map[string]*basicAuthEntry)
-	basicAuthMaxSize = 2
-	basicAuthCacheMu.Unlock()
-	defer func() {
-		basicAuthCacheMu.Lock()
-		basicAuthMaxSize = 10000
-		basicAuthCacheMu.Unlock()
-	}()
-
-	// 插入两个未过期条目，再插入第三个应触发淘汰
-	for i := 0; i < 2; i++ {
-		key := basicAuthCacheKey("user"+string(rune('A'+i)), "pass")
-		setBasicAuthCache(key, &basicAuthEntry{userID: uint(i + 1)})
-	}
-
-	// 第三个：触发淘汰逻辑
-	key3 := basicAuthCacheKey("userC", "pass")
-	setBasicAuthCache(key3, &basicAuthEntry{userID: 3})
-
-	// 未过期的条目应该还在
-	if _, ok := getBasicAuthCache(key3); !ok {
-		t.Error("newly inserted entry should be present")
-	}
-}
+// 容量淘汰（LRU）行为已由 core/cache 的 TestMemoryCacheCapacityEviction 覆盖，
+// middleware 侧容量在构造时固定，不再支持运行时改写。
 
 // ---------- Auth middleware ----------
 

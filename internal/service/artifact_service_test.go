@@ -1176,3 +1176,108 @@ func TestArtifactServiceSaveBatchSkipsProxyRepos(t *testing.T) {
 		// 期望：不触发
 	}
 }
+
+// TestArtifactServiceAttachBlobUpdatesContentAndSummary 验证回源补写 blob 的精简路径：
+// 不做整行 Save，但 size/checksums/blob 关联落库，且版本级聚合（size/files_downloaded）
+// 经异步 worker 最终一致。
+func TestArtifactServiceAttachBlobUpdatesContentAndSummary(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Repository{}, &model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}, &model.Package{}, &model.PackageVersion{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	repo := model.Repository{Name: "npm-proxy", Type: model.RepoTypeProxy, PackageType: "npm"}
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+
+	svc := NewArtifactService(db)
+	defer svc.Stop()
+
+	// 第一步：元数据先行入库（无 blob，模拟回源时先存 metadata 再下载内容）
+	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: fmt.Sprint(repo.ID),
+		Format:       "npm",
+		Kind:         runtime.KindVersion,
+		Name:         "left-pad",
+		Version:      "1.0.0",
+	})
+	if err := svc.Save(context.Background(), artifact); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+
+	// 第二步：内容下载完成，AttachBlob 补写
+	blob := model.Blob{Algorithm: "sha256", Digest: "deadbeef", Size: 4321, StoragePath: "de/deadbeef"}
+	if err := db.Create(&blob).Error; err != nil {
+		t.Fatalf("create blob: %v", err)
+	}
+	artifact.BlobRefs = []runtime.BlobRef{{
+		BlobID:    blob.ID,
+		Algorithm: blob.Algorithm,
+		Digest:    blob.Digest,
+		Size:      blob.Size,
+	}}
+	artifact.SizeBytes = blob.Size
+	artifact.Checksums = map[string]string{"sha256": blob.Digest}
+	if err := svc.AttachBlob(context.Background(), artifact); err != nil {
+		t.Fatalf("attach blob: %v", err)
+	}
+
+	// 制品行：size/checksums 已更新，blob 关联已建立
+	var row model.Artifact
+	if err := db.Where("repository_id = ? AND format = ? AND name = ? AND version = ?", repo.ID, "npm", "left-pad", "1.0.0").
+		First(&row).Error; err != nil {
+		t.Fatalf("load artifact: %v", err)
+	}
+	if row.SizeBytes != blob.Size {
+		t.Fatalf("SizeBytes = %d, want %d", row.SizeBytes, blob.Size)
+	}
+	if row.Checksums["sha256"] != blob.Digest {
+		t.Fatalf("Checksums[sha256] = %q, want %q", row.Checksums["sha256"], blob.Digest)
+	}
+	var blobCount int64
+	db.Model(&model.ArtifactBlob{}).Where("artifact_id = ?", row.ID).Count(&blobCount)
+	if blobCount != 1 {
+		t.Fatalf("artifact_blobs count = %d, want 1", blobCount)
+	}
+
+	// 版本级聚合：异步 worker（Stop 等待排空）后 size/files_downloaded 已更新
+	svc.Stop()
+	var pv model.PackageVersion
+	if err := db.Where("repository_id = ? AND format = ? AND package_name = ? AND version = ?", repo.ID, "npm", "left-pad", "1.0.0").
+		First(&pv).Error; err != nil {
+		t.Fatalf("load package version: %v", err)
+	}
+	if pv.SizeBytes != blob.Size {
+		t.Fatalf("summary SizeBytes = %d, want %d", pv.SizeBytes, blob.Size)
+	}
+	if !pv.FilesDownloaded {
+		t.Fatal("summary FilesDownloaded = false, want true")
+	}
+
+	// 第三步：行不存在时回退整条 Save（重建元数据）
+	ghost := runtime.NewArtifact(runtime.ArtifactSpec{
+		RepositoryID: fmt.Sprint(repo.ID),
+		Format:       "npm",
+		Kind:         runtime.KindVersion,
+		Name:         "ghost-pkg",
+		Version:      "2.0.0",
+	})
+	ghost.BlobRefs = []runtime.BlobRef{{BlobID: blob.ID, Algorithm: blob.Algorithm, Digest: blob.Digest, Size: blob.Size}}
+	ghost.SizeBytes = blob.Size
+	ghost.Checksums = map[string]string{"sha256": blob.Digest}
+	if err := svc.AttachBlob(context.Background(), ghost); err != nil {
+		t.Fatalf("attach blob for missing row: %v", err)
+	}
+	var ghostRow model.Artifact
+	if err := db.Where("repository_id = ? AND format = ? AND name = ? AND version = ?", repo.ID, "npm", "ghost-pkg", "2.0.0").
+		First(&ghostRow).Error; err != nil {
+		t.Fatalf("fallback Save did not create artifact: %v", err)
+	}
+	if ghostRow.SizeBytes != blob.Size {
+		t.Fatalf("ghost SizeBytes = %d, want %d", ghostRow.SizeBytes, blob.Size)
+	}
+}

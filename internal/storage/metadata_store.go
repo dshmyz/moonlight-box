@@ -29,6 +29,7 @@ const existingQueryChunkSize = 500
 type ArtifactServiceAdapter interface {
 	Save(ctx context.Context, artifact *runtime.Artifact) error
 	SaveBatch(ctx context.Context, artifacts []*runtime.Artifact, rejectOverwrite bool) error
+	AttachBlob(ctx context.Context, artifact *runtime.Artifact) error
 	Delete(ctx context.Context, key runtime.ArtifactKey) error
 	BatchDelete(ctx context.Context, repoID uint, artifactIDs []uint) error
 }
@@ -43,12 +44,10 @@ func NewMetadataStoreWithArtifactService(db *gorm.DB, svc ArtifactServiceAdapter
 }
 
 func (s *MetadataStore) Get(ctx context.Context, key runtime.ArtifactKey) (*runtime.Artifact, error) {
-	var artifact model.Artifact
-
 	var repoID uint
 	fmt.Sscanf(key.RepositoryID, "%d", &repoID)
 
-	db := s.db.WithContext(ctx).
+	db := s.db.WithContext(ctx).Model(&model.Artifact{}).
 		Where("repository_id = ?", repoID).
 		Where("format = ?", key.Format)
 	if key.IdentityKey != "" {
@@ -72,18 +71,61 @@ func (s *MetadataStore) Get(ctx context.Context, key runtime.ArtifactKey) (*runt
 		return nil, runtime.ErrNotFound
 	}
 
-	err := db.First(&artifact).Error
-
+	// 单条 JOIN 查询：artifact 行与 blob 引用一次取出（原为 2 条查询，读路径 2→1）。
+	// COALESCE 兜住 LEFT JOIN 无 blob 时的 NULL（scan 进非指针类型会报错）。
+	type artifactBlobRow struct {
+		model.Artifact `gorm:"embedded"`
+		RefBlobID      uint   `gorm:"column:ref_blob_id"`
+		RefAlgorithm   string `gorm:"column:ref_algorithm"`
+		RefDigest      string `gorm:"column:ref_digest"`
+		RefSize        int64  `gorm:"column:ref_size"`
+		RefPosition    int    `gorm:"column:ref_position"`
+		RefHasBlob     bool   `gorm:"column:ref_has_blob"`
+	}
+	var rows []artifactBlobRow
+	err := db.
+		Select("artifacts.*, COALESCE(ab.blob_id, 0) AS ref_blob_id, COALESCE(b.algorithm, '') AS ref_algorithm, " +
+			"COALESCE(b.digest, '') AS ref_digest, COALESCE(b.size, 0) AS ref_size, COALESCE(ab.position, 0) AS ref_position, " +
+			"(ab.artifact_id IS NOT NULL) AS ref_has_blob").
+		Joins("LEFT JOIN artifact_blobs ab ON ab.artifact_id = artifacts.id").
+		Joins("LEFT JOIN blobs b ON b.id = ab.blob_id").
+		Order("artifacts.id ASC, ab.position ASC").
+		Scan(&rows).Error
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, runtime.ErrNotFound
-		}
 		return nil, err
 	}
+	if len(rows) == 0 {
+		return nil, runtime.ErrNotFound
+	}
 
-	result := s.toTypesArtifact(&artifact)
-	s.fillBlobRefs(ctx, []*runtime.Artifact{result})
+	// 只取第一个 artifact 的全部行（与原 First 按 id 取第一条语义一致），聚合其 blob 引用
+	first := rows[0]
+	refs := make([]runtime.BlobRef, 0, len(rows))
+	for _, r := range rows {
+		if r.Artifact.ID != first.Artifact.ID {
+			break
+		}
+		if r.RefHasBlob {
+			refs = append(refs, runtime.BlobRef{
+				BlobID:    r.RefBlobID,
+				Algorithm: r.RefAlgorithm,
+				Digest:    r.RefDigest,
+				Size:      r.RefSize,
+			})
+		}
+	}
+	result := s.toTypesArtifact(&first.Artifact)
+	result.BlobRefs = refs
 	return result, nil
+}
+
+// AttachBlob 回源下载完内容后只补写 blob 关联与内容列（不走整条 Put 的重复查询）。
+// 无 ArtifactService 的回退路径直接整条 Put（该路径本就不维护聚合表）。
+func (s *MetadataStore) AttachBlob(ctx context.Context, artifact *runtime.Artifact) error {
+	if s.artifactSvc != nil {
+		return s.artifactSvc.AttachBlob(ctx, artifact)
+	}
+	return s.Put(ctx, artifact)
 }
 
 func (s *MetadataStore) Put(ctx context.Context, artifact *runtime.Artifact) error {
@@ -113,6 +155,9 @@ func (s *MetadataStore) Put(ctx context.Context, artifact *runtime.Artifact) err
 			return err
 		} else {
 			modelArtifact.ID = existing.ID
+			if runtime.IsSyncSource(ctx) {
+				preserveSyncPublishedAt(existing, modelArtifact)
+			}
 			if err := tx.Save(modelArtifact).Error; err != nil {
 				return err
 			}
@@ -219,6 +264,9 @@ func (s *MetadataStore) BatchPut(ctx context.Context, artifacts []*runtime.Artif
 
 		// 批量 UPDATE + 同步 blob
 		for _, ia := range toUpdate {
+			if existing, ok := existingMap[ia.model.IdentityKey]; ok {
+				preserveSyncPublishedAt(existing, ia.model)
+			}
 			if err := tx.Save(ia.model).Error; err != nil {
 				return err
 			}
@@ -229,6 +277,23 @@ func (s *MetadataStore) BatchPut(ctx context.Context, artifacts []*runtime.Artif
 
 		return nil
 	})
+}
+
+// preserveSyncPublishedAt 代理同步路径下，已存在制品的 published_at 保持 first-write-wins：
+// 上游 metadata 的 lastUpdated（尤其 Maven）随任意重新部署变化，不能反复覆盖。
+// 与 ArtifactService.preservePublishedAt 语义一致（此为无 ArtifactService 的回退路径）。
+func preserveSyncPublishedAt(existing model.Artifact, target *model.Artifact) {
+	old, _ := existing.Attributes["published_at"].(string)
+	if old == "" {
+		return
+	}
+	cur, _ := target.Attributes["published_at"].(string)
+	if cur != old {
+		if target.Attributes == nil {
+			target.Attributes = model.JSONB{}
+		}
+		target.Attributes["published_at"] = old
+	}
 }
 
 func (s *MetadataStore) syncBlobRefs(tx *gorm.DB, artifactID uint, blobRefs []runtime.BlobRef) error {

@@ -3,9 +3,9 @@ package middleware
 import (
 	"crypto/sha256"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/core/cache"
 	"github.com/dshmyz/moonlight-box/internal/response"
 	"github.com/dshmyz/moonlight-box/internal/service"
 
@@ -15,18 +15,21 @@ import (
 // basicAuthCache caches successful Basic Auth lookups to avoid full DB login per request.
 // Key = sha256(username:password), value = cached auth result.
 // CI/CD tools use Basic Auth on every request; 1min TTL avoids stale credentials.
+// 统一走 core/cache.MemoryCache（TTL + LRU 容量淘汰），并注册进 CacheManager 管理页可见。
 var (
-	basicAuthCache   = make(map[string]*basicAuthEntry)
-	basicAuthCacheMu sync.RWMutex
-	basicAuthTTL     = 1 * time.Minute
-	basicAuthMaxSize = 10000
+	basicAuthCache = cache.NewMemoryCacheWithOptions(cache.MemoryCacheOptions{MaxItems: 10000})
+	basicAuthTTL   = 1 * time.Minute
 )
 
 type basicAuthEntry struct {
 	userID   uint
 	username string
 	roles    []string
-	expires  time.Time
+}
+
+// AuthCache 暴露 basic auth 缓存供 main.go 注册进 CacheManager（管理页可见/可清空）。
+func AuthCache() *cache.MemoryCache {
+	return basicAuthCache
 }
 
 // apiTokenPrefix 是 API token 的固定前缀（见 service.generateToken），
@@ -114,28 +117,16 @@ func basicAuthCacheKey(username, password string) string {
 }
 
 func getBasicAuthCache(key string) (*basicAuthEntry, bool) {
-	basicAuthCacheMu.RLock()
-	entry, ok := basicAuthCache[key]
-	basicAuthCacheMu.RUnlock()
-	if !ok || time.Now().After(entry.expires) {
+	v, ok := basicAuthCache.Get(key)
+	if !ok {
 		return nil, false
 	}
-	return entry, true
+	entry, ok := v.(*basicAuthEntry)
+	return entry, ok
 }
 
 func setBasicAuthCache(key string, entry *basicAuthEntry) {
-	basicAuthCacheMu.Lock()
-	defer basicAuthCacheMu.Unlock()
-	if len(basicAuthCache) >= basicAuthMaxSize {
-		now := time.Now()
-		for k, v := range basicAuthCache {
-			if now.After(v.expires) {
-				delete(basicAuthCache, k)
-			}
-		}
-	}
-	entry.expires = time.Now().Add(basicAuthTTL)
-	basicAuthCache[key] = entry
+	basicAuthCache.Set(key, entry, basicAuthTTL)
 }
 
 func extractBasicAuth(c *gin.Context, authService *service.AuthService) (uint, string, []string, bool) {

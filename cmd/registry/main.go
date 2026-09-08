@@ -18,11 +18,14 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/core/cache"
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/database"
+	"github.com/dshmyz/moonlight-box/internal/mcp"
+	"github.com/dshmyz/moonlight-box/internal/middleware"
 	migv2executor "github.com/dshmyz/moonlight-box/internal/migration/v2/executor"
 	migv2handler "github.com/dshmyz/moonlight-box/internal/migration/v2/handler"
 	migv2repo "github.com/dshmyz/moonlight-box/internal/migration/v2/repository"
 	migv2sched "github.com/dshmyz/moonlight-box/internal/migration/v2/scheduler"
 	migv2svc "github.com/dshmyz/moonlight-box/internal/migration/v2/service"
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/plugins/apt"
 	gomod "github.com/dshmyz/moonlight-box/internal/plugins/go"
 	"github.com/dshmyz/moonlight-box/internal/plugins/maven"
@@ -30,7 +33,6 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/plugins/pypi"
 	"github.com/dshmyz/moonlight-box/internal/plugins/raw"
 	"github.com/dshmyz/moonlight-box/internal/plugins/yum"
-	"github.com/dshmyz/moonlight-box/internal/mcp"
 	"github.com/dshmyz/moonlight-box/internal/proxy"
 	"github.com/dshmyz/moonlight-box/internal/repository"
 	"github.com/dshmyz/moonlight-box/internal/service"
@@ -383,6 +385,28 @@ func main() {
 	permCacheProvider := service.NewPermissionCacheProvider(permCacheSvc, "permission", "权限缓存")
 	cacheMgr.Register(permCacheProvider)
 
+	// basic auth 校验结果缓存（统一走 core/cache）
+	cacheMgr.Register(cache.NewMemoryCacheProvider("basic-auth", "memory", "Basic Auth 登录结果缓存（TTL 1min）", middleware.AuthCache()))
+
+	// 系统配置缓存（统一走 core/cache）
+	cacheMgr.Register(cache.NewMemoryCacheProvider("system-config", "memory", "系统配置缓存（TTL 5min）", systemConfigSvc.ConfigCache()))
+
+	// 代理仓库元数据缓存（统一走 core/cache，按仓库注册；LRU+TTL，含负缓存）
+	if proxyRepos, err := repoRepo.List(map[string]interface{}{"type": model.RepoTypeProxy}); err == nil {
+		for _, repo := range proxyRepos {
+			r := repoManager.Get(repo.Name)
+			if r == nil || r.Runtime == nil {
+				continue
+			}
+			if pr, ok := r.Runtime.(*runtime.ProxyRuntime); ok {
+				cacheMgr.Register(cache.NewMetadataCacheProvider(
+					"proxy-metadata:"+repo.Name, "memory", "代理元数据缓存（LRU+TTL，含负缓存）", pr.MetadataCache()))
+			}
+		}
+	} else {
+		logrus.WithError(err).Warn("register proxy metadata cache providers failed")
+	}
+
 	// 初始化备份服务
 	backupRepo := repository.NewBackupRepository(db)
 	backupTargets := []service.BackupTarget{
@@ -522,6 +546,11 @@ func main() {
 	if cfg.AI.Enabled {
 		// 创建AI服务
 		aiService = ai.NewAIService(&cfg.AI, db, auditRepo)
+
+		// AI 响应缓存（统一走 core/cache）
+		if rc := aiService.GetResponseCache(); rc != nil {
+			cacheMgr.Register(cache.NewMemoryCacheProvider("ai-response", "memory", "AI 响应缓存", rc.Cache()))
+		}
 
 		// 注册工具
 		toolContext := &tools.ToolContext{
@@ -808,8 +837,8 @@ func mcpAuthenticate(r *http.Request, staticToken string, authSvc *service.AuthS
 	if apiTokenSvc != nil {
 		if apiToken, err := apiTokenSvc.ValidateToken(token); err == nil {
 			return &mcp.MCPUser{
-				UserID:   apiToken.UserID,
-				Static:   false,
+				UserID: apiToken.UserID,
+				Static: false,
 			}
 		}
 	}

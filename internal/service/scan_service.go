@@ -46,11 +46,16 @@ type SecurityScanner struct {
 }
 
 const (
-	defaultMaxConcurrentScans = 8
+	// defaultMaxConcurrentScans 同时并发扫描数。扫描每次约 5 次 DB 往返，
+	// 并发过高会在回源/上传高峰挤占数据库连接（尤其 SQLite 单写锁）。
+	defaultMaxConcurrentScans = 4
 	scanAllPackagesBatchSize  = 500
 	// maxQueuedScans 扫描投递队列上限（排队 + 在途）。超出时非阻塞投递直接丢弃并告警，
 	// 防止一次大批量上传瞬间创建海量等锁 goroutine 挤爆内存。
 	maxQueuedScans = 1024
+	// scanRescanInterval 增量全量扫描的重扫间隔：scanned_at 在此之内的组件跳过。
+	// 定时全量扫描只补"从未扫过 + 超过间隔未扫"的组件，避免每晚对全库逐行重扫。
+	scanRescanInterval = 7 * 24 * time.Hour
 )
 
 type ScanRule struct {
@@ -540,11 +545,31 @@ func (s *SecurityScanner) ScanAllPackages(ctx context.Context) {
 		s.logger.Infof("Scanning %d %s packages", total, pkgType)
 		var artifacts []model.Artifact
 		if err := query.Order("id ASC").FindInBatches(&artifacts, scanAllPackagesBatchSize, func(tx *gorm.DB, batch int) error {
+			// 增量：跳过最近已扫描的组件，只扫"从未扫过 + 超过重扫间隔"的，
+			// 避免大库每晚全量重扫造成 DB 风暴（每组件约 5 次 DB 往返）。
+			ids := make([]uint, 0, len(artifacts))
+			for i := range artifacts {
+				ids = append(ids, artifacts[i].ID)
+			}
+			var recentIDs []uint
+			if err := s.db.WithContext(ctx).Model(&model.ScanResult{}).
+				Where("component_id IN ? AND scanned_at > ?", ids, time.Now().Add(-scanRescanInterval)).
+				Pluck("component_id", &recentIDs).Error; err != nil {
+				s.logger.Warnf("query recent scan results failed (fallback to full scan): %v", err)
+				recentIDs = nil
+			}
+			recent := make(map[uint]bool, len(recentIDs))
+			for _, id := range recentIDs {
+				recent[id] = true
+			}
 			for _, a := range artifacts {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
 				default:
+				}
+				if recent[a.ID] {
+					continue
 				}
 				// 阻塞式投递：队列满时等待空位，全量扫描对投递量做背压而非无界堆积
 				s.TriggerScanWait(ctx, a.ID, pkgType, a.Name, a.Version)

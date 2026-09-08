@@ -116,6 +116,7 @@ func (h *PackageVersionHandler) respondVersionsFromArtifacts(c *gin.Context, pkg
 	type versionGroup struct {
 		id              uint
 		latestAt        time.Time
+		earliestAt      time.Time // 版本组内最早的制品入库时间（代理制品发布时间的稳定回退值）
 		publishedAt     string
 		publishedAtTime *time.Time
 		license         string
@@ -146,6 +147,10 @@ func (h *PackageVersionHandler) respondVersionsFromArtifacts(c *gin.Context, pkg
 		}
 		if s.LatestArtifactAt.After(vp.latestAt) {
 			vp.latestAt = s.LatestArtifactAt
+		}
+		// summary.CreatedAt 在 recalcPackageVersionSummary 中取组内最早的制品入库时间
+		if vp.earliestAt.IsZero() || s.CreatedAt.Before(vp.earliestAt) {
+			vp.earliestAt = s.CreatedAt
 		}
 		if s.PublishedAt != nil && vp.publishedAtTime == nil {
 			publishedAt := *s.PublishedAt
@@ -190,6 +195,12 @@ func (h *PackageVersionHandler) respondVersionsFromArtifacts(c *gin.Context, pkg
 			vp.latestAt = a.CreatedAt
 			vp.id = a.ID
 		}
+		// earliestAt 记录组内最早的制品 CreatedAt：无真实 published_at 属性的制品
+		// （代理回源缓存大多如此）用"首次入库时间"作发布时间，它不会随后续
+		// 回源校验/属性刷新跳变；latestAt 会随每次校验变化，不能当发布时间展示。
+		if vp.earliestAt.IsZero() || a.CreatedAt.Before(vp.earliestAt) {
+			vp.earliestAt = a.CreatedAt
+		}
 		if !vp.hasSummary && vp.sizeBytes == 0 && a.SizeBytes > 0 {
 			vp.sizeBytes = a.SizeBytes
 		}
@@ -229,13 +240,18 @@ func (h *PackageVersionHandler) respondVersionsFromArtifacts(c *gin.Context, pkg
 
 	for _, ver := range verOrder {
 		vp := verGroups[ver]
+		// 发布时间回退链：真实 published_at 属性（registry 提供的发布时间）→
+		// 首次入库时间（代理制品的稳定值）→ 最近制品更新时间（最后手段，
+		// 会随回源校验跳变，仅兜底历史数据）。
 		publishedAt := vp.latestAt
-		if vp.publishedAtTime != nil && vp.publishedAtTime.After(vp.latestAt) {
+		if vp.publishedAtTime != nil {
 			publishedAt = *vp.publishedAtTime
 		} else if vp.publishedAt != "" {
 			if t, err := time.Parse(time.RFC3339, vp.publishedAt); err == nil {
 				publishedAt = t
 			}
+		} else if !vp.earliestAt.IsZero() {
+			publishedAt = vp.earliestAt
 		}
 		if publishedAt.IsZero() {
 			publishedAt = time.Now()

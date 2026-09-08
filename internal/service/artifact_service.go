@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/core/cache"
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/database/dialect"
 	apperr "github.com/dshmyz/moonlight-box/internal/errors"
@@ -22,6 +23,9 @@ import (
 // 避免 SQLite "too many SQL variables" 错误（SQLite 默认上限 999/32766）。
 // 500 留出足够余量给 repository_id 等其它绑定参数。
 const existingQueryChunkSize = 500
+
+// virtualRepoCacheTTL 仓库类型缓存 TTL：过期重读 DB，方向安全（旧语义为永不失效）。
+const virtualRepoCacheTTL = 10 * time.Minute
 
 // ArtifactService 统一的制品管理服务，封装 artifact 与 blob 关联的创建/更新/删除，
 // 并自动同步 packages 聚合表，确保所有写入入口的一致性。
@@ -37,22 +41,33 @@ type ArtifactService struct {
 	packageVersionTableOnce  sync.Once
 	packageVersionTableReady bool
 
-	// virtualRepoCache 缓存仓库类型查询结果，避免同一事务内重复查询。
-	// key: repoID (uint), value: bool (是否为虚拟仓库)
-	virtualRepoCache sync.Map
+	// virtualRepoCache 缓存仓库类型查询结果（统一走 core/cache，TTL 过期重读 DB），
+	// 避免同一事务内重复查询。TTL 内仓库类型变更（hosted↔virtual）最迟 10min 生效，
+	// 仓库类型编辑本身是低频管理操作，可接受。
+	virtualRepoCache *cache.MemoryCache
 
-	// packageRecalcWorker 相关字段用于异步重算 packages 聚合表。
-	// SaveBatch 事务提交后，把 seenPackages 投递到 recalcCh，
-	// worker goroutine 用独立 db 连接执行 recalcPackageVersions，
+	// packageRecalcWorker 相关字段用于异步重算 packages/package_versions 聚合表。
+	// 写事务提交后，把涉及包投递到 recalcCh，
+	// worker goroutine 用独立 db 连接执行重算，
 	// 避免在事务内做每包 2 次全表扫描导致长事务持锁。
-	recalcCh   chan map[string]bool
+	recalcCh   chan recalcTask
 	recalcStop chan struct{}
 	recalcDone chan struct{}
 	recalcOnce sync.Once
 }
 
+// recalcTask 聚合重算任务。packages 为包级（version_count/latest_version），
+// versions 为版本级（size/file_count/published_at 等），两者独立可空。
+type recalcTask struct {
+	packages map[string]bool
+	versions map[string]bool
+}
+
 func NewArtifactService(db *gorm.DB) *ArtifactService {
-	s := &ArtifactService{db: db}
+	s := &ArtifactService{
+		db:               db,
+		virtualRepoCache: cache.NewMemoryCacheWithOptions(cache.MemoryCacheOptions{NumShards: 1, MaxItems: 4096}),
+	}
 	s.startPackageRecalcWorker()
 	return s
 }
@@ -61,7 +76,7 @@ func NewArtifactService(db *gorm.DB) *ArtifactService {
 // worker 用独立 db 连接（不在 SaveBatch 事务内），避免长事务持锁。
 // 同一包短时间内多次提交会去重（map 覆盖），worker 按节流间隔执行。
 func (s *ArtifactService) startPackageRecalcWorker() {
-	s.recalcCh = make(chan map[string]bool, 256)
+	s.recalcCh = make(chan recalcTask, 256)
 	s.recalcStop = make(chan struct{})
 	s.recalcDone = make(chan struct{})
 	util.SafeGo("artifact-service.recalc-worker", s.recalcLoop)
@@ -69,11 +84,33 @@ func (s *ArtifactService) startPackageRecalcWorker() {
 
 func (s *ArtifactService) recalcLoop() {
 	defer close(s.recalcDone)
-	// 合并 200ms 内到达的多个 seenPackages，避免短时间内对同一包重复重算
+	// 合并 200ms 内到达的多个任务，避免短时间内对同一包重复重算
 	const mergeWindow = 200 * time.Millisecond
-	var pending map[string]bool
+	var pending recalcTask
 	var timerC <-chan time.Time
 	var timer *time.Timer
+
+	merge := func(t recalcTask) {
+		if len(t.packages) > 0 {
+			if pending.packages == nil {
+				pending.packages = t.packages
+			} else {
+				for k := range t.packages {
+					pending.packages[k] = true
+				}
+			}
+		}
+		if len(t.versions) > 0 {
+			if pending.versions == nil {
+				pending.versions = t.versions
+			} else {
+				for k := range t.versions {
+					pending.versions[k] = true
+				}
+			}
+		}
+	}
+
 	for {
 		select {
 		case <-s.recalcStop:
@@ -82,61 +119,59 @@ func (s *ArtifactService) recalcLoop() {
 				timer.Stop()
 			}
 			// 关闭时处理剩余任务
-			if pending != nil {
+			if len(pending.packages) > 0 || len(pending.versions) > 0 {
 				s.executePackageRecalc(pending)
 			}
 			// 排空 channel，避免丢失已提交任务
 			for {
 				select {
 				case p := <-s.recalcCh:
-					if pending == nil {
-						pending = p
-					} else {
-						for k := range p {
-							pending[k] = true
-						}
-					}
+					merge(p)
 					continue
 				default:
-					if pending != nil {
+					if len(pending.packages) > 0 || len(pending.versions) > 0 {
 						s.executePackageRecalc(pending)
 					}
 					return
 				}
 			}
 		case p := <-s.recalcCh:
-			if pending == nil {
-				pending = p
-				if timer == nil {
-					timer = time.NewTimer(mergeWindow)
-					timerC = timer.C
-				} else {
-					timer.Reset(mergeWindow)
-				}
+			merge(p)
+			if timer == nil {
+				timer = time.NewTimer(mergeWindow)
+				timerC = timer.C
 			} else {
-				for k := range p {
-					pending[k] = true
-				}
+				timer.Reset(mergeWindow)
 			}
 		case <-timerC:
 			s.executePackageRecalc(pending)
-			pending = nil
+			pending = recalcTask{}
 			timerC = nil
 		}
 	}
 }
 
-// executePackageRecalc 用独立 db 连接执行 packages 重算，失败仅记录日志。
-func (s *ArtifactService) executePackageRecalc(seenPackages map[string]bool) {
-	if len(seenPackages) == 0 {
+// executePackageRecalc 用独立 db 连接执行聚合表重算，失败仅记录日志。
+func (s *ArtifactService) executePackageRecalc(task recalcTask) {
+	if len(task.packages) == 0 && len(task.versions) == 0 {
 		return
 	}
 	// 用独立 db 连接（不在事务内），避免长事务持锁
-	if err := s.recalcPackageVersions(s.db, seenPackages); err != nil {
-		util.WithFields(logrus.Fields{
-			util.LogKeyModule: "artifact-service",
-			"packageCount":    len(seenPackages),
-		}).WithError(err).Warn("async package recalc failed")
+	if len(task.packages) > 0 {
+		if err := s.recalcPackageVersions(s.db, task.packages); err != nil {
+			util.WithFields(logrus.Fields{
+				util.LogKeyModule: "artifact-service",
+				"packageCount":    len(task.packages),
+			}).WithError(err).Warn("async package recalc failed")
+		}
+	}
+	if len(task.versions) > 0 {
+		if err := s.recalcPackageVersionSummaries(s.db, task.versions); err != nil {
+			util.WithFields(logrus.Fields{
+				util.LogKeyModule: "artifact-service",
+				"versionCount":    len(task.versions),
+			}).WithError(err).Warn("async package version summary recalc failed")
+		}
 	}
 }
 
@@ -159,10 +194,14 @@ func (s *ArtifactService) SetSecurityScanner(scanner *SecurityScanner) {
 }
 
 // enqueueAutoScan 将新保存的可扫描制品异步投递到安全扫描器（幂等、并发受限、不阻塞保存）。
-// 仅针对 hosted（local）仓库：代理回源写入的制品来自上游缓存，不属于"上传"，
-// 不扫描也不自动阻断（否则代理同步大元数据会瞬间投递成千上万扫描，并可能阻断正常代理内容）。
+// 跳过两类写入：代理同步（ctx 带 WithSyncSource 标记——回源缓存不是"上传"，
+// 否则回源高峰会瞬间投递成千上万扫描，并可能阻断正常代理内容）；代理缓存迁移后的
+// local 类型仓库写入（repo type 过滤兜底，代理内容安全由定时全量扫描覆盖）。
 func (s *ArtifactService) enqueueAutoScan(ctx context.Context, created ...*model.Artifact) {
 	if s.scanTrigger == nil || !s.scanTrigger.ShouldScanOnUpload() || len(created) == 0 {
+		return
+	}
+	if runtime.IsSyncSource(ctx) {
 		return
 	}
 	var candidates []*model.Artifact
@@ -233,6 +272,9 @@ func (s *ArtifactService) Save(ctx context.Context, artifact *runtime.Artifact) 
 			return err
 		} else {
 			modelArtifact.ID = existing.ID
+			if runtime.IsSyncSource(ctx) {
+				preservePublishedAt(existing, modelArtifact)
+			}
 			if err := tx.Save(modelArtifact).Error; err != nil {
 				return err
 			}
@@ -271,6 +313,64 @@ func (s *ArtifactService) Save(ctx context.Context, artifact *runtime.Artifact) 
 	return err
 }
 
+// AttachBlob 代理回源下载完内容后，把 blob 关联与内容相关列（size_bytes/download_url/checksums）
+// 补写到已存在的制品上，不做整行 Save。版本级聚合（size/file_count/files_downloaded）交给
+// 异步 recalc worker（read model 弱一致性，与 SaveBatch 的 packages 异步重算同一约定）。
+// 相比整条 Save，回源高峰时每次下载少约 9 条 DB 查询。
+// 找不到对应行（并发删除等）时回退整条 Save，保证元数据不丢。
+func (s *ArtifactService) AttachBlob(ctx context.Context, artifact *runtime.Artifact) error {
+	if err := runtime.ValidateArtifactForStore(artifact); err != nil {
+		return err
+	}
+	modelArtifact := s.toModelArtifact(artifact)
+
+	var artifactID uint
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row model.Artifact
+		err := tx.Model(&model.Artifact{}).
+			Where("repository_id = ?", modelArtifact.RepositoryID).
+			Where("format = ?", artifact.Format).
+			Where("identity_key = ?", modelArtifact.IdentityKey).
+			Select("id").
+			First(&row).Error
+		if err != nil {
+			return err
+		}
+		artifactID = row.ID
+
+		if err := tx.Model(&model.Artifact{}).Where("id = ?", artifactID).Updates(map[string]interface{}{
+			"size_bytes":   modelArtifact.SizeBytes,
+			"download_url": modelArtifact.DownloadURL,
+			"checksums":    modelArtifact.Checksums,
+		}).Error; err != nil {
+			return err
+		}
+		return s.syncBlobRefs(tx, artifactID, artifact.BlobRefs)
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// 行已不存在（并发删除/首次写入失败等）→ 回退整条 Save 重建元数据
+		return s.Save(ctx, artifact)
+	}
+	if err != nil {
+		return err
+	}
+	s.notifyCacheInvalidation()
+
+	// 版本级聚合异步重算；channel 满时降级为同步执行，保证最终一致
+	versionKey := packageVersionKey(modelArtifact.RepositoryID, artifact.Format, modelArtifact.Name, modelArtifact.Version)
+	select {
+	case s.recalcCh <- recalcTask{versions: map[string]bool{versionKey: true}}:
+	case <-time.After(100 * time.Millisecond):
+		if err := s.recalcPackageVersionSummary(s.db, modelArtifact.RepositoryID, artifact.Format, modelArtifact.Name, modelArtifact.Version); err != nil {
+			util.WithFields(logrus.Fields{
+				util.LogKeyModule: "artifact-service",
+				"versionKey":      versionKey,
+			}).WithError(err).Warn("sync package version summary recalc failed")
+		}
+	}
+	return nil
+}
+
 // SaveBatch 批量创建或更新 artifacts，自动同步 packages 聚合表。
 // rejectOverwrite 为 true 时，拒绝覆盖已存在 identity_key 的内容 artifact
 // （metadata/checksum/directory 类仍允许更新，它们是聚合元数据的合法重写）。
@@ -287,7 +387,7 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 
 	// seenPackages 提升到事务外，事务提交后供异步 worker 使用。
 	seenPackages := make(map[string]bool) // 用于批量更新 packages 去重
-	var createdModel []*model.Artifact     // 事务内新建的制品，提交后投递自动扫描
+	var createdModel []*model.Artifact    // 事务内新建的制品，提交后投递自动扫描
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		seenPackageVersions := make(map[string]bool)
@@ -383,6 +483,11 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 
 		// 批量 UPDATE
 		for _, ia := range toUpdate {
+			if runtime.IsSyncSource(ctx) {
+				if existing, ok := existingMap[ia.model.IdentityKey]; ok {
+					preservePublishedAt(existing, ia.model)
+				}
+			}
 			if err := tx.Save(ia.model).Error; err != nil {
 				return err
 			}
@@ -424,10 +529,10 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 				packagesCopy[k] = true
 			}
 			select {
-			case s.recalcCh <- packagesCopy:
+			case s.recalcCh <- recalcTask{packages: packagesCopy}:
 			case <-time.After(100 * time.Millisecond):
 				// channel 满，降级同步执行
-				s.executePackageRecalc(packagesCopy)
+				s.executePackageRecalc(recalcTask{packages: packagesCopy})
 			}
 		}
 	}
@@ -923,9 +1028,9 @@ type overlapRow struct {
 
 // overlapSpec 描述一张内容表如何判断 source 与 target 仓库的重叠。
 type overlapSpec struct {
-	table   string   // 表名
-	joinOn  []string // source=target 全等列（与表唯一索引一致）
-	kind    string   // 冲突类型："package" / "version" / "artifact"
+	table  string   // 表名
+	joinOn []string // source=target 全等列（与表唯一索引一致）
+	kind   string   // 冲突类型："package" / "version" / "artifact"
 }
 
 // overlapSpecs 迁移预检查覆盖的三张内容表。joinOn 与各表唯一索引一致，
@@ -1049,7 +1154,7 @@ func (s *ArtifactService) isVirtualRepo(tx *gorm.DB, repoID uint) (bool, error) 
 	}
 
 	// 先查缓存
-	if cached, ok := s.virtualRepoCache.Load(repoID); ok {
+	if cached, ok := s.virtualRepoCache.Get(fmt.Sprintf("%d", repoID)); ok {
 		return cached.(bool), nil
 	}
 
@@ -1061,7 +1166,7 @@ func (s *ArtifactService) isVirtualRepo(tx *gorm.DB, repoID uint) (bool, error) 
 	}
 
 	isVirtual := count > 0
-	s.virtualRepoCache.Store(repoID, isVirtual)
+	s.virtualRepoCache.Set(fmt.Sprintf("%d", repoID), isVirtual, virtualRepoCacheTTL)
 	return isVirtual, nil
 }
 
@@ -1438,6 +1543,23 @@ func (s *ArtifactService) recalcPackageVersions(tx *gorm.DB, seenPackages map[st
 		}
 	}
 	return nil
+}
+
+// preservePublishedAt 代理同步路径下，已存在制品的 published_at 保持 first-write-wins：
+// 上游 metadata 的 lastUpdated（尤其 Maven 的 maven-metadata.xml）会随任意重新部署变化，
+// 不能当作发布时间反复覆盖，否则列表页"发布时间"会跟着每次代理同步跳变。
+// 用户真实上传（无 sync 标记）不经过此逻辑，覆盖上传仍会正常更新发布时间。
+func preservePublishedAt(existing model.Artifact, target *model.Artifact) {
+	old := extractJSONBString(existing.Attributes, "published_at")
+	if old == "" {
+		return
+	}
+	if extractJSONBString(target.Attributes, "published_at") != old {
+		if target.Attributes == nil {
+			target.Attributes = model.JSONB{}
+		}
+		target.Attributes["published_at"] = old
+	}
 }
 
 func extractJSONBString(data model.JSONB, key string) string {

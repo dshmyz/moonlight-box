@@ -40,6 +40,13 @@ type MetadataStore interface {
 	Query(ctx context.Context, query ArtifactQuery) ([]*Artifact, error)
 }
 
+// BlobAttacher 是 MetadataStore 的可选能力：代理回源下载完内容后，只补写
+// blob 关联与内容相关列（size_bytes/download_url/checksums），不做整条 Put，
+// 省去回源高峰时的重复查询。未实现该能力时调用方回退 Put。
+type BlobAttacher interface {
+	AttachBlob(ctx context.Context, artifact *Artifact) error
+}
+
 type BlobStore interface {
 	Put(reader io.Reader) (BlobRef, error)
 	Open(ref BlobRef) (io.ReadCloser, error)

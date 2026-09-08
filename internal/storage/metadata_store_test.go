@@ -167,3 +167,82 @@ func TestBatchPutHandlesManyIdentityKeys(t *testing.T) {
 		t.Fatalf("BatchPut (update path) with %d identity keys failed: %v", count, err)
 	}
 }
+
+// TestMetadataStoreGetJoinsBlobRefs 验证 Get 的单条 JOIN 查询能同时取回
+// artifact 行与其全部 blob 引用（原实现为 2 条查询），且无 blob 制品不报错。
+func TestMetadataStoreGetJoinsBlobRefs(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Artifact{}, &model.Blob{}, &model.ArtifactBlob{}); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	store := NewMetadataStore(db)
+	ctx := context.Background()
+
+	// 带 blob 的制品
+	blob := model.Blob{Algorithm: "sha256", Digest: "abc123", Size: 1234, StoragePath: "ab/abc123"}
+	if err := db.Create(&blob).Error; err != nil {
+		t.Fatalf("create blob: %v", err)
+	}
+	withBlob := &runtime.Artifact{
+		RepositoryID: "1",
+		Format:       "npm",
+		Kind:         runtime.KindArtifact,
+		IdentityKey:  "npm:left-pad:1.0.0:tarball",
+		Name:         "left-pad",
+		Version:      "1.0.0",
+		Filename:     "left-pad-1.0.0.tgz",
+		BlobRefs: []runtime.BlobRef{{
+			BlobID:    blob.ID,
+			Algorithm: blob.Algorithm,
+			Digest:    blob.Digest,
+			Size:      blob.Size,
+		}},
+	}
+	if err := store.Put(ctx, withBlob); err != nil {
+		t.Fatalf("put artifact with blob: %v", err)
+	}
+
+	got, err := store.Get(ctx, runtime.ArtifactKey{RepositoryID: "1", Format: "npm", IdentityKey: withBlob.IdentityKey})
+	if err != nil {
+		t.Fatalf("get artifact with blob: %v", err)
+	}
+	if len(got.BlobRefs) != 1 {
+		t.Fatalf("expected 1 blob ref, got %d", len(got.BlobRefs))
+	}
+	ref := got.BlobRefs[0]
+	if ref.BlobID != blob.ID || ref.Digest != blob.Digest || ref.Size != blob.Size || ref.Algorithm != "sha256" {
+		t.Fatalf("blob ref mismatch: %+v", ref)
+	}
+	if got.Name != "left-pad" || got.Version != "1.0.0" || got.Filename != "left-pad-1.0.0.tgz" {
+		t.Fatalf("artifact fields mismatch: %+v", got)
+	}
+
+	// 无 blob 的制品（元数据行）也应正常取回，BlobRefs 为空
+	metaOnly := &runtime.Artifact{
+		RepositoryID: "1",
+		Format:       "npm",
+		Kind:         runtime.KindVersion,
+		IdentityKey:  "npm:left-pad:1.0.0:metadata",
+		Name:         "left-pad",
+		Version:      "1.0.0",
+	}
+	if err := store.Put(ctx, metaOnly); err != nil {
+		t.Fatalf("put metadata-only artifact: %v", err)
+	}
+	got, err = store.Get(ctx, runtime.ArtifactKey{RepositoryID: "1", Format: "npm", IdentityKey: metaOnly.IdentityKey})
+	if err != nil {
+		t.Fatalf("get metadata-only artifact: %v", err)
+	}
+	if len(got.BlobRefs) != 0 {
+		t.Fatalf("expected 0 blob refs for metadata-only artifact, got %d", len(got.BlobRefs))
+	}
+
+	// 不存在的 key 返回 ErrNotFound
+	if _, err := store.Get(ctx, runtime.ArtifactKey{RepositoryID: "1", Format: "npm", IdentityKey: "npm:missing"}); err != runtime.ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}

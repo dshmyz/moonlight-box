@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/core/cache"
 	"github.com/dshmyz/moonlight-box/internal/metrics"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
@@ -21,6 +21,9 @@ import (
 const maxMetadataCacheSize = 10000 // 内存缓存上限，防止无限增长
 const maxNegativeCacheSize = 5000  // 负缓存上限，防止 DoS
 const maxMetadataFailures = 5000   // 元数据失败缓存上限，防止 DoS
+
+// proxyMetadataCacheSize 正/负缓存条目共用一个 LRU，总容量 = 两者上限之和。
+const proxyMetadataCacheSize = maxMetadataCacheSize + maxNegativeCacheSize
 
 // backgroundRefreshTimeout 限制异步刷新的最长执行时间，避免 FetchRemote 挂起导致
 // refreshingPaths 永不释放、该路径后续刷新全部失效以及 goroutine 泄漏。
@@ -49,15 +52,16 @@ type ProxyRuntime struct {
 	// 客户端断开而取消。
 	UpstreamTimeout time.Duration
 
-	metadataCacheMu   sync.RWMutex
-	metadataCache     map[string]*list.Element // LRU: 值为 *cachedArtifactEntry，链表队首为最久未访问
-	metadataCacheLL   *list.List
-	negativeCache     map[string]time.Time
+	// 统一缓存设施（internal/core/cache）：正/负缓存共用 MetadataCache（LRU+TTL，
+	// 负缓存独立 TTL），元数据失败退避走 MemoryCache。惰性构造（TTL 来自
+	// CachePolicy，测试常用 struct 字面量构造），sync.Once 保证只建一次。
+	metadataCacheInit sync.Once
+	metadataCache     *cache.MetadataCache
+	failuresInit      sync.Once
+	metadataFailures  *cache.MemoryCache
 	fetchGroup        singleflight.Group
 	refreshingMu      sync.Mutex
 	refreshingPaths   map[string]struct{}
-	metadataFailureMu sync.Mutex
-	metadataFailures  map[string]time.Time
 }
 
 // upstreamTimeout 返回回源请求用的固定超时（仓库级 UpstreamTimeout，未配置时回退默认值）。
@@ -193,21 +197,6 @@ func isHopByHopHeader(name string) bool {
 	return ok
 }
 
-type cachedArtifact struct {
-	artifact  *Artifact
-	expiresAt time.Time
-	negative  bool
-}
-
-// cachedArtifactEntry 是 LRU 链表节点，持有原始 ArtifactKey 以便 O(1) 从 map 删除，
-// 也供 WarmUp 在无损耗地重放检索（保留 scoped 名称与 Qualifiers，无需从字符串反向解析）。
-type cachedArtifactEntry struct {
-	key       ArtifactKey
-	artifact  *Artifact
-	expiresAt time.Time
-	negative  bool
-}
-
 type proxyCountingReader struct {
 	reader io.Reader
 	n      int64
@@ -333,50 +322,16 @@ func missingConditionAttributes(artifact *Artifact, requirements []ConditionRequ
 }
 
 func (n *ProxyRuntime) metadataFailureCached(key string) bool {
-	n.metadataFailureMu.Lock()
-	defer n.metadataFailureMu.Unlock()
-	expiry, ok := n.metadataFailures[key]
-	if !ok {
-		return false
-	}
-	if time.Now().After(expiry) {
-		delete(n.metadataFailures, key)
-		return false
-	}
-	return true
+	_, ok := n.metadataFailuresOrInit().Get(key)
+	return ok
 }
+
 func (n *ProxyRuntime) cacheMetadataFailure(key string) {
 	ttl := n.MetadataFailureTTL
 	if ttl <= 0 {
 		ttl = 5 * time.Minute
 	}
-	n.metadataFailureMu.Lock()
-	defer n.metadataFailureMu.Unlock()
-	if n.metadataFailures == nil {
-		n.metadataFailures = make(map[string]time.Time)
-	}
-	if len(n.metadataFailures) >= maxMetadataFailures {
-		n.evictMetadataFailuresLocked()
-	}
-	n.metadataFailures[key] = time.Now().Add(ttl)
-}
-
-// evictMetadataFailuresLocked 清理失败缓存：先删过期项，仍超限时淘汰至 75%。
-// 调用时必须已持有 n.metadataFailureMu。
-func (n *ProxyRuntime) evictMetadataFailuresLocked() {
-	now := time.Now()
-	for k, expiry := range n.metadataFailures {
-		if now.After(expiry) {
-			delete(n.metadataFailures, k)
-		}
-	}
-	target := maxMetadataFailures * 3 / 4
-	for k := range n.metadataFailures {
-		if len(n.metadataFailures) <= target {
-			break
-		}
-		delete(n.metadataFailures, k)
-	}
+	n.metadataFailuresOrInit().Set(key, true, ttl)
 }
 func (n *ProxyRuntime) auditConditionUnverified(ctx context.Context, key ArtifactKey, requirements []ConditionRequirement, missing []string, reason string) {
 	if n.ConditionAudit == nil {
@@ -423,12 +378,12 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 	key.RepositoryID = n.RepositoryID
 
 	logrus.WithFields(logrus.Fields{
-		"repo_id": n.RepositoryID,
-		"format":       key.Format,
-		"name":         key.Name,
-		"version":      key.Version,
-		"remote_path":   key.RemotePath,
-		"filename":     key.Filename,
+		"repo_id":     n.RepositoryID,
+		"format":      key.Format,
+		"name":        key.Name,
+		"version":     key.Version,
+		"remote_path": key.RemotePath,
+		"filename":    key.Filename,
 	}).Debug("proxy: GetArtifact called")
 
 	if n.isNegativeCached(key) {
@@ -441,7 +396,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 	if artifact, ok := n.getCachedArtifact(key); ok {
 		metrics.RecordCacheHit(n.RepositoryID, n.Format)
 		logrus.WithFields(logrus.Fields{
-			"key":      key.String(),
+			"key":         key.String(),
 			"duration_ms": time.Since(start).Seconds(),
 		}).Debug("proxy: GetArtifact memory cache hit")
 		artifact = cloneArtifactForResponse(artifact)
@@ -526,7 +481,7 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 		}
 		n.setCachedArtifact(key, artifact)
 		logrus.WithFields(logrus.Fields{
-			"key":      key.String(),
+			"key":         key.String(),
 			"duration_ms": time.Since(start).Seconds(),
 		}).Debug("proxy: GetArtifact metadata store hit")
 		fromCache := hadBlob && artifact.RemoteURL == ""
@@ -537,7 +492,7 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 	metrics.RecordCacheMiss(n.RepositoryID, n.Format)
 
 	logrus.WithFields(logrus.Fields{
-		"key":           key.String(),
+		"key":             key.String(),
 		"remote_base_url": n.RemoteBaseURL,
 	}).Debug("proxy: GetArtifact cache miss, fetching from remote")
 
@@ -545,19 +500,19 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 	metadata, err := n.RemoteClient.FetchMetadata(ctx, key)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"key":       key.String(),
-			"remote_url": key.RemoteURL,
-			"duration_ms":  time.Since(start).Seconds(),
-			"error":     err.Error(),
+			"key":         key.String(),
+			"remote_url":  key.RemoteURL,
+			"duration_ms": time.Since(start).Seconds(),
+			"error":       err.Error(),
 		}).Error("proxy: GetArtifact fetch metadata failed")
 		return getArtifactResult{}, err
 	}
 	if !metadata.Exists {
 		n.setNegativeCache(key)
 		logrus.WithFields(logrus.Fields{
-			"key":       key.String(),
-			"remote_url": key.RemoteURL,
-			"duration_ms":  time.Since(start).Seconds(),
+			"key":         key.String(),
+			"remote_url":  key.RemoteURL,
+			"duration_ms": time.Since(start).Seconds(),
 		}).Debug("proxy: GetArtifact remote not found, set negative cache")
 		return getArtifactResult{}, ErrNotFound
 	}
@@ -599,7 +554,7 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 		return getArtifactResult{}, blockErr
 	}
 
-	if err := n.MetadataStore.Put(ctx, artifact); err != nil {
+	if err := n.MetadataStore.Put(WithSyncSource(ctx), artifact); err != nil {
 		logrus.WithFields(logrus.Fields{
 			"key":   key.String(),
 			"error": err.Error(),
@@ -612,9 +567,9 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 	}
 	n.setCachedArtifact(key, artifact)
 	logrus.WithFields(logrus.Fields{
-		"key":       key.String(),
-		"remote_url": key.RemoteURL,
-		"duration_ms":  time.Since(start).Seconds(),
+		"key":         key.String(),
+		"remote_url":  key.RemoteURL,
+		"duration_ms": time.Since(start).Seconds(),
 	}).Debug("proxy: GetArtifact fetch from remote success")
 	if len(artifact.BlobRefs) > 0 {
 		artifact.SizeBytes = artifact.BlobRefs[0].Size
@@ -633,11 +588,11 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 	query.RepositoryID = n.RepositoryID
 
 	logrus.WithFields(logrus.Fields{
-		"repo_id":  n.RepositoryID,
+		"repo_id":         n.RepositoryID,
 		"remote_base_url": n.RemoteBaseURL,
-		"remote_path":    query.RemotePath,
-		"format":        query.Format,
-		"hasFetcher":    n.Fetcher != nil,
+		"remote_path":     query.RemotePath,
+		"format":          query.Format,
+		"hasFetcher":      n.Fetcher != nil,
 	}).Debug("proxy: QueryArtifacts called")
 
 	artifacts, err := n.MetadataStore.Query(ctx, query)
@@ -679,11 +634,11 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 							oldMap := buildArtifactMap(artifacts)
 							toUpdate := n.prepareArtifactsForUpdate(refreshCtx, fetched, oldMap)
 							if len(toUpdate) > 0 {
-								if err := n.MetadataStore.BatchPut(refreshCtx, toUpdate, false); err != nil {
+								if err := n.MetadataStore.BatchPut(WithSyncSource(refreshCtx), toUpdate, false); err != nil {
 									logrus.WithFields(logrus.Fields{
 										"remote_base_url": n.RemoteBaseURL,
-										"remote_path":    query.RemotePath,
-										"error":         err.Error(),
+										"remote_path":     query.RemotePath,
+										"error":           err.Error(),
 									}).Warn("QueryArtifacts: background BatchPut failed")
 								}
 								// 异步刷新后清除负缓存，使后续 GetArtifact 能命中新记录。
@@ -720,14 +675,14 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		// 缓存不完整，继续走回源逻辑
 		logrus.WithFields(logrus.Fields{
 			"cachedCount": len(artifacts),
-			"remote_path":  query.RemotePath,
+			"remote_path": query.RemotePath,
 		}).Debug("proxy: cache has only artifact records, fetching from remote for complete metadata")
 	}
 	// 本地缓存为空,通过 RemoteFetcher 回源
 	if n.Fetcher != nil && n.RemoteBaseURL != "" && query.RemotePath != "" {
 		logrus.WithFields(logrus.Fields{
 			"remote_base_url": n.RemoteBaseURL,
-			"remote_path":    query.RemotePath,
+			"remote_path":     query.RemotePath,
 		}).Debug("proxy: local cache empty, fetching from remote")
 
 		fetchStart := time.Now()
@@ -749,7 +704,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 				// 保留触发请求的 client IP 用于审计，用调用方 ctx 而非上游上下文
 				n.stampTriggerIP(ctx, a)
 			}
-			if err := n.MetadataStore.BatchPut(runCtx, fetched, false); err != nil {
+			if err := n.MetadataStore.BatchPut(WithSyncSource(runCtx), fetched, false); err != nil {
 				return queryResult{err: err}, nil
 			}
 			for _, a := range fetched {
@@ -769,13 +724,13 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 			metrics.RecordProxyFetch(n.Format, "error", fetchDuration)
 			logrus.WithFields(logrus.Fields{
 				"remote_base_url": n.RemoteBaseURL,
-				"remote_path":    query.RemotePath,
-				"error":         fetchErr.Error(),
+				"remote_path":     query.RemotePath,
+				"error":           fetchErr.Error(),
 			}).Error("proxy: FetchRemote failed")
 			if len(artifacts) > 0 {
 				logrus.WithFields(logrus.Fields{
 					"cachedCount": len(artifacts),
-					"remote_path":  query.RemotePath,
+					"remote_path": query.RemotePath,
 				}).Warn("proxy: serving cached artifacts after FetchRemote failure")
 				return n.filterBlockedArtifacts(artifacts), nil
 			}
@@ -794,9 +749,9 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		return n.filterBlockedArtifacts(fetched), nil
 	}
 	logrus.WithFields(logrus.Fields{
-		"hasFetcher":    n.Fetcher != nil,
+		"hasFetcher":      n.Fetcher != nil,
 		"remote_base_url": n.RemoteBaseURL,
-		"remote_path":    query.RemotePath,
+		"remote_path":     query.RemotePath,
 	}).Warn("proxy: no fetcher or remote URL, returning empty result")
 	return n.filterBlockedArtifacts(artifacts), nil
 }
@@ -846,9 +801,9 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"repo_id": n.RepositoryID,
-		"remote_url":    key.RemoteURL,
-		"filename":     key.Filename,
+		"repo_id":    n.RepositoryID,
+		"remote_url": key.RemoteURL,
+		"filename":   key.Filename,
 	}).Debug("proxy: ensureArtifactBlob fetching from remote")
 
 	blobReader, err := n.RemoteClient.FetchBlob(ctx, key)
@@ -859,23 +814,23 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 			_ = n.MetadataStore.Delete(ctx, key)
 			n.setNegativeCache(key)
 			logrus.WithFields(logrus.Fields{
-				"remote_url": key.RemoteURL,
-				"duration_ms":  time.Since(start).Seconds(),
+				"remote_url":  key.RemoteURL,
+				"duration_ms": time.Since(start).Seconds(),
 			}).Debug("proxy: ensureArtifactBlob blob not found, set negative cache")
 			return ErrNotFound
 		}
 		if IsUpstreamTimeout(err) {
 			logrus.WithFields(logrus.Fields{
-				"remote_url": key.RemoteURL,
-				"duration_ms":  time.Since(start).Seconds(),
-				"error":     err.Error(),
+				"remote_url":  key.RemoteURL,
+				"duration_ms": time.Since(start).Seconds(),
+				"error":       err.Error(),
 			}).Warn("proxy: ensureArtifactBlob upstream timeout")
 			return NewUpstreamTimeoutError(key.RemoteURL, 30, err)
 		}
 		logrus.WithFields(logrus.Fields{
-			"remote_url": key.RemoteURL,
-			"duration_ms":  time.Since(start).Seconds(),
-			"error":     err.Error(),
+			"remote_url":  key.RemoteURL,
+			"duration_ms": time.Since(start).Seconds(),
+			"error":       err.Error(),
 		}).Error("proxy: ensureArtifactBlob fetch blob failed")
 		return err
 	}
@@ -896,9 +851,9 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 	}
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"remote_url": key.RemoteURL,
-			"duration_ms":  time.Since(start).Seconds(),
-			"error":     err.Error(),
+			"remote_url":  key.RemoteURL,
+			"duration_ms": time.Since(start).Seconds(),
+			"error":       err.Error(),
 		}).Error("proxy: ensureArtifactBlob store blob failed")
 		return err
 	}
@@ -914,8 +869,8 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 		}
 		logrus.WithFields(logrus.Fields{
 			"remote_url": key.RemoteURL,
-			"size":      readSize,
-			"maxSize":   n.CachePolicy.MaxBlobSize,
+			"size":       readSize,
+			"maxSize":    n.CachePolicy.MaxBlobSize,
 		}).Warn("proxy: blob too large, rejecting")
 		return fmt.Errorf("blob too large: %d bytes exceeds limit %d", readSize, n.CachePolicy.MaxBlobSize)
 	}
@@ -931,18 +886,29 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 	if blobRef.Size > 0 {
 		metrics.RecordProxyBlobStored(n.Format, blobRef.Size)
 	}
-	if err := n.MetadataStore.Put(ctx, artifact); err != nil {
+	// 内容下载完成后只补写 blob 关联与内容列，避免整条 Put 的重复查询
+	// （省 SELECT/整行 UPDATE/事务内聚合重算，聚合由存储层异步重算）
+	if attacher, ok := n.MetadataStore.(BlobAttacher); ok {
+		if err := attacher.AttachBlob(WithSyncSource(ctx), artifact); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"remote_url":  key.RemoteURL,
+				"duration_ms": time.Since(start).Seconds(),
+				"error":       err.Error(),
+			}).Error("proxy: ensureArtifactBlob attach blob failed")
+			return err
+		}
+	} else if err := n.MetadataStore.Put(WithSyncSource(ctx), artifact); err != nil {
 		logrus.WithFields(logrus.Fields{
-			"remote_url": key.RemoteURL,
-			"duration_ms":  time.Since(start).Seconds(),
-			"error":     err.Error(),
+			"remote_url":  key.RemoteURL,
+			"duration_ms": time.Since(start).Seconds(),
+			"error":       err.Error(),
 		}).Error("proxy: ensureArtifactBlob update metadata failed")
 		return err
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"remote_url": key.RemoteURL,
-		"duration_ms":  time.Since(start).Seconds(),
+		"remote_url":  key.RemoteURL,
+		"duration_ms": time.Since(start).Seconds(),
 	}).Debug("proxy: ensureArtifactBlob success")
 	return nil
 }
@@ -1006,12 +972,17 @@ func (n *ProxyRuntime) refreshStaleMetadata(ctx context.Context, artifact *Artif
 	oldSize := artifact.Properties["remote_size"]
 	newSize := strconv.FormatInt(remoteMeta.Size, 10)
 	changed := remoteMeta.Digest != "" && oldDigest != "" && remoteMeta.Digest != oldDigest
-	if !changed && oldSize != "" && oldSize != newSize {
+	// 上游未返回 Content-Length（Size<=0，部分 HEAD/元数据接口如此）时视为未知，
+	// 不能拿 0 与旧值比较误判"上游已变化"，否则会清空本地 blob 导致整包重下
+	if !changed && oldSize != "" && remoteMeta.Size > 0 && oldSize != newSize {
 		changed = true
 	}
 
 	artifact.Properties["remote_digest"] = remoteMeta.Digest
-	artifact.Properties["remote_size"] = newSize
+	// 只在拿到真实大小后才覆盖 remote_size，避免未知值抹掉已有的准确记录
+	if remoteMeta.Size > 0 {
+		artifact.Properties["remote_size"] = newSize
+	}
 	if remoteETag := firstNonEmpty(remoteMeta.ETag, remoteMeta.Digest); remoteETag != "" {
 		artifact.Properties["remote_etag"] = remoteETag
 	}
@@ -1025,7 +996,14 @@ func (n *ProxyRuntime) refreshStaleMetadata(ctx context.Context, artifact *Artif
 	if ip := ClientIPFromContext(ctx); ip != "" {
 		artifact.Properties["trigger_ip"] = ip
 	}
-	return n.MetadataStore.Put(ctx, artifact)
+	// 内容未变化时不写库：Put 会经 GORM autoUpdateTime 刷新行的 updated_at，
+	// 既造成每次 TTL 校验一次的无效写放大，也让依赖 updated_at 的展示
+	// （发布时间回退链）跟着跳变。revalidate 节奏由 CachePolicy.MetadataTTL 驱动，
+	// 不依赖行更新时间；内存缓存仍在 loadArtifact 中照常刷新。
+	if !changed {
+		return nil
+	}
+	return n.MetadataStore.Put(WithSyncSource(ctx), artifact)
 }
 
 func (n *ProxyRuntime) BeginUpload(ctx context.Context, request UploadRequest) (UploadSession, error) {
@@ -1036,50 +1014,46 @@ func (n *ProxyRuntime) getCachedArtifact(key ArtifactKey) (*Artifact, bool) {
 	if n.CachePolicy.MetadataTTL <= 0 {
 		return nil, false
 	}
-	cacheKey := key.String()
-	n.metadataCacheMu.Lock()
-	defer n.metadataCacheMu.Unlock()
-	el, ok := n.metadataCache[cacheKey]
+	v, ok := n.metadataCacheOrInit().Get(&key)
 	if !ok {
 		return nil, false
 	}
-	entry := el.Value.(*cachedArtifactEntry)
-	if time.Now().After(entry.expiresAt) || entry.negative {
-		n.removeElementLocked(el)
-		return nil, false
-	}
-	// 命中后移到队尾（最近访问），LRU 淘汰时从队首删
-	n.metadataCacheLL.MoveToBack(el)
-	return entry.artifact, true
+	artifact, ok := v.(*Artifact)
+	return artifact, ok
 }
 
 func (n *ProxyRuntime) setCachedArtifact(key ArtifactKey, artifact *Artifact) {
 	if n.CachePolicy.MetadataTTL <= 0 || artifact == nil {
 		return
 	}
-	cacheKey := key.String()
-	entry := &cachedArtifactEntry{
-		key:       key,
-		artifact:  cloneArtifactForCache(artifact),
-		expiresAt: time.Now().Add(n.CachePolicy.MetadataTTL),
-	}
-	n.metadataCacheMu.Lock()
-	defer n.metadataCacheMu.Unlock()
-	if n.metadataCache == nil {
-		n.metadataCache = map[string]*list.Element{}
-		n.metadataCacheLL = list.New()
-	}
-	if el, ok := n.metadataCache[cacheKey]; ok {
-		el.Value = entry
-		n.metadataCacheLL.MoveToBack(el)
-		return
-	}
-	el := n.metadataCacheLL.PushBack(entry)
-	n.metadataCache[cacheKey] = el
-	// 超过上限时淘汰队首（最久未访问），O(1)
-	for n.metadataCacheLL.Len() > maxMetadataCacheSize {
-		n.removeOldestLocked()
-	}
+	n.metadataCacheOrInit().Set(&key, cloneArtifactForCache(artifact))
+}
+
+// metadataCacheOrInit 惰性构造统一元数据缓存（正/负缓存共用 LRU）。
+// TTL 语义与旧手搓实现一致：MetadataTTL 为正缓存 TTL，NegativeTTL 为负缓存默认 TTL。
+func (n *ProxyRuntime) metadataCacheOrInit() *cache.MetadataCache {
+	n.metadataCacheInit.Do(func() {
+		n.metadataCache = cache.NewMetadataCache(n.CachePolicy.MetadataTTL, n.CachePolicy.NegativeTTL, proxyMetadataCacheSize)
+	})
+	return n.metadataCache
+}
+
+// metadataFailuresOrInit 惰性构造元数据失败退避缓存（KV+TTL，容量 LRU 淘汰）。
+func (n *ProxyRuntime) metadataFailuresOrInit() *cache.MemoryCache {
+	n.failuresInit.Do(func() {
+		n.metadataFailures = cache.NewMemoryCacheWithOptions(cache.MemoryCacheOptions{MaxItems: maxMetadataFailures})
+	})
+	return n.metadataFailures
+}
+
+// MetadataCache 暴露统一元数据缓存供 main.go 注册进 CacheManager（管理页可见/可清空）。
+func (n *ProxyRuntime) MetadataCache() *cache.MetadataCache {
+	return n.metadataCacheOrInit()
+}
+
+// FailureCache 暴露失败退避缓存供 main.go 注册进 CacheManager。
+func (n *ProxyRuntime) FailureCache() *cache.MemoryCache {
+	return n.metadataFailuresOrInit()
 }
 
 func cloneArtifactForCache(artifact *Artifact) *Artifact {
@@ -1110,64 +1084,14 @@ func cloneArtifactForResponse(artifact *Artifact) *Artifact {
 }
 
 func (n *ProxyRuntime) invalidateCachedArtifact(key ArtifactKey) {
-	cacheKey := key.String()
-	n.metadataCacheMu.Lock()
-	defer n.metadataCacheMu.Unlock()
-	if el, ok := n.metadataCache[cacheKey]; ok {
-		n.removeElementLocked(el)
-	}
-}
-
-// removeOldestLocked 删除队首元素（最久未访问），O(1)。
-// 调用方必须持有 metadataCacheMu 写锁。
-func (n *ProxyRuntime) removeOldestLocked() {
-	if n.metadataCacheLL == nil {
-		return
-	}
-	el := n.metadataCacheLL.Front()
-	if el == nil {
-		return
-	}
-	n.removeElementLocked(el)
-}
-
-// removeElementLocked 从 map 和链表中同步移除元素，O(1)。
-// 调用方必须持有 metadataCacheMu 写锁。
-func (n *ProxyRuntime) removeElementLocked(el *list.Element) {
-	entry := el.Value.(*cachedArtifactEntry)
-	delete(n.metadataCache, entry.key.String())
-	n.metadataCacheLL.Remove(el)
-}
-
-// evictOldestEntries 淘汰 count 个条目。
-// LRU 实现下从队首删除，O(count)。
-// 调用方必须持有 metadataCacheMu 写锁。
-func (n *ProxyRuntime) evictOldestEntries(count int) {
-	if count <= 0 || n.metadataCacheLL == nil {
-		return
-	}
-	for i := 0; i < count && n.metadataCacheLL.Len() > 0; i++ {
-		n.removeOldestLocked()
-	}
+	n.metadataCacheOrInit().Invalidate(&key)
 }
 
 func (n *ProxyRuntime) isNegativeCached(key ArtifactKey) bool {
 	if n.CachePolicy.NegativeTTL <= 0 {
 		return false
 	}
-	n.metadataCacheMu.RLock()
-	expiresAt, ok := n.negativeCache[key.String()]
-	n.metadataCacheMu.RUnlock()
-	if !ok {
-		return false
-	}
-	if time.Now().After(expiresAt) {
-		n.metadataCacheMu.Lock()
-		delete(n.negativeCache, key.String())
-		n.metadataCacheMu.Unlock()
-		return false
-	}
-	return true
+	return n.metadataCacheOrInit().IsNegative(&key)
 }
 
 func (n *ProxyRuntime) tryRefreshPath(remotePath string) bool {
@@ -1203,43 +1127,7 @@ func (n *ProxyRuntime) setNegativeCacheWithTTL(key ArtifactKey, failureTTL time.
 	if failureTTL <= 0 {
 		return
 	}
-	n.metadataCacheMu.Lock()
-	if n.negativeCache == nil {
-		n.negativeCache = map[string]time.Time{}
-	}
-	if len(n.negativeCache) >= maxNegativeCacheSize {
-		n.evictNegativeCache(maxNegativeCacheSize / 4)
-	}
-	n.negativeCache[key.String()] = time.Now().Add(failureTTL)
-	n.metadataCacheMu.Unlock()
-}
-
-func (n *ProxyRuntime) evictNegativeCache(count int) {
-	if count <= 0 {
-		return
-	}
-	oldest := make([]string, 0, count)
-	for k, v := range n.negativeCache {
-		if len(oldest) < count {
-			oldest = append(oldest, k)
-			continue
-		}
-		// 找到当前 oldest 中过期最晚的条目替换
-		maxIdx := 0
-		maxTime := n.negativeCache[oldest[0]]
-		for i := 1; i < len(oldest); i++ {
-			if t := n.negativeCache[oldest[i]]; t.After(maxTime) {
-				maxTime = t
-				maxIdx = i
-			}
-		}
-		if v.Before(maxTime) {
-			oldest[maxIdx] = k
-		}
-	}
-	for _, k := range oldest {
-		delete(n.negativeCache, k)
-	}
+	n.metadataCacheOrInit().SetNegativeWithTTL(&key, failureTTL)
 }
 
 // clearNegativeCacheForArtifact 根据 artifact 的各个可能的查询 key 清除负缓存。
@@ -1248,12 +1136,10 @@ func (n *ProxyRuntime) clearNegativeCacheForArtifact(a *Artifact) {
 	if n.CachePolicy.NegativeTTL <= 0 {
 		return
 	}
-	keys := n.buildNegativeCacheKeys(a)
-	n.metadataCacheMu.Lock()
-	for _, k := range keys {
-		delete(n.negativeCache, k)
+	mc := n.metadataCacheOrInit()
+	for _, k := range n.buildNegativeCacheKeys(a) {
+		mc.DeleteNegativeByKey(k)
 	}
-	n.metadataCacheMu.Unlock()
 }
 
 // buildNegativeCacheKeys 生成 artifact 可能被查询到的所有 key 字符串。
@@ -1438,13 +1324,12 @@ func hasArtifactChanged(old, new *Artifact) bool {
 	return true
 }
 
-// WarmUp 在熔断器恢复后预热内存缓存：遍历 metadataCache，对每个过期条目
+// WarmUp 在熔断器恢复后预热内存缓存：遍历统一元数据缓存，对每个过期条目
 // 异步触发 refreshStaleMetadata，使后续请求命中缓存而非重新回源。
 func (n *ProxyRuntime) WarmUp() {
-	if n.CachePolicy.MetadataTTL <= 0 {
+	if n.CachePolicy.MetadataTTL <= 0 || n.metadataCache == nil {
 		return
 	}
-	n.metadataCacheMu.Lock()
 	now := time.Now()
 	type entry struct {
 		key   ArtifactKey
@@ -1452,23 +1337,25 @@ func (n *ProxyRuntime) WarmUp() {
 		stale bool
 	}
 	var staleEntries []entry
-	for _, el := range n.metadataCache {
-		e := el.Value.(*cachedArtifactEntry)
-		if now.After(e.expiresAt) || e.negative {
+	for _, item := range n.metadataCache.Items() {
+		if item.IsNegative {
+			continue
+		}
+		art, ok := item.Value.(*Artifact)
+		if !ok || art == nil {
 			continue
 		}
 		// 检查是否过期（距上次更新超过 TTL 的一半）
-		if now.Sub(e.artifact.UpdatedAt) > n.CachePolicy.MetadataTTL/2 {
-			staleEntries = append(staleEntries, entry{key: e.key, art: e.artifact, stale: true})
+		if now.Sub(art.UpdatedAt) > n.CachePolicy.MetadataTTL/2 {
+			staleEntries = append(staleEntries, entry{key: *item.CacheKey.(*ArtifactKey), art: art, stale: true})
 		}
 	}
-	n.metadataCacheMu.Unlock()
 
 	if len(staleEntries) == 0 {
 		return
 	}
 	logrus.WithFields(logrus.Fields{
-		"repo_id":  n.RepositoryID,
+		"repo_id":    n.RepositoryID,
 		"staleCount": len(staleEntries),
 	}).Info("proxy: warm-up triggered, refreshing stale metadata")
 

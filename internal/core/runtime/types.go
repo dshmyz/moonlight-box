@@ -273,6 +273,23 @@ func ClientIPFromContext(ctx context.Context) string {
 	return ""
 }
 
+// syncSourceCtxKey 标记本次 MetadataStore 写入来自代理同步（回源缓存/元数据刷新），而非用户上传。
+type syncSourceCtxKey struct{}
+
+// WithSyncSource 返回带"代理同步写入"标记的 ctx。代理写入路径必须打标，存储层据此：
+//  1. 跳过上传自动扫描（代理缓存不是"上传"，否则回源高峰会瞬间投递海量扫描）
+//  2. 对已存在制品的 published_at 属性保持 first-write-wins（上游 metadata 的
+//     lastUpdated——尤其 Maven——随任意重新部署变化，不能当作发布时间反复覆盖）
+func WithSyncSource(ctx context.Context) context.Context {
+	return context.WithValue(ctx, syncSourceCtxKey{}, true)
+}
+
+// IsSyncSource 判断 ctx 是否携带代理同步写入标记。
+func IsSyncSource(ctx context.Context) bool {
+	v, _ := ctx.Value(syncSourceCtxKey{}).(bool)
+	return v
+}
+
 type ArtifactKey struct {
 	RepositoryID string
 	Format       string

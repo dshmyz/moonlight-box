@@ -430,6 +430,11 @@ func (s *AIService) GetCacheStats() *CacheStats {
 	return s.cache.GetStats()
 }
 
+// GetResponseCache 暴露响应缓存供 main.go 注册进 CacheManager；缓存未启用时返回 nil。
+func (s *AIService) GetResponseCache() *ResponseCache {
+	return s.cache
+}
+
 // GetAuditLogs 获取最近审计日志
 func (s *AIService) GetAuditLogs(limit int) []AuditEntry {
 	return s.toolManager.GetAuditLogs(limit)

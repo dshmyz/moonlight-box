@@ -1,19 +1,15 @@
 package cache
 
 import (
-	"context"
 	"testing"
 	"time"
-
-	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 )
 
 func TestMetadataCacheSetNegativeCountsTowardMaxSize(t *testing.T) {
-	cache := NewMetadataCache(time.Hour, 1)
-	ctx := context.Background()
+	cache := NewMetadataCache(time.Hour, 0, 1)
 
-	cache.SetNegative(ctx, &runtime.ArtifactKey{RepositoryID: "1", Format: "npm", Name: "missing-a"})
-	cache.SetNegative(ctx, &runtime.ArtifactKey{RepositoryID: "1", Format: "npm", Name: "missing-b"})
+	cache.SetNegative(testKey{"npm:missing-a"})
+	cache.SetNegative(testKey{"npm:missing-b"})
 
 	if got := countMetadataCacheEntries(cache); got != 1 {
 		t.Fatalf("entry count = %d, want 1", got)

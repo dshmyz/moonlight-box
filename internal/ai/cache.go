@@ -1,32 +1,21 @@
 package ai
 
 import (
-	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
-	"sync"
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/config"
+	corecache "github.com/dshmyz/moonlight-box/internal/core/cache"
 )
 
-// ResponseCache 响应缓存，用于缓存相似问题的答案
+// ResponseCache 响应缓存，用于缓存相似问题的答案。
+// 统一走 core/cache.MemoryCache（TTL + LRU 容量淘汰 + 后台清理），
+// 本结构仅保留协议化的 Get/Set/Stats 接口与查询规范化/哈希逻辑。
 type ResponseCache struct {
-	entries   map[string]*cacheEntry
-	lruList   *list.List
-	lruIndex  map[string]*list.Element
-	mu        sync.RWMutex
-	maxSize   int
-	ttl       time.Duration
-	stopClean chan struct{}
-	stopOnce  sync.Once
-}
-
-// cacheEntry 缓存条目
-type cacheEntry struct {
-	query     string
-	response  string
-	createdAt time.Time
+	mc      *corecache.MemoryCache
+	maxSize int
+	ttl     time.Duration
 }
 
 // CacheStats 缓存统计信息
@@ -38,128 +27,45 @@ type CacheStats struct {
 
 // NewResponseCache 创建一个新的响应缓存
 func NewResponseCache(cfg *config.AICacheConfig) *ResponseCache {
-	rc := &ResponseCache{
-		entries:   make(map[string]*cacheEntry),
-		lruList:   list.New(),
-		lruIndex:  make(map[string]*list.Element),
-		maxSize:   cfg.MaxSize,
-		ttl:       cfg.TTL,
-		stopClean: make(chan struct{}),
+	return &ResponseCache{
+		mc:      corecache.NewMemoryCacheWithOptions(corecache.MemoryCacheOptions{MaxItems: cfg.MaxSize}),
+		maxSize: cfg.MaxSize,
+		ttl:     cfg.TTL,
 	}
+}
 
-	// 启动定期清理协程
-	go rc.cleanupLoop()
-
-	return rc
+// Cache 暴露底层缓存供 main.go 注册进 CacheManager（管理页可见/可清空）。
+func (rc *ResponseCache) Cache() *corecache.MemoryCache {
+	return rc.mc
 }
 
 // Get 获取缓存的响应
 func (rc *ResponseCache) Get(query string) (string, bool) {
-	key := rc.hashQuery(query)
-
-	rc.mu.RLock()
-	entry, exists := rc.entries[key]
-	rc.mu.RUnlock()
-
-	if !exists {
+	v, ok := rc.mc.Get(rc.hashQuery(query))
+	if !ok {
 		return "", false
 	}
-
-	// 检查是否过期
-	if time.Since(entry.createdAt) > rc.ttl {
-		rc.mu.Lock()
-		delete(rc.entries, key)
-		if elem, ok := rc.lruIndex[key]; ok {
-			rc.lruList.Remove(elem)
-			delete(rc.lruIndex, key)
-		}
-		rc.mu.Unlock()
-		return "", false
-	}
-
-	// 更新LRU
-	rc.mu.Lock()
-	if elem, ok := rc.lruIndex[key]; ok {
-		rc.lruList.MoveToFront(elem)
-	}
-	rc.mu.Unlock()
-
-	return entry.response, true
+	response, ok := v.(string)
+	return response, ok
 }
 
 // Set 设置缓存
 func (rc *ResponseCache) Set(query, response string) {
-	key := rc.hashQuery(query)
-
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-
-	// 如果已存在，更新
-	if entry, exists := rc.entries[key]; exists {
-		entry.response = response
-		entry.createdAt = time.Now()
-		if elem, ok := rc.lruIndex[key]; ok {
-			rc.lruList.MoveToFront(elem)
-		}
-		return
-	}
-
-	// 检查是否需要淘汰
-	if rc.maxSize > 0 && len(rc.entries) >= rc.maxSize {
-		rc.evict()
-	}
-
-	// 添加新条目
-	entry := &cacheEntry{
-		query:     query,
-		response:  response,
-		createdAt: time.Now(),
-	}
-	rc.entries[key] = entry
-	elem := rc.lruList.PushFront(key)
-	rc.lruIndex[key] = elem
+	rc.mc.Set(rc.hashQuery(query), response, rc.ttl)
 }
 
 // Clear 清空缓存
 func (rc *ResponseCache) Clear() {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-
-	rc.entries = make(map[string]*cacheEntry)
-	rc.lruList = list.New()
-	rc.lruIndex = make(map[string]*list.Element)
+	rc.mc.Clear()
 }
 
 // GetStats 获取缓存统计信息
 func (rc *ResponseCache) GetStats() *CacheStats {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
-
 	return &CacheStats{
-		TotalEntries:    len(rc.entries),
+		TotalEntries:    rc.mc.Count(),
 		MaxSize:         rc.maxSize,
 		TTLMilliseconds: rc.ttl.Milliseconds(),
 	}
-}
-
-// evict 淘汰最久未使用的条目
-func (rc *ResponseCache) evict() {
-	if rc.lruList.Len() == 0 {
-		return
-	}
-
-	// 获取最久未使用的key
-	elem := rc.lruList.Back()
-	if elem == nil {
-		return
-	}
-
-	key := elem.Value.(string)
-
-	// 删除条目
-	delete(rc.entries, key)
-	rc.lruList.Remove(elem)
-	delete(rc.lruIndex, key)
 }
 
 // hashQuery 对查询进行哈希，生成缓存key
@@ -199,41 +105,7 @@ func normalizeQuery(query string) string {
 	return string(result)
 }
 
-// cleanupLoop 定期清理过期条目
-func (rc *ResponseCache) cleanupLoop() {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			rc.cleanupExpired()
-		case <-rc.stopClean:
-			return
-		}
-	}
-}
-
-// cleanupExpired 清理过期条目
-func (rc *ResponseCache) cleanupExpired() {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-
-	now := time.Now()
-	for key, entry := range rc.entries {
-		if now.Sub(entry.createdAt) > rc.ttl {
-			delete(rc.entries, key)
-			if elem, ok := rc.lruIndex[key]; ok {
-				rc.lruList.Remove(elem)
-				delete(rc.lruIndex, key)
-			}
-		}
-	}
-}
-
-// Stop 停止缓存
+// Stop 停止缓存（后台清理协程随 MemoryCache 一并退出）
 func (rc *ResponseCache) Stop() {
-	rc.stopOnce.Do(func() {
-		close(rc.stopClean)
-	})
+	rc.mc.Stop()
 }

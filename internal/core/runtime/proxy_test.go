@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -249,45 +248,6 @@ func TestProxyRuntimePreservesRemoteCacheValidatorsOnFetch(t *testing.T) {
 	if !store.artifact.UpdatedAt.Equal(modified) {
 		t.Fatalf("stored UpdatedAt = %s, want upstream Last-Modified %s", store.artifact.UpdatedAt, modified)
 	}
-}
-
-func TestProxyRuntimeEvictOldestEntriesDoesNotSortWholeCache(t *testing.T) {
-	source, err := os.ReadFile("proxy.go")
-	if err != nil {
-		t.Fatalf("read proxy source: %v", err)
-	}
-	body := extractRuntimeFunctionBodyForTest(string(source), "func (n *ProxyRuntime) evictOldestEntries")
-	if body == "" {
-		t.Fatal("ProxyRuntime.evictOldestEntries source not found")
-	}
-	if strings.Contains(body, "sort.Slice") {
-		t.Fatal("evictOldestEntries should avoid sorting the whole metadata cache while holding the write lock")
-	}
-}
-
-func extractRuntimeFunctionBodyForTest(source, signature string) string {
-	start := strings.Index(source, signature)
-	if start < 0 {
-		return ""
-	}
-	open := strings.Index(source[start:], "{")
-	if open < 0 {
-		return ""
-	}
-	pos := start + open
-	depth := 0
-	for i := pos; i < len(source); i++ {
-		switch source[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return source[pos : i+1]
-			}
-		}
-	}
-	return ""
 }
 
 func TestProxyRuntimeCachedArtifactOpensBlobEachRequest(t *testing.T) {
@@ -820,9 +780,9 @@ func TestNegativeCacheDoesNotGrowWithoutBound(t *testing.T) {
 			t.Fatalf("expected ErrNotFound for request %d, got %v", i, err)
 		}
 	}
-	// 负缓存应该有上限
-	if len(rt.negativeCache) > maxNegativeCacheSize {
-		t.Fatalf("negativeCache grew to %d, exceeds limit %d", len(rt.negativeCache), maxNegativeCacheSize)
+	// 负缓存与正缓存共用统一 LRU，总量受 maxMetadataCacheSize+maxNegativeCacheSize 约束
+	if got := rt.metadataCacheOrInit().Len(); got > proxyMetadataCacheSize {
+		t.Fatalf("metadata cache grew to %d, exceeds limit %d", got, proxyMetadataCacheSize)
 	}
 }
 
@@ -833,10 +793,9 @@ func TestMetadataFailuresDoesNotGrowWithoutBound(t *testing.T) {
 	for i := 0; i < maxMetadataFailures+200; i++ {
 		rt.cacheMetadataFailure(fmt.Sprintf("pkg-%d:1.0", i))
 	}
-	rt.metadataFailureMu.Lock()
-	defer rt.metadataFailureMu.Unlock()
-	if len(rt.metadataFailures) > maxMetadataFailures {
-		t.Fatalf("metadataFailures grew to %d, exceeds limit %d", len(rt.metadataFailures), maxMetadataFailures)
+	// 容量由 MemoryCache 的 LRU 淘汰兜底（构造时 MaxItems=maxMetadataFailures）
+	if got := rt.metadataFailuresOrInit().Count(); got > maxMetadataFailures {
+		t.Fatalf("metadataFailures grew to %d, exceeds limit %d", got, maxMetadataFailures)
 	}
 }
 
@@ -1967,9 +1926,9 @@ func (s *fakeMultiMetadataStore) Query(ctx context.Context, query ArtifactQuery)
 // 仍只触发一次（去重不被破坏）。
 func TestQueryArtifactsWaiterReturnsOnOwnContextTimeout(t *testing.T) {
 	var (
-		mu        sync.Mutex
+		mu         sync.Mutex
 		fetchCount int
-		released  = make(chan struct{})
+		released   = make(chan struct{})
 	)
 	fetcher := &fakeFetcher{
 		fn: func() ([]*Artifact, error) {
@@ -2140,9 +2099,9 @@ func TestGetArtifactReturnsErrorWhenNoLocalBlob(t *testing.T) {
 	}
 
 	_, err := rt.GetArtifact(context.Background(), ArtifactKey{
-		Format:  "npm",
-		Name:    "pkg",
-		Version: "2.0.0",
+		Format:   "npm",
+		Name:     "pkg",
+		Version:  "2.0.0",
 		Filename: "pkg-2.0.0.tgz",
 	})
 	if err == nil {

@@ -15,8 +15,8 @@ import (
 // 比较函数须对任意长度、任意字节差异返回正确布尔，且内部应为恒定时间。
 func TestHashesEqualConstantTime(t *testing.T) {
 	a := sha256Raw([]byte("token-a-1234567890abcdef"))
-	b := sha256Raw([]byte("token-a-1234567890abcdef")) // same
-	c := sha256Raw([]byte("token-b-1234567890abcdef")) // differs in first bytes
+	b := sha256Raw([]byte("token-a-1234567890abcdef"))      // same
+	c := sha256Raw([]byte("token-b-1234567890abcdef"))      // differs in first bytes
 	d := append([]byte{1, 2, 3}, sha256Raw([]byte("x"))...) // length differs
 
 	if !hashesEqual(a, b) {
@@ -109,5 +109,59 @@ func TestValidateToken_CaseDiffers(t *testing.T) {
 
 	if _, err := svc.ValidateToken(forged); err == nil {
 		t.Fatal("ValidateToken(forged) = nil error, want error (必须完整哈希校验，不能只对前缀)")
+	}
+}
+
+// TestValidateToken_CacheAndThrottle 验证 API token 校验的三项优化：
+// 1) 校验结果缓存 TTL 内免查库；2) last_used_at 节流落库（窗口内不写）；
+// 3) 撤销 token 立即失效（缓存被清除）。
+func TestValidateToken_CacheAndThrottle(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&model.APIToken{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	svc := NewAPITokenService(repository.NewAPITokenRepository(db))
+	raw, info, err := svc.CreateToken(1, "ci", nil)
+	if err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+
+	// 1) 首次校验：LastUsed 为空 → 应落库
+	if _, err := svc.ValidateToken(raw); err != nil {
+		t.Fatalf("first validate: %v", err)
+	}
+	var row model.APIToken
+	if err := db.First(&row, info.ID).Error; err != nil {
+		t.Fatalf("load token: %v", err)
+	}
+	if row.LastUsed == nil {
+		t.Fatal("首次校验应更新 last_used_at")
+	}
+
+	// 2) 节流：1 分钟前刚写过（节流窗口 5min 内），清缓存强制走查库，不应再写
+	recent := time.Now().Add(-time.Minute)
+	if err := db.Model(&model.APIToken{}).Where("id = ?", info.ID).Update("last_used", recent).Error; err != nil {
+		t.Fatalf("seed last_used: %v", err)
+	}
+	svc.cache.Clear()
+	if _, err := svc.ValidateToken(raw); err != nil {
+		t.Fatalf("second validate: %v", err)
+	}
+	if err := db.First(&row, info.ID).Error; err != nil {
+		t.Fatalf("reload token: %v", err)
+	}
+	if row.LastUsed == nil || row.LastUsed.Sub(recent) >= 30*time.Second {
+		t.Fatalf("last_used_at 节流失效：落库时间被刷新为 %v（seed=%v）", row.LastUsed, recent)
+	}
+
+	// 3) 撤销即失效：缓存仍热，但 DeleteToken 后必须校验失败
+	if err := svc.DeleteToken(info.ID, 1); err != nil {
+		t.Fatalf("delete token: %v", err)
+	}
+	if _, err := svc.ValidateToken(raw); err == nil {
+		t.Fatal("撤销后 ValidateToken = nil error, want error（缓存应立即失效）")
 	}
 }
