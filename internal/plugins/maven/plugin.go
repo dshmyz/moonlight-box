@@ -340,6 +340,11 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 				"extension": sv.Extension,
 				"updated":   sv.Updated,
 			}
+			// published_at 取该构建的 updated（与文件名 timestamp 同源），
+			// 而非 metadata 的 lastUpdated——后者随上游重新部署变化，不是发布时间。
+			if t, err := parseMavenLastUpdated(sv.Updated); err == nil {
+				props["published_at"] = t.UTC().Format(time.RFC3339)
+			}
 			artifacts = append(artifacts, runtime.NewArtifact(runtime.ArtifactSpec{
 				Format:     "maven",
 				Kind:       runtime.KindArtifact,
@@ -351,6 +356,7 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 				RemotePath: basePath + "/" + filename,
 				Extension:  "." + strings.TrimPrefix(sv.Extension, "."),
 				Qualifiers: qualifiers,
+				Attributes: props,
 				Properties: props,
 			}))
 		}
@@ -426,6 +432,24 @@ func (p *MavenPlugin) ClassifyFileType(filename string) string {
 	return "other"
 }
 
+// snapshotFilenamePublishedAt 从 SNAPSHOT 时间戳文件名（lib-1.0-20260604.090000-2.jar）
+// 解析构建时间，返回 UTC RFC3339；非 SNAPSHOT 版本、无时间戳文件名或解析失败返回 ""。
+// 上传与代理回源共用，保证 local/proxy 的发布时间来源一致。
+func snapshotFilenamePublishedAt(artifact, version, filename string) string {
+	if version == "" || !strings.Contains(version, "-SNAPSHOT") || artifact == "" {
+		return ""
+	}
+	info, ok := parseSnapshotFileInfo(artifact, version, filename)
+	if !ok {
+		return ""
+	}
+	t, err := time.Parse("20060102.150405", info.timestamp)
+	if err != nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
 func (p *MavenPlugin) NormalizeAsset(ctx context.Context, input runtime.NormalizeInput) (*runtime.Artifact, error) {
 	path := strings.Trim(input.RemotePath, "/")
 	var key runtime.ArtifactKey
@@ -437,6 +461,17 @@ func (p *MavenPlugin) NormalizeAsset(ctx context.Context, input runtime.Normaliz
 	}
 	if err != nil {
 		return nil, err
+	}
+	attributes := input.Attributes
+	// 时间戳快照文件名（lib-1.0-20260604.090000-2.jar）携带真实构建时间，
+	// 解析进 published_at 供版本聚合取最新构建时间；无时间戳时不写。
+	if t := snapshotFilenamePublishedAt(key.Qualifiers["artifact"], key.Version, key.Filename); t != "" {
+		if attributes == nil {
+			attributes = map[string]string{}
+		}
+		if _, exists := attributes["published_at"]; !exists {
+			attributes["published_at"] = t
+		}
 	}
 	return runtime.NewArtifact(runtime.ArtifactSpec{
 		RepositoryID: input.RepositoryID,
@@ -453,7 +488,7 @@ func (p *MavenPlugin) NormalizeAsset(ctx context.Context, input runtime.Normaliz
 		SizeBytes:    input.SizeBytes,
 		Checksums:    input.Checksums,
 		Qualifiers:   key.Qualifiers,
-		Attributes:   input.Attributes,
+		Attributes:   attributes,
 		BlobRefs:     input.BlobRefs,
 	}), nil
 }
@@ -1557,6 +1592,10 @@ func (p *MavenPlugin) handleUpload(ctx *runtime.RequestContext, repoRuntime runt
 	kind := key.Kind
 	if kind == "" {
 		kind = runtime.KindArtifact
+	}
+	// 时间戳快照文件名携带真实构建时间，写入 published_at 供版本聚合取最新构建时间。
+	if t := snapshotFilenamePublishedAt(key.Qualifiers["artifact"], key.Version, key.Filename); t != "" && attributes != nil {
+		attributes["published_at"] = t
 	}
 	artifact := runtime.NewArtifact(runtime.ArtifactSpec{
 		RepositoryID: ctx.Repository.ID,

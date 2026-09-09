@@ -1361,6 +1361,10 @@ func (s *ArtifactService) recalcPackageVersionSummary(tx *gorm.DB, repoID uint, 
 		}
 		summary.FileCount++
 	}
+	// published_at 优先取文件行（真实制品）attributes.published_at 的最大值——
+	// 对 SNAPSHOT 即最新一次构建时间，新构建出现时随之前进；metadata 行
+	// （如代理同步的版本记录）仅作无文件行时的回退，避免覆盖真实构建时间。
+	var filePublished, metaPublished *time.Time
 	for _, artifact := range artifacts {
 		if summary.Namespace == "" {
 			summary.Namespace = artifact.Namespace
@@ -1378,11 +1382,21 @@ func (s *ArtifactService) recalcPackageVersionSummary(tx *gorm.DB, repoID uint, 
 		if summary.License == "" {
 			summary.License = extractJSONBString(artifact.Attributes, "license")
 		}
-		if summary.PublishedAt == nil {
-			if published := parseRFC3339Ptr(extractJSONBString(artifact.Attributes, "published_at")); published != nil {
-				summary.PublishedAt = published
-			}
+		published := parseRFC3339Ptr(extractJSONBString(artifact.Attributes, "published_at"))
+		if published == nil {
+			continue
 		}
+		if runtime.IsCountableFileKind(artifact.Kind) {
+			if filePublished == nil || published.After(*filePublished) {
+				filePublished = published
+			}
+		} else if metaPublished == nil {
+			metaPublished = published
+		}
+	}
+	summary.PublishedAt = filePublished
+	if summary.PublishedAt == nil {
+		summary.PublishedAt = metaPublished
 	}
 	if summary.CreatedAt.IsZero() {
 		summary.CreatedAt = time.Now()
