@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
+	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/sirupsen/logrus"
 )
 
@@ -246,6 +248,16 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	clientIP := getRealClientIP(req)
+
+	// 浏览器直接访问仓库根路径 → 302 跳转前端仓库详情页（/repo/{name}）。
+	// 包管理客户端（go/npm/pip 等）按协议只请求具体资源路径，从不请求根路径，
+	// 且 Accept 不含 text/html，继续走协议插件按协议语义响应（未知路径 404）。
+	// 分流只看"剩余路径 + Accept"，不解析协议语义，不涉及插件/runtime 分层。
+	if isBrowserRepoRootRequest(resolved.RemainingPath, req) {
+		http.Redirect(w, req, "/repo/"+url.PathEscape(repo.Name), http.StatusFound)
+		return
+	}
+
 	rec := &statusRecorder{ResponseWriter: w}
 	ctx := &RequestContext{
 		Writer:         rec,
@@ -282,7 +294,9 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// 下载日志（替代 AuditLog 记录下载操作）
-	if r.ProxyLog != nil {
+	// 本地仓库的 404 是正常"未命中"（客户端探测/扫描器探包），不写日志库，
+	// 避免噪声把 failed 统计刷爆、并给日志表注入高并发写请求。
+	if r.ProxyLog != nil && !(repo.Type == string(model.RepoTypeLocal) && statusCode == http.StatusNotFound) {
 		r.ProxyLog.LogDownload(DownloadLogParams{
 			RepoID:      repoID,
 			PackageType: repo.Format,
@@ -298,6 +312,18 @@ func (r *RepositoryRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			RequestID:   req.Header.Get("X-Request-ID"),
 		})
 	}
+}
+
+// isBrowserRepoRootRequest 浏览器直接访问仓库根路径（如 /repository/go）：
+// GET + Accept 含 text/html 且剩余路径为空（或仅剩 /）。
+func isBrowserRepoRootRequest(remainingPath string, req *http.Request) bool {
+	if req.Method != http.MethodGet {
+		return false
+	}
+	if remainingPath != "" && remainingPath != "/" {
+		return false
+	}
+	return strings.Contains(req.Header.Get("Accept"), "text/html")
 }
 
 func NewRepositoryRouter(resolver RepositoryPathResolver, manager RepositoryManager) *RepositoryRouter {

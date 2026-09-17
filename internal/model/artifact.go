@@ -11,7 +11,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// JSONB 用于 PostgreSQL JSONB 类型
+// JSONB JSON 对象列（SQLite TEXT / MySQL JSON / PostgreSQL JSON）。
+// 列类型统一用 type:json：jsonb 仅 PostgreSQL 认识，MySQL AutoMigrate 会生成非法 DDL。
 type JSONB map[string]interface{}
 
 // Value 实现 driver.Valuer 接口
@@ -89,10 +90,10 @@ type Artifact struct {
 	Extension   string    `gorm:"size:64" json:"extension,omitempty"`
 	ContentType string    `gorm:"size:255" json:"content_type,omitempty"`
 	SizeBytes   int64     `gorm:"not null;default:0" json:"size_bytes"`
-	Checksums   JSONB     `gorm:"type:jsonb" json:"checksums,omitempty"`
-	Qualifiers  JSONB     `gorm:"type:jsonb" json:"qualifiers,omitempty"`
-	Attributes  JSONB     `gorm:"type:jsonb" json:"attributes,omitempty"`
-	Metadata    JSONB     `gorm:"type:jsonb" json:"metadata,omitempty"`
+	Checksums   JSONB     `gorm:"type:json" json:"checksums,omitempty"`
+	Qualifiers  JSONB     `gorm:"type:json" json:"qualifiers,omitempty"`
+	Attributes  JSONB     `gorm:"type:json" json:"attributes,omitempty"`
+	Metadata    JSONB     `gorm:"type:json" json:"metadata,omitempty"`
 	CreatedAt   time.Time `gorm:"autoCreateTime;not null" json:"created_at"`
 	UpdatedAt   time.Time `gorm:"autoUpdateTime;not null" json:"updated_at"`
 }

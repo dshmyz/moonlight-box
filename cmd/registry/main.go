@@ -391,7 +391,9 @@ func main() {
 	// 系统配置缓存（统一走 core/cache）
 	cacheMgr.Register(cache.NewMemoryCacheProvider("system-config", "memory", "系统配置缓存（TTL 5min）", systemConfigSvc.ConfigCache()))
 
-	// 代理仓库元数据缓存（统一走 core/cache，按仓库注册；LRU+TTL，含负缓存）
+	// 代理仓库元数据缓存（统一走 core/cache，按仓库注册；LRU+TTL）
+	// 仅注册正缓存：负缓存（回源 404 判空）独立实例、不进管理页，
+	// 清空管理页缓存不会驱逐 404 判空条目（其随 NegativeTTL 自然过期）。
 	if proxyRepos, err := repoRepo.List(map[string]interface{}{"type": model.RepoTypeProxy}); err == nil {
 		for _, repo := range proxyRepos {
 			r := repoManager.Get(repo.Name)
@@ -400,7 +402,7 @@ func main() {
 			}
 			if pr, ok := r.Runtime.(*runtime.ProxyRuntime); ok {
 				cacheMgr.Register(cache.NewMetadataCacheProvider(
-					"proxy-metadata:"+repo.Name, "memory", "代理元数据缓存（LRU+TTL，含负缓存）", pr.MetadataCache()))
+					"proxy-metadata:"+repo.Name, "memory", "代理元数据缓存（LRU+TTL）", pr.MetadataCache()))
 			}
 		}
 	} else {

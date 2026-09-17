@@ -417,13 +417,12 @@ func TestHandle_Latest_MethodNotAllowed(t *testing.T) {
 	p := NewGoPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
-	ctx, _ := newCtx("POST", "github.com/example/mod/@latest", nil)
-	err := p.Handle(ctx, rt)
-	if err == nil {
-		t.Fatal("expected error for POST method")
+	ctx, w := newCtx("POST", "github.com/example/mod/@latest", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle err = %v, want nil (405 written directly)", err)
 	}
-	if !strings.Contains(err.Error(), "method not allowed") {
-		t.Errorf("expected 'method not allowed', got: %v", err)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", w.Code)
 	}
 }
 
@@ -495,13 +494,12 @@ func TestHandle_VersionList_MethodNotAllowed(t *testing.T) {
 	p := NewGoPlugin(http.DefaultClient)
 	rt := &testhelper.MockRuntime{}
 
-	ctx, _ := newCtx("POST", "github.com/example/mod/@v/list", nil)
-	err := p.Handle(ctx, rt)
-	if err == nil {
-		t.Fatal("expected error for POST method")
+	ctx, w := newCtx("POST", "github.com/example/mod/@v/list", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle err = %v, want nil (405 written directly)", err)
 	}
-	if !strings.Contains(err.Error(), "method not allowed") {
-		t.Errorf("expected 'method not allowed', got: %v", err)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", w.Code)
 	}
 }
 
@@ -705,12 +703,14 @@ func TestHandle_ModuleDownloadMissQueriesRemotePathBeforeRetry(t *testing.T) {
 type goQueryThenGetRuntime struct {
 	artifact   *runtime.Artifact
 	getCalls   int
+	getKeys    []runtime.ArtifactKey
 	queryCalls []runtime.ArtifactQuery
 	queried    bool
 }
 
 func (r *goQueryThenGetRuntime) GetArtifact(ctx context.Context, key runtime.ArtifactKey) (*runtime.Artifact, error) {
 	r.getCalls++
+	r.getKeys = append(r.getKeys, key)
 	if !r.queried {
 		return nil, runtime.ErrNotFound
 	}
@@ -984,5 +984,216 @@ func TestHandle_ModuleDownloadGetBlockedPropagatesErrBlocked(t *testing.T) {
 	err := p.Handle(ctx, rt)
 	if !errors.Is(err, runtime.ErrBlocked) {
 		t.Fatalf("Handle err = %v, want ErrBlocked (must propagate to router for audit log)", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 未知路径：仓库根路径等非协议形态的路径必须 404（ErrNotFound），
+// 不能返回裸 error——路由层会把未识别错误兜底成 500。
+// ---------------------------------------------------------------------------
+
+func TestHandle_UnknownPathReturnsNotFound(t *testing.T) {
+	p := NewGoPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	for _, path := range []string{"", "/"} {
+		ctx, w := newCtx("GET", path, nil)
+		err := p.Handle(ctx, rt)
+		if !errors.Is(err, runtime.ErrNotFound) {
+			t.Errorf("path %q: Handle err = %v, want ErrNotFound (404)", path, err)
+		}
+		if w.Code == http.StatusInternalServerError {
+			t.Errorf("path %q: must not write 500", path)
+		}
+	}
+}
+
+// 已识别路径上的不支持方法：必须直接写 405 响应并 return nil。
+func TestHandle_UnsupportedMethodWrites405(t *testing.T) {
+	p := NewGoPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{}
+
+	ctx, w := newCtx("POST", "github.com/gin-gonic/gin/@latest", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle err = %v, want nil (response already written)", err)
+	}
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 大写 module path：Handle 必须把客户端原始的 !x 编码路径作为 RemotePath 透传给
+// Runtime。Runtime 的 buildRemoteURL 用 RemotePath 直接拼回源 URL，若传入解码后
+// 的大写路径，严格上游（proxy.golang.org 等）会以 400 拒绝，导致 go get 500。
+// Name/Path/Filename 等展示与匹配字段保持解码形式。
+// ---------------------------------------------------------------------------
+
+func TestHandle_ModuleDownload_PreservesEscapedRemotePath(t *testing.T) {
+	p := NewGoPlugin(http.DefaultClient)
+	rt := &goQueryThenGetRuntime{
+		artifact: testhelper.NewArtifact("go", "module-file", map[string]string{
+			"name":     "github.com/Microsoft/go-winio",
+			"module":   "github.com/Microsoft/go-winio",
+			"version":  "v0.6.2",
+			"path":     "github.com/Microsoft/go-winio/@v",
+			"ext":      "info",
+			"filename": "v0.6.2.info",
+		}, "{}"),
+	}
+
+	ctx, w := newCtx("GET", "github.com/!microsoft/go-winio/@v/v0.6.2.info", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.getKeys) == 0 {
+		t.Fatal("expected at least one GetArtifact call")
+	}
+	key := rt.getKeys[0]
+	if key.RemotePath != "github.com/!microsoft/go-winio/@v/v0.6.2.info" {
+		t.Errorf("RemotePath = %q, want client-original escaped form", key.RemotePath)
+	}
+	if key.Name != "github.com/Microsoft/go-winio" {
+		t.Errorf("Name = %q, want decoded form", key.Name)
+	}
+}
+
+func TestHandle_VersionList_PreservesEscapedRemotePath(t *testing.T) {
+	p := NewGoPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{
+		Artifacts: []*runtime.Artifact{
+			runtime.NewArtifact(runtime.ArtifactSpec{
+				Format: "go", Kind: runtime.KindVersion,
+				Name: "github.com/Microsoft/go-winio", Version: "v0.6.2",
+			}),
+		},
+	}
+	ctx, w := newCtx("GET", "github.com/!microsoft/go-winio/@v/list", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if len(rt.QueryCalls) != 1 {
+		t.Fatalf("expected 1 query call, got %d", len(rt.QueryCalls))
+	}
+	if rt.QueryCalls[0].RemotePath != "github.com/!microsoft/go-winio/@v/list" {
+		t.Errorf("RemotePath = %q, want client-original escaped form", rt.QueryCalls[0].RemotePath)
+	}
+	if rt.QueryCalls[0].Name != "github.com/Microsoft/go-winio" {
+		t.Errorf("Name = %q, want decoded form", rt.QueryCalls[0].Name)
+	}
+}
+
+func TestHandle_Latest_PreservesEscapedRemotePath(t *testing.T) {
+	p := NewGoPlugin(http.DefaultClient)
+	rt := &testhelper.MockRuntime{
+		Artifacts: []*runtime.Artifact{
+			runtime.NewArtifact(runtime.ArtifactSpec{
+				Format: "go", Kind: runtime.KindVersion,
+				Name: "github.com/Microsoft/go-winio", Version: "v0.6.2",
+				RemotePath: "github.com/!microsoft/go-winio/@latest",
+				Attributes: map[string]string{"published_at": "2024-04-09T20:07:04Z"},
+			}),
+		},
+	}
+	ctx, w := newCtx("GET", "github.com/!microsoft/go-winio/@latest", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.QueryCalls) != 1 {
+		t.Fatalf("expected 1 query call, got %d", len(rt.QueryCalls))
+	}
+	if rt.QueryCalls[0].RemotePath != "github.com/!microsoft/go-winio/@latest" {
+		t.Errorf("RemotePath = %q, want client-original escaped form", rt.QueryCalls[0].RemotePath)
+	}
+	if rt.QueryCalls[0].Name != "github.com/Microsoft/go-winio" {
+		t.Errorf("Name = %q, want decoded form", rt.QueryCalls[0].Name)
+	}
+}
+
+// FetchRemote 收到的 path 现在是客户端原始的 !x 编码形式（RemotePath 透传）：
+// 产物 Name/Path 必须解码，RemotePath 保持原样，DownloadURL 继续正确
+// （encodeGoPath 对已编码路径幂等）。
+func TestFetchRemote_EscapedPathProducesDecodedName(t *testing.T) {
+	p := NewGoPlugin(http.DefaultClient)
+	arts, err := p.FetchRemote(context.Background(), "https://up.test", "github.com/!microsoft/go-winio/@v/v0.6.2.info")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+	a := arts[0]
+	if a.Name != "github.com/Microsoft/go-winio" {
+		t.Errorf("Name = %q, want decoded form", a.Name)
+	}
+	if a.Path != "github.com/Microsoft/go-winio/@v" {
+		t.Errorf("Path = %q, want decoded form", a.Path)
+	}
+	if a.RemotePath != "github.com/!microsoft/go-winio/@v/v0.6.2.info" {
+		t.Errorf("RemotePath = %q, want escaped form", a.RemotePath)
+	}
+	if a.DownloadURL != "https://up.test/github.com/!microsoft/go-winio/@v/v0.6.2.info" {
+		t.Errorf("DownloadURL = %q", a.DownloadURL)
+	}
+}
+
+// identity 必须用解码路径构造：升级前存量行的 identity_key 基于解码 remote_path，
+// 若 identity 随透传的编码 RemotePath 漂移，老行无法命中、重新入库产生重复制品。
+func TestHandle_ModuleDownloadUsesDecodedIdentityKey(t *testing.T) {
+	p := NewGoPlugin(http.DefaultClient)
+	rt := &goQueryThenGetRuntime{
+		artifact: testhelper.NewArtifact("go", "module-file", map[string]string{
+			"name":     "github.com/Microsoft/go-winio",
+			"module":   "github.com/Microsoft/go-winio",
+			"version":  "v0.6.2",
+			"path":     "github.com/Microsoft/go-winio/@v",
+			"ext":      "info",
+			"filename": "v0.6.2.info",
+		}, "{}"),
+	}
+
+	ctx, w := newCtx("GET", "github.com/!microsoft/go-winio/@v/v0.6.2.info", nil)
+	if err := p.Handle(ctx, rt); err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", w.Code, w.Body.String())
+	}
+	if len(rt.getKeys) == 0 {
+		t.Fatal("expected at least one GetArtifact call")
+	}
+	key := rt.getKeys[0]
+	want := "file/github.com/Microsoft/go-winio/@v/v0.6.2.info"
+	if key.IdentityKey != want {
+		t.Errorf("IdentityKey = %q, want decoded stable form %q", key.IdentityKey, want)
+	}
+}
+
+func TestFetchRemote_ModuleFileStableIdentity(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	p := NewGoPlugin(http.DefaultClient)
+	arts, err := p.FetchRemote(context.Background(), srv.URL, "github.com/!microsoft/go-winio/@v/v0.6.2.info")
+	if err != nil {
+		t.Fatalf("FetchRemote failed: %v", err)
+	}
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(arts))
+	}
+	want := "file/github.com/Microsoft/go-winio/@v/v0.6.2.info"
+	if arts[0].IdentityKey != want {
+		t.Errorf("IdentityKey = %q, want decoded stable form %q", arts[0].IdentityKey, want)
 	}
 }

@@ -161,7 +161,7 @@ func (s *S3Storage) Exists(ctx context.Context, key string) (bool, error) {
 		Key:    aws.String(fullKey),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "404") {
+		if isBlobMissingErr(err) {
 			return false, nil
 		}
 		return false, err

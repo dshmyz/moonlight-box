@@ -22,9 +22,6 @@ const maxMetadataCacheSize = 10000 // 内存缓存上限，防止无限增长
 const maxNegativeCacheSize = 5000  // 负缓存上限，防止 DoS
 const maxMetadataFailures = 5000   // 元数据失败缓存上限，防止 DoS
 
-// proxyMetadataCacheSize 正/负缓存条目共用一个 LRU，总容量 = 两者上限之和。
-const proxyMetadataCacheSize = maxMetadataCacheSize + maxNegativeCacheSize
-
 // backgroundRefreshTimeout 限制异步刷新的最长执行时间，避免 FetchRemote 挂起导致
 // refreshingPaths 永不释放、该路径后续刷新全部失效以及 goroutine 泄漏。
 const backgroundRefreshTimeout = 30 * time.Second
@@ -52,11 +49,14 @@ type ProxyRuntime struct {
 	// 客户端断开而取消。
 	UpstreamTimeout time.Duration
 
-	// 统一缓存设施（internal/core/cache）：正/负缓存共用 MetadataCache（LRU+TTL，
-	// 负缓存独立 TTL），元数据失败退避走 MemoryCache。惰性构造（TTL 来自
-	// CachePolicy，测试常用 struct 字面量构造），sync.Once 保证只建一次。
+	// 统一缓存设施（internal/core/cache）：正缓存与负缓存分开两个独立 MetadataCache，
+	// 各自独立 LRU 上限，避免 404/失败条目大量涌入挤掉热门包的正缓存；元数据失败
+	// 退避走 MemoryCache。惰性构造（TTL 来自 CachePolicy，测试常用 struct 字面量
+	// 构造），sync.Once 保证只建一次。
 	metadataCacheInit sync.Once
 	metadataCache     *cache.MetadataCache
+	negativeCacheInit sync.Once
+	negativeCache     *cache.MetadataCache
 	failuresInit      sync.Once
 	metadataFailures  *cache.MemoryCache
 	fetchGroup        singleflight.Group
@@ -404,7 +404,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 			return nil, err
 		}
 		if err := n.openArtifactContent(ctx, artifact); err != nil {
-			return nil, err
+			return nil, n.healMissingBlob(ctx, key, err)
 		}
 		artifact.FromCache = true
 		artifact.RemoteURL = ""
@@ -434,7 +434,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 		return nil, err
 	}
 	if err := n.openArtifactContent(ctx, artifact); err != nil {
-		return nil, err
+		return nil, n.healMissingBlob(ctx, key, err)
 	}
 	artifact.FromCache = res.fromCache
 	if res.fromCache {
@@ -788,7 +788,26 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 		return ErrNotFound
 	}
 	if len(artifact.BlobRefs) > 0 {
-		return nil
+		// 磁盘清理/存储迁移可能造成 blobs 表有记录而文件已丢失。跳过下载前先探测：
+		// 只有"探测成功且确定不存在"才清引用重下自愈；探测失败（S3 抖动/限流）
+		// 不等于引用悬空，保留引用交给 Open 路径给出真实结果，避免误触发热门大文件重下。
+		exists, probeErr := n.blobRefsExist(ctx, artifact.BlobRefs)
+		switch {
+		case probeErr == nil && exists:
+			return nil
+		case probeErr != nil:
+			// 保留引用并跳过下载：交给 Open 路径给出真实结果
+			logrus.WithFields(logrus.Fields{
+				"key":   key.String(),
+				"error": probeErr.Error(),
+			}).Warn("proxy: blob existence probe failed, keeping refs")
+			return nil
+		default:
+			logrus.WithFields(logrus.Fields{
+				"key": key.String(),
+			}).Warn("proxy: referenced blob file missing, re-downloading to self-heal")
+			artifact.BlobRefs = nil
+		}
 	}
 	// Only artifact download paths require blob fetch; metadata-only keys have no filename.
 	if key.Filename == "" {
@@ -910,6 +929,8 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 		"remote_url":  key.RemoteURL,
 		"duration_ms": time.Since(start).Seconds(),
 	}).Debug("proxy: ensureArtifactBlob success")
+	// 重下成功，清掉该制品残留的负缓存条目，避免 TTL 内后续请求被拦 404
+	n.clearNegativeCacheForArtifact(artifact)
 	return nil
 }
 
@@ -931,6 +952,52 @@ func (n *ProxyRuntime) openArtifactContent(ctx context.Context, artifact *Artifa
 	}
 	artifact.Content = rc
 	return nil
+}
+
+// blobRefsExist 探测 BlobRefs 指向的文件是否真实存在。优先用 CAS 提供的
+// 低成本校验（backend.Exists），否则退化为 Open 后立即关闭。
+func (n *ProxyRuntime) blobRefsExist(ctx context.Context, refs []BlobRef) (bool, error) {
+	if checker, ok := n.BlobStore.(BlobRefExistenceChecker); ok {
+		return checker.RefsExist(ctx, refs)
+	}
+	for _, ref := range refs {
+		var (
+			rc  io.ReadCloser
+			err error
+		)
+		if store, ok := n.BlobStore.(ContextBlobOpener); ok {
+			rc, err = store.OpenContext(ctx, ref)
+		} else {
+			rc, err = n.BlobStore.Open(ref)
+		}
+		if err != nil {
+			// ErrNotFound = 确定缺失（如 CAS 已把文件丢失映射为 ErrNotFound）；
+			// 其他错误是探测失败，必须作为 err 返回，让调用方区分"悬空"与"不确定"。
+			if errors.Is(err, ErrNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		if rc != nil {
+			_ = rc.Close()
+		}
+	}
+	return true, nil
+}
+
+// healMissingBlob 打开 blob 失败时的自愈：文件丢失（ErrNotFound）清掉内存缓存后
+// 按未命中返回，下一次请求走 loadArtifact → ensureArtifactBlob 探测引用并重新下载。
+// 注意本地文件丢失不是"上游不存在"，不能进负缓存——那会让 TTL 内的所有请求
+// 被 isNegativeCached 直接拦掉 404，自愈路径永远跑不到。
+func (n *ProxyRuntime) healMissingBlob(ctx context.Context, key ArtifactKey, err error) error {
+	if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	logrus.WithFields(logrus.Fields{
+		"key": key.String(),
+	}).Warn("proxy: blob file missing on open, invalidating cache to trigger re-fetch")
+	n.invalidateCachedArtifact(key)
+	return ErrNotFound
 }
 
 func (n *ProxyRuntime) refreshStaleMetadata(ctx context.Context, artifact *Artifact, key ArtifactKey) error {
@@ -1029,13 +1096,23 @@ func (n *ProxyRuntime) setCachedArtifact(key ArtifactKey, artifact *Artifact) {
 	n.metadataCacheOrInit().Set(&key, cloneArtifactForCache(artifact))
 }
 
-// metadataCacheOrInit 惰性构造统一元数据缓存（正/负缓存共用 LRU）。
-// TTL 语义与旧手搓实现一致：MetadataTTL 为正缓存 TTL，NegativeTTL 为负缓存默认 TTL。
+// metadataCacheOrInit 惰性构造正元数据缓存（LRU+TTL）。
+// TTL 语义与旧手搓实现一致：MetadataTTL 为正缓存 TTL。
 func (n *ProxyRuntime) metadataCacheOrInit() *cache.MetadataCache {
 	n.metadataCacheInit.Do(func() {
-		n.metadataCache = cache.NewMetadataCache(n.CachePolicy.MetadataTTL, n.CachePolicy.NegativeTTL, proxyMetadataCacheSize)
+		n.metadataCache = cache.NewMetadataCache(n.CachePolicy.MetadataTTL, n.CachePolicy.NegativeTTL, maxMetadataCacheSize)
 	})
 	return n.metadataCache
+}
+
+// negativeCacheOrInit 惰性构造负元数据缓存，独立 LRU 上限（maxNegativeCacheSize）。
+// 与正缓存分开：避免 404/失败条目把热门包的正缓存挤出共享 LRU。负缓存条目 TTL
+// 由调用方经 SetNegativeWithTTL 显式传入。
+func (n *ProxyRuntime) negativeCacheOrInit() *cache.MetadataCache {
+	n.negativeCacheInit.Do(func() {
+		n.negativeCache = cache.NewMetadataCache(n.CachePolicy.MetadataTTL, n.CachePolicy.NegativeTTL, maxNegativeCacheSize)
+	})
+	return n.negativeCache
 }
 
 // metadataFailuresOrInit 惰性构造元数据失败退避缓存（KV+TTL，容量 LRU 淘汰）。
@@ -1046,7 +1123,8 @@ func (n *ProxyRuntime) metadataFailuresOrInit() *cache.MemoryCache {
 	return n.metadataFailures
 }
 
-// MetadataCache 暴露统一元数据缓存供 main.go 注册进 CacheManager（管理页可见/可清空）。
+// MetadataCache 暴露正元数据缓存供 main.go 注册进 CacheManager（管理页可见/可清空）。
+// 负缓存不暴露（与失败退避 cacheMemory 一致，避免管理页清理波及回源 404 判空状态）。
 func (n *ProxyRuntime) MetadataCache() *cache.MetadataCache {
 	return n.metadataCacheOrInit()
 }
@@ -1085,13 +1163,14 @@ func cloneArtifactForResponse(artifact *Artifact) *Artifact {
 
 func (n *ProxyRuntime) invalidateCachedArtifact(key ArtifactKey) {
 	n.metadataCacheOrInit().Invalidate(&key)
+	n.negativeCacheOrInit().Invalidate(&key)
 }
 
 func (n *ProxyRuntime) isNegativeCached(key ArtifactKey) bool {
 	if n.CachePolicy.NegativeTTL <= 0 {
 		return false
 	}
-	return n.metadataCacheOrInit().IsNegative(&key)
+	return n.negativeCacheOrInit().IsNegative(&key)
 }
 
 func (n *ProxyRuntime) tryRefreshPath(remotePath string) bool {
@@ -1127,7 +1206,7 @@ func (n *ProxyRuntime) setNegativeCacheWithTTL(key ArtifactKey, failureTTL time.
 	if failureTTL <= 0 {
 		return
 	}
-	n.metadataCacheOrInit().SetNegativeWithTTL(&key, failureTTL)
+	n.negativeCacheOrInit().SetNegativeWithTTL(&key, failureTTL)
 }
 
 // clearNegativeCacheForArtifact 根据 artifact 的各个可能的查询 key 清除负缓存。
@@ -1136,7 +1215,7 @@ func (n *ProxyRuntime) clearNegativeCacheForArtifact(a *Artifact) {
 	if n.CachePolicy.NegativeTTL <= 0 {
 		return
 	}
-	mc := n.metadataCacheOrInit()
+	mc := n.negativeCacheOrInit()
 	for _, k := range n.buildNegativeCacheKeys(a) {
 		mc.DeleteNegativeByKey(k)
 	}

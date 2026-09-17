@@ -280,3 +280,57 @@ func TestRouterHandlesDoubleWrappedCircuitOpenError(t *testing.T) {
 		t.Fatalf("Retry-After = %q, want %q (must extract via errors.As through double wrap)", got, "60")
 	}
 }
+
+// --- 仓库根路径分流：浏览器 302 前端详情页，程序客户端走协议插件 ---
+
+// errNotFoundPlugin 模拟协议插件对未知路径返回 ErrNotFound（协议内无该资源）。
+type errNotFoundPlugin struct{}
+
+func (errNotFoundPlugin) Name() string { return "npm" }
+func (errNotFoundPlugin) Handle(*RequestContext, RepositoryRuntime) error {
+	return ErrNotFound
+}
+
+func TestRepositoryRouterRedirectsBrowserRepoRootToFrontend(t *testing.T) {
+	router := newRouterForTest(nil, nil, errNotFoundPlugin{})
+
+	for _, path := range []string{"/repository/npm", "/repository/npm/"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, req)
+
+		if response.Code != http.StatusFound {
+			t.Fatalf("GET %s: status = %d, want 302", path, response.Code)
+		}
+		if loc := response.Header().Get("Location"); loc != "/repo/npm" {
+			t.Fatalf("GET %s: Location = %q, want /repo/npm", path, loc)
+		}
+	}
+}
+
+func TestRepositoryRouterRepoRootNonBrowserGoesToPlugin(t *testing.T) {
+	router := newRouterForTest(nil, nil, errNotFoundPlugin{})
+
+	req := httptest.NewRequest(http.MethodGet, "/repository/npm", nil)
+	req.Header.Set("Accept", "*/*") // go/npm/pip 等客户端
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (non-browser must fall through to plugin)", response.Code)
+	}
+}
+
+func TestRepositoryRouterRepoRootNonGetGoesToPlugin(t *testing.T) {
+	router := newRouterForTest(nil, nil, errNotFoundPlugin{})
+
+	req := httptest.NewRequest(http.MethodPost, "/repository/npm", nil)
+	req.Header.Set("Accept", "text/html")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, req)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (non-GET must fall through to plugin)", response.Code)
+	}
+}

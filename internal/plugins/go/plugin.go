@@ -87,15 +87,21 @@ func (p *GoPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*
 		return p.fetchLatest(ctx, remoteURL, path)
 	}
 	// For other paths (e.g. /@v/*.info, *.mod, *.zip), return a basic artifact indicating the resource exists.
-	modulePath, filename := p.splitModulePath(path)
+	// path 可能是客户端原始的 !x 编码形式（RemotePath 透传）：Name/Path 用解码形式，
+	// DownloadURL 继续用 encodeGoPath（对已编码路径幂等）。
+	decodedPath := decodeGoPath(path)
+	modulePath, filename := p.splitModulePath(decodedPath)
 	fileType := strings.TrimPrefix(filepath.Ext(filename), ".")
 	// DownloadURL 使用编码后的路径，确保 ensureArtifactBlob 向上游下载时 URL 正确
 	// （大写字母模块如 github.com/Azure/... 需要编码为 !azure 才能被上游识别）
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + encodeGoPath(path)
 	return []*runtime.Artifact{
 		runtime.NewArtifact(runtime.ArtifactSpec{
-			Format:      "go",
-			Kind:        runtime.KindFile,
+			Format: "go",
+			Kind:   runtime.KindFile,
+			// identity 用解码路径：升级前后（RemotePath 从解码改为透传编码）
+			// identity 不漂移，存量行可直接命中、不会重新入库产生重复制品
+			IdentityKey: goFileIdentity(decodedPath),
 			Name:        modulePath,
 			Version:     strings.TrimSuffix(filename, filepath.Ext(filename)),
 			Path:        modulePath + "/@v",
@@ -114,7 +120,8 @@ func (p *GoPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]*
 // fetchVersionList fetches the @v/list endpoint from a Go module proxy
 // and parses the line-separated version list.
 func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
-	modulePath := strings.TrimSuffix(path, "/@v/list")
+	// path 可能是客户端原始的 !x 编码形式：Name 用解码形式，URL 继续编码（幂等）
+	modulePath := decodeGoPath(strings.TrimSuffix(path, "/@v/list"))
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + encodeGoPath(path)
 
 	logrus.WithFields(logrus.Fields{
@@ -255,7 +262,7 @@ func (p *GoPlugin) fetchVersionInfo(ctx context.Context, remoteURL, modulePath, 
 // fetchLatest fetches the @latest endpoint from a Go module proxy
 // and parses the JSON response.
 func (p *GoPlugin) fetchLatest(ctx context.Context, remoteURL, path string) ([]*runtime.Artifact, error) {
-	modulePath := strings.TrimSuffix(path, "/@latest")
+	modulePath := decodeGoPath(strings.TrimSuffix(path, "/@latest"))
 	fullURL := strings.TrimRight(remoteURL, "/") + "/" + encodeGoPath(path)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
@@ -347,6 +354,12 @@ func decodeGoPath(path string) string {
 	return b.String()
 }
 
+// goFileIdentity 为 KindFile 制品构造稳定 identity：基于解码路径，保证客户端
+// 请求透传的 !x 编码形式不影响 identity（否则存量行无法命中、重复入库）。
+func goFileIdentity(decodedPath string) string {
+	return runtime.BuildArtifactIdentityKey(&runtime.Artifact{Kind: runtime.KindFile, RemotePath: decodedPath})
+}
+
 func (p *GoPlugin) Name() string {
 	return "go"
 }
@@ -361,28 +374,34 @@ func (p *GoPlugin) ClassifyFileType(filename string) string {
 func (p *GoPlugin) Handle(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime) error {
 	path := ctx.RepositoryPath
 	path = strings.TrimPrefix(path, "/")
+	// 客户端原始路径（含 !x 大写编码）：必须原样透传给 Runtime 作为 RemotePath，
+	// buildRemoteURL 用它拼回源 URL；解码形式的大写路径会被严格上游 400 拒绝。
+	rawPath := path
 	// 解码 Go module proxy 路径编码：!a → A, !b → B, ..., !z → Z
 	// Go CLI 发送请求时会将大写字母编码为 !x 格式
 	path = decodeGoPath(path)
 
 	if strings.HasSuffix(path, "/@latest") {
-		return p.handleLatest(ctx, repoRuntime, path)
+		return p.handleLatest(ctx, repoRuntime, path, rawPath)
 	}
 
 	if strings.HasSuffix(path, "/@v/list") {
-		return p.handleVersionList(ctx, repoRuntime, path)
+		return p.handleVersionList(ctx, repoRuntime, path, rawPath)
 	}
 
 	if strings.Contains(path, "/@v/") {
-		return p.handleModuleDownload(ctx, repoRuntime, path)
+		return p.handleModuleDownload(ctx, repoRuntime, path, rawPath)
 	}
 
-	return errors.New("invalid go module path")
+	// 未知路径（含仓库根路径）：不是本协议的资源形态，按 404 响应。
+	// 不能返回裸 error——路由层会把未识别错误兜底成 500，污染错误日志。
+	return runtime.ErrNotFound
 }
 
-func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
+func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path, rawPath string) error {
 	if ctx.Request.Method != http.MethodGet && ctx.Request.Method != http.MethodHead {
-		return errors.New("method not allowed")
+		http.Error(ctx.Writer, "method not allowed", http.StatusMethodNotAllowed)
+		return nil
 	}
 
 	modulePath := strings.TrimSuffix(path, "/@latest")
@@ -394,7 +413,7 @@ func (p *GoPlugin) handleLatest(ctx *runtime.RequestContext, repoRuntime runtime
 		RepositoryID: ctx.Repository.ID,
 		Format:       "go",
 		Name:         modulePath,
-		RemotePath:   path, // 必须带 RemotePath，供 FetchRemote 回源使用
+		RemotePath:   rawPath, // 必须带 RemotePath，供 FetchRemote 回源使用
 	})
 	if err != nil {
 		{ logrus.WithError(err).Error("internal error"); http.Error(ctx.Writer, "internal server error", http.StatusInternalServerError) }
@@ -492,9 +511,10 @@ func parseModulePathMajor(modulePath string) int {
 	return 0
 }
 
-func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
+func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path, rawPath string) error {
 	if ctx.Request.Method != http.MethodGet {
-		return errors.New("method not allowed")
+		http.Error(ctx.Writer, "method not allowed", http.StatusMethodNotAllowed)
+		return nil
 	}
 
 	modulePath := strings.TrimSuffix(path, "/@v/list")
@@ -513,7 +533,7 @@ func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime ru
 		RepositoryID: ctx.Repository.ID,
 		Format:       "go",
 		Name:         modulePath,
-		RemotePath:   path,
+		RemotePath:   rawPath,
 	})
 	if err != nil {
 		if !errors.Is(err, runtime.ErrNotFound) {
@@ -546,7 +566,7 @@ func (p *GoPlugin) handleVersionList(ctx *runtime.RequestContext, repoRuntime ru
 	return nil
 }
 
-func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {
+func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path, rawPath string) error {
 	parts := strings.Split(path, "/@v/")
 	if len(parts) != 2 {
 		http.Error(ctx.Writer, "Invalid path", http.StatusBadRequest)
@@ -578,11 +598,15 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 	key := runtime.ArtifactKey{
 		RepositoryID: ctx.Repository.ID,
 		Format:       "go",
+		// identity 用解码路径（path 已解码），与 FetchRemote 产物及存量行的
+		// identity 保持一致；不带它 MetadataStore 会回落 remote_path 精确匹配，
+		// 而透传的编码 RemotePath 与存量解码行不一致 → 每次都判 miss 回源重建
+		IdentityKey: goFileIdentity(path),
 		Name:         modulePath,
 		Version:      cleanVersion,
 		Path:         modulePath + "/@v",
 		Filename:     filename,
-		RemotePath:   path,
+		RemotePath:   rawPath,
 		Qualifiers: map[string]string{
 			"module": modulePath,
 			"ext":    fileType,
@@ -603,7 +627,7 @@ func (p *GoPlugin) handleModuleDownload(ctx *runtime.RequestContext, repoRuntime
 			Version:      cleanVersion,
 			Path:         modulePath + "/@v",
 			Filename:     filename,
-			RemotePath:   path,
+			RemotePath:   rawPath,
 			Qualifiers: map[string]string{
 				"module": modulePath,
 				"ext":    fileType,

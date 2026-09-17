@@ -66,6 +66,12 @@ type ContextBlobDeleter interface {
 	DeleteContext(ctx context.Context, ref BlobRef) error
 }
 
+// BlobRefExistenceChecker 由 CASBlobStore 实现：低成本校验 BlobRef 指向的
+// 文件是否真实存在（本地 os.Stat / S3 HEAD），供下载跳过路径探测悬空引用。
+type BlobRefExistenceChecker interface {
+	RefsExist(ctx context.Context, refs []BlobRef) (bool, error)
+}
+
 type RemoteRequest struct {
 	URL     string
 	Method  string

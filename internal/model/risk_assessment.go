@@ -79,8 +79,8 @@ type RiskAssessmentItem struct {
 	Reason           string    `gorm:"size:512" json:"reason,omitempty"`
 	CVE              string    `gorm:"size:64" json:"cve,omitempty"`
 	Matched          bool      `gorm:"not null;default:false;index" json:"matched"`
-	ArtifactHit      JSONArray `gorm:"type:jsonb" json:"artifact_hit,omitempty"`
-	DependencyHit    JSONArray `gorm:"type:jsonb" json:"dependency_hit,omitempty"`
+	ArtifactHit      JSONArray `gorm:"type:json" json:"artifact_hit,omitempty"`
+	DependencyHit    JSONArray `gorm:"type:json" json:"dependency_hit,omitempty"`
 	Disposition      DispositionStatus `gorm:"size:20;not null;default:'';index" json:"disposition"`
 	DispositionNote  string    `gorm:"size:512" json:"disposition_note,omitempty"`
 	DisposedBy       uint      `json:"disposed_by,omitempty"`

@@ -175,6 +175,32 @@ func (s *ArtifactService) executePackageRecalc(task recalcTask) {
 	}
 }
 
+// enqueueRecalc 将聚合重算任务投递给异步 worker，绝不在请求线程内执行聚合写。
+//
+// 聚合是幂等且最终一致的：channel 满时短暂等待 worker 消耗（复用 LogBatcher.Record
+// 的既有取舍），仍满则丢弃并警告——后续对同一包/版本的写入会再次触发重算。
+// 不可像此前那样降级为同步 executePackageRecalc：那会把多轮全表扫描的聚合写拉进
+// 上传/下载请求线程，在 _txlock=immediate 下重新引入 SQLite 长事务持锁问题。
+func (s *ArtifactService) enqueueRecalc(task recalcTask) {
+	if len(task.packages) == 0 && len(task.versions) == 0 {
+		return
+	}
+	select {
+	case s.recalcCh <- task:
+		return
+	default:
+	}
+	select {
+	case s.recalcCh <- task:
+	case <-time.After(100 * time.Millisecond):
+		util.WithFields(logrus.Fields{
+			util.LogKeyModule: "artifact-service",
+			"packageCount":    len(task.packages),
+			"versionCount":    len(task.versions),
+		}).Warn("recalc channel full after 100ms, dropping aggregation recalculation (eventually consistent)")
+	}
+}
+
 // Stop 优雅关闭异步 worker，等待剩余任务完成。
 func (s *ArtifactService) Stop() {
 	s.recalcOnce.Do(func() {
@@ -280,37 +306,39 @@ func (s *ArtifactService) Save(ctx context.Context, artifact *runtime.Artifact) 
 			}
 		}
 
-		// 同步 blob 关联
-		if err := s.syncBlobRefs(tx, modelArtifact.ID, artifact.BlobRefs); err != nil {
-			return err
-		}
-
-		hasBlobRefs := hasUsableBlobRefs(artifact.BlobRefs)
-
-		// 同步 packages 聚合表
-		if syncErr := s.syncPackageAfterSave(tx, modelArtifact, isNew, hasBlobRefs); syncErr != nil {
-			return syncErr
-		}
-		if shouldAggregatePackageArtifact(modelArtifact, hasBlobRefs) {
-			if err := s.recalcPackageVersionSummary(tx, modelArtifact.RepositoryID, modelArtifact.Format, modelArtifact.Name, modelArtifact.Version); err != nil {
-				return err
-			}
-			if err := s.recalcPackageVersions(tx, map[string]bool{
-				packageKey(modelArtifact.RepositoryID, modelArtifact.Format, modelArtifact.Name): true,
-			}); err != nil {
-				return err
-			}
-		}
-
-		return nil
+		// 同步 blob 关联（纯写，持锁窗口短）
+		return s.syncBlobRefs(tx, modelArtifact.ID, artifact.BlobRefs)
 	})
-	if err == nil {
-		s.notifyCacheInvalidation()
-		if isNew {
-			s.enqueueAutoScan(ctx, modelArtifact)
+	if err != nil {
+		return err
+	}
+
+	s.notifyCacheInvalidation()
+	if isNew {
+		s.enqueueAutoScan(ctx, modelArtifact)
+	}
+
+	// packages/package_versions 聚合放事务提交后、用独立 db 连接执行（不占写锁事务）。
+	// 保持同步：Save 是单条保存的规范入口（上传/包管理），调用方依赖返回后聚合立即可查，
+	// 故不像 SaveBatch/AttachBlob 那样异步；但已从写锁事务内移出，规避长事务持锁。
+	hasBlobRefs := hasUsableBlobRefs(artifact.BlobRefs)
+	if syncErr := s.syncPackageAfterSave(s.db, modelArtifact, isNew, hasBlobRefs); syncErr != nil {
+		util.WithFields(logrus.Fields{util.LogKeyModule: "artifact-service"}).
+			WithError(syncErr).Warn("Save: sync package after save failed (weak-consistency read model)")
+	}
+	if shouldAggregatePackageArtifact(modelArtifact, hasBlobRefs) {
+		if err := s.recalcPackageVersionSummary(s.db, modelArtifact.RepositoryID, modelArtifact.Format, modelArtifact.Name, modelArtifact.Version); err != nil {
+			util.WithFields(logrus.Fields{util.LogKeyModule: "artifact-service"}).
+				WithError(err).Warn("Save: recalc version summary failed (weak-consistency read model)")
+		}
+		if err := s.recalcPackageVersions(s.db, map[string]bool{
+			packageKey(modelArtifact.RepositoryID, modelArtifact.Format, modelArtifact.Name): true,
+		}); err != nil {
+			util.WithFields(logrus.Fields{util.LogKeyModule: "artifact-service"}).
+				WithError(err).Warn("Save: recalc package failed (weak-consistency read model)")
 		}
 	}
-	return err
+	return nil
 }
 
 // AttachBlob 代理回源下载完内容后，把 blob 关联与内容相关列（size_bytes/download_url/checksums）
@@ -324,20 +352,28 @@ func (s *ArtifactService) AttachBlob(ctx context.Context, artifact *runtime.Arti
 	}
 	modelArtifact := s.toModelArtifact(artifact)
 
-	var artifactID uint
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var row model.Artifact
-		err := tx.Model(&model.Artifact{}).
-			Where("repository_id = ?", modelArtifact.RepositoryID).
-			Where("format = ?", artifact.Format).
-			Where("identity_key = ?", modelArtifact.IdentityKey).
-			Select("id").
-			First(&row).Error
-		if err != nil {
-			return err
-		}
-		artifactID = row.ID
+	// 事务外先定位 id：命中 ErrRecordNotFound 直接回退整条 Save 重建。把读也拖进
+	// 写事务会把下载高峰的查询并到同一条 SQLite 写锁上（_txlock=immediate 下每个事务
+	// 开局即抢写锁）；拆出后事务内只剩 UPDATE+syncBlobRefs 纯写，持锁窗口极短。
+	// 事务外的定位与后续 UPDATE 存在极小 TOCTOU（查完被并发删除 → UPDATE 影响 0 行，
+	// AttachBlob 幂等补写、不影响数据正确性），可接受。
+	var row model.Artifact
+	err := s.db.WithContext(ctx).Model(&model.Artifact{}).
+		Where("repository_id = ?", modelArtifact.RepositoryID).
+		Where("format = ?", artifact.Format).
+		Where("identity_key = ?", modelArtifact.IdentityKey).
+		Select("id").
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// 行已不存在（并发删除/首次写入失败等）→ 回退整条 Save 重建元数据
+		return s.Save(ctx, artifact)
+	}
+	if err != nil {
+		return err
+	}
+	artifactID := row.ID
 
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&model.Artifact{}).Where("id = ?", artifactID).Updates(map[string]interface{}{
 			"size_bytes":   modelArtifact.SizeBytes,
 			"download_url": modelArtifact.DownloadURL,
@@ -347,27 +383,15 @@ func (s *ArtifactService) AttachBlob(ctx context.Context, artifact *runtime.Arti
 		}
 		return s.syncBlobRefs(tx, artifactID, artifact.BlobRefs)
 	})
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		// 行已不存在（并发删除/首次写入失败等）→ 回退整条 Save 重建元数据
-		return s.Save(ctx, artifact)
-	}
 	if err != nil {
 		return err
 	}
 	s.notifyCacheInvalidation()
 
-	// 版本级聚合异步重算；channel 满时降级为同步执行，保证最终一致
+	// 版本级聚合异步重算；channel 满时降级为丢弃（下次同版本写入重放），
+	// 绝不在请求线程内同步执行聚合写。
 	versionKey := packageVersionKey(modelArtifact.RepositoryID, artifact.Format, modelArtifact.Name, modelArtifact.Version)
-	select {
-	case s.recalcCh <- recalcTask{versions: map[string]bool{versionKey: true}}:
-	case <-time.After(100 * time.Millisecond):
-		if err := s.recalcPackageVersionSummary(s.db, modelArtifact.RepositoryID, artifact.Format, modelArtifact.Name, modelArtifact.Version); err != nil {
-			util.WithFields(logrus.Fields{
-				util.LogKeyModule: "artifact-service",
-				"versionKey":      versionKey,
-			}).WithError(err).Warn("sync package version summary recalc failed")
-		}
-	}
+	s.enqueueRecalc(recalcTask{versions: map[string]bool{versionKey: true}})
 	return nil
 }
 
@@ -385,12 +409,12 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 		}
 	}
 
-	// seenPackages 提升到事务外，事务提交后供异步 worker 使用。
-	seenPackages := make(map[string]bool) // 用于批量更新 packages 去重
-	var createdModel []*model.Artifact    // 事务内新建的制品，提交后投递自动扫描
+	// seenPackages / seenPackageVersions 提升到事务外，事务提交后供异步 worker 使用。
+	seenPackages := make(map[string]bool)        // 用于批量更新 packages 去重
+	seenPackageVersions := make(map[string]bool) // 版本级聚合去重，提交后异步重算
+	var createdModel []*model.Artifact           // 事务内新建的制品，提交后投递自动扫描
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		seenPackageVersions := make(map[string]bool)
 
 		// 批量查询已有记录，避免逐条 SELECT
 		modelArtifacts := make([]*model.Artifact, len(artifacts))
@@ -510,30 +534,34 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 			}
 		}
 
-		if err := s.recalcPackageVersionSummaries(tx, seenPackageVersions); err != nil {
-			return err
-		}
-		// seenPackages 副本投递给异步 worker；原 map 供事务内去重使用。
-		// packages 表是 read model，弱一致性可接受；事务提交后异步重算 version_count/latest_version，
-		// 避免每包 2 次全表扫描在事务内执行导致长事务持锁。
+		// 版本级全表聚合（recalcPackageVersionSummaries）从写事务内移出，见提交后投递段。
+		// 避免把多轮全表扫描拖进 SQLite 写锁事务（_txlock=immediate 下每个事务开局即抢写锁）。
+		// packages 去重 map 仍在事务内收集，供提交后投递异步 worker。
 		return nil
 	})
 	if err == nil {
 		s.notifyCacheInvalidation()
 		s.enqueueAutoScan(ctx, createdModel...)
-		// 投递 seenPackages 副本到异步 worker。channel 满时阻塞最多 100ms，
-		// 超时则降级为同步执行，保证 packages 聚合表最终一致。
-		if len(seenPackages) > 0 {
-			packagesCopy := make(map[string]bool, len(seenPackages))
-			for k := range seenPackages {
-				packagesCopy[k] = true
+		// 投递 seenPackages/seenPackageVersions 副本到异步 worker。channel 满时
+		// 降级为丢弃（幂等、最终一致，下次同包写入重放），绝不在请求线程内同步
+		// 执行聚合写——避免把多轮全表扫描拖进上传请求线程。
+		if len(seenPackages) > 0 || len(seenPackageVersions) > 0 {
+			task := recalcTask{}
+			if len(seenPackages) > 0 {
+				packagesCopy := make(map[string]bool, len(seenPackages))
+				for k := range seenPackages {
+					packagesCopy[k] = true
+				}
+				task.packages = packagesCopy
 			}
-			select {
-			case s.recalcCh <- recalcTask{packages: packagesCopy}:
-			case <-time.After(100 * time.Millisecond):
-				// channel 满，降级同步执行
-				s.executePackageRecalc(recalcTask{packages: packagesCopy})
+			if len(seenPackageVersions) > 0 {
+				versionsCopy := make(map[string]bool, len(seenPackageVersions))
+				for k := range seenPackageVersions {
+					versionsCopy[k] = true
+				}
+				task.versions = versionsCopy
 			}
+			s.enqueueRecalc(task)
 		}
 	}
 	return err
@@ -1447,20 +1475,23 @@ func (s *ArtifactService) syncBlobRefs(tx *gorm.DB, artifactID uint, blobRefs []
 	if err := tx.Where("artifact_id = ?", artifactID).Delete(&model.ArtifactBlob{}).Error; err != nil {
 		return err
 	}
+	// 批量写入 blob 关联，取代逐条 CREATE：缩减写事务内语句数、持锁窗口更短
+	// （_txlock=immediate 下每个 UPDATE/INSERT 都持有 SQLite 写锁）。
+	refs := make([]*model.ArtifactBlob, 0, len(blobRefs))
 	for i, ref := range blobRefs {
 		if ref.BlobID == 0 {
 			continue
 		}
-		ab := &model.ArtifactBlob{
+		refs = append(refs, &model.ArtifactBlob{
 			ArtifactID: artifactID,
 			BlobID:     ref.BlobID,
 			Position:   i,
-		}
-		if err := tx.Create(ab).Error; err != nil {
-			return err
-		}
+		})
 	}
-	return nil
+	if len(refs) == 0 {
+		return nil
+	}
+	return tx.CreateInBatches(refs, 500).Error
 }
 
 // toModelArtifact 将 runtime.Artifact 转换为 model.Artifact。

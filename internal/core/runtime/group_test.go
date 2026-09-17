@@ -603,3 +603,76 @@ func (n *groupProjectionNode) BeginUpload(ctx context.Context, request UploadReq
 func (n *groupProjectionNode) DeleteArtifact(ctx context.Context, key ArtifactKey) error {
 	return ErrReadOnly
 }
+
+// groupGetCaptureNode 捕获 group 转发下来的 GetArtifact/QueryArtifacts 参数。
+type groupGetCaptureNode struct {
+	HostedRuntime
+	gotKey   ArtifactKey
+	gotQuery ArtifactQuery
+	artifact *Artifact
+}
+
+func (n *groupGetCaptureNode) GetArtifact(ctx context.Context, key ArtifactKey) (*Artifact, error) {
+	n.gotKey = key
+	if n.artifact != nil {
+		return n.artifact, nil
+	}
+	return nil, ErrNotFound
+}
+
+func (n *groupGetCaptureNode) QueryArtifacts(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
+	n.gotQuery = query
+	if n.artifact != nil {
+		return []*Artifact{n.artifact}, nil
+	}
+	return nil, ErrNotFound
+}
+
+// go 大写编码路径在组合仓库里必须是纯透传：key 的 IdentityKey（解码稳定
+// identity）与 RemotePath（客户端原始 !x 编码形式）都要原样到达成员，
+// 成员 proxy 才能按 identity 直接命中存量行。group 不得裁剪或改写任何字段。
+func TestGroupRuntimeForwardsGoEscapedKeyUntouchedToMembers(t *testing.T) {
+	node := &groupGetCaptureNode{artifact: &Artifact{
+		RepositoryID: "proxy",
+		Format:       "go",
+		Kind:         KindFile,
+		Name:         "github.com/Microsoft/go-winio",
+		Version:      "v0.6.2",
+		Filename:     "v0.6.2.info",
+	}}
+	group := &GroupRuntime{Members: []RepositoryNode{node}}
+	key := ArtifactKey{
+		Format:      "go",
+		Name:        "github.com/Microsoft/go-winio",
+		Version:     "v0.6.2",
+		Path:        "github.com/Microsoft/go-winio/@v",
+		Filename:    "v0.6.2.info",
+		RemotePath:  "github.com/!microsoft/go-winio/@v/v0.6.2.info",
+		IdentityKey: "file/github.com/Microsoft/go-winio/@v/v0.6.2.info",
+	}
+
+	art, err := group.GetArtifact(context.Background(), key)
+	if err != nil {
+		t.Fatalf("GetArtifact failed: %v", err)
+	}
+	if art == nil {
+		t.Fatal("GetArtifact returned nil artifact")
+	}
+	if node.gotKey.IdentityKey != key.IdentityKey {
+		t.Errorf("member got IdentityKey = %q, want untouched %q", node.gotKey.IdentityKey, key.IdentityKey)
+	}
+	if node.gotKey.RemotePath != key.RemotePath {
+		t.Errorf("member got RemotePath = %q, want untouched escaped form %q", node.gotKey.RemotePath, key.RemotePath)
+	}
+
+	if _, err := group.QueryArtifacts(context.Background(), ArtifactQuery{
+		Format:     "go",
+		Name:       "github.com/Microsoft/go-winio",
+		RemotePath: "github.com/!microsoft/go-winio/@v/list",
+	}); err != nil {
+		t.Fatalf("QueryArtifacts failed: %v", err)
+	}
+	if node.gotQuery.RemotePath != "github.com/!microsoft/go-winio/@v/list" {
+		t.Errorf("member got query RemotePath = %q, want untouched escaped form", node.gotQuery.RemotePath)
+	}
+}

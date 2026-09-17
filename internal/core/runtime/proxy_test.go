@@ -780,9 +780,9 @@ func TestNegativeCacheDoesNotGrowWithoutBound(t *testing.T) {
 			t.Fatalf("expected ErrNotFound for request %d, got %v", i, err)
 		}
 	}
-	// 负缓存与正缓存共用统一 LRU，总量受 maxMetadataCacheSize+maxNegativeCacheSize 约束
-	if got := rt.metadataCacheOrInit().Len(); got > proxyMetadataCacheSize {
-		t.Fatalf("metadata cache grew to %d, exceeds limit %d", got, proxyMetadataCacheSize)
+	// 负缓存独立 LRU，容量受 maxNegativeCacheSize 约束（不再与正缓存抢共享容量）
+	if got := rt.negativeCacheOrInit().Len(); got > maxNegativeCacheSize {
+		t.Fatalf("negative metadata cache grew to %d, exceeds limit %d", got, maxNegativeCacheSize)
 	}
 }
 
@@ -934,8 +934,10 @@ type fakeRemoteClient struct {
 	metadata      *RemoteMetadata
 	metadataErr   error
 	metadataCalls int
+	lastKey       ArtifactKey
 	blob          io.ReadCloser
 	blobErr       error
+	blobCalls     int
 	openResponse  *RemoteResponse
 	openErr       error
 	openRequest   RemoteRequest
@@ -943,6 +945,7 @@ type fakeRemoteClient struct {
 
 func (c *fakeRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (*RemoteMetadata, error) {
 	c.metadataCalls++
+	c.lastKey = key
 	if c.metadataErr != nil {
 		return nil, c.metadataErr
 	}
@@ -953,6 +956,7 @@ func (c *fakeRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (
 }
 
 func (c *fakeRemoteClient) FetchBlob(ctx context.Context, key ArtifactKey) (io.ReadCloser, error) {
+	c.blobCalls++
 	if c.blobErr != nil {
 		return nil, c.blobErr
 	}
@@ -972,15 +976,33 @@ func (c *fakeRemoteClient) Open(ctx context.Context, request RemoteRequest) (*Re
 
 type fakeBlobStore struct {
 	openCalls int
+	openErr   error
+	// refsExistFn 非 nil 时接管 RefsExist 返回值；nil 时默认 (true, nil)，
+	// 保持既有测试"引用存在、不触发重下"的行为。
+	refsExistFn func(refs []BlobRef) (bool, error)
+	probeCalls  int
 }
 
 func (fakeBlobStore) Put(reader io.Reader) (BlobRef, error) { return BlobRef{}, nil }
 func (s *fakeBlobStore) Open(ref BlobRef) (io.ReadCloser, error) {
 	s.openCalls++
+	if s.openErr != nil {
+		return nil, s.openErr
+	}
 	return io.NopCloser(nil), nil
 }
 func (fakeBlobStore) Stat(ref BlobRef) (*BlobMetadata, error) { return nil, nil }
 func (fakeBlobStore) Delete(ref BlobRef) error                { return nil }
+
+// RefsExist 与生产环境对齐：fake 也走存在性校验而非 Open 探测，
+// 保证 openCalls 语义（每次请求一次内容打开）不被探测污染。
+func (s *fakeBlobStore) RefsExist(ctx context.Context, refs []BlobRef) (bool, error) {
+	s.probeCalls++
+	if s.refsExistFn != nil {
+		return s.refsExistFn(refs)
+	}
+	return true, nil
+}
 
 // ── 新增测试: 覆盖已发现的 bug ──────────────────────
 
@@ -2106,5 +2128,194 @@ func TestGetArtifactReturnsErrorWhenNoLocalBlob(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("GetArtifact error = nil, want error (no local blob to serve)")
+	}
+}
+
+// 大写 module path 的回源 URL 必须保持客户端的 !x 编码形式：插件透传的
+// RemotePath 经 buildRemoteURL 拼接后原样到达 RemoteClient；解码形式会被
+// 严格上游（proxy.golang.org 等）以 400 拒绝。
+func TestGetArtifactFetchMetadataUsesEscapedRemotePath(t *testing.T) {
+	remote := &fakeRemoteClient{metadata: &RemoteMetadata{Exists: false}}
+	n := &ProxyRuntime{
+		MetadataStore: newFakeMetadataStore(),
+		BlobStore:     &fakeBlobStore{},
+		RemoteClient:  remote,
+		RemoteBaseURL: "https://up.test",
+		Format:        "go",
+		CachePolicy:   CachePolicy{NegativeTTL: time.Minute},
+	}
+	_, err := n.GetArtifact(context.Background(), ArtifactKey{
+		RepositoryID: "repo",
+		Format:       "go",
+		Name:         "github.com/Microsoft/go-winio",
+		Version:      "v0.6.2",
+		Filename:     "v0.6.2.info",
+		RemotePath:   "github.com/!microsoft/go-winio/@v/v0.6.2.info",
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+	if remote.metadataCalls != 1 {
+		t.Fatalf("expected 1 FetchMetadata call, got %d", remote.metadataCalls)
+	}
+	want := "https://up.test/github.com/!microsoft/go-winio/@v/v0.6.2.info"
+	if remote.lastKey.RemoteURL != want {
+		t.Fatalf("FetchMetadata RemoteURL = %q, want %q", remote.lastKey.RemoteURL, want)
+	}
+}
+
+// ── 本地 blob 丢失自愈 ──────────────────────────────
+
+// 本地 blob 文件丢失（Open 失败）不是"上游不存在"，不得写负缓存：
+// 否则后续请求在 NegativeTTL 内被负缓存直接 404、自愈逻辑永远跑不到。
+// 期望：第一次请求 404 后，blob 一恢复下一次请求立即成功。
+func TestGetArtifactRecoversImmediatelyAfterLocalBlobLoss(t *testing.T) {
+	store := newFakeMetadataStore()
+	store.artifact = &Artifact{
+		RepositoryID: "repo",
+		Format:       "go",
+		Kind:         KindFile,
+		Name:         "m",
+		Filename:     "v.info",
+		RemotePath:   "m/@v/v.info",
+		BlobRefs:     []BlobRef{{BlobID: 1}},
+	}
+	// 生产 CASBlobStore.OpenContext 会把文件丢失映射为 ErrNotFound
+	bs := &fakeBlobStore{openErr: ErrNotFound}
+	rt := &ProxyRuntime{
+		MetadataStore: store,
+		BlobStore:     bs,
+		RemoteClient:  &fakeRemoteClient{},
+		RemoteBaseURL: "https://up.test",
+		Format:        "go",
+		CachePolicy:   CachePolicy{NegativeTTL: time.Minute},
+	}
+	key := ArtifactKey{Format: "go", Name: "m", Version: "v", Filename: "v.info", RemotePath: "m/@v/v.info"}
+
+	if _, err := rt.GetArtifact(context.Background(), key); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("first GetArtifact (blob lost) error = %v, want ErrNotFound", err)
+	}
+	bs.openErr = nil
+	art, err := rt.GetArtifact(context.Background(), key)
+	if err != nil {
+		t.Fatalf("second GetArtifact (blob restored) error = %v, want nil (negative cache must not block self-heal)", err)
+	}
+	if art == nil {
+		t.Fatal("second GetArtifact returned nil artifact")
+	}
+}
+
+// 存在性探测失败（S3 抖动/限流）≠ 引用悬空：不得清空 BlobRefs 触发重下，
+// 应保留引用交给 Open 路径给出真实结果。
+func TestGetArtifactKeepsRefsWhenProbeFails(t *testing.T) {
+	store := newFakeMetadataStore()
+	store.artifact = &Artifact{
+		RepositoryID: "repo",
+		Format:       "go",
+		Kind:         KindFile,
+		Name:         "m",
+		Filename:     "v.info",
+		RemotePath:   "m/@v/v.info",
+		BlobRefs:     []BlobRef{{BlobID: 1}},
+	}
+	bs := &fakeBlobStore{refsExistFn: func(refs []BlobRef) (bool, error) {
+		return false, errors.New("simulated S3 probe flake")
+	}}
+	remote := &fakeRemoteClient{} // FetchBlob 会返回 ErrNotFound，被调用即失败
+	rt := &ProxyRuntime{
+		MetadataStore: store,
+		BlobStore:     bs,
+		RemoteClient:  remote,
+		RemoteBaseURL: "https://up.test",
+		Format:        "go",
+		CachePolicy:   CachePolicy{NegativeTTL: time.Minute},
+	}
+	key := ArtifactKey{Format: "go", Name: "m", Version: "v", Filename: "v.info", RemotePath: "m/@v/v.info"}
+
+	art, err := rt.GetArtifact(context.Background(), key)
+	if err != nil {
+		t.Fatalf("GetArtifact error = %v, want nil (probe failure must keep refs and serve via Open)", err)
+	}
+	if art == nil {
+		t.Fatal("GetArtifact returned nil artifact")
+	}
+	if remote.blobCalls != 0 {
+		t.Fatalf("FetchBlob called %d times after probe failure, want 0 (no spurious re-download)", remote.blobCalls)
+	}
+	if len(art.BlobRefs) == 0 {
+		t.Fatal("BlobRefs were cleared despite probe failure")
+	}
+}
+
+// 引用悬空（探测确定文件不存在）→ 清空引用 → 重新下载自愈。
+// pin 既有自愈行为，防止上面两条修改把它改坏。
+func TestGetArtifactRedownloadsWhenRefsDangling(t *testing.T) {
+	store := newFakeMetadataStore()
+	store.artifact = &Artifact{
+		RepositoryID: "repo",
+		Format:       "go",
+		Kind:         KindFile,
+		Name:         "m",
+		Filename:     "v.info",
+		RemotePath:   "m/@v/v.info",
+		BlobRefs:     []BlobRef{{BlobID: 1}},
+	}
+	bs := &fakeBlobStore{refsExistFn: func(refs []BlobRef) (bool, error) {
+		return false, nil // 探测确定：文件不存在
+	}}
+	remote := &fakeRemoteClient{blob: io.NopCloser(strings.NewReader("content"))}
+	rt := &ProxyRuntime{
+		MetadataStore: store,
+		BlobStore:     bs,
+		RemoteClient:  remote,
+		RemoteBaseURL: "https://up.test",
+		Format:        "go",
+		CachePolicy:   CachePolicy{NegativeTTL: time.Minute},
+	}
+	key := ArtifactKey{Format: "go", Name: "m", Version: "v", Filename: "v.info", RemotePath: "m/@v/v.info"}
+
+	art, err := rt.GetArtifact(context.Background(), key)
+	if err != nil {
+		t.Fatalf("GetArtifact error = %v, want nil (dangling refs must self-heal via re-download)", err)
+	}
+	if remote.blobCalls != 1 {
+		t.Fatalf("FetchBlob called %d times, want 1 (re-download)", remote.blobCalls)
+	}
+	if len(art.BlobRefs) == 0 {
+		t.Fatal("BlobRefs not re-attached after self-heal")
+	}
+}
+
+// 回源重下成功后必须清除该制品的负缓存条目，否则即便 blob 已恢复，
+// 负缓存仍会让后续请求在 TTL 内直接 404。
+func TestEnsureArtifactBlobSuccessClearsNegativeCache(t *testing.T) {
+	store := newFakeMetadataStore()
+	store.artifact = &Artifact{
+		RepositoryID: "repo",
+		Format:       "go",
+		Kind:         KindFile,
+		Name:         "m",
+		Version:      "v",
+		Filename:     "v.info",
+		RemotePath:   "m/@v/v.info",
+	}
+	bs := &fakeBlobStore{}
+	remote := &fakeRemoteClient{blob: io.NopCloser(strings.NewReader("content"))}
+	rt := &ProxyRuntime{
+		MetadataStore: store,
+		BlobStore:     bs,
+		RemoteClient:  remote,
+		RemoteBaseURL: "https://up.test",
+		Format:        "go",
+		CachePolicy:   CachePolicy{NegativeTTL: time.Minute},
+	}
+	key := ArtifactKey{Format: "go", Name: "m", Version: "v", Filename: "v.info", RemotePath: "m/@v/v.info"}
+	rt.setNegativeCache(key)
+
+	if err := rt.ensureArtifactBlob(context.Background(), store.artifact, key); err != nil {
+		t.Fatalf("ensureArtifactBlob error = %v, want nil", err)
+	}
+	if rt.isNegativeCached(key) {
+		t.Fatal("negative cache entry survived a successful blob re-download")
 	}
 }

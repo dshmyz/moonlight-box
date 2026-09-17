@@ -303,20 +303,22 @@ func (s *MetadataStore) syncBlobRefs(tx *gorm.DB, artifactID uint, blobRefs []ru
 	if err := tx.Where("artifact_id = ?", artifactID).Delete(&model.ArtifactBlob{}).Error; err != nil {
 		return err
 	}
+	// 批量写入 blob 关联，取代逐条 CREATE：缩减写事务内语句数、持锁窗口更短。
+	refs := make([]*model.ArtifactBlob, 0, len(blobRefs))
 	for i, ref := range blobRefs {
 		if ref.BlobID == 0 {
 			continue
 		}
-		ab := &model.ArtifactBlob{
+		refs = append(refs, &model.ArtifactBlob{
 			ArtifactID: artifactID,
 			BlobID:     ref.BlobID,
 			Position:   i,
-		}
-		if err := tx.Create(ab).Error; err != nil {
-			return err
-		}
+		})
 	}
-	return nil
+	if len(refs) == 0 {
+		return nil
+	}
+	return tx.CreateInBatches(refs, 500).Error
 }
 
 func (s *MetadataStore) Delete(ctx context.Context, key runtime.ArtifactKey) error {
