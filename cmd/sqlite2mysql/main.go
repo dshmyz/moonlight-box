@@ -89,6 +89,7 @@ type tableSpec struct {
 	pkIndexes    [][]int      // 主键字段在 struct 中的 Index 路径
 	allCols      []string     // 全部列名
 	fieldIndexes [][]int      // 与 allCols 一一对应的字段 Index 路径（map 插入时按列取值）
+	fieldNotNull []bool       // 与 allCols 一一对应，目标列是否 NOT NULL
 }
 
 func parseSpec(db *gorm.DB, m interface{}) (*tableSpec, error) {
@@ -106,6 +107,7 @@ func parseSpec(db *gorm.DB, m interface{}) (*tableSpec, error) {
 	for _, name := range schema.DBNames {
 		if field := schema.LookUpField(name); field != nil {
 			spec.fieldIndexes = append(spec.fieldIndexes, field.StructField.Index)
+			spec.fieldNotNull = append(spec.fieldNotNull, field.NotNull)
 		} else {
 			return nil, fmt.Errorf("表 %s 找不到列 %s 对应字段", schema.Table, name)
 		}
@@ -235,10 +237,14 @@ func main() {
 			continue
 		}
 		start := time.Now()
-		if err := copyTable(src, dst, spec, *batch, copied); err != nil {
+		fixed, err := copyTable(src, dst, spec, *batch, copied)
+		if err != nil {
 			fatal("复制表 %s 失败（已复制 %d 行，可 -truncate 后重跑）: %v", spec.name, copied[spec.name], err)
 		}
 		fmt.Printf("[完成] %-24s %8d 行  %s\n", spec.name, copied[spec.name], time.Since(start).Round(time.Millisecond))
+		if fixed > 0 {
+			fmt.Printf("[回填] %-24s %d 处空值：NOT NULL 列回填 1970-01-01/零值（SQLite 历史脏数据），可空列置 NULL\n", spec.name, fixed)
+		}
 	}
 
 	// ---- 对账 ----
@@ -272,7 +278,8 @@ func main() {
 }
 
 // copyTable 把一张表从源库复制到目标库，保留主键。主键表 keyset 分页，无主键表 offset 分页。
-func copyTable(src, dst *gorm.DB, spec *tableSpec, batch int, copied map[string]int64) error {
+// 返回本表回填的空值数量（见 insertRows）。
+func copyTable(src, dst *gorm.DB, spec *tableSpec, batch int, copied map[string]int64) (totalFixed int, err error) {
 	if len(spec.pkCols) > 0 {
 		cond := fmt.Sprintf("(%s) > (%s)",
 			strings.Join(spec.pkCols, ", "),
@@ -288,16 +295,18 @@ func copyTable(src, dst *gorm.DB, spec *tableSpec, batch int, copied map[string]
 				q = q.Where(cond, last...)
 			}
 			if err := q.Find(slicePtr.Interface()).Error; err != nil {
-				return err
+				return totalFixed, err
 			}
 			rows := slicePtr.Elem()
 			n := rows.Len()
 			if n == 0 {
-				return nil
+				return totalFixed, nil
 			}
-			if err := insertRows(dst, spec, rows, batch); err != nil {
-				return err
+			fixed, err := insertRows(dst, spec, rows, batch)
+			if err != nil {
+				return fixed, err
 			}
+			totalFixed += fixed
 			row := rows.Index(n - 1)
 			for i, idx := range spec.pkIndexes {
 				last[i] = row.FieldByIndex(idx).Interface()
@@ -305,7 +314,7 @@ func copyTable(src, dst *gorm.DB, spec *tableSpec, batch int, copied map[string]
 			first = false
 			copied[spec.name] += int64(n)
 			if n < batch {
-				return nil
+				return totalFixed, nil
 			}
 		}
 	}
@@ -320,44 +329,69 @@ func copyTable(src, dst *gorm.DB, spec *tableSpec, batch int, copied map[string]
 			Limit(batch).
 			Find(slicePtr.Interface()).Error
 		if err != nil {
-			return err
+			return totalFixed, err
 		}
 		rows := slicePtr.Elem()
 		n := rows.Len()
 		if n == 0 {
-			return nil
+			return totalFixed, nil
 		}
-		if err := insertRows(dst, spec, rows, batch); err != nil {
-			return err
+		fixed, err := insertRows(dst, spec, rows, batch)
+		if err != nil {
+			return totalFixed + fixed, err
 		}
+		totalFixed += fixed
 		offset += n
 		copied[spec.name] += int64(n)
 		if n < batch {
-			return nil
+			return totalFixed, nil
 		}
 	}
 }
 
 // insertRows 按列名 map 写入目标库，不触发模型钩子（BeforeSave/自动时间戳不重跑，数据保真）。
-// 零值 time.Time 归一为 NULL：go-sql-driver 会把 Go 零值时间写成 MySQL 的 '0000-00-00'，
-// 严格模式直接拒绝（Error 1292）；SQLite 中它表示"未设置"，NULL 才是等价语义。
-func insertRows(dst *gorm.DB, spec *tableSpec, rows reflect.Value, batch int) error {
+// 零值/NULL 的处理：
+//   - 可空列：零值 time.Time → NULL。go-sql-driver 会把 Go 零值时间写成 MySQL 的
+//     '0000-00-00'，严格模式直接拒绝（Error 1292）；SQLite 中它表示"未设置"，NULL 才是等价语义。
+//   - NOT NULL 列：SQLite 历史数据里可能存在 NULL/零值（建表早于 not null 约束，SQLite 不追溯），
+//     直接插 NULL 会被 MySQL 拒绝（Error 1048）。回填 1970-01-01 / 类型零值，并计数返回供日志提示。
+func insertRows(dst *gorm.DB, spec *tableSpec, rows reflect.Value, batch int) (fixed int, err error) {
 	n := rows.Len()
 	maps := make([]map[string]interface{}, n)
 	for i := 0; i < n; i++ {
 		row := rows.Index(i)
 		m := make(map[string]interface{}, len(spec.allCols))
 		for j, col := range spec.allCols {
-			v := row.FieldByIndex(spec.fieldIndexes[j]).Interface()
-			if t, ok := v.(time.Time); ok && t.IsZero() {
-				m[col] = nil
-			} else {
-				m[col] = v
+			fv := row.FieldByIndex(spec.fieldIndexes[j])
+			v := fv.Interface()
+			if t, ok := v.(time.Time); ok {
+				if t.IsZero() {
+					if spec.fieldNotNull[j] {
+						m[col] = time.Unix(0, 0)
+						fixed++
+					} else {
+						m[col] = nil
+					}
+				} else {
+					m[col] = t
+				}
+				continue
 			}
+			if v == nil && spec.fieldNotNull[j] {
+				// 指针字段为 nil 但目标列 NOT NULL：回填指向类型的零值
+				if fv.Type().Elem().Kind() == reflect.Struct {
+					m[col] = time.Unix(0, 0)
+				} else {
+					m[col] = reflect.Zero(fv.Type().Elem()).Interface()
+				}
+				fixed++
+				continue
+			}
+			m[col] = v
 		}
 		maps[i] = m
 	}
-	return dst.Table(spec.name).CreateInBatches(&maps, batch).Error
+	return fixed, dst.Table(spec.name).CreateInBatches(&maps, batch).Error
 }
 
 func countRows(db *gorm.DB, table string) (int64, error) {

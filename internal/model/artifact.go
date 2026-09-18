@@ -23,17 +23,22 @@ func (j JSONB) Value() (driver.Value, error) {
 	return json.Marshal(j)
 }
 
-// Scan 实现 sql.Scanner 接口
+// Scan 实现 sql.Scanner 接口。
+// []byte 来自 gorm 写入的 BLOB 存储类；string 来自原始 SQL 写入的 TEXT 存储类
+// （历史数据/外部工具写入的行），两者都必须接受，否则这类行读出来直接报 Scan error。
 func (j *JSONB) Scan(value interface{}) error {
 	if value == nil {
 		*j = nil
 		return nil
 	}
-	bytes, ok := value.([]byte)
-	if !ok {
-		return errors.New("type assertion to []byte failed")
+	switch v := value.(type) {
+	case []byte:
+		return json.Unmarshal(v, j)
+	case string:
+		return json.Unmarshal([]byte(v), j)
+	default:
+		return errors.New("unexpected type for JSONB, expecting []byte or string")
 	}
-	return json.Unmarshal(bytes, j)
 }
 
 // RepositoryMember 仓库成员关系（用于虚拟仓库）
