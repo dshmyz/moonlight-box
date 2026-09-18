@@ -72,10 +72,15 @@ type Artifact struct {
 	RepositoryID uint   `gorm:"not null;index:idx_artifacts_repo;index:idx_artifacts_repo_format_remote_path,priority:1;index:idx_artifacts_repo_format_name,priority:1;index:idx_artifacts_repo_format_name_version,priority:1;index:idx_artifacts_repo_format_filename,priority:1;index:idx_artifacts_repo_format_kind_name_version,priority:1;uniqueIndex:idx_artifact_identity,priority:1" json:"repository_id"`
 	Format       string `gorm:"not null;size:64;index:idx_artifact_format;index:idx_artifacts_repo_format_remote_path,priority:2;index:idx_artifacts_repo_format_name,priority:2;index:idx_artifacts_repo_format_name_version,priority:2;index:idx_artifacts_repo_format_filename,priority:2;index:idx_artifacts_repo_format_kind_name_version,priority:2" json:"format"`
 	Kind         string `gorm:"size:64;index:idx_artifacts_repo_format_kind_name_version,priority:3" json:"kind,omitempty"`
-	IdentityKey  string `gorm:"not null;size:1024;uniqueIndex:idx_artifact_identity,priority:2" json:"identity_key"`
-	Name         string `gorm:"size:512;index:idx_artifact_name;index:idx_artifacts_repo_format_name,priority:3;index:idx_artifacts_repo_format_name_version,priority:3;index:idx_artifacts_repo_format_kind_name_version,priority:4" json:"name,omitempty"`
-	Namespace    string `gorm:"size:512;index:idx_artifact_namespace" json:"namespace,omitempty"`
-	Version      string `gorm:"size:255;index:idx_artifact_version;index:idx_artifacts_repo_format_name_version,priority:4;index:idx_artifacts_repo_format_kind_name_version,priority:5" json:"version,omitempty"`
+	// IdentityKey 1024 字符全列进唯一索引会超 MySQL utf8mb4 3072 字节键长上限
+	// （8 + 1024×4 = 4104 > 3072），加 760 字符前缀（8+3040=3048 ≤ 3072）。
+	// SQLite/PG 忽略 length 前缀，唯一性仍按全列生效。
+	IdentityKey string `gorm:"not null;size:1024;uniqueIndex:idx_artifact_identity,priority:2,length:760" json:"identity_key"`
+	// Name 进 name_version 复合索引的部分加 384 前缀：8+256+1536(+1020) ≤ 3072。
+	Name      string `gorm:"size:512;index:idx_artifact_name;index:idx_artifacts_repo_format_name,priority:3;index:idx_artifacts_repo_format_name_version,priority:3,length:384;index:idx_artifacts_repo_format_kind_name_version,priority:4,length:384" json:"name,omitempty"`
+	Namespace string `gorm:"size:512;index:idx_artifact_namespace" json:"namespace,omitempty"`
+	// Version 进 kind_name_version 复合索引的部分加 191 前缀：8+256+256+1536+764=2820 ≤ 3072。
+	Version string `gorm:"size:255;index:idx_artifact_version;index:idx_artifacts_repo_format_name_version,priority:4;index:idx_artifacts_repo_format_kind_name_version,priority:5,length:191" json:"version,omitempty"`
 	// Path 逻辑分组路径，不含文件名，如 "left-pad/-"、"com/google/guava/guava"
 	Path     string `gorm:"type:text" json:"path,omitempty"`
 	Filename string `gorm:"size:1024;index:idx_artifact_filename,length:512;index:idx_artifacts_repo_format_filename,priority:3,length:512" json:"filename,omitempty"`

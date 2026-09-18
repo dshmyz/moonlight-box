@@ -110,8 +110,11 @@ func VerifyAuditChain(db *gorm.DB, earliestID uint) ([]uint, error) {
 }
 
 type CacheEntry struct {
-	ID             uint       `gorm:"primaryKey" json:"id"`
-	RemoteURL      string     `gorm:"uniqueIndex;not null" json:"remote_url"`
+	ID uint `gorm:"primaryKey" json:"id"`
+	// RemoteURL 不加 size（不限制写入长度），唯一索引用 768 字符前缀：
+	// MySQL 不允许对 longtext 直接建索引（Error 1170）；SQLite/PG 忽略前缀，仍全列唯一。
+	// 注意 length 必须写在 uniqueIndex:索引名 之内（索引选项），独立 tag 会被 gorm 静默忽略。
+	RemoteURL      string     `gorm:"uniqueIndex:idx_cache_entries_remote_url,length:768;not null" json:"remote_url"`
 	LocalKey       string     `gorm:"not null" json:"local_key"`
 	PackageType    string     `gorm:"not null;index" json:"package_type"`
 	ETag           string     `json:"etag,omitempty"`

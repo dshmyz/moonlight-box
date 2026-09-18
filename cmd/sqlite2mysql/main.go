@@ -82,12 +82,13 @@ var logTables = map[string]bool{
 }
 
 type tableSpec struct {
-	name      string
-	model     interface{}
-	modelType reflect.Type // struct type（非指针）
-	pkCols    []string     // 主键列名；无主键模型（artifact_blobs）为空 → offset 分页
-	pkIndexes [][]int      // 主键字段在 struct 中的 Index 路径
-	allCols   []string     // 全部列名（offset 分页时用于确定性排序）
+	name         string
+	model        interface{}
+	modelType    reflect.Type // struct type（非指针）
+	pkCols       []string     // 主键列名；无主键模型（artifact_blobs）为空 → offset 分页
+	pkIndexes    [][]int      // 主键字段在 struct 中的 Index 路径
+	allCols      []string     // 全部列名
+	fieldIndexes [][]int      // 与 allCols 一一对应的字段 Index 路径（map 插入时按列取值）
 }
 
 func parseSpec(db *gorm.DB, m interface{}) (*tableSpec, error) {
@@ -101,6 +102,13 @@ func parseSpec(db *gorm.DB, m interface{}) (*tableSpec, error) {
 		model:     m,
 		modelType: reflect.TypeOf(m).Elem(),
 		allCols:   schema.DBNames,
+	}
+	for _, name := range schema.DBNames {
+		if field := schema.LookUpField(name); field != nil {
+			spec.fieldIndexes = append(spec.fieldIndexes, field.StructField.Index)
+		} else {
+			return nil, fmt.Errorf("表 %s 找不到列 %s 对应字段", schema.Table, name)
+		}
 	}
 	for _, f := range schema.PrimaryFields {
 		spec.pkCols = append(spec.pkCols, f.DBName)
@@ -287,7 +295,7 @@ func copyTable(src, dst *gorm.DB, spec *tableSpec, batch int, copied map[string]
 			if n == 0 {
 				return nil
 			}
-			if err := dst.CreateInBatches(rows.Interface(), batch).Error; err != nil {
+			if err := insertRows(dst, spec, rows, batch); err != nil {
 				return err
 			}
 			row := rows.Index(n - 1)
@@ -319,7 +327,7 @@ func copyTable(src, dst *gorm.DB, spec *tableSpec, batch int, copied map[string]
 		if n == 0 {
 			return nil
 		}
-		if err := dst.CreateInBatches(rows.Interface(), batch).Error; err != nil {
+		if err := insertRows(dst, spec, rows, batch); err != nil {
 			return err
 		}
 		offset += n
@@ -328,6 +336,28 @@ func copyTable(src, dst *gorm.DB, spec *tableSpec, batch int, copied map[string]
 			return nil
 		}
 	}
+}
+
+// insertRows 按列名 map 写入目标库，不触发模型钩子（BeforeSave/自动时间戳不重跑，数据保真）。
+// 零值 time.Time 归一为 NULL：go-sql-driver 会把 Go 零值时间写成 MySQL 的 '0000-00-00'，
+// 严格模式直接拒绝（Error 1292）；SQLite 中它表示"未设置"，NULL 才是等价语义。
+func insertRows(dst *gorm.DB, spec *tableSpec, rows reflect.Value, batch int) error {
+	n := rows.Len()
+	maps := make([]map[string]interface{}, n)
+	for i := 0; i < n; i++ {
+		row := rows.Index(i)
+		m := make(map[string]interface{}, len(spec.allCols))
+		for j, col := range spec.allCols {
+			v := row.FieldByIndex(spec.fieldIndexes[j]).Interface()
+			if t, ok := v.(time.Time); ok && t.IsZero() {
+				m[col] = nil
+			} else {
+				m[col] = v
+			}
+		}
+		maps[i] = m
+	}
+	return dst.Table(spec.name).CreateInBatches(&maps, batch).Error
 }
 
 func countRows(db *gorm.DB, table string) (int64, error) {

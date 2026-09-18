@@ -30,10 +30,12 @@ func (Package) TableName() string {
 // PackageVersion 版本级聚合索引表，用于快速查询包详情页的版本列表。
 // Source of truth 仍然是 artifacts；本表可从 artifacts 重建。
 type PackageVersion struct {
-	ID               uint       `gorm:"primaryKey" json:"id"`
-	RepositoryID     uint       `gorm:"not null;uniqueIndex:idx_pkg_ver_repo_format_name_version,priority:1;index:idx_pkg_ver_repo_format_name_updated,priority:1;index:idx_pkg_ver_repo_format_name_published,priority:1" json:"repository_id"`
-	Format           string     `gorm:"not null;size:64;uniqueIndex:idx_pkg_ver_repo_format_name_version,priority:2;index:idx_pkg_ver_repo_format_name_updated,priority:2;index:idx_pkg_ver_repo_format_name_published,priority:2" json:"format"`
-	PackageName      string     `gorm:"not null;size:512;uniqueIndex:idx_pkg_ver_repo_format_name_version,priority:3;index:idx_pkg_ver_repo_format_name_updated,priority:3;index:idx_pkg_ver_repo_format_name_published,priority:3" json:"package_name"`
+	ID           uint   `gorm:"primaryKey" json:"id"`
+	RepositoryID uint   `gorm:"not null;uniqueIndex:idx_pkg_ver_repo_format_name_version,priority:1;index:idx_pkg_ver_repo_format_name_updated,priority:1;index:idx_pkg_ver_repo_format_name_published,priority:1" json:"repository_id"`
+	Format       string `gorm:"not null;size:64;uniqueIndex:idx_pkg_ver_repo_format_name_version,priority:2;index:idx_pkg_ver_repo_format_name_updated,priority:2;index:idx_pkg_ver_repo_format_name_published,priority:2" json:"format"`
+	// PackageName 进唯一索引的部分加 384 前缀：MySQL utf8mb4 下 8+256+1536+1020=2820 ≤ 3072
+	// （全列 512×4 会超 MySQL 3072 字节键长上限；SQLite/PG 忽略前缀，仍全列唯一）。
+	PackageName      string     `gorm:"not null;size:512;uniqueIndex:idx_pkg_ver_repo_format_name_version,priority:3,length:384;index:idx_pkg_ver_repo_format_name_updated,priority:3;index:idx_pkg_ver_repo_format_name_published,priority:3" json:"package_name"`
 	Namespace        string     `gorm:"size:512;index:idx_package_version_namespace" json:"namespace,omitempty"`
 	Version          string     `gorm:"not null;size:255;uniqueIndex:idx_pkg_ver_repo_format_name_version,priority:4;index:idx_package_version_version" json:"version"`
 	Status           string     `gorm:"not null;size:32;default:published;index:idx_package_version_status" json:"status"`
