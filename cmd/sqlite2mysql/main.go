@@ -18,6 +18,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -28,6 +29,8 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/database"
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/domain"
 	"github.com/dshmyz/moonlight-box/internal/model"
+
+	gormschema "gorm.io/gorm/schema"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/sqlite"
@@ -84,12 +87,13 @@ var logTables = map[string]bool{
 type tableSpec struct {
 	name         string
 	model        interface{}
-	modelType    reflect.Type // struct type（非指针）
-	pkCols       []string     // 主键列名；无主键模型（artifact_blobs）为空 → offset 分页
-	pkIndexes    [][]int      // 主键字段在 struct 中的 Index 路径
-	allCols      []string     // 全部列名
-	fieldIndexes [][]int      // 与 allCols 一一对应的字段 Index 路径（map 插入时按列取值）
-	fieldNotNull []bool       // 与 allCols 一一对应，目标列是否 NOT NULL
+	modelType    reflect.Type        // struct type（非指针）
+	pkCols       []string            // 主键列名；无主键模型（artifact_blobs）为空 → offset 分页
+	pkIndexes    [][]int             // 主键字段在 struct 中的 Index 路径
+	allCols      []string            // 全部列名
+	fieldIndexes [][]int             // 与 allCols 一一对应的字段 Index 路径（map 插入时按列取值）
+	fieldNotNull []bool              // 与 allCols 一一对应，目标列是否 NOT NULL
+	fields       []*gormschema.Field // 与 allCols 一一对应，含 Serializer 等元信息
 }
 
 func parseSpec(db *gorm.DB, m interface{}) (*tableSpec, error) {
@@ -108,6 +112,7 @@ func parseSpec(db *gorm.DB, m interface{}) (*tableSpec, error) {
 		if field := schema.LookUpField(name); field != nil {
 			spec.fieldIndexes = append(spec.fieldIndexes, field.StructField.Index)
 			spec.fieldNotNull = append(spec.fieldNotNull, field.NotNull)
+			spec.fields = append(spec.fields, field)
 		} else {
 			return nil, fmt.Errorf("表 %s 找不到列 %s 对应字段", schema.Table, name)
 		}
@@ -364,6 +369,15 @@ func insertRows(dst *gorm.DB, spec *tableSpec, rows reflect.Value, batch int) (f
 		for j, col := range spec.allCols {
 			fv := row.FieldByIndex(spec.fieldIndexes[j])
 			v := fv.Interface()
+			// 带 serializer:json 的字段（如 Repository.Config）：map 插入会绕过 gorm
+			// 的序列化器，必须手动调用，否则 struct 直接丢给驱动报 unsupported type
+			if f := spec.fields[j]; f.Serializer != nil && v != nil {
+				encoded, serr := f.Serializer.Value(context.Background(), f, reflect.Value{}, v)
+				if serr != nil {
+					return fixed, fmt.Errorf("表 %s 列 %s 序列化失败: %w", spec.name, col, serr)
+				}
+				v = encoded
+			}
 			if t, ok := v.(time.Time); ok {
 				if t.IsZero() {
 					if spec.fieldNotNull[j] {

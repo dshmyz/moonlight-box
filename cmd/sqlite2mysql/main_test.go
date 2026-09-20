@@ -118,3 +118,50 @@ func TestCopyTableBackfillsNullTimes(t *testing.T) {
 		t.Errorf("normal row CreatedAt 被误判为零值")
 	}
 }
+
+// Repository.Config 带 serializer:json：map 插入会绕过 gorm 序列化器，
+// 必须手动调用，否则裸 struct 丢给驱动报 unsupported type。
+func TestCopyTableSerializesJSONFields(t *testing.T) {
+	src := openTestDB(t, "src.db")
+	dst := openTestDB(t, "dst.db")
+	for _, db := range []*gorm.DB{src, dst} {
+		if err := db.AutoMigrate(&model.Repository{}); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+	}
+	// Config 非 nil
+	withConfig := model.Repository{Name: "npm-proxy", Type: model.RepoTypeProxy, PackageType: "npm",
+		Config: &model.RepositoryConfig{RemoteURL: "https://registry.npmjs.org"}}
+	if err := src.Create(&withConfig).Error; err != nil {
+		t.Fatalf("seed with config: %v", err)
+	}
+	// Config 为 nil（指针空值 → NULL）
+	noConfig := model.Repository{Name: "raw-hosted", Type: model.RepoTypeLocal, PackageType: "raw"}
+	if err := src.Create(&noConfig).Error; err != nil {
+		t.Fatalf("seed without config: %v", err)
+	}
+
+	spec, err := parseSpec(src, &model.Repository{})
+	if err != nil {
+		t.Fatalf("parseSpec: %v", err)
+	}
+	copied := make(map[string]int64)
+	if _, err := copyTable(src, dst, spec, 1, copied); err != nil {
+		t.Fatalf("copyTable: %v", err)
+	}
+
+	var got model.Repository
+	if err := dst.Where("name = ?", "npm-proxy").First(&got).Error; err != nil {
+		t.Fatalf("load with-config repo: %v", err)
+	}
+	if got.Config == nil || got.Config.RemoteURL != "https://registry.npmjs.org" {
+		t.Errorf("Config roundtrip 失败: %+v", got.Config)
+	}
+	var noCfg model.Repository
+	if err := dst.Where("name = ?", "raw-hosted").First(&noCfg).Error; err != nil {
+		t.Fatalf("load no-config repo: %v", err)
+	}
+	if noCfg.Config != nil {
+		t.Errorf("nil Config 应保持 NULL，得到: %+v", noCfg.Config)
+	}
+}
