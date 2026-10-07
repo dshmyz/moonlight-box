@@ -161,12 +161,14 @@ func TestGroupQueryArtifactsPriorityShortCircuit(t *testing.T) {
 	}
 
 	artifacts, err := group.QueryArtifacts(context.Background(), ArtifactQuery{
-		Format: "npm",
+		Format:     "npm",
+		Name:       "lodash",
+		RemotePath: "lodash",
 	})
 	if err != nil {
 		t.Fatalf("QueryArtifacts failed: %v", err)
 	}
-	// 方案 C：只返回第一个有结果的成员
+	// 带身份字段的具体路径查询：优先级短路，只返回第一个有结果的成员
 	if len(artifacts) != 1 {
 		t.Fatalf("expected 1 artifact from priority member, got %d", len(artifacts))
 	}
@@ -196,11 +198,12 @@ func TestGroupQueryArtifactsSkipsEmptyMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueryArtifacts failed: %v", err)
 	}
-	if len(artifacts) != 1 {
-		t.Fatalf("expected 1 artifact, got %d", len(artifacts))
+	// 无具体路径的列表查询：聚合所有成员，空成员被跳过
+	if len(artifacts) != 2 {
+		t.Fatalf("expected 2 artifacts from remaining members, got %d", len(artifacts))
 	}
-	if artifacts[0].Name != "express" {
-		t.Fatalf("expected 'express' from second member, got %q", artifacts[0].Name)
+	if artifacts[0].Name != "express" || artifacts[1].Name != "axios" {
+		t.Fatalf("expected ['express','axios'], got [%q,%q]", artifacts[0].Name, artifacts[1].Name)
 	}
 }
 
@@ -245,7 +248,9 @@ func TestGroupQueryArtifactsReturnsNotFoundWhenAllEmpty(t *testing.T) {
 	}
 }
 
-func TestGroupQueryArtifactsRemotePathPriorityShortCircuit(t *testing.T) {
+// TestGroupQueryArtifactsAggregatesPureRemotePathListing 验证纯 RemotePath
+// 无身份字段的查询（如 PyPI simple/ 仓库级索引）聚合所有成员。
+func TestGroupQueryArtifactsAggregatesPureRemotePathListing(t *testing.T) {
 	group := &GroupRuntime{
 		Members: []RepositoryNode{
 			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
@@ -263,16 +268,16 @@ func TestGroupQueryArtifactsRemotePathPriorityShortCircuit(t *testing.T) {
 
 	artifacts, err := group.QueryArtifacts(context.Background(), ArtifactQuery{
 		Format:     "pypi",
-		RemotePath: "simple/requests/",
+		RemotePath: "simple/",
 	})
 	if err != nil {
 		t.Fatalf("QueryArtifacts failed: %v", err)
 	}
-	if len(artifacts) != 1 {
-		t.Fatalf("expected 1 artifact from priority member, got %d", len(artifacts))
+	if len(artifacts) != 2 {
+		t.Fatalf("expected 2 artifacts aggregated across members, got %d", len(artifacts))
 	}
-	if artifacts[0].Name != "requests" {
-		t.Fatalf("expected 'requests', got %q", artifacts[0].Name)
+	if artifacts[0].Name != "requests" || artifacts[1].Name != "flask" {
+		t.Fatalf("expected ['requests','flask'], got [%q,%q]", artifacts[0].Name, artifacts[1].Name)
 	}
 }
 
@@ -303,12 +308,12 @@ func TestGroupQueryArtifactsAggregatesRemotePathWithStructuredFields(t *testing.
 	if err != nil {
 		t.Fatalf("QueryArtifacts failed: %v", err)
 	}
-	// 方案 C：优先级短路，只返回第一个成员的 results
-	if len(artifacts) != 1 {
-		t.Fatalf("expected 1 artifact from priority member, got %d", len(artifacts))
+	// Kind metadata 的投影查询聚合所有成员
+	if len(artifacts) != 2 {
+		t.Fatalf("expected 2 artifacts aggregated across members, got %d", len(artifacts))
 	}
-	if artifacts[0].Name != "requests" {
-		t.Fatalf("expected 'requests', got %q", artifacts[0].Name)
+	if artifacts[0].Name != "requests" || artifacts[1].Name != "flask" {
+		t.Fatalf("expected ['requests','flask'], got [%q,%q]", artifacts[0].Name, artifacts[1].Name)
 	}
 }
 
@@ -346,12 +351,47 @@ func TestGroupQueryArtifactsAggregatesMavenMetadataAcrossMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueryArtifacts failed: %v", err)
 	}
-	// 方案 C：优先级短路，只返回第一个成员的版本
-	if len(artifacts) != 1 {
-		t.Fatalf("expected 1 version from priority member, got %d", len(artifacts))
+	// maven-metadata.xml 投影查询聚合所有成员的版本
+	if len(artifacts) != 2 {
+		t.Fatalf("expected 2 versions aggregated across members, got %d", len(artifacts))
 	}
-	if artifacts[0].Version != "31.1-jre" {
-		t.Fatalf("expected '31.1-jre', got %q", artifacts[0].Version)
+	if artifacts[0].Version != "31.1-jre" || artifacts[1].Version != "32.1.2-jre" {
+		t.Fatalf("expected ['31.1-jre','32.1.2-jre'], got [%q,%q]", artifacts[0].Version, artifacts[1].Version)
+	}
+}
+
+// TestGroupQueryArtifactsDedupesSameVersionAcrossMembers 验证同名同版本
+// 在多个成员中只保留先出现成员（hosted 优先）的一条。
+func TestGroupQueryArtifactsDedupesSameVersionAcrossMembers(t *testing.T) {
+	group := &GroupRuntime{
+		Members: []RepositoryNode{
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
+				Format:     "maven",
+				Kind:       KindVersion,
+				Name:       "com.example:app",
+				Version:    "1.0.0",
+				RemotePath: "com/example/app/1.0.0/app-1.0.0.pom",
+			})}},
+			&groupQueryNode{artifacts: []*Artifact{NewArtifact(ArtifactSpec{
+				Format:     "maven",
+				Kind:       KindVersion,
+				Name:       "com.example:app",
+				Version:    "1.0.0",
+				RemotePath: "com/example/app/1.0.0/app-1.0.0.pom",
+			})}},
+		},
+	}
+
+	artifacts, err := group.QueryArtifacts(context.Background(), ArtifactQuery{
+		Format:     "maven",
+		Name:       "com.example:app",
+		RemotePath: "com/example/app/maven-metadata.xml",
+	})
+	if err != nil {
+		t.Fatalf("QueryArtifacts failed: %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 artifact after dedupe, got %d", len(artifacts))
 	}
 }
 
