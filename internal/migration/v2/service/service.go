@@ -11,6 +11,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/scheduler"
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/source"
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/source/nexus"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"gorm.io/gorm"
 )
 
@@ -111,7 +112,7 @@ func (s *MigrationServiceV2) ScanPlan(ctx context.Context, planID uint) error {
 	s.planRepo.UpdateStatus(planID, domain.PlanScanning)
 	s.planRepo.UpdateStage(planID, domain.StageScan)
 
-	go s.runScan(plan)
+	util.SafeGo("migration.runScan", func() { s.runScan(plan) })
 	return nil
 }
 

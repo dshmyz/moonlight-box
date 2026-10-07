@@ -5,6 +5,8 @@ import (
 	"hash/fnv"
 	"sync"
 	"time"
+
+	"github.com/dshmyz/moonlight-box/internal/util"
 )
 
 type Item struct {
@@ -90,7 +92,10 @@ func NewMemoryCacheWithOptions(opts MemoryCacheOptions) *MemoryCache {
 	}
 
 	c.cleaner = time.NewTicker(5 * time.Minute)
-	go c.startCleaner()
+	go func() {
+		defer util.RecoverPanic("cache.cleaner")
+		c.startCleaner()
+	}()
 
 	return c
 }

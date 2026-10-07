@@ -49,6 +49,7 @@ import (
 	"sync"
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/mod/semver"
 )
@@ -197,7 +198,8 @@ func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string)
 	var wg sync.WaitGroup
 	for _, a := range artifacts[infoStart:] {
 		wg.Add(1)
-		go func(art *runtime.Artifact) {
+		art := a
+		util.SafeGo("plugin.go.fetch-info", func() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -207,7 +209,7 @@ func (p *GoPlugin) fetchVersionList(ctx context.Context, remoteURL, path string)
 			if err == nil && info.Time != "" {
 				art.Attributes["published_at"] = info.Time
 			}
-		}(a)
+		})
 	}
 	wg.Wait()
 

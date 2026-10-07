@@ -15,6 +15,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/ai/models"
 	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/util"
 )
 
 // defaultAITimeout 在配置未指定 ai.timeout 时的兜底超时。
@@ -187,7 +188,7 @@ func (c *AIClient) Stream(ctx context.Context, req *models.ChatRequest) (<-chan 
 	}
 
 	// 启动goroutine读取流式响应
-	go func() {
+	util.SafeGo("ai.stream-reader", func() {
 		defer close(ch)
 		defer resp.Body.Close()
 
@@ -239,7 +240,7 @@ func (c *AIClient) Stream(ctx context.Context, req *models.ChatRequest) (<-chan 
 			case <-ctx.Done():
 			}
 		}
-	}()
+	})
 
 	return ch, nil
 }

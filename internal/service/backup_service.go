@@ -14,6 +14,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 )
 
@@ -77,10 +78,10 @@ func (s *BackupService) CreateBackup(name string, backupType model.BackupType, d
 	}).Info("Backup created, starting execution")
 
 	s.wg.Add(1)
-	go func() {
+	util.SafeGo("service.backup.execute", func() {
 		defer s.wg.Done()
 		s.executeBackup(backup)
-	}()
+	})
 
 	return backup, nil
 }

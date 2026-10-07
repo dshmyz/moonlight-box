@@ -14,6 +14,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/core/cache"
 	"github.com/dshmyz/moonlight-box/internal/metrics"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
 )
@@ -616,7 +617,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 		if time.Since(oldest) > n.CachePolicy.MetadataTTL {
 			if n.Fetcher != nil && n.RemoteBaseURL != "" && query.RemotePath != "" {
 				if n.tryRefreshPath(query.RemotePath) {
-					go func() {
+					util.SafeGo("runtime.proxy.swr-refresh", func() {
 						defer n.doneRefreshPath(query.RemotePath)
 						// 用带超时的独立 context，避免请求结束后父 ctx 取消导致刷新中断；
 						// 同时限制超时防止 FetchRemote 挂起泄漏 goroutine 和 refreshingPaths 槽位。
@@ -650,7 +651,7 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 							metrics.RecordProxyFetch(n.Format, "error", fetchDuration)
 							logrus.WithError(fetchErr).Warn("QueryArtifacts: background refresh failed")
 						}
-					}()
+					})
 				}
 				metrics.RecordProxyStaleServed(n.Format)
 				return n.filterBlockedArtifacts(artifacts), nil
@@ -1439,7 +1440,8 @@ func (n *ProxyRuntime) WarmUp() {
 	}).Info("proxy: warm-up triggered, refreshing stale metadata")
 
 	for _, e := range staleEntries {
-		go func(key ArtifactKey, art *Artifact) {
+		key, art := e.key, e.art
+		util.SafeGo("runtime.proxy.warmup", func() {
 			refreshCtx, cancel := context.WithTimeout(context.Background(), backgroundRefreshTimeout)
 			defer cancel()
 			if err := n.refreshStaleMetadata(refreshCtx, art, key); err != nil {
@@ -1448,6 +1450,6 @@ func (n *ProxyRuntime) WarmUp() {
 					"error": err.Error(),
 				}).Debug("proxy: warm-up refresh failed")
 			}
-		}(e.key, e.art)
+		})
 	}
 }

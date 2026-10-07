@@ -14,6 +14,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/config"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -518,7 +519,7 @@ func (s *AIService) StreamChat(ctx context.Context, userID uint, sessionID strin
 	req := s.buildChatRequest(session, user)
 
 	// 启动goroutine处理流式响应
-	go func() {
+	util.SafeGo("ai.stream", func() {
 		defer close(output)
 
 		// 设置流式标志
@@ -722,7 +723,7 @@ func (s *AIService) StreamChat(ctx context.Context, userID uint, sessionID strin
 				return
 			}
 		}
-	}()
+	})
 
 	return output, nil
 }

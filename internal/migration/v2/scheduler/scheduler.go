@@ -11,6 +11,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/planner"
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/repository"
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/source/nexus"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -57,7 +58,7 @@ func (s *Scheduler) StartPlan(planID uint) error {
 	s.active[planID] = cancel
 	s.mu.Unlock()
 
-	go s.runPlan(ctx, plan)
+	util.SafeGo("migration.runPlan", func() { s.runPlan(ctx, plan) })
 	return nil
 }
 
@@ -77,7 +78,7 @@ func (s *Scheduler) StartPlanStreaming(planID uint) error {
 	s.active[planID] = cancel
 	s.mu.Unlock()
 
-	go s.runPlanStreaming(ctx, plan)
+	util.SafeGo("migration.runPlanStreaming", func() { s.runPlanStreaming(ctx, plan) })
 	return nil
 }
 
@@ -115,7 +116,7 @@ func (s *Scheduler) ResumePlan(planID uint) error {
 	s.active[planID] = cancel
 	s.mu.Unlock()
 
-	go s.runPlan(ctx, plan)
+	util.SafeGo("migration.runPlan", func() { s.runPlan(ctx, plan) })
 	return nil
 }
 
@@ -156,7 +157,7 @@ func (s *Scheduler) RetryFailedJobs(planID uint) error {
 	s.eventRepo.Log(planID, domain.LevelInfo, domain.EventRetryScheduled,
 		fmt.Sprintf("Retrying %d failed jobs", len(jobs)), nil, nil)
 
-	go s.runPlan(context.Background(), plan)
+	util.SafeGo("migration.runPlan.retry", func() { s.runPlan(context.Background(), plan) })
 	return nil
 }
 
@@ -223,7 +224,8 @@ func (s *Scheduler) runPlan(ctx context.Context, plan *domain.MigrationPlan) {
 		}
 
 		wg.Add(1)
-		go func(j domain.MigrationJob) {
+		j := job
+		util.SafeGo("migration.execJob", func() {
 			defer wg.Done()
 			defer func() { <-sem }()
 
@@ -232,7 +234,7 @@ func (s *Scheduler) runPlan(ctx context.Context, plan *domain.MigrationPlan) {
 				failedCount++
 				mu.Unlock()
 			}
-		}(job)
+		})
 	}
 
 	wg.Wait()
@@ -306,13 +308,13 @@ func (s *Scheduler) runPlanStreaming(ctx context.Context, plan *domain.Migration
 		err error
 		mu  sync.Mutex
 	}
-	go func() {
+	util.SafeGo("migration.scanStreaming", func() {
 		p := planner.New(ns, plan.ID, scope, s.jobRepo, s.itemRepo, s.eventRepo)
 		err := p.ScanStreaming(ctx, itemReady)
 		scanResult.mu.Lock()
 		scanResult.err = err
 		scanResult.mu.Unlock()
-	}()
+	})
 
 	// Goroutine 2: Executor - listens for new items and executes artifact_copy jobs
 	sem := make(chan struct{}, s.maxConcurrent)
@@ -338,7 +340,8 @@ func (s *Scheduler) runPlanStreaming(ctx context.Context, plan *domain.Migration
 
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(j domain.MigrationJob) {
+		j := *job
+		util.SafeGo("migration.execJob", func() {
 			defer wg.Done()
 			defer func() { <-sem }()
 
@@ -347,7 +350,7 @@ func (s *Scheduler) runPlanStreaming(ctx context.Context, plan *domain.Migration
 				failedCount++
 				mu.Unlock()
 			}
-		}(*job)
+		})
 	}
 
 	wg.Wait()

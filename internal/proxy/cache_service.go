@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dshmyz/moonlight-box/internal/util"
 )
 
 type cacheEntry struct {
@@ -114,12 +116,13 @@ func (c *CacheService) Invalidate(ctx context.Context, pattern string) error {
 
 	for _, shard := range c.shards {
 		wg.Add(1)
-		go func(s *CacheShard) {
+		s := shard
+		util.SafeGo("proxy.cache-shard.invalidate", func() {
 			defer wg.Done()
 			if err := s.invalidate(pattern); err != nil {
 				errChan <- err
 			}
-		}(shard)
+		})
 	}
 
 	wg.Wait()

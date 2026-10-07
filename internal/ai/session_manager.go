@@ -6,6 +6,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/ai/models"
 	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/google/uuid"
 )
 
@@ -38,7 +39,7 @@ func NewSessionManager(cfg *config.AISessionConfig) *SessionManager {
 	}
 
 	// 启动定期清理协程
-	go sm.cleanupLoop()
+	util.SafeGo("ai.session.cleanup", func() { sm.cleanupLoop() })
 
 	return sm
 }

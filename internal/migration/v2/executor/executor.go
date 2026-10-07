@@ -349,12 +349,13 @@ func (m *ExecutorManager) executeArtifactCopy(ctx context.Context, job *domain.M
 			continue
 		}
 		sem <- struct{}{}
-		go func(it domain.MigrationItem) {
+		it := item
+		util.SafeGo("migration.execItem", func() {
 			defer func() { <-sem }()
 			if execErr := m.executeItem(ctx, job.PlanID, &it); execErr != nil {
 				errCh <- execErr
 			}
-		}(item)
+		})
 	}
 
 	for i := 0; i < m.concurrency; i++ {

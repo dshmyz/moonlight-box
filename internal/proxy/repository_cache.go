@@ -10,6 +10,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -301,7 +302,7 @@ func (c *RepositoryCache) StartCleanup(interval time.Duration) {
 		interval = 1 * time.Minute
 	}
 
-	go func() {
+	util.SafeGo("proxy.repo-cache.cleanup", func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -314,7 +315,7 @@ func (c *RepositoryCache) StartCleanup(interval time.Duration) {
 				return
 			}
 		}
-	}()
+	})
 }
 
 func (c *RepositoryCache) Stop() {

@@ -11,6 +11,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/proxy"
 	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"gorm.io/gorm"
 )
 
@@ -96,7 +97,7 @@ func NewDashboardService(db *gorm.DB, repoRepo *repository.RepositoryRepository,
 	}
 
 	// 启动后台任务定期计算目录大小
-	go svc.storageSizeWorker()
+	util.SafeGo("service.dashboard.storage-size", func() { svc.storageSizeWorker() })
 
 	return svc
 }

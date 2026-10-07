@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/util"
 )
 
 // RateLimiter 限制用户请求频率和Token使用量
@@ -51,7 +52,7 @@ func NewRateLimiter(cfg *config.AIRateLimitConfig) *RateLimiter {
 	}
 
 	// 启动定期清理协程
-	go rl.cleanupLoop()
+	util.SafeGo("ai.rate-limiter.cleanup", func() { rl.cleanupLoop() })
 
 	return rl
 }

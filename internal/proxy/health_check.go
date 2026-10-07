@@ -13,6 +13,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"gorm.io/gorm"
 )
 
@@ -113,7 +114,7 @@ func (h *HealthCheckService) Start() {
 	h.stopCh = make(chan struct{})
 
 	slog.Info("starting health check service", "interval", h.config.Interval)
-	go h.runHealthChecks()
+	util.SafeGo("proxy.healthcheck.loop", func() { h.runHealthChecks() })
 }
 
 // Stop 停止健康检查服务
@@ -336,7 +337,8 @@ func (h *HealthCheckService) checkRepoHealth(repo *model.Repository) {
 		// 检测恢复：断路器从 open/half_open 转为 closed，触发缓存预热
 		if (prevState == CircuitOpen || prevState == CircuitHalfOpen) && cb.GetState() == CircuitClosed {
 			if h.OnRecovery != nil {
-				go h.OnRecovery(repo.ID)
+				repoID := repo.ID
+				util.SafeGo("proxy.healthcheck.recovery", func() { h.OnRecovery(repoID) })
 			}
 		}
 		slog.Debug("health check passed",

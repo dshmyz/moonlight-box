@@ -10,6 +10,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/domain"
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/repository"
 	"github.com/dshmyz/moonlight-box/internal/migration/v2/source"
+	"github.com/dshmyz/moonlight-box/internal/util"
 )
 
 // Planner builds migration jobs and items from source scanning.
@@ -235,10 +236,11 @@ func (p *Planner) scanRepositories(ctx context.Context, repos []source.SourceRep
 	if len(needsDetail) > 0 {
 		results := make(chan repoDetail, len(needsDetail))
 		for i := range needsDetail {
-			go func(idx int, r source.SourceRepository) {
+			idx, r := i, repos[i]
+			util.SafeGo("migration.repo-detail", func() {
 				d, err := p.src.GetRepositoryDetail(ctx, r.Format, r.Type, r.Name)
 				results <- repoDetail{detail: d, err: err, repoIndex: idx}
-			}(i, repos[i])
+			})
 		}
 		for range needsDetail {
 			r := <-results

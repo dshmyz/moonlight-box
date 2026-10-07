@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 )
 
@@ -124,7 +125,7 @@ func (s *SchedulerService) ScheduleBackupFromConfig() error {
 	cancelCh := make(chan struct{})
 	s.cancelChs["daily_backup"] = cancelCh
 
-	go func() {
+	util.SafeGo("scheduler.daily_backup", func() {
 		// 先等待到首次备份时间，再开始按 ticker 周期执行
 		select {
 		case <-time.After(initialDelay):
@@ -149,7 +150,7 @@ func (s *SchedulerService) ScheduleBackupFromConfig() error {
 				return
 			}
 		}
-	}()
+	})
 
 	return nil
 }
@@ -169,7 +170,7 @@ func (s *SchedulerService) scheduleBackupWithInterval(interval time.Duration) er
 	cancelCh := make(chan struct{})
 	s.cancelChs["daily_backup"] = cancelCh
 
-	go func() {
+	util.SafeGo("scheduler.daily_backup_interval", func() {
 		// 立即执行一次
 		s.performBackup()
 
@@ -185,7 +186,7 @@ func (s *SchedulerService) scheduleBackupWithInterval(interval time.Duration) er
 				return
 			}
 		}
-	}()
+	})
 
 	logrus.WithField("interval", interval).Info("Scheduled backup with interval")
 	return nil
@@ -281,7 +282,7 @@ func (s *SchedulerService) ScheduleConfigSync() {
 	cancelCh := make(chan struct{})
 	s.cancelChs["config_sync"] = cancelCh
 
-	go func() {
+	util.SafeGo("scheduler.config_sync", func() {
 		for {
 			select {
 			case <-ticker.C:
@@ -294,7 +295,7 @@ func (s *SchedulerService) ScheduleConfigSync() {
 				return
 			}
 		}
-	}()
+	})
 
 	logrus.Info("Scheduled config sync task")
 }
@@ -317,7 +318,7 @@ func (s *SchedulerService) ScheduleCustomTask(name string, interval time.Duratio
 	cancelCh := make(chan struct{})
 	s.cancelChs[name] = cancelCh
 
-	go func() {
+	util.SafeGo("scheduler.custom."+name, func() {
 		for {
 			select {
 			case <-ticker.C:
@@ -330,7 +331,7 @@ func (s *SchedulerService) ScheduleCustomTask(name string, interval time.Duratio
 				return
 			}
 		}
-	}()
+	})
 
 	logrus.WithFields(logrus.Fields{
 		"task":     name,

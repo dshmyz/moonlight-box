@@ -14,6 +14,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 )
 
@@ -59,7 +60,7 @@ func NewWebhookService(webhookRepo *repository.WebhookRepository) *WebhookServic
 			"count":  n,
 		}).Info("Requeued stuck deliveries on startup")
 	}
-	go s.workerLoop()
+	util.SafeGo("webhook.worker", func() { s.workerLoop() })
 	// 若有恢复的任务，通知 worker 立即处理，避免等待首次轮询
 	if requeued > 0 {
 		s.notifyWorker()

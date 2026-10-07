@@ -12,6 +12,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/repository"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -424,7 +425,7 @@ func (s *SecurityScanner) dispatchScan(ctx context.Context, versionID uint, pkgT
 	if scanPackage == nil {
 		scanPackage = s.ScanPackage
 	}
-	go func() {
+	util.SafeGo("service.scan.async", func() {
 		if s.scanSlots != nil {
 			// ctx 在等 scanSem 时取消也要释放队列槽位
 			defer func() { <-s.scanSlots }()
@@ -438,7 +439,7 @@ func (s *SecurityScanner) dispatchScan(ctx context.Context, versionID uint, pkgT
 			}
 		}
 		scanPackage(ctx, versionID, pkgType, name, version)
-	}()
+	})
 }
 
 func (s *SecurityScanner) GetScanResult(versionID uint) (*model.ScanResult, error) {
