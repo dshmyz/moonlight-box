@@ -61,8 +61,8 @@ func Initialize(cfg *config.Config) error {
 	if cfg.Database.Driver == "sqlite" {
 		// WAL 模式支持多读单写，允许多个读连接并发。
 		// 写串行由 DSN 中的 _txlock=immediate 保证，不会产生写冲突。
-		sqlDB.SetMaxOpenConns(4)
-		sqlDB.SetMaxIdleConns(2)
+		sqlDB.SetMaxOpenConns(16)
+		sqlDB.SetMaxIdleConns(8)
 		sqlDB.SetConnMaxLifetime(time.Hour)
 		sqlDB.SetConnMaxIdleTime(30 * time.Minute)
 
@@ -72,7 +72,7 @@ func Initialize(cfg *config.Config) error {
 		sqlDB.Exec("PRAGMA temp_store=MEMORY")
 		sqlDB.Exec("PRAGMA mmap_size=268435456")
 		sqlDB.Exec("PRAGMA wal_autocheckpoint=1000")
-		sqlDB.Exec("PRAGMA busy_timeout=30000")
+		sqlDB.Exec("PRAGMA busy_timeout=5000")
 	} else {
 		sqlDB.SetMaxOpenConns(cfg.Database.MaxOpenConns)
 		sqlDB.SetMaxIdleConns(cfg.Database.MaxIdleConns)

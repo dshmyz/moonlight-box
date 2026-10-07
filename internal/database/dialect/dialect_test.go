@@ -80,7 +80,7 @@ func TestSQLiteDSNWithPragmas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SQLiteDSNWithPragmas() error = %v", err)
 	}
-	want := "./data/registry.db?_journal_mode=WAL&_busy_timeout=30000&_txlock=immediate"
+	want := "./data/registry.db?_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
 	if got != want {
 		t.Fatalf("SQLiteDSNWithPragmas() = %q, want %q", got, want)
 	}
@@ -89,7 +89,7 @@ func TestSQLiteDSNWithPragmas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SQLiteDSNWithPragmas() error = %v", err)
 	}
-	want = "file:test.db?cache=shared&_journal_mode=WAL&_busy_timeout=30000&_txlock=immediate"
+	want = "file:test.db?cache=shared&_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
 	if got != want {
 		t.Fatalf("SQLiteDSNWithPragmas() = %q, want %q", got, want)
 	}

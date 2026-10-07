@@ -101,8 +101,8 @@ func TestInitializeSQLiteUsesConcurrentReadConnection(t *testing.T) {
 	}
 	stats := sqlDB.Stats()
 	// WAL 模式支持多读单写，允许多个读连接并发，写串行由 _txlock=immediate 保证
-	if stats.MaxOpenConnections != 4 {
-		t.Fatalf("sqlite MaxOpenConnections = %d, want 4 for concurrent reads under WAL", stats.MaxOpenConnections)
+	if stats.MaxOpenConnections < 4 {
+		t.Fatalf("sqlite MaxOpenConnections = %d, want >= 4 for concurrent reads under WAL", stats.MaxOpenConnections)
 	}
 }
 

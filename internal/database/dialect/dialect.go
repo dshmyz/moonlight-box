@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-const SQLitePragmas = "_journal_mode=WAL&_busy_timeout=30000&_txlock=immediate"
+const SQLitePragmas = "_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
 
 func JSONTextExpr(dialectName, column, key string) string {
 	switch dialectName {

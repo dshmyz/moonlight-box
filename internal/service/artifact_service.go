@@ -398,6 +398,11 @@ func (s *ArtifactService) AttachBlob(ctx context.Context, artifact *runtime.Arti
 // SaveBatch 批量创建或更新 artifacts，自动同步 packages 聚合表。
 // rejectOverwrite 为 true 时，拒绝覆盖已存在 identity_key 的内容 artifact
 // （metadata/checksum/directory 类仍允许更新，它们是聚合元数据的合法重写）。
+// saveBatchChunkSize 限制单个写事务持有的行数。SQLite 单写者 + _txlock=immediate
+// 下，单个大事务会长时间持有全局写锁，令并发写事务在 busy_timeout 内各自钉死连接、
+// 放大成写锁车队。把整包索引拆成多个短事务，缩短持锁窗口。
+const saveBatchChunkSize = 500
+
 func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Artifact, rejectOverwrite bool) error {
 	if len(artifacts) == 0 {
 		return nil
@@ -409,12 +414,51 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 		}
 	}
 
-	// seenPackages / seenPackageVersions 提升到事务外，事务提交后供异步 worker 使用。
+	// seenPackages / seenPackageVersions 跨分片累计，事务提交后供异步 worker 使用。
 	seenPackages := make(map[string]bool)        // 用于批量更新 packages 去重
 	seenPackageVersions := make(map[string]bool) // 版本级聚合去重，提交后异步重算
 	var createdModel []*model.Artifact           // 事务内新建的制品，提交后投递自动扫描
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	for start := 0; start < len(artifacts); start += saveBatchChunkSize {
+		end := start + saveBatchChunkSize
+		if end > len(artifacts) {
+			end = len(artifacts)
+		}
+		if err := s.saveBatchChunk(ctx, artifacts[start:end], rejectOverwrite, &createdModel, seenPackages, seenPackageVersions); err != nil {
+			return err
+		}
+	}
+
+	s.notifyCacheInvalidation()
+	s.enqueueAutoScan(ctx, createdModel...)
+	// 投递 seenPackages/seenPackageVersions 副本到异步 worker。channel 满时
+	// 降级为丢弃（幂等、最终一致，下次同包写入重放），绝不在请求线程内同步
+	// 执行聚合写——避免把多轮全表扫描拖进上传请求线程。
+	if len(seenPackages) > 0 || len(seenPackageVersions) > 0 {
+		task := recalcTask{}
+		if len(seenPackages) > 0 {
+			packagesCopy := make(map[string]bool, len(seenPackages))
+			for k := range seenPackages {
+				packagesCopy[k] = true
+			}
+			task.packages = packagesCopy
+		}
+		if len(seenPackageVersions) > 0 {
+			versionsCopy := make(map[string]bool, len(seenPackageVersions))
+			for k := range seenPackageVersions {
+				versionsCopy[k] = true
+			}
+			task.versions = versionsCopy
+		}
+		s.enqueueRecalc(task)
+	}
+	return nil
+}
+
+// saveBatchChunk 在单个写事务内保存一批 artifact，并把跨批次共享的
+// createdModel / seenPackages / seenPackageVersions 累加写回调用方。
+func (s *ArtifactService) saveBatchChunk(ctx context.Context, artifacts []*runtime.Artifact, rejectOverwrite bool, createdModel *[]*model.Artifact, seenPackages, seenPackageVersions map[string]bool) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 
 		// 批量查询已有记录，避免逐条 SELECT
 		modelArtifacts := make([]*model.Artifact, len(artifacts))
@@ -484,7 +528,7 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 				return err
 			}
 			for _, ia := range toCreate {
-				createdModel = append(createdModel, ia.model)
+				*createdModel = append(*createdModel, ia.model)
 				if err := s.syncBlobRefs(tx, ia.model.ID, artifacts[ia.index].BlobRefs); err != nil {
 					return err
 				}
@@ -539,32 +583,6 @@ func (s *ArtifactService) SaveBatch(ctx context.Context, artifacts []*runtime.Ar
 		// packages 去重 map 仍在事务内收集，供提交后投递异步 worker。
 		return nil
 	})
-	if err == nil {
-		s.notifyCacheInvalidation()
-		s.enqueueAutoScan(ctx, createdModel...)
-		// 投递 seenPackages/seenPackageVersions 副本到异步 worker。channel 满时
-		// 降级为丢弃（幂等、最终一致，下次同包写入重放），绝不在请求线程内同步
-		// 执行聚合写——避免把多轮全表扫描拖进上传请求线程。
-		if len(seenPackages) > 0 || len(seenPackageVersions) > 0 {
-			task := recalcTask{}
-			if len(seenPackages) > 0 {
-				packagesCopy := make(map[string]bool, len(seenPackages))
-				for k := range seenPackages {
-					packagesCopy[k] = true
-				}
-				task.packages = packagesCopy
-			}
-			if len(seenPackageVersions) > 0 {
-				versionsCopy := make(map[string]bool, len(seenPackageVersions))
-				for k := range seenPackageVersions {
-					versionsCopy[k] = true
-				}
-				task.versions = versionsCopy
-			}
-			s.enqueueRecalc(task)
-		}
-	}
-	return err
 }
 
 // Delete 删除 artifact 及其 blob 关联，并同步更新 packages 聚合表。
