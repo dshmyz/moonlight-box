@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	pprof "net/http/pprof"
 	"os"
 	"os/signal"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/database"
 	"github.com/dshmyz/moonlight-box/internal/mcp"
 	"github.com/dshmyz/moonlight-box/internal/middleware"
+	"github.com/dshmyz/moonlight-box/internal/metrics"
 	migv2executor "github.com/dshmyz/moonlight-box/internal/migration/v2/executor"
 	migv2handler "github.com/dshmyz/moonlight-box/internal/migration/v2/handler"
 	migv2repo "github.com/dshmyz/moonlight-box/internal/migration/v2/repository"
@@ -164,6 +166,11 @@ func main() {
 	if err := database.SeedData(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to seed data: %v\n", err)
 		os.Exit(1)
+	}
+
+	// DB 连接池指标采集：wait_count 快速上涨即连接池成为瓶颈的前兆信号
+	if sqlDB, err := database.GetDB().DB(); err == nil {
+		metrics.StartDBPoolCollector(sqlDB, 15*time.Second)
 	}
 
 	// 初始化系统配置
@@ -719,6 +726,30 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		IdleTimeout:  cfg.Server.IdleTimeout,
+	}
+
+	// pprof 诊断端点：独立监听、与主路由隔离，故障时抓 goroutine/heap 现场用。
+	// WriteTimeout 置 0——CPU profile 采集通常持续 30s，不能被写超时腰斩。
+	if cfg.Server.PprofAddr != "" {
+		pprofMux := http.NewServeMux()
+		pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
+		pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		pprofSrv := &http.Server{
+			Addr:        cfg.Server.PprofAddr,
+			Handler:     pprofMux,
+			ReadTimeout: 30 * time.Second,
+		}
+		logrus.WithField("addr", cfg.Server.PprofAddr).Info("pprof endpoint listening")
+		util.SafeGo("server.pprof", func() {
+			if err := pprofSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logrus.WithFields(logrus.Fields{
+					"error": err,
+				}).Error("pprof server error")
+			}
+		})
 	}
 
 	// 优雅关闭

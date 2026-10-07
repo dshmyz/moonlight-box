@@ -39,6 +39,9 @@ type ServerConfig struct {
 	IdleTimeout   time.Duration `mapstructure:"idle_timeout"`   // 空闲连接超时时间
 	StaticDir     string        `mapstructure:"static_dir"`     // 前端静态文件目录
 	MaxUploadSize int64         `mapstructure:"max_upload_size"`
+	// PprofAddr 是 pprof 诊断端点的独立监听地址（默认 127.0.0.1:6060），
+	// 与主服务隔离、不经鉴权中间件；置空禁用。仅应绑定内网/本机地址。
+	PprofAddr string `mapstructure:"pprof_addr"`
 }
 
 type DatabaseConfig struct {

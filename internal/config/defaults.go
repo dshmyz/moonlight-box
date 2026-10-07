@@ -14,6 +14,8 @@ func setDefaults(v interface {
 	v.SetDefault("server.idle_timeout", 60*time.Second)
 	v.SetDefault("server.static_dir", "./cmd/registry/front")
 	v.SetDefault("server.max_upload_size", 200*1024*1024) // 200MB
+	// pprof 诊断端点独立监听，默认仅本机可访问；置空禁用
+	v.SetDefault("server.pprof_addr", "127.0.0.1:6060")
 
 	// Database
 	v.SetDefault("database.driver", "sqlite")
