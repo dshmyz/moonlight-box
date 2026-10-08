@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -165,11 +166,18 @@ func TestWebhookWorkerDeliversToEndpoint(t *testing.T) {
 	repo := repository.NewWebhookRepository(db)
 
 	var receivedCount int32
-	var receivedPayload map[string]interface{}
+	var (
+		payloadMu       sync.Mutex
+		receivedPayload map[string]interface{}
+	)
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&receivedCount, 1)
-		json.NewDecoder(r.Body).Decode(&receivedPayload)
+		var decoded map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&decoded)
+		payloadMu.Lock()
+		receivedPayload = decoded
+		payloadMu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer ts.Close()
@@ -208,8 +216,11 @@ func TestWebhookWorkerDeliversToEndpoint(t *testing.T) {
 		t.Fatal("webhook was not delivered to endpoint")
 	}
 
-	if receivedPayload["package_name"] != "delivered-pkg" {
-		t.Fatalf("received package_name = %v, want delivered-pkg", receivedPayload["package_name"])
+	payloadMu.Lock()
+	gotName := receivedPayload["package_name"]
+	payloadMu.Unlock()
+	if gotName != "delivered-pkg" {
+		t.Fatalf("received package_name = %v, want delivered-pkg", gotName)
 	}
 
 	// 验证 DB 中 delivery 状态为 delivered

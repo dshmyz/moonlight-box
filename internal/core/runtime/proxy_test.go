@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -305,6 +306,7 @@ func TestProxyRuntimeCachesRemoteMissingMetadata(t *testing.T) {
 }
 
 type fakeMetadataStore struct {
+	mu         sync.Mutex
 	artifact   *Artifact
 	getCalls   int
 	putCalls   int
@@ -318,6 +320,8 @@ func newFakeMetadataStore() *fakeMetadataStore {
 }
 
 func (s *fakeMetadataStore) Get(ctx context.Context, key ArtifactKey) (*Artifact, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.getCalls++
 	if s.artifact == nil || s.deleted {
 		return nil, ErrNotFound
@@ -326,6 +330,8 @@ func (s *fakeMetadataStore) Get(ctx context.Context, key ArtifactKey) (*Artifact
 }
 
 func (s *fakeMetadataStore) Put(ctx context.Context, artifact *Artifact) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.putCalls++
 	s.artifact = artifact
 	s.deleted = false
@@ -333,6 +339,8 @@ func (s *fakeMetadataStore) Put(ctx context.Context, artifact *Artifact) error {
 }
 
 func (s *fakeMetadataStore) BatchPut(ctx context.Context, artifacts []*Artifact, rejectOverwrite bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.batchErr != nil {
 		return s.batchErr
 	}
@@ -345,12 +353,16 @@ func (s *fakeMetadataStore) BatchPut(ctx context.Context, artifacts []*Artifact,
 }
 
 func (s *fakeMetadataStore) Delete(ctx context.Context, key ArtifactKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.deleted = true
 	s.artifact = nil
 	return nil
 }
 
 func (s *fakeMetadataStore) Query(ctx context.Context, query ArtifactQuery) ([]*Artifact, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.queryCalls++
 	if s.artifact == nil || s.deleted {
 		return nil, nil
@@ -360,10 +372,10 @@ func (s *fakeMetadataStore) Query(ctx context.Context, query ArtifactQuery) ([]*
 
 func TestDifferentPathsCanRefreshConcurrently(t *testing.T) {
 	ctx := context.Background()
-	fetchCount := 0
+	var fetchCount atomic.Int64
 	fetcher := &fakeFetcher{
 		fn: func() ([]*Artifact, error) {
-			fetchCount++
+			fetchCount.Add(1)
 			time.Sleep(100 * time.Millisecond)
 			return []*Artifact{{
 				RepositoryID: "repo",
@@ -405,8 +417,8 @@ func TestDifferentPathsCanRefreshConcurrently(t *testing.T) {
 	time.Sleep(200 * time.Millisecond) // 等待异步刷新 goroutine
 
 	// 两个不同路径应该各触发一次 fetch，共 2 次
-	if fetchCount != 2 {
-		t.Fatalf("FetchRemote called %d times, expected 2 (不同 path 应并发刷新)", fetchCount)
+	if got := fetchCount.Load(); got != 2 {
+		t.Fatalf("FetchRemote called %d times, expected 2 (不同 path 应并发刷新)", got)
 	}
 }
 
@@ -723,10 +735,10 @@ func (s *threadSafeBlobStore) openCallCount() int {
 
 func TestConcurrentQueryArtifactsOnlyTriggersOneFetch(t *testing.T) {
 	ctx := context.Background()
-	fetchCount := 0
+	var fetchCount atomic.Int64
 	fetcher := &fakeFetcher{
 		fn: func() ([]*Artifact, error) {
-			fetchCount++
+			fetchCount.Add(1)
 			time.Sleep(50 * time.Millisecond) // 模拟网络延迟
 			return []*Artifact{{
 				RepositoryID: "repo",
@@ -755,8 +767,8 @@ func TestConcurrentQueryArtifactsOnlyTriggersOneFetch(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if fetchCount != 1 {
-		t.Fatalf("FetchRemote called %d times, expected 1", fetchCount)
+	if got := fetchCount.Load(); got != 1 {
+		t.Fatalf("FetchRemote called %d times, expected 1", got)
 	}
 }
 

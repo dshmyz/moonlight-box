@@ -24,7 +24,8 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 REPO="token-test-local"
-VERSION="1.0.0"
+# 唯一版本号：脚本重跑时避免与已上传的同版本 PUT 冲突（409）
+VERSION="1.0.$(date +%s)"
 FILE_PATH="com/example/demo/$VERSION/demo-$VERSION.json"
 
 PASS=0

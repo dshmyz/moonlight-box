@@ -111,10 +111,13 @@ func (h *HealthCheckService) Start() {
 	}
 
 	h.running = true
-	h.stopCh = make(chan struct{})
+	stopCh := make(chan struct{})
+	h.stopCh = stopCh
 
 	slog.Info("starting health check service", "interval", h.config.Interval)
-	util.SafeGo("proxy.healthcheck.loop", func() { h.runHealthChecks() })
+	// stopCh 通过参数传递而非读 h.stopCh 字段：重启后新 Start 会替换字段，
+	// 旧 goroutine 读字段与新写构成数据竞争。
+	util.SafeGo("proxy.healthcheck.loop", func() { h.runHealthChecks(stopCh) })
 }
 
 // Stop 停止健康检查服务
@@ -192,7 +195,7 @@ func (h *HealthCheckService) ResetCircuitBreaker(repoID uint) {
 }
 
 // runHealthChecks 定期执行健康检查，支持动态配置重载
-func (h *HealthCheckService) runHealthChecks() {
+func (h *HealthCheckService) runHealthChecks(stopCh chan struct{}) {
 	currentInterval := h.config.Interval
 	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
@@ -215,7 +218,7 @@ func (h *HealthCheckService) runHealthChecks() {
 				}
 			}
 			h.checkAllRepos()
-		case <-h.stopCh:
+		case <-stopCh:
 			return
 		}
 	}
