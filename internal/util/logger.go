@@ -104,7 +104,8 @@ func initLoggers(cfg *LoggerConfig) error {
 	// 这样配置的 output/level/format 对全部代码生效，不再有"独立实例不生效"的分裂。
 	logrus.SetLevel(level)
 	logrus.SetFormatter(&samplingFormatter{base: newFormatter(cfg.Format)})
-	logrus.SetOutput(getWriter(cfg.Output, cfg.LogRetentionDays))
+	// 异步写出：磁盘慢/满时同步写会在 logrus 全局互斥上排队，阻塞所有请求。
+	logrus.SetOutput(newAsyncWriter(getWriter(cfg.Output, cfg.LogRetentionDays)))
 
 	// 采样 hook：对 Debug/Info/Warn 全局采样，sample_by_module 可指定 module 专属采样率
 	sampling := &samplingHook{
@@ -209,7 +210,7 @@ func setupLogger(level logrus.Level, format, output string, retentionDays int) *
 	l := logrus.New()
 	l.SetLevel(level)
 	l.SetFormatter(newFormatter(format))
-	l.SetOutput(getWriter(output, retentionDays))
+	l.SetOutput(newAsyncWriter(getWriter(output, retentionDays)))
 	return l
 }
 
@@ -369,6 +370,8 @@ func (f *samplingFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 
 // 关闭所有日志文件
 func CloseLoggers() {
+	// 先排空异步写出器的队列，再关底层文件——否则优雅退出丢尾部日志
+	flushAsyncLoggers()
 	logFilesMu.Lock()
 	defer logFilesMu.Unlock()
 	for _, writer := range logFiles {

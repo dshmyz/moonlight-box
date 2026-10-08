@@ -172,6 +172,8 @@ func main() {
 	if sqlDB, err := database.GetDB().DB(); err == nil {
 		metrics.StartDBPoolCollector(sqlDB, 15*time.Second)
 	}
+	// 异步日志丢弃指标：持续增长说明日志速率超过磁盘写出速率
+	metrics.StartLogDropCollector(15 * time.Second)
 
 	// 初始化系统配置
 	systemConfigRepo := repository.NewSystemConfigRepository(database.GetDB())
