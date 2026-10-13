@@ -13,6 +13,7 @@ bin/
 /registry-test
 /moonlight-box
 /mcp-server
+/sqlite2mysql
 
 # Build output directories
 cmd/registry/registry
