@@ -1,0 +1,1 @@
+import{a as t}from"./index-CStd9oOt.js";const n={getConfigs(){return t.get("/configs")},updateConfigs(e){return t.post("/configs",e)},getSystemInfo(){return t.get("/system/info")},getConnections(){return t.get("/system/connections")}};export{n as s};

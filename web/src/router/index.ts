@@ -223,6 +223,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '系统信息', permission: { resource: 'system', action: 'read' } },
       },
       {
+        path: 'connections',
+        name: 'Connections',
+        component: () => import('@/views/Connections.vue'),
+        meta: { title: '活跃连接', permission: { resource: 'system', action: 'admin' } },
+      },
+      {
         path: 'api-docs',
         name: 'APIDocs',
         component: () => import('@/views/APIDocs.vue'),

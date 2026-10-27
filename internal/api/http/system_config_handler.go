@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/conntrack"
 	"github.com/dshmyz/moonlight-box/internal/database"
 	"github.com/dshmyz/moonlight-box/internal/model"
 	"github.com/dshmyz/moonlight-box/internal/response"
@@ -252,5 +253,14 @@ func (h *SystemInfoHandler) Health(c *gin.Context) {
 	response.Success(c, gin.H{
 		"status":  "ok",
 		"version": h.version,
+	})
+}
+
+// Connections 返回当前活跃连接/请求的实时列表（管理后台可观测性）。
+func (h *SystemInfoHandler) Connections(c *gin.Context) {
+	entries, counts := conntrack.Global().Snapshot()
+	response.Success(c, gin.H{
+		"count":   counts,
+		"entries": entries,
 	})
 }

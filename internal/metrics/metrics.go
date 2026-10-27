@@ -104,13 +104,6 @@ var (
 		[]string{"method", "path"},
 	)
 
-	ActiveConnections = promauto.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "moonlight_active_connections",
-			Help: "Number of active connections",
-		},
-	)
-
 	SecurityScansTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "moonlight_security_scans_total",
@@ -216,10 +209,6 @@ func UpdateStorageBytes(packageType string, bytes float64) {
 
 func UpdateRepositoriesTotal(repositoryType, packageType string, count float64) {
 	RepositoriesTotal.WithLabelValues(repositoryType, packageType).Set(count)
-}
-
-func UpdateActiveConnections(count float64) {
-	ActiveConnections.Set(count)
 }
 
 func RecordProxyFetch(format, result string, durationSeconds float64) {

@@ -127,6 +127,12 @@ export const menuConfig: MenuItem[] = [
         permission: { resource: 'system', action: 'admin' },
       },
       {
+        index: '/admin/connections',
+        title: '活跃连接',
+        icon: 'fa-solid fa-network-wired',
+        permission: { resource: 'system', action: 'admin' },
+      },
+      {
         index: '/admin/system-info',
         title: '系统信息',
         icon: 'fa-solid fa-info-circle',

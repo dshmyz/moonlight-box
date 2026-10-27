@@ -45,6 +45,23 @@ export interface SystemInfo {
   database_pool?: DatabasePoolStats
 }
 
+export interface ConnectionEntry {
+  id: number
+  kind: 'request' | 'upstream'
+  remote: string
+  repository?: string
+  path?: string
+  started_at: string
+  bytes_read: number
+  bytes_written: number
+  extra?: Record<string, string>
+}
+
+export interface ConnectionStats {
+  count: Record<string, number>
+  entries: ConnectionEntry[]
+}
+
 export const systemApi = {
   getConfigs() {
     return request.get<{ list: SystemConfig[] }>('/configs')
@@ -56,5 +73,9 @@ export const systemApi = {
 
   getSystemInfo() {
     return request.get<SystemInfo>('/system/info')
+  },
+
+  getConnections() {
+    return request.get<ConnectionStats>('/system/connections')
   },
 }

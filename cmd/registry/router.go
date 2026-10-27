@@ -7,6 +7,7 @@ import (
 
 	handler "github.com/dshmyz/moonlight-box/internal/api/http"
 	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/conntrack"
 	"github.com/dshmyz/moonlight-box/internal/middleware"
 	migv2handler "github.com/dshmyz/moonlight-box/internal/migration/v2/handler"
 	"github.com/dshmyz/moonlight-box/internal/proxy"
@@ -50,8 +51,8 @@ type RouterContext struct {
 		MigrationV2      *migv2handler.MigrationV2Handler
 		AI               *handler.AIHandler
 		DownloadLog      *handler.DownloadLogHandler
-		LogCleanupConfig      *handler.LogCleanupConfigHandler
-		Scheduler             *handler.SchedulerHandler
+		LogCleanupConfig *handler.LogCleanupConfigHandler
+		Scheduler        *handler.SchedulerHandler
 		HealthCheck      *handler.HealthCheckHandler
 		VulnRule         *handler.VulnRuleHandler
 		RiskAssessment   *handler.RiskAssessmentHandler
@@ -93,6 +94,7 @@ func (ctx *RouterContext) SetupRouter(version string) *gin.Engine {
 		r.Use(middleware.BodySizeLimit(ctx.Config.Server.MaxUploadSize))
 	}
 	r.Use(middleware.AccessLog())
+	r.Use(conntrack.Middleware())
 
 	ctx.setupPublicRoutes(r, version)
 	ctx.setupAPIRoutes(r)
@@ -477,6 +479,7 @@ func (ctx *RouterContext) setupSystemRoutes(protected *gin.RouterGroup) {
 	}
 
 	protected.GET("/system/info", ctx.Handlers.SystemInfo.GetInfo)
+	protected.GET("/system/connections", ctx.requirePermission("system", "admin"), ctx.Handlers.SystemInfo.Connections)
 
 	// 重建类维护操作：packages / package_versions 是 artifacts 的可重建 read model，
 	// 数据异常时手动触发全量重建恢复
