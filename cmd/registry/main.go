@@ -16,12 +16,13 @@ import (
 	"github.com/dshmyz/moonlight-box/internal/ai/tools"
 	handler "github.com/dshmyz/moonlight-box/internal/api/http"
 	"github.com/dshmyz/moonlight-box/internal/config"
+	"github.com/dshmyz/moonlight-box/internal/conntrack"
 	"github.com/dshmyz/moonlight-box/internal/core/cache"
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/database"
 	"github.com/dshmyz/moonlight-box/internal/mcp"
-	"github.com/dshmyz/moonlight-box/internal/middleware"
 	"github.com/dshmyz/moonlight-box/internal/metrics"
+	"github.com/dshmyz/moonlight-box/internal/middleware"
 	migv2executor "github.com/dshmyz/moonlight-box/internal/migration/v2/executor"
 	migv2handler "github.com/dshmyz/moonlight-box/internal/migration/v2/handler"
 	migv2repo "github.com/dshmyz/moonlight-box/internal/migration/v2/repository"
@@ -214,14 +215,15 @@ func main() {
 	tm := proxy.NewTransportManager(cfg.Proxy.ConnectTimeout, dnsResolver)
 	remoteClient := proxy.NewRemoteClient(tm, cfg.Proxy.MaxRedirects)
 
-	// 共享 HTTP 客户端：使用 proxy.TransportManager 的 DNS 映射、TLS 配置和连接池
+	// 共享 HTTP 客户端：使用 proxy.TransportManager 的 DNS 映射、TLS 配置和连接池。
+	// 不设 Client.Timeout：上游请求的时限一律由 ctx 决定（仓库级 read_timeout 或
+	// 回源总超时）。Client.Timeout 是不可放宽的硬上限，会静默压过更长的仓库配置。
 	pluginTimeout := cfg.Proxy.DefaultTimeout
 	if pluginTimeout <= 0 {
 		pluginTimeout = 60 * time.Second
 	}
 	pluginHTTPClient := &http.Client{
 		Transport: tm.GetTransport(cfg.Proxy.InsecureSkipVerify),
-		Timeout:   pluginTimeout,
 	}
 
 	healthCheckCfg := proxy.HealthCheckConfig{
@@ -346,7 +348,7 @@ func main() {
 
 	// 设置懒加载 factory：Get() 在内存缓存未命中时自动从 DB 创建 Runtime
 	repoManager.SetFactory(NewRepositoryFactory(
-		repoRepo, groupRepo, db, storageSvc, repoManager, fetchers, blocker, pluginHTTPClient, artifactSvc,
+		repoRepo, groupRepo, db, storageSvc, repoManager, fetchers, blocker, pluginHTTPClient, pluginTimeout, artifactSvc,
 		&healthCheckLookup{svc: healthCheckSvc},
 	))
 
@@ -739,6 +741,7 @@ func main() {
 		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		pprofMux.Handle("/debug/connections", conntrack.Handler())
 		pprofSrv := &http.Server{
 			Addr:        cfg.Server.PprofAddr,
 			Handler:     pprofMux,

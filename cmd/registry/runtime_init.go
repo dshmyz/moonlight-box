@@ -58,6 +58,7 @@ func NewRepositoryFactory(
 	fetchers map[string]runtime.RemoteFetcher,
 	blocker runtime.PackageBlocker,
 	httpClient *http.Client,
+	defaultTimeout time.Duration,
 	artifactSvc *service.ArtifactService,
 	cbLookup proxy.CircuitBreakerLookup,
 ) runtime.RepositoryFactory {
@@ -72,7 +73,7 @@ func NewRepositoryFactory(
 			return nil, fmt.Errorf("no default storage backend available")
 		}
 
-		repoRuntime, err := createRuntimeForRepo(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers, blocker, httpClient, artifactSvc, cbLookup)
+		repoRuntime, err := createRuntimeForRepo(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers, blocker, httpClient, defaultTimeout, artifactSvc, cbLookup)
 		if err != nil {
 			return nil, err
 		}
@@ -117,6 +118,7 @@ func createRuntimeForRepo(
 	fetchers map[string]runtime.RemoteFetcher,
 	blocker runtime.PackageBlocker,
 	httpClient *http.Client,
+	defaultTimeout time.Duration,
 	artifactSvc *service.ArtifactService,
 	cbLookup proxy.CircuitBreakerLookup,
 ) (runtime.RepositoryRuntime, error) {
@@ -153,17 +155,18 @@ func createRuntimeForRepo(
 		}
 		if remoteBaseURL == "" {
 			logrus.WithFields(logrus.Fields{
-				"repo":   repo.Name,
+				"repo":    repo.Name,
 				"repo_id": repo.ID,
-				"format": repo.PackageType,
+				"format":  repo.PackageType,
 			}).Warn("proxy repository remote URL is empty")
 		}
-		upstreamTimeout := upstreamTimeoutFor(repo, httpClient)
+		upstreamTimeout := upstreamTimeoutFor(repo, defaultTimeout)
 		pr := &runtime.ProxyRuntime{
 			MetadataStore:   metadataStore,
 			BlobStore:       blobStore,
 			RemoteClient:    newRemoteClientWithCircuitBreaker(httpClient, repo.ID, cbLookup),
 			RepositoryID:    fmt.Sprintf("%d", repo.ID),
+			RepositoryName:  repo.Name,
 			RemoteBaseURL:   remoteBaseURL,
 			CachePolicy:     cachePolicy,
 			Format:          repo.PackageType,
@@ -181,7 +184,7 @@ func createRuntimeForRepo(
 		return pr, nil
 
 	case model.RepoTypeVirtual:
-		return createGroupRuntime(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers, blocker, httpClient, artifactSvc, cbLookup)
+		return createGroupRuntime(repo, repoRepo, groupRepo, db, backend, repoManager, fetchers, blocker, httpClient, defaultTimeout, artifactSvc, cbLookup)
 
 	default:
 		return nil, fmt.Errorf("unsupported repo type: %s", repo.Type)
@@ -203,15 +206,12 @@ func newRemoteClientWithCircuitBreaker(httpClient *http.Client, repoID uint, cbL
 }
 
 // upstreamTimeoutFor 解析仓库级回源超时：RepoConfig.TimeoutSeconds>0 用之，
-// 否则回退到全局默认 httpClient.Timeout（即 pluginHTTPClient 的固定超时）。
-func upstreamTimeoutFor(repo *model.Repository, httpClient *http.Client) time.Duration {
+// 否则回退到全局默认 proxy.default_timeout。
+func upstreamTimeoutFor(repo *model.Repository, fallback time.Duration) time.Duration {
 	if repo.Config != nil && repo.Config.TimeoutSeconds > 0 {
 		return time.Duration(repo.Config.TimeoutSeconds) * time.Second
 	}
-	if httpClient != nil {
-		return httpClient.Timeout
-	}
-	return 0
+	return fallback
 }
 
 // repoConnectTimeout 解析仓库级 TCP 建连超时；0 表示沿用全局 proxy.connect_timeout。
@@ -273,6 +273,7 @@ func createGroupRuntime(
 	fetchers map[string]runtime.RemoteFetcher,
 	blocker runtime.PackageBlocker,
 	httpClient *http.Client,
+	defaultTimeout time.Duration,
 	artifactSvc *service.ArtifactService,
 	cbLookup proxy.CircuitBreakerLookup,
 ) (runtime.RepositoryRuntime, error) {
@@ -335,10 +336,10 @@ func createGroupRuntime(
 				}
 				if remoteBaseURL == "" {
 					logrus.WithFields(logrus.Fields{
-						"repo":   memberRepo.Name,
+						"repo":    memberRepo.Name,
 						"repo_id": memberRepo.ID,
-						"format": memberRepo.PackageType,
-						"group":  repo.Name,
+						"format":  memberRepo.PackageType,
+						"group":   repo.Name,
 					}).Warn("proxy member repository remote URL is empty")
 				}
 				n := &runtime.ProxyRuntime{
@@ -346,10 +347,11 @@ func createGroupRuntime(
 					BlobStore:       memberBlob,
 					RemoteClient:    newRemoteClientWithCircuitBreaker(httpClient, memberRepo.ID, cbLookup),
 					RepositoryID:    memberID,
+					RepositoryName:  memberRepo.Name,
 					RemoteBaseURL:   remoteBaseURL,
 					CachePolicy:     cachePolicy,
 					Format:          memberRepo.PackageType,
-					UpstreamTimeout: upstreamTimeoutFor(&memberRepo, httpClient),
+					UpstreamTimeout: upstreamTimeoutFor(&memberRepo, defaultTimeout),
 					ConnectTimeout:  repoConnectTimeout(&memberRepo),
 					ReadTimeout:     repoReadTimeout(&memberRepo),
 				}
