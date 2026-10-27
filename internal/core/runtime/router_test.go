@@ -2,9 +2,11 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -130,6 +132,38 @@ func TestRouterMapsUpstreamUnavailableToBadGateway(t *testing.T) {
 
 	if response.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", response.Code)
+	}
+}
+
+// *UpstreamError 走结构化 JSON 分支时必须真正写出 502：json.Encode 只会提交
+// 隐式 200，若不显式 WriteHeader，客户端会把上游超时当成正常响应。
+type errUpstreamTimeoutPlugin struct{}
+
+func (errUpstreamTimeoutPlugin) Name() string { return "npm" }
+func (errUpstreamTimeoutPlugin) Handle(*RequestContext, RepositoryRuntime) error {
+	return NewUpstreamTimeoutError("http://up.test", 30, errors.New("boom"))
+}
+
+func TestRouterMapsUpstreamErrorToBadGateway(t *testing.T) {
+	router := newRouterForTest(nil, nil, errUpstreamTimeoutPlugin{})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/repository/npm/left-pad", nil))
+
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", response.Code)
+	}
+	if got := response.Header().Get("Retry-After"); got != "30" {
+		t.Fatalf("Retry-After = %q, want 30", got)
+	}
+	if got := response.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"remote_url":"http://up.test"`) {
+		t.Fatalf("body = %q, want remote_url in JSON payload", body)
+	}
+	if !strings.Contains(body, `"retry_after":30`) {
+		t.Fatalf("body = %q, want retry_after in JSON payload", body)
 	}
 }
 

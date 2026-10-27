@@ -430,6 +430,9 @@ func (r *RepositoryRouter) handleRequest(ctx *RequestContext) {
 			ctx.Writer.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			ctx.StatusCode = statusCode
 			ctx.Writer.Header().Set("Content-Type", "application/json")
+			// 必须显式写状态码：json.Encode 只会触发隐式 200，否则客户端会把
+			// 上游超时当成正常响应（历史 bug，见 TestRouterMapsUpstreamErrorToBadGateway）。
+			ctx.Writer.WriteHeader(statusCode)
 			json.NewEncoder(ctx.Writer).Encode(map[string]interface{}{
 				"error":      upstreamErr.Error(),
 				"remote_url": upstreamErr.RemoteURL,
