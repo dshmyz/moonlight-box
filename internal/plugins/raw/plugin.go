@@ -89,7 +89,7 @@ func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,
-			"duration_ms": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Milliseconds(),
 			"error":    err.Error(),
 		}).Error("generic: HTTP request failed")
 		return nil, fmt.Errorf("generic: fetch from %s: %w", fullURL, err)
@@ -102,7 +102,7 @@ func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string)
 		logrus.WithFields(logrus.Fields{
 			"full_url":    fullURL,
 			"status_code": resp.StatusCode,
-			"duration_ms":   time.Since(start).Seconds(),
+			"duration_ms":   time.Since(start).Milliseconds(),
 		}).Error("generic: HTTP request returned non-200 status")
 		return nil, fmt.Errorf("generic: fetch from %s: status %d", fullURL, resp.StatusCode)
 	}
@@ -114,7 +114,7 @@ func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string)
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
 				"full_url":  fullURL,
-				"duration_ms": time.Since(start).Seconds(),
+				"duration_ms": time.Since(start).Milliseconds(),
 				"error":    err.Error(),
 			}).Error("generic: parse directory listing failed")
 			return nil, err
@@ -123,7 +123,7 @@ func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string)
 			"full_url":     fullURL,
 			"itemCount":   len(artifacts),
 			"contentType": contentType,
-			"duration_ms":    time.Since(start).Seconds(),
+			"duration_ms":    time.Since(start).Milliseconds(),
 		}).Debug("generic: FetchRemote directory listing success")
 		return artifacts, nil
 	}
@@ -139,7 +139,7 @@ func (p *GenericPlugin) FetchRemote(ctx context.Context, remoteURL, path string)
 		"full_url":     fullURL,
 		"filename":    filename,
 		"contentType": contentType,
-		"duration_ms":    time.Since(start).Seconds(),
+		"duration_ms":    time.Since(start).Milliseconds(),
 	}).Debug("generic: FetchRemote file success")
 	return []*runtime.Artifact{
 		runtime.NewArtifact(runtime.ArtifactSpec{

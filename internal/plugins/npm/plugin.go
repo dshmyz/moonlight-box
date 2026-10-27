@@ -94,7 +94,7 @@ func (p *NpmPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,
-			"duration_ms": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Milliseconds(),
 			"error":    err.Error(),
 		}).Error("npm: HTTP request failed")
 		return nil, err
@@ -108,7 +108,7 @@ func (p *NpmPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 		logrus.WithFields(logrus.Fields{
 			"full_url":    fullURL,
 			"status_code": resp.StatusCode,
-			"duration_ms":   time.Since(start).Seconds(),
+			"duration_ms":   time.Since(start).Milliseconds(),
 		}).Error("npm: HTTP request returned non-200 status")
 		return nil, fmt.Errorf("npm: fetch from %s: status %d", fullURL, resp.StatusCode)
 	}
@@ -117,7 +117,7 @@ func (p *NpmPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,
-			"duration_ms": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Milliseconds(),
 			"error":    err.Error(),
 		}).Error("npm: parse metadata failed")
 		return nil, err
@@ -126,7 +126,7 @@ func (p *NpmPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([]
 	logrus.WithFields(logrus.Fields{
 		"full_url":      fullURL,
 		"versionCount": len(artifacts),
-		"duration_ms":     time.Since(start).Seconds(),
+		"duration_ms":     time.Since(start).Milliseconds(),
 	}).Debug("npm: FetchRemote success")
 	return artifacts, nil
 }

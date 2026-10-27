@@ -142,7 +142,7 @@ func (s *LogCleanupService) Run(ctx context.Context) (int, error) {
 
 	startTime := time.Now()
 	err := s.logRepo.CleanOldLogs(maxAge)
-	duration := time.Since(startTime)
+	duration := time.Since(startTime).Milliseconds()
 
 	if err != nil {
 		logrus.WithFields(logrus.Fields{

@@ -141,7 +141,7 @@ func (p *PyPIPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,
-			"duration_ms": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Milliseconds(),
 			"error":    err.Error(),
 		}).Error("pypi: HTTP request failed")
 		return nil, err
@@ -155,7 +155,7 @@ func (p *PyPIPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([
 		logrus.WithFields(logrus.Fields{
 			"full_url":    fullURL,
 			"status_code": resp.StatusCode,
-			"duration_ms":   time.Since(start).Seconds(),
+			"duration_ms":   time.Since(start).Milliseconds(),
 		}).Error("pypi: HTTP request returned non-200 status")
 		return nil, fmt.Errorf("remote returned status %d for %s", resp.StatusCode, fullURL)
 	}
@@ -182,7 +182,7 @@ func (p *PyPIPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,
-			"duration_ms": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Milliseconds(),
 			"error":    err.Error(),
 		}).Error("pypi: parse response failed")
 		return nil, err
@@ -191,7 +191,7 @@ func (p *PyPIPlugin) FetchRemote(ctx context.Context, remoteURL, path string) ([
 	logrus.WithFields(logrus.Fields{
 		"full_url":       fullURL,
 		"artifactCount": len(artifacts),
-		"duration_ms":      time.Since(start).Seconds(),
+		"duration_ms":      time.Since(start).Milliseconds(),
 	}).Debug("pypi: FetchRemote success")
 	return artifacts, nil
 }

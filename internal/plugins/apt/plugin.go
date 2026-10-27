@@ -206,7 +206,7 @@ func (p *AptPlugin) fetchPackagesIndex(ctx context.Context, remoteURL, path stri
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,
-			"duration_ms": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Milliseconds(),
 			"error":    err.Error(),
 		}).Error("apt: fetch packages index HTTP request failed")
 		return nil, fmt.Errorf("apt: fetch packages index from %s: %w", fullURL, err)
@@ -219,7 +219,7 @@ func (p *AptPlugin) fetchPackagesIndex(ctx context.Context, remoteURL, path stri
 		logrus.WithFields(logrus.Fields{
 			"full_url":    fullURL,
 			"status_code": resp.StatusCode,
-			"duration_ms":   time.Since(start).Seconds(),
+			"duration_ms":   time.Since(start).Milliseconds(),
 		}).Error("apt: fetch packages index returned non-200 status")
 		return nil, fmt.Errorf("apt: fetch packages index from %s: status %d", fullURL, resp.StatusCode)
 	}
@@ -228,7 +228,7 @@ func (p *AptPlugin) fetchPackagesIndex(ctx context.Context, remoteURL, path stri
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,
-			"duration_ms": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Milliseconds(),
 			"error":    err.Error(),
 		}).Error("apt: read packages index body failed")
 		return nil, fmt.Errorf("apt: read packages index body: %w", err)
@@ -243,7 +243,7 @@ func (p *AptPlugin) fetchPackagesIndex(ctx context.Context, remoteURL, path stri
 	logrus.WithFields(logrus.Fields{
 		"full_url":      fullURL,
 		"packageCount": len(artifacts),
-		"duration_ms":     time.Since(start).Seconds(),
+		"duration_ms":     time.Since(start).Milliseconds(),
 	}).Debug("apt: fetchPackagesIndex success")
 	return artifacts, nil
 }

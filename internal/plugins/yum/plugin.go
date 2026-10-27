@@ -199,7 +199,7 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,
-			"duration_ms": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Milliseconds(),
 			"error":    err.Error(),
 		}).Error("yum: fetch repomd HTTP request failed")
 		return nil, fmt.Errorf("yum: fetch repomd from %s: %w", fullURL, err)
@@ -212,7 +212,7 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 		logrus.WithFields(logrus.Fields{
 			"full_url":    fullURL,
 			"status_code": resp.StatusCode,
-			"duration_ms":   time.Since(start).Seconds(),
+			"duration_ms":   time.Since(start).Milliseconds(),
 		}).Error("yum: fetch repomd returned non-200 status")
 		return nil, fmt.Errorf("yum: fetch repomd from %s: status %d", fullURL, resp.StatusCode)
 	}
@@ -221,7 +221,7 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,
-			"duration_ms": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Milliseconds(),
 			"error":    err.Error(),
 		}).Error("yum: read repomd body failed")
 		return nil, fmt.Errorf("yum: read repomd body: %w", err)
@@ -231,7 +231,7 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 	if err := xml.Unmarshal(body, &repomd); err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,
-			"duration_ms": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Milliseconds(),
 			"error":    err.Error(),
 		}).Error("yum: unmarshal repomd XML failed")
 		return nil, fmt.Errorf("yum: unmarshal repomd XML: %w", err)
@@ -285,7 +285,7 @@ func (p *YumPlugin) fetchRepomd(ctx context.Context, remoteURL, path string) ([]
 	logrus.WithFields(logrus.Fields{
 		"full_url":       fullURL,
 		"artifactCount": len(artifacts),
-		"duration_ms":      time.Since(start).Seconds(),
+		"duration_ms":      time.Since(start).Milliseconds(),
 	}).Debug("yum: fetchRepomd success")
 	return artifacts, nil
 }

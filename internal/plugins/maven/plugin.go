@@ -227,7 +227,7 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,
-			"duration_ms": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Milliseconds(),
 			"error":    err.Error(),
 		}).Error("maven: fetch metadata HTTP request failed")
 		return nil, fmt.Errorf("maven: fetch metadata from %s: %w", fullURL, err)
@@ -240,7 +240,7 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 		logrus.WithFields(logrus.Fields{
 			"full_url":    fullURL,
 			"status_code": resp.StatusCode,
-			"duration_ms":   time.Since(start).Seconds(),
+			"duration_ms":   time.Since(start).Milliseconds(),
 		}).Error("maven: fetch metadata returned non-200 status")
 		return nil, fmt.Errorf("maven: fetch metadata from %s: status %d", fullURL, resp.StatusCode)
 	}
@@ -249,7 +249,7 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,
-			"duration_ms": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Milliseconds(),
 			"error":    err.Error(),
 		}).Error("maven: read metadata body failed")
 		return nil, fmt.Errorf("maven: read metadata body: %w", err)
@@ -259,7 +259,7 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 	if err := xml.Unmarshal(body, &meta); err != nil {
 		logrus.WithFields(logrus.Fields{
 			"full_url":  fullURL,
-			"duration_ms": time.Since(start).Seconds(),
+			"duration_ms": time.Since(start).Milliseconds(),
 			"error":    err.Error(),
 		}).Error("maven: unmarshal metadata XML failed")
 		return nil, fmt.Errorf("maven: unmarshal metadata XML: %w", err)
@@ -367,7 +367,7 @@ func (p *MavenPlugin) fetchMetadata(ctx context.Context, remoteURL, path string)
 		"group":        group,
 		"artifact":     artifact,
 		"versionCount": len(artifacts),
-		"duration_ms":     time.Since(start).Seconds(),
+		"duration_ms":     time.Since(start).Milliseconds(),
 	}).Debug("maven: fetchMetadata success")
 	return artifacts, nil
 }
