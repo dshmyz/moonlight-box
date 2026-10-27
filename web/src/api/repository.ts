@@ -38,6 +38,8 @@ export interface RepositoryConfig {
   cache_max_size_gb?: number
   cache_negative_ttl?: number
   timeout_seconds?: number
+  connect_timeout_seconds?: number
+  read_timeout_seconds?: number
   max_redirects?: number
   insecure_skip_verify?: boolean
   failure_cache_rules?: string

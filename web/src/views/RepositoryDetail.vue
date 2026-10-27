@@ -97,6 +97,10 @@
               <span>{{ repo?.config?.timeout_seconds || 0 }} 秒</span>
             </div>
             <div class="info-item">
+              <label>建连 / 读超时</label>
+              <span>{{ repo?.config?.connect_timeout_seconds || 0 }} / {{ repo?.config?.read_timeout_seconds || 0 }} 秒（0 为全局默认）</span>
+            </div>
+            <div class="info-item">
               <label>最大重定向次数</label>
               <span>{{ repo?.config?.max_redirects || 5 }}</span>
             </div>

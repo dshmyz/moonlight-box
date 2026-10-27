@@ -171,18 +171,20 @@ func (p *UpdateRepositoryParams) ToRepoForUpdate() (*Repository, []string) {
 
 // RepositoryConfig 仓库配置 JSONB，替代原有的独立代理字段
 type RepositoryConfig struct {
-	RemoteURL          string           `json:"remote_url,omitempty"`
-	AuthType           string           `json:"auth_type,omitempty"`
-	Auth               *ProxyAuthConfig `json:"auth,omitempty"`
-	ProxyPriority      int              `json:"proxy_priority,omitempty"`
-	CacheEnabled       bool             `json:"cache_enabled,omitempty"`
-	CacheTTLSeconds    int              `json:"cache_ttl_seconds,omitempty"`
-	CacheMaxSizeGB     float64          `json:"cache_max_size_gb,omitempty"`
-	CacheNegativeTTL   int              `json:"cache_negative_ttl,omitempty"`
-	TimeoutSeconds     int              `json:"timeout_seconds,omitempty"`
-	MaxRedirects       int              `json:"max_redirects,omitempty"`
-	InsecureSkipVerify bool             `json:"insecure_skip_verify,omitempty"`
-	FailureCacheRules  string           `json:"failure_cache_rules,omitempty"`
+	RemoteURL             string           `json:"remote_url,omitempty"`
+	AuthType              string           `json:"auth_type,omitempty"`
+	Auth                  *ProxyAuthConfig `json:"auth,omitempty"`
+	ProxyPriority         int              `json:"proxy_priority,omitempty"`
+	CacheEnabled          bool             `json:"cache_enabled,omitempty"`
+	CacheTTLSeconds       int              `json:"cache_ttl_seconds,omitempty"`
+	CacheMaxSizeGB        float64          `json:"cache_max_size_gb,omitempty"`
+	CacheNegativeTTL      int              `json:"cache_negative_ttl,omitempty"`
+	TimeoutSeconds        int              `json:"timeout_seconds,omitempty"`
+	ConnectTimeoutSeconds int              `json:"connect_timeout_seconds,omitempty"`
+	ReadTimeoutSeconds    int              `json:"read_timeout_seconds,omitempty"`
+	MaxRedirects          int              `json:"max_redirects,omitempty"`
+	InsecureSkipVerify    bool             `json:"insecure_skip_verify,omitempty"`
+	FailureCacheRules     string           `json:"failure_cache_rules,omitempty"`
 
 	// SNAPSHOT 清理策略（仓库级覆盖，nil 表示使用全局默认值）
 	SnapshotKeepLast   *int `json:"snapshot_keep_last,omitempty"`

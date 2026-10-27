@@ -31,12 +31,13 @@ var (
 )
 
 // IsUpstreamTimeout 判断错误是否为上游超时。
-// 覆盖三种场景：ErrUpstreamTimeout 哨兵、net.Error.Timeout()、context.DeadlineExceeded。
+// 覆盖四种场景：ErrUpstreamTimeout 哨兵、流式 TTFB/读空闲超时、net.Error.Timeout()、
+// context.DeadlineExceeded。
 func IsUpstreamTimeout(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, ErrUpstreamTimeout) {
+	if errors.Is(err, ErrUpstreamTimeout) || errors.Is(err, errUpstreamStreamTimeout) {
 		return true
 	}
 	var netErr net.Error

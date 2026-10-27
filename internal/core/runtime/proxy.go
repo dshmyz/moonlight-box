@@ -49,6 +49,13 @@ type ProxyRuntime struct {
 	// 回源不再透传任意调用者的 ctx，统一用带此 deadline 的背景 ctx，保证共享回源不被单个
 	// 客户端断开而取消。
 	UpstreamTimeout time.Duration
+	// ConnectTimeout 是仓库级 TCP 建连超时（0 表示沿用全局 proxy.connect_timeout）。
+	// 通过 ctx 传给共享 Transport 的 DialContext，不新建连接池；只覆盖 TCP dial，
+	// TLS 握手仍受 Transport 全局 TLSHandshakeTimeout 约束。
+	ConnectTimeout time.Duration
+	// ReadTimeout 是仓库级元数据读取超时（0 表示沿用全局 proxy.default_timeout）。
+	// 只约束元数据/索引请求，不约束 blob 流式传输（后者由 TTFB + 读空闲控制）。
+	ReadTimeout time.Duration
 
 	// 统一缓存设施（internal/core/cache）：正缓存与负缓存分开两个独立 MetadataCache，
 	// 各自独立 LRU 上限，避免 404/失败条目大量涌入挤掉热门包的正缓存；元数据失败
@@ -75,6 +82,17 @@ func (n *ProxyRuntime) upstreamTimeout() time.Duration {
 		to = defaultUpstreamTimeout
 	}
 	return to
+}
+
+// metadataContext 给元数据/索引请求叠加仓库级超时：建连超时写进 ctx（供共享
+// Transport 的 DialContext 读取），读超时以 deadline 约束本次请求。
+// 返回的 cancel 必须由调用方执行，否则会泄漏定时器。
+func (n *ProxyRuntime) metadataContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx = WithConnectTimeout(ctx, n.ConnectTimeout)
+	if n.ReadTimeout > 0 {
+		return context.WithTimeout(ctx, n.ReadTimeout)
+	}
+	return ctx, func() {}
 }
 
 // flightResult[T] 是 doFlight 在 singleflight 内的统一结果载体。
@@ -141,6 +159,8 @@ func (n *ProxyRuntime) OpenRemote(ctx context.Context, request RemoteOpenRequest
 	if n.RemoteClient == nil {
 		return nil, NewUpstreamUnavailableError("", fmt.Errorf("remote client is not configured"))
 	}
+	// 直通流只注入建连超时：响应体是长连接，不能施加总/读超时。
+	ctx = WithConnectTimeout(ctx, n.ConnectTimeout)
 
 	headers := make(http.Header)
 	for _, name := range []string{"Accept", "If-None-Match", "If-Modified-Since"} {
@@ -275,6 +295,7 @@ func (n *ProxyRuntime) evaluateConditionalAccess(ctx context.Context, key Artifa
 		timeout = 2 * time.Second
 	}
 	metadata, err := doFlight(ctx, &n.fetchGroup, failureKey, timeout, func(runCtx context.Context) (*ArtifactMetadata, error) {
+		runCtx = WithConnectTimeout(runCtx, n.ConnectTimeout)
 		return fetcher.FetchArtifactMetadata(runCtx, n.RemoteBaseURL, key)
 	})
 	if err != nil {
@@ -417,6 +438,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 
 	sfKey := "get:" + key.String()
 	res, err := doFlight(ctx, &n.fetchGroup, sfKey, n.upstreamTimeout(), func(runCtx context.Context) (getArtifactResult, error) {
+		runCtx = WithConnectTimeout(runCtx, n.ConnectTimeout)
 		if n.isNegativeCached(key) {
 			metrics.RecordProxyNegativeCacheHit(n.Format)
 			return getArtifactResult{}, ErrNotFound
@@ -498,7 +520,9 @@ func (n *ProxyRuntime) loadArtifact(ctx context.Context, key ArtifactKey, start 
 	}).Debug("proxy: GetArtifact cache miss, fetching from remote")
 
 	key.RemoteURL = n.buildRemoteURL(key)
-	metadata, err := n.RemoteClient.FetchMetadata(ctx, key)
+	fetchCtx, cancelFetch := n.metadataContext(ctx)
+	metadata, err := n.RemoteClient.FetchMetadata(fetchCtx, key)
+	cancelFetch()
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"key":         key.String(),
@@ -623,12 +647,15 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 						// 同时限制超时防止 FetchRemote 挂起泄漏 goroutine 和 refreshingPaths 槽位。
 						refreshCtx, cancel := context.WithTimeout(context.Background(), backgroundRefreshTimeout)
 						defer cancel()
+						refreshCtx = WithConnectTimeout(refreshCtx, n.ConnectTimeout)
 						// 保留触发请求的 client IP 用于审计，否则背景 ctx 拿不到 IP
 						if ip := ClientIPFromContext(ctx); ip != "" {
 							refreshCtx = ContextWithClientIP(refreshCtx, ip)
 						}
 						fetchStart := time.Now()
-						fetched, fetchErr := n.Fetcher.FetchRemote(refreshCtx, n.RemoteBaseURL, query.RemotePath)
+						fetchCtx, cancelFetch := n.metadataContext(refreshCtx)
+						fetched, fetchErr := n.Fetcher.FetchRemote(fetchCtx, n.RemoteBaseURL, query.RemotePath)
+						cancelFetch()
 						fetchDuration := time.Since(fetchStart).Seconds()
 						if fetchErr == nil && len(fetched) > 0 {
 							metrics.RecordProxyFetch(n.Format, "success", fetchDuration)
@@ -696,7 +723,11 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 			err     error
 		}
 		res, sgErr := doFlight(ctx, &n.fetchGroup, sgKey, n.upstreamTimeout(), func(runCtx context.Context) (queryResult, error) {
-			fetched, fetchErr := n.Fetcher.FetchRemote(runCtx, n.RemoteBaseURL, query.RemotePath)
+			runCtx = WithConnectTimeout(runCtx, n.ConnectTimeout)
+			// 读超时只约束上游索引请求；随后的 BatchPut 用原 ctx，不被读超时波及。
+			fetchCtx, cancelFetch := n.metadataContext(runCtx)
+			fetched, fetchErr := n.Fetcher.FetchRemote(fetchCtx, n.RemoteBaseURL, query.RemotePath)
+			cancelFetch()
 			if fetchErr != nil {
 				return queryResult{err: fetchErr}, nil
 			}
@@ -826,12 +857,18 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 		"filename":   key.Filename,
 	}).Debug("proxy: ensureArtifactBlob fetching from remote")
 
-	blobReader, err := n.RemoteClient.FetchBlob(ctx, key)
+	// 下载与落盘不继承上层回源的总 deadline：上游慢但持续有数据时，
+	// 传输只应受 RemoteClient 的 TTFB / 读空闲约束，不能被 upstreamTimeout
+	// 按总时长腰斩（大文件必然超时）。共享回源本身已跑在 background ctx 上
+	// （见 doFlight），解除继承不会改变调用方的取消语义。
+	blobCtx := context.WithoutCancel(ctx)
+
+	blobReader, err := n.RemoteClient.FetchBlob(blobCtx, key)
 	if err != nil {
 		// blob 不存在（上游 404）→ 清理过期 metadata，设置负缓存，返回 ErrNotFound
 		// 这样 Go CLI 收到 404 而非 500，不会无限重试
 		if errors.Is(err, ErrNotFound) {
-			_ = n.MetadataStore.Delete(ctx, key)
+			_ = n.MetadataStore.Delete(blobCtx, key)
 			n.setNegativeCache(key)
 			logrus.WithFields(logrus.Fields{
 				"remote_url":  key.RemoteURL,
@@ -865,7 +902,7 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 
 	var blobRef BlobRef
 	if store, ok := n.BlobStore.(ContextBlobPutter); ok {
-		blobRef, err = store.PutContext(ctx, blobReaderForStore)
+		blobRef, err = store.PutContext(blobCtx, blobReaderForStore)
 	} else {
 		blobRef, err = n.BlobStore.Put(blobReaderForStore)
 	}
@@ -883,7 +920,7 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 	}
 	if n.CachePolicy.MaxBlobSize > 0 && readSize > n.CachePolicy.MaxBlobSize {
 		if store, ok := n.BlobStore.(ContextBlobDeleter); ok {
-			_ = store.DeleteContext(ctx, blobRef)
+			_ = store.DeleteContext(blobCtx, blobRef)
 		} else {
 			_ = n.BlobStore.Delete(blobRef)
 		}
@@ -906,10 +943,15 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 	if blobRef.Size > 0 {
 		metrics.RecordProxyBlobStored(n.Format, blobRef.Size)
 	}
+	// 下载可能已远超上层回源 deadline，元数据写入不能复用那把已过期的 ctx；
+	// 另起有界 ctx，既避开过期 deadline，也不让 DB 异常把共享回源无限挂住。
+	writeCtx, cancelWrite := context.WithTimeout(blobCtx, n.upstreamTimeout())
+	defer cancelWrite()
+
 	// 内容下载完成后只补写 blob 关联与内容列，避免整条 Put 的重复查询
 	// （省 SELECT/整行 UPDATE/事务内聚合重算，聚合由存储层异步重算）
 	if attacher, ok := n.MetadataStore.(BlobAttacher); ok {
-		if err := attacher.AttachBlob(WithSyncSource(ctx), artifact); err != nil {
+		if err := attacher.AttachBlob(WithSyncSource(writeCtx), artifact); err != nil {
 			logrus.WithFields(logrus.Fields{
 				"remote_url":  key.RemoteURL,
 				"duration_ms": time.Since(start).Seconds(),
@@ -917,7 +959,7 @@ func (n *ProxyRuntime) ensureArtifactBlob(ctx context.Context, artifact *Artifac
 			}).Error("proxy: ensureArtifactBlob attach blob failed")
 			return err
 		}
-	} else if err := n.MetadataStore.Put(WithSyncSource(ctx), artifact); err != nil {
+	} else if err := n.MetadataStore.Put(WithSyncSource(writeCtx), artifact); err != nil {
 		logrus.WithFields(logrus.Fields{
 			"remote_url":  key.RemoteURL,
 			"duration_ms": time.Since(start).Seconds(),
@@ -1013,7 +1055,11 @@ func (n *ProxyRuntime) refreshStaleMetadata(ctx context.Context, artifact *Artif
 	if key.RemoteURL == "" {
 		return nil
 	}
-	remoteMeta, err := n.RemoteClient.FetchMetadata(ctx, key)
+	remoteMeta, err := func() (*RemoteMetadata, error) {
+		fetchCtx, cancelFetch := n.metadataContext(ctx)
+		defer cancelFetch()
+		return n.RemoteClient.FetchMetadata(fetchCtx, key)
+	}()
 	if err != nil {
 		// 远端不可达：设置短 TTL 负缓存，避免故障期间每个请求都重复回源放大流量。
 		// 不返回错误（stale-while-revalidate 语义），继续服务本地缓存数据。

@@ -258,3 +258,18 @@ func TestHTTPRemoteClientFetchBlobSlowStreamSucceeds(t *testing.T) {
 		t.Fatalf("body mismatch:\n got %q\nwant %q", got, want.String())
 	}
 }
+
+// 去掉回源总 deadline 后，流式的 TTFB / 读空闲超时是唯一的超时来源，
+// 必须仍被识别为上游超时，否则插件会把它当普通错误返回 500 而非 503，
+// 熔断器也不会按 timeout 计数。
+func TestStreamTimeoutsClassifiedAsUpstreamTimeout(t *testing.T) {
+	cases := map[string]error{
+		"TTFB":      fmt.Errorf("fetching blob: %w", fmt.Errorf("%w: TTFB after 30s", errUpstreamStreamTimeout)),
+		"read idle": fmt.Errorf("fetching blob: %w", fmt.Errorf("%w: read idle after 1m0s", errUpstreamStreamTimeout)),
+	}
+	for name, err := range cases {
+		if !IsUpstreamTimeout(err) {
+			t.Fatalf("%s timeout not classified as upstream timeout: %v", name, err)
+		}
+	}
+}

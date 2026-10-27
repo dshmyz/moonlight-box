@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	coreruntime "github.com/dshmyz/moonlight-box/internal/core/runtime"
 )
 
 func TestRemoteClientGetBytesRejectsOversizedContentLength(t *testing.T) {
@@ -61,5 +63,16 @@ func TestRemoteClientBuildClientRespectsExplicitReadTimeout(t *testing.T) {
 	got := c.buildClient(RequestOptions{ReadTimeout: 7 * time.Second})
 	if got.Timeout != 7*time.Second {
 		t.Fatalf("buildClient() Timeout = %v, want 7s", got.Timeout)
+	}
+}
+
+// 共享 Transport 的 DialContext 按请求解析建连超时：仓库级值优先，否则全局值。
+func TestResolveDialTimeoutPrefersRepoContextValue(t *testing.T) {
+	if got := resolveDialTimeout(context.Background(), 10*time.Second); got != 10*time.Second {
+		t.Fatalf("fallback dial timeout = %s, want 10s", got)
+	}
+	ctx := coreruntime.WithConnectTimeout(context.Background(), 3*time.Second)
+	if got := resolveDialTimeout(ctx, 10*time.Second); got != 3*time.Second {
+		t.Fatalf("repo dial timeout = %s, want 3s", got)
 	}
 }

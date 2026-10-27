@@ -13,6 +13,11 @@ import (
 )
 
 var (
+	// errUpstreamStreamTimeout 让流式的 TTFB / 读空闲超时能被 IsUpstreamTimeout 识别：
+	// 去掉回源总 deadline 后，这两条是唯一的超时来源，必须仍映射为
+	// 503 + retry-after 并计入熔断超时，而不是退化成普通 500。
+	errUpstreamStreamTimeout = errors.New("upstream stream timeout")
+
 	// streamTTFBTimeout 限制流式请求（FetchBlob/Open）从发起到收到响应头的最长时间。
 	// 用变量以便测试缩短。
 	streamTTFBTimeout = 30 * time.Second
@@ -52,7 +57,7 @@ func NewHTTPRemoteClient(client *http.Client) *HTTPRemoteClient {
 func doStream(ctx context.Context, client *http.Client, req *http.Request) (*http.Response, error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	timer := time.AfterFunc(streamTTFBTimeout, func() {
-		cancel(fmt.Errorf("upstream TTFB timeout after %s", streamTTFBTimeout))
+		cancel(fmt.Errorf("%w: TTFB after %s", errUpstreamStreamTimeout, streamTTFBTimeout))
 	})
 	resp, err := client.Do(req.WithContext(ctx))
 	if err != nil {
@@ -144,7 +149,7 @@ func (b *idleTimeoutBody) Read(p []byte) (int, error) {
 		b.cancel(nil)
 		return 0, http.ErrBodyReadAfterClose
 	case <-time.After(streamIdleTimeout):
-		err := fmt.Errorf("upstream read idle timeout after %s", streamIdleTimeout)
+		err := fmt.Errorf("%w: read idle after %s", errUpstreamStreamTimeout, streamIdleTimeout)
 		b.terminate(err)
 		return 0, err
 	}

@@ -153,6 +153,8 @@ interface RepoFormData {
   auth_config: string
   proxy_priority: number
   timeout_seconds: number
+  connect_timeout_seconds: number
+  read_timeout_seconds: number
   max_redirects: number
   insecure_skip_verify: boolean
   cache_enabled: boolean
@@ -175,6 +177,8 @@ const defaultFormData = (): RepoFormData => ({
   auth_config: '',
   proxy_priority: 0,
   timeout_seconds: 0,
+  connect_timeout_seconds: 0,
+  read_timeout_seconds: 0,
   max_redirects: 0,
   insecure_skip_verify: false,
   cache_enabled: true,
@@ -244,6 +248,8 @@ watch(
         auth_config: '',
         proxy_priority: cfg.proxy_priority ?? 0,
         timeout_seconds: cfg.timeout_seconds ?? 0,
+        connect_timeout_seconds: cfg.connect_timeout_seconds ?? 0,
+        read_timeout_seconds: cfg.read_timeout_seconds ?? 0,
         max_redirects: cfg.max_redirects ?? 0,
         insecure_skip_verify: cfg.insecure_skip_verify ?? false,
         cache_enabled: cfg.cache_enabled ?? true,
@@ -372,6 +378,8 @@ const buildConfig = (): RepositoryConfig => {
       cache_negative_ttl: formData.value.cache_negative_ttl,
       cache_max_size_gb: formData.value.cache_max_size_gb,
       timeout_seconds: formData.value.timeout_seconds,
+      connect_timeout_seconds: formData.value.connect_timeout_seconds,
+      read_timeout_seconds: formData.value.read_timeout_seconds,
       max_redirects: formData.value.max_redirects,
       insecure_skip_verify: formData.value.insecure_skip_verify,
       failure_cache_rules: formData.value.failure_cache_rules || '',

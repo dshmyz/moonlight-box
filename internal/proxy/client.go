@@ -12,12 +12,13 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+
+	coreruntime "github.com/dshmyz/moonlight-box/internal/core/runtime"
 )
 
 type TransportManager struct {
 	secureTransport   *http.Transport
 	insecureTransport *http.Transport
-	connectTimeout    time.Duration
 	dnsResolver       *DNSResolver
 }
 
@@ -41,7 +42,7 @@ func NewTransportManager(connectTimeout time.Duration, dnsResolver *DNSResolver)
 			}
 
 			dialer := &net.Dialer{
-				Timeout:   connectTimeout,
+				Timeout:   resolveDialTimeout(ctx, connectTimeout),
 				KeepAlive: 30 * time.Second,
 			}
 			return dialer.DialContext(ctx, network, net.JoinHostPort(resolvedHost, resolvedPort))
@@ -63,7 +64,6 @@ func NewTransportManager(connectTimeout time.Duration, dnsResolver *DNSResolver)
 	return &TransportManager{
 		secureTransport:   secureTransport,
 		insecureTransport: insecureTransport,
-		connectTimeout:    connectTimeout,
 		dnsResolver:       dnsResolver,
 	}
 }
@@ -73,6 +73,15 @@ func (m *TransportManager) GetTransport(insecure bool) *http.Transport {
 		return m.insecureTransport
 	}
 	return m.secureTransport
+}
+
+// resolveDialTimeout 解析本次建连超时：请求 ctx 携带的仓库级值优先，否则回退全局值。
+// ctx 由 ProxyRuntime 在回源前注入（runtime.WithConnectTimeout）。
+func resolveDialTimeout(ctx context.Context, fallback time.Duration) time.Duration {
+	if repoTimeout := coreruntime.ConnectTimeoutFromContext(ctx); repoTimeout > 0 {
+		return repoTimeout
+	}
+	return fallback
 }
 
 type RequestOptions struct {

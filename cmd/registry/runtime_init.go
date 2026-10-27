@@ -168,6 +168,8 @@ func createRuntimeForRepo(
 			CachePolicy:     cachePolicy,
 			Format:          repo.PackageType,
 			UpstreamTimeout: upstreamTimeout,
+			ConnectTimeout:  repoConnectTimeout(repo),
+			ReadTimeout:     repoReadTimeout(repo),
 		}
 		if f, ok := fetchers[repo.PackageType]; ok {
 			pr.Fetcher = newFetcherWithCircuitBreaker(f, repo.ID, cbLookup)
@@ -208,6 +210,22 @@ func upstreamTimeoutFor(repo *model.Repository, httpClient *http.Client) time.Du
 	}
 	if httpClient != nil {
 		return httpClient.Timeout
+	}
+	return 0
+}
+
+// repoConnectTimeout 解析仓库级 TCP 建连超时；0 表示沿用全局 proxy.connect_timeout。
+func repoConnectTimeout(repo *model.Repository) time.Duration {
+	if repo != nil && repo.Config != nil && repo.Config.ConnectTimeoutSeconds > 0 {
+		return time.Duration(repo.Config.ConnectTimeoutSeconds) * time.Second
+	}
+	return 0
+}
+
+// repoReadTimeout 解析仓库级元数据读取超时；0 表示沿用全局 proxy.default_timeout。
+func repoReadTimeout(repo *model.Repository) time.Duration {
+	if repo != nil && repo.Config != nil && repo.Config.ReadTimeoutSeconds > 0 {
+		return time.Duration(repo.Config.ReadTimeoutSeconds) * time.Second
 	}
 	return 0
 }
@@ -332,6 +350,8 @@ func createGroupRuntime(
 					CachePolicy:     cachePolicy,
 					Format:          memberRepo.PackageType,
 					UpstreamTimeout: upstreamTimeoutFor(&memberRepo, httpClient),
+					ConnectTimeout:  repoConnectTimeout(&memberRepo),
+					ReadTimeout:     repoReadTimeout(&memberRepo),
 				}
 				if f, ok := fetchers[memberRepo.PackageType]; ok {
 					n.Fetcher = newFetcherWithCircuitBreaker(f, memberRepo.ID, cbLookup)

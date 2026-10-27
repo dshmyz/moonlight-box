@@ -2331,3 +2331,243 @@ func TestEnsureArtifactBlobSuccessClearsNegativeCache(t *testing.T) {
 		t.Fatal("negative cache entry survived a successful blob re-download")
 	}
 }
+
+// ctxGatedSlowReader 模拟真实 HTTP 响应体：每次 Read 都受请求 ctx 约束，
+// 以固定间隔持续吐数据，总耗时可远超上游超时。
+type ctxGatedSlowReader struct {
+	ctx      context.Context
+	remain   int
+	chunk    int
+	interval time.Duration
+}
+
+func (r *ctxGatedSlowReader) Read(p []byte) (int, error) {
+	if r.remain <= 0 {
+		return 0, io.EOF
+	}
+	select {
+	case <-r.ctx.Done():
+		return 0, r.ctx.Err()
+	case <-time.After(r.interval):
+	}
+	n := r.chunk
+	if n > r.remain {
+		n = r.remain
+	}
+	if n > len(p) {
+		n = len(p)
+	}
+	for i := 0; i < n; i++ {
+		p[i] = 'x'
+	}
+	r.remain -= n
+	return n, nil
+}
+
+func (r *ctxGatedSlowReader) Close() error { return nil }
+
+// slowBlobRemoteClient 记录 FetchBlob 收到的 ctx，返回受该 ctx 约束的慢速流。
+type slowBlobRemoteClient struct {
+	*fakeRemoteClient
+	blobCtx  context.Context
+	chunks   int
+	chunk    int
+	interval time.Duration
+}
+
+func (c *slowBlobRemoteClient) FetchBlob(ctx context.Context, key ArtifactKey) (io.ReadCloser, error) {
+	c.blobCalls++
+	c.blobCtx = ctx
+	return &ctxGatedSlowReader{
+		ctx:      ctx,
+		remain:   c.chunks * c.chunk,
+		chunk:    c.chunk,
+		interval: c.interval,
+	}, nil
+}
+
+// drainingBlobStore 真正消费 reader（模拟落盘），并记录 PutContext 收到的 ctx。
+type drainingBlobStore struct {
+	fakeBlobStore
+	putCtx context.Context
+	bytes  int64
+}
+
+func (s *drainingBlobStore) PutContext(ctx context.Context, reader io.Reader) (BlobRef, error) {
+	s.putCtx = ctx
+	n, err := io.Copy(io.Discard, reader)
+	s.bytes = n
+	if err != nil {
+		return BlobRef{}, err
+	}
+	return BlobRef{Size: n, Digest: "slow"}, nil
+}
+
+// TestGetArtifactSlowSteadyBlobNotCutByUpstreamTimeout 验证回源总超时不再按总时长
+// 腰斩慢速但持续的 blob 下载：下载耗时是 UpstreamTimeout 的数倍，但每次 Read 都有
+// 数据，必须完整落盘并成功返回。
+func TestGetArtifactSlowSteadyBlobNotCutByUpstreamTimeout(t *testing.T) {
+	const (
+		upstreamTimeout = 40 * time.Millisecond
+		chunk           = 8
+		chunks          = 10
+		interval        = 15 * time.Millisecond // 总耗时约 150ms，是 upstreamTimeout 的 3 倍多
+	)
+
+	store := newFakeMetadataStore()
+	remote := &slowBlobRemoteClient{
+		fakeRemoteClient: &fakeRemoteClient{},
+		chunks:           chunks,
+		chunk:            chunk,
+		interval:         interval,
+	}
+	blobs := &drainingBlobStore{}
+	rt := &ProxyRuntime{
+		MetadataStore:   store,
+		BlobStore:       blobs,
+		RemoteClient:    remote,
+		RemoteBaseURL:   "https://up.test",
+		Format:          "npm",
+		CachePolicy:     CachePolicy{MetadataTTL: time.Minute, NegativeTTL: time.Minute},
+		UpstreamTimeout: upstreamTimeout,
+		ConnectTimeout:  3 * time.Second,
+		ReadTimeout:     20 * time.Millisecond, // 只应作用于元数据，不能波及 blob 传输
+	}
+	key := ArtifactKey{
+		Format:     "npm",
+		Name:       "pkg",
+		Version:    "1.0.0",
+		Filename:   "pkg-1.0.0.tgz",
+		RemotePath: "pkg/-/pkg-1.0.0.tgz",
+	}
+
+	start := time.Now()
+	artifact, err := rt.GetArtifact(context.Background(), key)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("GetArtifact error = %v, want nil: a steady trickle must not be cut by the upstream total timeout", err)
+	}
+	if elapsed <= upstreamTimeout {
+		t.Fatalf("download finished in %s, want > %s so the test really outlives the upstream timeout", elapsed, upstreamTimeout)
+	}
+	if _, ok := remote.blobCtx.Deadline(); ok {
+		t.Fatal("FetchBlob ctx still carries a deadline; slow downloads can be cut mid-transfer")
+	}
+	if _, ok := blobs.putCtx.Deadline(); ok {
+		t.Fatal("PutContext ctx still carries a deadline; slow downloads can be cut while persisting")
+	}
+	if got := ConnectTimeoutFromContext(remote.blobCtx); got != 3*time.Second {
+		t.Fatalf("blob ctx connect timeout = %s, want 3s (repo value must survive WithoutCancel)", got)
+	}
+	if want := int64(chunks * chunk); blobs.bytes != want || artifact.SizeBytes != want {
+		t.Fatalf("stored %d bytes (artifact size %d), want %d", blobs.bytes, artifact.SizeBytes, want)
+	}
+}
+
+// ctxCapturingRemoteClient 记录 FetchMetadata / FetchBlob 收到的 ctx。
+type ctxCapturingRemoteClient struct {
+	*fakeRemoteClient
+	metadataCtx context.Context
+	blobCtx     context.Context
+}
+
+func (c *ctxCapturingRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (*RemoteMetadata, error) {
+	c.metadataCtx = ctx
+	return c.fakeRemoteClient.FetchMetadata(ctx, key)
+}
+
+func (c *ctxCapturingRemoteClient) FetchBlob(ctx context.Context, key ArtifactKey) (io.ReadCloser, error) {
+	c.blobCtx = ctx
+	return c.fakeRemoteClient.FetchBlob(ctx, key)
+}
+
+// ctxCapturingFetcher 记录 FetchRemote 收到的 ctx。
+type ctxCapturingFetcher struct {
+	ctx       context.Context
+	artifacts []*Artifact
+	err       error
+}
+
+func (f *ctxCapturingFetcher) FetchRemote(ctx context.Context, remoteURL, path string) ([]*Artifact, error) {
+	f.ctx = ctx
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.artifacts, nil
+}
+
+// 仓库级建连超时必须随 ctx 到达 RemoteClient，共享 Transport 的 DialContext
+// 才能按请求解析出正确的 dial 超时。
+func TestGetArtifactInjectsRepoConnectTimeoutIntoUpstreamCtx(t *testing.T) {
+	store := newFakeMetadataStore()
+	remote := &ctxCapturingRemoteClient{fakeRemoteClient: &fakeRemoteClient{
+		metadata: &RemoteMetadata{Exists: false},
+	}}
+	rt := &ProxyRuntime{
+		MetadataStore:  store,
+		BlobStore:      &fakeBlobStore{},
+		RemoteClient:   remote,
+		RemoteBaseURL:  "https://up.test",
+		Format:         "npm",
+		ConnectTimeout: 3 * time.Second,
+		CachePolicy:    CachePolicy{NegativeTTL: time.Minute},
+	}
+
+	_, _ = rt.GetArtifact(context.Background(), ArtifactKey{
+		Format:     "npm",
+		Name:       "pkg",
+		Version:    "1.0.0",
+		Filename:   "pkg-1.0.0.tgz",
+		RemotePath: "pkg/-/pkg-1.0.0.tgz",
+	})
+
+	if remote.metadataCtx == nil {
+		t.Fatal("FetchMetadata was not called")
+	}
+	if got := ConnectTimeoutFromContext(remote.metadataCtx); got != 3*time.Second {
+		t.Fatalf("upstream ctx connect timeout = %s, want 3s", got)
+	}
+}
+
+// 仓库级读超时只约束元数据/索引请求；blob 下载必须不受影响（由上一条测试覆盖）。
+func TestQueryArtifactsInjectsRepoTimeoutsIntoFetchRemote(t *testing.T) {
+	fetcher := &ctxCapturingFetcher{artifacts: []*Artifact{{
+		RepositoryID: "repo",
+		Format:       "npm",
+		Kind:         KindVersion,
+		Name:         "pkg",
+		Version:      "1.0.0",
+	}}}
+	rt := &ProxyRuntime{
+		MetadataStore:  newFakeMetadataStore(),
+		Fetcher:        fetcher,
+		RemoteBaseURL:  "https://up.test",
+		RepositoryID:   "repo",
+		Format:         "npm",
+		CachePolicy:    CachePolicy{MetadataTTL: time.Minute},
+		ConnectTimeout: 4 * time.Second,
+		ReadTimeout:    300 * time.Millisecond,
+	}
+
+	if _, err := rt.QueryArtifacts(context.Background(), ArtifactQuery{
+		RepositoryID: "repo",
+		Format:       "npm",
+		RemotePath:   "pkg",
+	}); err != nil {
+		t.Fatalf("QueryArtifacts error = %v", err)
+	}
+
+	if fetcher.ctx == nil {
+		t.Fatal("FetchRemote was not called")
+	}
+	if got := ConnectTimeoutFromContext(fetcher.ctx); got != 4*time.Second {
+		t.Fatalf("FetchRemote ctx connect timeout = %s, want 4s", got)
+	}
+	deadline, ok := fetcher.ctx.Deadline()
+	if !ok {
+		t.Fatal("FetchRemote ctx carries no read deadline; repo ReadTimeout not applied")
+	}
+	if remaining := time.Until(deadline); remaining <= 0 || remaining > 300*time.Millisecond {
+		t.Fatalf("FetchRemote read deadline remaining = %s, want within (0, 300ms]", remaining)
+	}
+}
