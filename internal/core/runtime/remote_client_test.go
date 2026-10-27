@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/dshmyz/moonlight-box/internal/conntrack"
 )
 
 func TestHTTPRemoteClientOpenPreservesStatusHeadersAndUnreadBody(t *testing.T) {
@@ -262,6 +264,57 @@ func TestHTTPRemoteClientFetchBlobSlowStreamSucceeds(t *testing.T) {
 // 去掉回源总 deadline 后，流式的 TTFB / 读空闲超时是唯一的超时来源，
 // 必须仍被识别为上游超时，否则插件会把它当普通错误返回 500 而非 503，
 // 熔断器也不会按 timeout 计数。
+// 元数据请求的时限应完全由 ctx 决定（仓库级 read timeout 或回源总超时），
+// 不能被共享 http.Client 的 Timeout 提前截断——否则仓库把 read_timeout
+// 调到 30s 以上也不会生效。
+// 回源统计必须跟随「请求」生命周期，而不是 TCP 连接：keep-alive 连接会留在
+// Transport 空闲池里（最长 IdleConnTimeout），按连接统计会让活跃回源数长期虚高。
+func TestFetchBlobTracksUpstreamRequestNotConnection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte("hello"))
+	}))
+	defer srv.Close()
+
+	client := NewHTTPRemoteClient(srv.Client())
+	base := conntrack.Global().ActiveCount("upstream")
+
+	body, err := client.FetchBlob(context.Background(), ArtifactKey{RemoteURL: srv.URL + "/blob"})
+	if err != nil {
+		t.Fatalf("FetchBlob: %v", err)
+	}
+	if got := conntrack.Global().ActiveCount("upstream"); got != base+1 {
+		t.Fatalf("upstream entries while body open = %d, want %d", got, base+1)
+	}
+	if _, err := io.Copy(io.Discard, body); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if err := body.Close(); err != nil {
+		t.Fatalf("close body: %v", err)
+	}
+
+	if got := conntrack.Global().ActiveCount("upstream"); got != base {
+		t.Fatalf("upstream entries after Close = %d, want %d (idle pooled conns must not count)", got, base)
+	}
+}
+
+func TestFetchMetadataBoundedByContextNotClientTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(80 * time.Millisecond)
+		w.Header().Set("Content-Length", "0")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := NewHTTPRemoteClient(&http.Client{Timeout: 20 * time.Millisecond})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if _, err := client.FetchMetadata(ctx, ArtifactKey{RemoteURL: srv.URL + "/meta"}); err != nil {
+		t.Fatalf("FetchMetadata must be bounded by ctx, not client.Timeout: %v", err)
+	}
+}
+
 func TestStreamTimeoutsClassifiedAsUpstreamTimeout(t *testing.T) {
 	cases := map[string]error{
 		"TTFB":      fmt.Errorf("fetching blob: %w", fmt.Errorf("%w: TTFB after 30s", errUpstreamStreamTimeout)),

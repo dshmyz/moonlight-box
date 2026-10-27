@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dshmyz/moonlight-box/internal/conntrack"
 	"github.com/dshmyz/moonlight-box/internal/util"
 )
 
@@ -43,10 +44,27 @@ func NewHTTPRemoteClient(client *http.Client) *HTTPRemoteClient {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
+	// 元数据请求的时限完全由 ctx 决定（仓库级 read timeout / 回源总超时）。
+	// 必须清掉共享客户端的 Client.Timeout：它是一个不可放宽的硬上限，会静默
+	// 压过更长的仓库级配置（如 read_timeout_seconds=60）。
+	meta := *client
+	meta.Timeout = 0
 	// 流式变体共享 Transport（连接池/DNS 映射/TLS 配置），但去掉总超时：
 	// http.Client.Timeout 从发起请求一直管到响应体读完，大文件流式下载必然被腰斩。
 	stream := &http.Client{Transport: client.Transport}
-	return &HTTPRemoteClient{client: client, stream: stream}
+	return &HTTPRemoteClient{client: &meta, stream: stream}
+}
+
+// trackUpstream 登记一次回源请求。与按 TCP 连接统计不同，登记项的生命周期
+// 跟随请求/响应体，不跟随连接池里的 idle 连接。
+func trackUpstream(ctx context.Context, op, remoteURL string) *conntrack.Handle {
+	return conntrack.Global().Register(conntrack.Entry{
+		Kind:       "upstream",
+		Remote:     remoteURL,
+		Repository: UpstreamRepositoryFromContext(ctx),
+		Path:       remoteURL,
+		Extra:      map[string]string{"op": op},
+	})
 }
 
 // doStream 发起流式请求。超时控制分两层，替代会被大文件触发的 Client.Timeout：
@@ -90,6 +108,10 @@ type idleTimeoutBody struct {
 	reads   chan readResult
 	closing chan struct{}
 	pending []byte // 上次读出的未消费数据（内部缓冲可能大于调用方 p）
+
+	// idle 复用一个定时器：每次 Read 都 time.After 会按 32KB 分块分配定时器，
+	// 一个大文件下载可能产生数万个 60s 定时器，增加 GC 与 runtime 定时器堆压力。
+	idle *time.Timer
 }
 
 func newIdleTimeoutBody(body io.ReadCloser, cancel context.CancelCauseFunc) *idleTimeoutBody {
@@ -134,6 +156,20 @@ func (b *idleTimeoutBody) Read(p []byte) (int, error) {
 		b.pending = b.pending[n:]
 		return n, nil
 	}
+	// 复用同一个定时器，避免每次 Read 分配一个 60s 定时器。
+	if b.idle == nil {
+		b.idle = time.NewTimer(streamIdleTimeout)
+	} else {
+		if !b.idle.Stop() {
+			select {
+			case <-b.idle.C:
+			default:
+			}
+		}
+		b.idle.Reset(streamIdleTimeout)
+	}
+	defer b.stopIdle()
+
 	select {
 	case res := <-b.reads:
 		b.pending = res.data
@@ -148,10 +184,23 @@ func (b *idleTimeoutBody) Read(p []byte) (int, error) {
 	case <-b.closing:
 		b.cancel(nil)
 		return 0, http.ErrBodyReadAfterClose
-	case <-time.After(streamIdleTimeout):
+	case <-b.idle.C:
 		err := fmt.Errorf("%w: read idle after %s", errUpstreamStreamTimeout, streamIdleTimeout)
 		b.terminate(err)
 		return 0, err
+	}
+}
+
+// stopIdle 停止并排空复用定时器，避免其在下一次 Reset 前残留触发。
+func (b *idleTimeoutBody) stopIdle() {
+	if b.idle == nil {
+		return
+	}
+	if !b.idle.Stop() {
+		select {
+		case <-b.idle.C:
+		default:
+		}
 	}
 }
 
@@ -164,8 +213,11 @@ func (b *idleTimeoutBody) Close() error {
 // HTTP status codes are returned as responses; only request construction and
 // transport failures are returned as errors.
 func (c *HTTPRemoteClient) Open(ctx context.Context, request RemoteRequest) (*RemoteResponse, error) {
+	h := trackUpstream(ctx, "open", request.URL)
+
 	req, err := http.NewRequestWithContext(ctx, request.Method, request.URL, nil)
 	if err != nil {
+		h.Unregister()
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 	req.Header = request.Headers.Clone()
@@ -176,13 +228,14 @@ func (c *HTTPRemoteClient) Open(ctx context.Context, request RemoteRequest) (*Re
 	}
 	resp, err := doStream(ctx, &client, req)
 	if err != nil {
+		h.Unregister()
 		return nil, fmt.Errorf("opening remote response: %w", err)
 	}
 
 	return &RemoteResponse{
 		StatusCode: resp.StatusCode,
 		Header:     resp.Header.Clone(),
-		Body:       resp.Body,
+		Body:       conntrack.TrackReadCloser(resp.Body, h),
 	}, nil
 }
 
@@ -191,6 +244,9 @@ func (c *HTTPRemoteClient) FetchMetadata(ctx context.Context, key ArtifactKey) (
 	if remoteURL == "" {
 		return nil, fmt.Errorf("remote URL not configured for artifact key: %s", key.String())
 	}
+
+	h := trackUpstream(ctx, "metadata", remoteURL)
+	defer h.Unregister()
 
 	meta, status, err := c.fetchMetadataWithMethod(ctx, http.MethodHead, remoteURL)
 	if err == nil && status < 400 {
@@ -248,24 +304,30 @@ func (c *HTTPRemoteClient) FetchBlob(ctx context.Context, key ArtifactKey) (io.R
 		return nil, fmt.Errorf("remote URL not configured for artifact key: %s", key.String())
 	}
 
+	h := trackUpstream(ctx, "blob", remoteURL)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, remoteURL, nil)
 	if err != nil {
+		h.Unregister()
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
 	resp, err := doStream(ctx, c.stream, req)
 	if err != nil {
+		h.Unregister()
 		return nil, fmt.Errorf("fetching blob: %w", err)
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
 		resp.Body.Close()
+		h.Unregister()
 		return nil, ErrNotFound
 	}
 	if resp.StatusCode >= 400 {
 		resp.Body.Close()
+		h.Unregister()
 		return nil, fmt.Errorf("remote returned status %d", resp.StatusCode)
 	}
 
-	return resp.Body, nil
+	return conntrack.TrackReadCloser(resp.Body, h), nil
 }

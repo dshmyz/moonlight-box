@@ -56,6 +56,8 @@ type ProxyRuntime struct {
 	// ReadTimeout 是仓库级元数据读取超时（0 表示沿用全局 proxy.default_timeout）。
 	// 只约束元数据/索引请求，不约束 blob 流式传输（后者由 TTFB + 读空闲控制）。
 	ReadTimeout time.Duration
+	// RepositoryName 是仓库名，仅用于可观测性（回源连接列表展示）。
+	RepositoryName string
 
 	// 统一缓存设施（internal/core/cache）：正缓存与负缓存分开两个独立 MetadataCache，
 	// 各自独立 LRU 上限，避免 404/失败条目大量涌入挤掉热门包的正缓存；元数据失败
@@ -84,11 +86,17 @@ func (n *ProxyRuntime) upstreamTimeout() time.Duration {
 	return to
 }
 
+// upstreamContext 给回源 ctx 注入仓库级建连超时与仓库名（后者供可观测性展示）。
+func (n *ProxyRuntime) upstreamContext(ctx context.Context) context.Context {
+	ctx = WithConnectTimeout(ctx, n.ConnectTimeout)
+	return WithUpstreamRepository(ctx, n.RepositoryName)
+}
+
 // metadataContext 给元数据/索引请求叠加仓库级超时：建连超时写进 ctx（供共享
 // Transport 的 DialContext 读取），读超时以 deadline 约束本次请求。
 // 返回的 cancel 必须由调用方执行，否则会泄漏定时器。
 func (n *ProxyRuntime) metadataContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	ctx = WithConnectTimeout(ctx, n.ConnectTimeout)
+	ctx = n.upstreamContext(ctx)
 	if n.ReadTimeout > 0 {
 		return context.WithTimeout(ctx, n.ReadTimeout)
 	}
@@ -160,7 +168,7 @@ func (n *ProxyRuntime) OpenRemote(ctx context.Context, request RemoteOpenRequest
 		return nil, NewUpstreamUnavailableError("", fmt.Errorf("remote client is not configured"))
 	}
 	// 直通流只注入建连超时：响应体是长连接，不能施加总/读超时。
-	ctx = WithConnectTimeout(ctx, n.ConnectTimeout)
+	ctx = n.upstreamContext(ctx)
 
 	headers := make(http.Header)
 	for _, name := range []string{"Accept", "If-None-Match", "If-Modified-Since"} {
@@ -295,7 +303,7 @@ func (n *ProxyRuntime) evaluateConditionalAccess(ctx context.Context, key Artifa
 		timeout = 2 * time.Second
 	}
 	metadata, err := doFlight(ctx, &n.fetchGroup, failureKey, timeout, func(runCtx context.Context) (*ArtifactMetadata, error) {
-		runCtx = WithConnectTimeout(runCtx, n.ConnectTimeout)
+		runCtx = n.upstreamContext(runCtx)
 		return fetcher.FetchArtifactMetadata(runCtx, n.RemoteBaseURL, key)
 	})
 	if err != nil {
@@ -438,7 +446,7 @@ func (n *ProxyRuntime) GetArtifact(ctx context.Context, key ArtifactKey) (*Artif
 
 	sfKey := "get:" + key.String()
 	res, err := doFlight(ctx, &n.fetchGroup, sfKey, n.upstreamTimeout(), func(runCtx context.Context) (getArtifactResult, error) {
-		runCtx = WithConnectTimeout(runCtx, n.ConnectTimeout)
+		runCtx = n.upstreamContext(runCtx)
 		if n.isNegativeCached(key) {
 			metrics.RecordProxyNegativeCacheHit(n.Format)
 			return getArtifactResult{}, ErrNotFound
@@ -647,7 +655,6 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 						// 同时限制超时防止 FetchRemote 挂起泄漏 goroutine 和 refreshingPaths 槽位。
 						refreshCtx, cancel := context.WithTimeout(context.Background(), backgroundRefreshTimeout)
 						defer cancel()
-						refreshCtx = WithConnectTimeout(refreshCtx, n.ConnectTimeout)
 						// 保留触发请求的 client IP 用于审计，否则背景 ctx 拿不到 IP
 						if ip := ClientIPFromContext(ctx); ip != "" {
 							refreshCtx = ContextWithClientIP(refreshCtx, ip)
@@ -723,7 +730,6 @@ func (n *ProxyRuntime) QueryArtifacts(ctx context.Context, query ArtifactQuery) 
 			err     error
 		}
 		res, sgErr := doFlight(ctx, &n.fetchGroup, sgKey, n.upstreamTimeout(), func(runCtx context.Context) (queryResult, error) {
-			runCtx = WithConnectTimeout(runCtx, n.ConnectTimeout)
 			// 读超时只约束上游索引请求；随后的 BatchPut 用原 ctx，不被读超时波及。
 			fetchCtx, cancelFetch := n.metadataContext(runCtx)
 			fetched, fetchErr := n.Fetcher.FetchRemote(fetchCtx, n.RemoteBaseURL, query.RemotePath)
