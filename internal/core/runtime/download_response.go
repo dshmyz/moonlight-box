@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -12,11 +13,41 @@ import (
 
 const maxInMemoryRangeFallbackBytes = 8 * 1024 * 1024
 
+// contentTypeForFilename 按扩展名推导 Content-Type，对齐 Nexus 的映射习惯。
+// 不用 mime.TypeByExtension：它依赖宿主机 /etc/mime.types，不同机器结果不同。
+func contentTypeForFilename(filename string) string {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".tgz":
+		return "application/x-tgz"
+	case ".gz":
+		return "application/gzip"
+	case ".jar", ".war", ".ear":
+		return "application/java-archive"
+	case ".zip", ".whl":
+		return "application/zip"
+	case ".pom", ".xml":
+		return "application/xml"
+	case ".json":
+		return "application/json"
+	case ".deb":
+		return "application/vnd.debian.binary-package"
+	case ".rpm":
+		return "application/x-rpm"
+	case ".xz":
+		return "application/x-xz"
+	case ".bz2":
+		return "application/x-bzip2"
+	default:
+		return "application/octet-stream"
+	}
+}
+
 // ServeArtifactContent writes a downloadable artifact response.
 // It centralizes HTTP download semantics that are shared by protocol plugins.
 func ServeArtifactContent(w http.ResponseWriter, r *http.Request, artifact *Artifact, filename, contentType, disposition string) error {
+	// 调用方没指定类型时按文件名推导：MIME 只在这里决定，插件不再各自硬编码。
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		contentType = contentTypeForFilename(filename)
 	}
 	if disposition == "" {
 		disposition = "inline"

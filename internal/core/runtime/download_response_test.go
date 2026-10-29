@@ -272,3 +272,71 @@ func TestServeArtifactContent_IfModifiedSinceReturnsNotModifiedWithoutBody(t *te
 		t.Fatalf("expected empty body for 304, got %q", got)
 	}
 }
+
+// MIME 由文件名推导，且与 Nexus 的映射习惯对齐。
+func TestContentTypeForFilename(t *testing.T) {
+	cases := map[string]string{
+		"pkg-1.0.0.tgz":    "application/x-tgz",
+		"foo.tar.gz":       "application/gzip",
+		"lib-1.0.jar":      "application/java-archive",
+		"app.war":          "application/java-archive",
+		"pkg-1.0-py3.whl":  "application/zip",
+		"artifact.pom":     "application/xml",
+		"artifact-1.0.deb": "application/vnd.debian.binary-package",
+		"pkg-1.0.rpm":      "application/x-rpm",
+		"unknown.bin":      "application/octet-stream",
+		"noext":            "application/octet-stream",
+	}
+	for filename, want := range cases {
+		if got := contentTypeForFilename(filename); got != want {
+			t.Errorf("contentTypeForFilename(%q) = %q, want %q", filename, got, want)
+		}
+	}
+}
+
+// 调用方传入空类型时按文件名推导（插件不再硬编码 octet-stream）。
+func TestServeArtifactContent_DerivesContentTypeWhenEmpty(t *testing.T) {
+	content := "tarball-bytes"
+	artifact := NewArtifact(ArtifactSpec{
+		Format:    "npm",
+		Kind:      KindFile,
+		Name:      "pkg",
+		Filename:  "pkg-1.0.0.tgz",
+		SizeBytes: int64(len(content)),
+		Content:   io.NopCloser(strings.NewReader(content)),
+		BlobRefs:  []BlobRef{{Size: int64(len(content))}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/repository/npm/pkg/-/pkg-1.0.0.tgz", nil)
+	w := httptest.NewRecorder()
+
+	if err := ServeArtifactContent(w, req, artifact, "pkg-1.0.0.tgz", "", "inline"); err != nil {
+		t.Fatalf("ServeArtifactContent failed: %v", err)
+	}
+	if got, want := w.Header().Get("Content-Type"), "application/x-tgz"; got != want {
+		t.Fatalf("Content-Type = %q, want %q", got, want)
+	}
+}
+
+// 显式类型优先，不被文件名推导覆盖（.deb/.rpm/协议专有类型）。
+func TestServeArtifactContent_KeepsExplicitContentType(t *testing.T) {
+	content := "deb-bytes"
+	artifact := NewArtifact(ArtifactSpec{
+		Format:    "apt",
+		Kind:      KindFile,
+		Name:      "pkg",
+		Filename:  "pkg_1.0_amd64.deb",
+		SizeBytes: int64(len(content)),
+		Content:   io.NopCloser(strings.NewReader(content)),
+		BlobRefs:  []BlobRef{{Size: int64(len(content))}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/repository/apt/pkg_1.0_amd64.deb", nil)
+	w := httptest.NewRecorder()
+
+	const explicit = "application/vnd.debian.binary-package"
+	if err := ServeArtifactContent(w, req, artifact, "pkg_1.0_amd64.deb", explicit, "inline"); err != nil {
+		t.Fatalf("ServeArtifactContent failed: %v", err)
+	}
+	if got := w.Header().Get("Content-Type"); got != explicit {
+		t.Fatalf("Content-Type = %q, want %q", got, explicit)
+	}
+}

@@ -892,7 +892,7 @@ func (p *PyPIPlugin) handlePackagesDownload(ctx *runtime.RequestContext, repoRun
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
 		ctx.SizeBytes = artifact.SizeBytes
-		if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, "application/octet-stream", "attachment"); err != nil {
+		if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, "", "attachment"); err != nil {
 			logrus.WithError(err).Warn("failed to write artifact content to client")
 			return nil
 		}

@@ -608,7 +608,7 @@ func (p *NpmPlugin) handleTarballDownload(ctx *runtime.RequestContext, repoRunti
 	ctx.RemoteURL = artifact.RemoteURL
 	ctx.SizeBytes = artifact.SizeBytes
 
-	if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, "application/octet-stream", "inline"); err != nil {
+	if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, "", "inline"); err != nil {
 		logrus.WithError(err).Warn("failed to write artifact content to client")
 		return nil
 	}
