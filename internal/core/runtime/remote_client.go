@@ -108,6 +108,10 @@ type idleTimeoutBody struct {
 	reads   chan readResult
 	closing chan struct{}
 	pending []byte // 上次读出的未消费数据（内部缓冲可能大于调用方 p）
+	// pendingErr 是与 pending 同批到达的终止错误。io.Reader 契约要求数据先交付、
+	// 错误后交付：只要 pending 还有字节，就不能把 EOF 冒给调用方，否则调用方
+	// 按契约停止读取，剩余字节被静默丢弃。
+	pendingErr error
 
 	// idle 复用一个定时器：每次 Read 都 time.After 会按 32KB 分块分配定时器，
 	// 一个大文件下载可能产生数万个 60s 定时器，增加 GC 与 runtime 定时器堆压力。
@@ -154,7 +158,16 @@ func (b *idleTimeoutBody) Read(p []byte) (int, error) {
 	if len(b.pending) > 0 {
 		n := copy(p, b.pending)
 		b.pending = b.pending[n:]
-		return n, nil
+		if len(b.pending) > 0 {
+			return n, nil
+		}
+		// 剩余数据已全部交付，此时才把同批到达的终止错误交给调用方。
+		err := b.pendingErr
+		b.pendingErr = nil
+		if err != nil {
+			b.terminate(err)
+		}
+		return n, err
 	}
 	// 复用同一个定时器，避免每次 Read 分配一个 60s 定时器。
 	if b.idle == nil {
@@ -172,15 +185,18 @@ func (b *idleTimeoutBody) Read(p []byte) (int, error) {
 
 	select {
 	case res := <-b.reads:
-		b.pending = res.data
-		n := copy(p, b.pending)
-		b.pending = b.pending[n:]
+		n := copy(p, res.data)
+		if n < len(res.data) {
+			// 调用方缓冲装不下这一批：剩下的与终止错误一起挂起，等下次 Read 交付。
+			b.pending = res.data[n:]
+			b.pendingErr = res.err
+			return n, nil
+		}
 		if res.err != nil {
 			// 读终止（EOF/断流）：解除 ctx 关联释放连接。
 			b.terminate(res.err)
-			return n, res.err
 		}
-		return n, nil
+		return n, res.err
 	case <-b.closing:
 		b.cancel(nil)
 		return 0, http.ErrBodyReadAfterClose
