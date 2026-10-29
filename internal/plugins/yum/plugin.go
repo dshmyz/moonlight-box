@@ -671,7 +671,7 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
 		ctx.SizeBytes = artifact.SizeBytes
-		ctx.Writer.Header().Set("Content-Type", contentTypeForFile(filename))
+		ctx.Writer.Header().Set("Content-Type", runtime.ContentTypeForFilename(filename))
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
@@ -728,7 +728,7 @@ func (p *YumPlugin) handlePrimary(ctx *runtime.RequestContext, repoRuntime runti
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
 		ctx.SizeBytes = artifact.SizeBytes
-		ctx.Writer.Header().Set("Content-Type", contentTypeForFile(filename))
+		ctx.Writer.Header().Set("Content-Type", runtime.ContentTypeForFilename(filename))
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(key.Filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
@@ -955,7 +955,7 @@ func (p *YumPlugin) handleRepodataGeneric(ctx *runtime.RequestContext, repoRunti
 		ctx.FromCache = artifact.FromCache
 		ctx.RemoteURL = artifact.RemoteURL
 		ctx.SizeBytes = artifact.SizeBytes
-		ctx.Writer.Header().Set("Content-Type", contentTypeForFile(filename))
+		ctx.Writer.Header().Set("Content-Type", runtime.ContentTypeForFilename(filename))
 		ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(filename)+"\"")
 		ctx.Writer.WriteHeader(http.StatusOK)
 		if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
@@ -1001,31 +1001,13 @@ func (p *YumPlugin) handleRepodataGeneric(ctx *runtime.RequestContext, repoRunti
 	ctx.FromCache = artifact.FromCache
 	ctx.RemoteURL = artifact.RemoteURL
 	ctx.SizeBytes = artifact.SizeBytes
-	ctx.Writer.Header().Set("Content-Type", contentTypeForFile(filename))
+	ctx.Writer.Header().Set("Content-Type", runtime.ContentTypeForFilename(filename))
 	ctx.Writer.Header().Set("Content-Disposition", "inline; filename=\""+runtime.SanitizeFilename(filename)+"\"")
 	ctx.Writer.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(ctx.Writer, artifact.Content); err != nil {
 		logrus.WithError(err).Warn("failed to write repodata content to client")
 	}
 	return nil
-}
-
-// contentTypeForFile returns an appropriate Content-Type for repodata files.
-func contentTypeForFile(filename string) string {
-	switch {
-	case strings.HasSuffix(filename, ".xz"):
-		return "application/x-xz"
-	case strings.HasSuffix(filename, ".bz2"):
-		return "application/x-bzip2"
-	case strings.HasSuffix(filename, ".xml.gz"):
-		return "application/gzip"
-	case strings.HasSuffix(filename, ".xml"):
-		return "application/xml"
-	case strings.HasSuffix(filename, ".gz"):
-		return "application/gzip"
-	default:
-		return "application/octet-stream"
-	}
 }
 
 func isCompressedYumMetadata(filename string) bool {

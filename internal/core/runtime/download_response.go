@@ -14,9 +14,9 @@ import (
 
 const maxInMemoryRangeFallbackBytes = 8 * 1024 * 1024
 
-// contentTypeForFilename 按扩展名推导 Content-Type，对齐 Nexus 的映射习惯。
+// ContentTypeForFilename 按扩展名推导 Content-Type，对齐 Nexus 的映射习惯。
 // 不用 mime.TypeByExtension：它依赖宿主机 /etc/mime.types，不同机器结果不同。
-func contentTypeForFilename(filename string) string {
+func ContentTypeForFilename(filename string) string {
 	switch strings.ToLower(filepath.Ext(filename)) {
 	case ".tgz":
 		return "application/x-tgz"
@@ -30,6 +30,8 @@ func contentTypeForFilename(filename string) string {
 		return "application/xml"
 	case ".json":
 		return "application/json"
+	case ".txt":
+		return "text/plain"
 	case ".deb":
 		return "application/vnd.debian.binary-package"
 	case ".rpm":
@@ -48,7 +50,7 @@ func contentTypeForFilename(filename string) string {
 func ServeArtifactContent(w http.ResponseWriter, r *http.Request, artifact *Artifact, filename, contentType, disposition string) error {
 	// 调用方没指定类型时按文件名推导：MIME 只在这里决定，插件不再各自硬编码。
 	if contentType == "" {
-		contentType = contentTypeForFilename(filename)
+		contentType = ContentTypeForFilename(filename)
 	}
 	if disposition == "" {
 		disposition = "inline"

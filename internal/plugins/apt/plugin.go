@@ -491,19 +491,13 @@ func aptArtifactDir(remotePath string) string {
 	return dir
 }
 
+// contentTypeForFile 只保留 apt 特有的无扩展名文本索引，其余交给 runtime 的
+// 统一扩展名→MIME 映射，避免各插件各维护一份会漂移的表。
 func contentTypeForFile(filename string) string {
-	switch {
-	case strings.HasSuffix(filename, ".gz"):
-		return "application/gzip"
-	case strings.HasSuffix(filename, ".xz"):
-		return "application/x-xz"
-	case strings.HasSuffix(filename, ".bz2"):
-		return "application/x-bzip2"
-	case filename == "Packages" || strings.HasSuffix(filename, "/Packages"):
+	if filename == "Packages" || strings.HasSuffix(filename, "/Packages") {
 		return "text/plain; charset=utf-8"
-	default:
-		return "application/octet-stream"
 	}
+	return runtime.ContentTypeForFilename(filename)
 }
 
 func (p *AptPlugin) handleInRelease(ctx *runtime.RequestContext, repoRuntime runtime.RepositoryRuntime, path string) error {

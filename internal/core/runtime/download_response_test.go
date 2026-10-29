@@ -413,13 +413,14 @@ func TestContentTypeForFilename(t *testing.T) {
 		"pkg-1.0-py3.whl":  "application/zip",
 		"artifact.pom":     "application/xml",
 		"artifact-1.0.deb": "application/vnd.debian.binary-package",
+		"readme.txt":       "text/plain",
 		"pkg-1.0.rpm":      "application/x-rpm",
 		"unknown.bin":      "application/octet-stream",
 		"noext":            "application/octet-stream",
 	}
 	for filename, want := range cases {
-		if got := contentTypeForFilename(filename); got != want {
-			t.Errorf("contentTypeForFilename(%q) = %q, want %q", filename, got, want)
+		if got := ContentTypeForFilename(filename); got != want {
+			t.Errorf("ContentTypeForFilename(%q) = %q, want %q", filename, got, want)
 		}
 	}
 }

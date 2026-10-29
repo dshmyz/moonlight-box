@@ -351,20 +351,7 @@ func (p *GenericPlugin) handleDownload(ctx *runtime.RequestContext, repoRuntime 
 	ctx.RemoteURL = artifact.RemoteURL
 	ctx.SizeBytes = artifact.SizeBytes
 
-	contentType := "application/octet-stream"
-	ext := strings.ToLower(key.Extension)
-	switch ext {
-	case ".txt":
-		contentType = "text/plain"
-	case ".json":
-		contentType = "application/json"
-	case ".xml":
-		contentType = "application/xml"
-	case ".zip":
-		contentType = "application/zip"
-	}
-
-	if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, contentType, "inline"); err != nil {
+	if err := runtime.ServeArtifactContent(ctx.Writer, ctx.Request, artifact, key.Filename, "", "inline"); err != nil {
 		logrus.WithError(err).Warn("failed to write artifact content to client")
 		return nil
 	}
