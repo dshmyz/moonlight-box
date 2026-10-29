@@ -44,6 +44,21 @@ func NewCASBlobStore(backend Backend, db *gorm.DB) *CASBlobStore {
 	}
 }
 
+// blobFileMatches 校验 blob 行与底层文件是否一致。
+// 只比对大小：截断/半截写入是本地存储最常见的损坏形态（磁盘满、进程被杀、
+// 历史版本缺陷），而 stat 比重新哈希便宜得多，可以放在每次读之前。
+// Size <= 0 的历史行无法判定，按"一致"处理，避免把未知当成损坏。
+func (s *CASBlobStore) blobFileMatches(ctx context.Context, blob *model.Blob) (bool, error) {
+	if blob.Size <= 0 {
+		return true, nil
+	}
+	size, err := s.backend.Size(ctx, blob.StoragePath)
+	if err != nil {
+		return false, err
+	}
+	return size == blob.Size, nil
+}
+
 func (s *CASBlobStore) Put(reader io.Reader) (runtime.BlobRef, error) {
 	return s.PutContext(context.Background(), reader)
 }
@@ -68,13 +83,18 @@ func (s *CASBlobStore) PutContext(ctx context.Context, reader io.Reader) (runtim
 	// Open 永远失败，且每次重新下载都会撞上同一悬空记录，无法自愈。
 	if findErr == nil {
 		if exists, existsErr := s.backend.Exists(ctx, existingBlob.StoragePath); existsErr == nil && exists {
-			_ = s.backend.Delete(ctx, tempPath)
-			return runtime.BlobRef{
-				BlobID:    existingBlob.ID,
-				Algorithm: "sha256",
-				Digest:    digest,
-				Size:      existingBlob.Size,
-			}, nil
+			// 复用前必须确认磁盘文件与记录一致。文件被截断/写坏时若直接复用，
+			// 坏内容会按 digest 永久化并跨仓库扩散——重新回源也覆盖不了它。
+			// 不一致就落到下面的 Move，用本次下载到的完整内容覆盖。
+			if matched, matchErr := s.blobFileMatches(ctx, &existingBlob); matchErr == nil && matched && existingBlob.Size == size {
+				_ = s.backend.Delete(ctx, tempPath)
+				return runtime.BlobRef{
+					BlobID:    existingBlob.ID,
+					Algorithm: "sha256",
+					Digest:    digest,
+					Size:      existingBlob.Size,
+				}, nil
+			}
 		}
 	}
 
@@ -130,6 +150,18 @@ func (s *CASBlobStore) OpenContext(ctx context.Context, ref runtime.BlobRef) (io
 	if err := s.db.WithContext(ctx).First(&blob, ref.BlobID).Error; err != nil {
 		return nil, err
 	}
+	// 大小与记录不符 = 文件已损坏（截断/半截写入）。映射为 ErrNotFound：
+	// 上层据此清理引用并重新回源，坏内容不会继续发给客户端。
+	matched, matchErr := s.blobFileMatches(ctx, &blob)
+	if matchErr != nil {
+		if isBlobMissingErr(matchErr) {
+			return nil, runtime.ErrNotFound
+		}
+		return nil, matchErr
+	}
+	if !matched {
+		return nil, runtime.ErrNotFound
+	}
 	rc, err := s.backend.Get(ctx, blob.StoragePath)
 	if err != nil {
 		// 文件丢失映射为 runtime.ErrNotFound：上层据此清理引用/重新回源，
@@ -154,10 +186,11 @@ func isBlobMissingErr(err error) bool {
 	return strings.Contains(msg, "NotFound") || strings.Contains(msg, "StatusCode: 404")
 }
 
-// RefsExist 校验一组 BlobRef 指向的文件是否真实存在（backend.Exists：本地为
-// os.Stat，S3 为 HEAD 请求）。供 runtime 在跳过下载前探测悬空引用。
-// 返回约定：(false, nil) = 确定悬空（行缺失/文件确认不存在）；(false, err) = 探测
-// 本身失败（网络抖动等），调用方应视为"不确定"而非"悬空"。
+// RefsExist 校验一组 BlobRef 指向的文件是否真实存在且内容完整（backend.Exists
+// 做存在性探测，大小与记录比对做完整性探测）。供 runtime 在跳过下载前探测悬空
+// 或损坏的引用。
+// 返回约定：(false, nil) = 确定不可用（行缺失/文件不存在/大小不符）；
+// (false, err) = 探测本身失败（网络抖动等），调用方应视为"不确定"而非悬空。
 func (s *CASBlobStore) RefsExist(ctx context.Context, refs []runtime.BlobRef) (bool, error) {
 	for _, ref := range refs {
 		var blob model.Blob
@@ -171,6 +204,15 @@ func (s *CASBlobStore) RefsExist(ctx context.Context, refs []runtime.BlobRef) (b
 		exists, err := s.backend.Exists(ctx, blob.StoragePath)
 		if err != nil || !exists {
 			return false, err
+		}
+		// 文件存在但大小与记录不符 = 内容已损坏。按"确定不可用"处理，
+		// 让 ProxyRuntime 丢掉引用并重新回源，而不是把坏字节发给客户端。
+		matched, err := s.blobFileMatches(ctx, &blob)
+		if err != nil {
+			return false, err
+		}
+		if !matched {
+			return false, nil
 		}
 	}
 	return true, nil
