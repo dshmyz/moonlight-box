@@ -150,6 +150,20 @@ func main() {
 		}
 	}
 
+	// 致命但需走完清理流程的退出码（当前只有"HTTP 监听失败"）。
+	// 该 defer 先于后续所有 defer 注册，因此最后执行——保证数据库、批量器、
+	// 日志都按序关闭后再以非零码退出。
+	exitCode := 0
+	defer func() {
+		if exitCode != 0 {
+			os.Exit(exitCode)
+		}
+	}()
+	// 日志必须最后关闭：注册在 exitCode defer 之后，LIFO 下会在后面所有 defer
+	// （database.Close、批量器 Stop、调度器 Stop 等）执行完之后才运行，这些清理
+	// 过程中产生的日志不会丢；写出器关闭后新投递的日志也不再有 goroutine 承接。
+	defer util.CloseLoggers()
+
 	// 初始化数据库
 	if err := database.Initialize(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize database: %v\n", err)
@@ -757,21 +771,31 @@ func main() {
 		})
 	}
 
-	// 优雅关闭
+	// 监听失败必须让进程退出。此前只打一行日志后继续等信号：端口被占/绑定失败时
+	// 进程活着却永远不服务，运维侧表现为"启动不起来、不报错、卡住"。
+	serverErr := make(chan error, 1)
 	go func() {
 		logrus.WithFields(logrus.Fields{
 			"address": srv.Addr,
 		}).Info("Server listening")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logrus.WithFields(logrus.Fields{
-				"error": err,
-			}).Error("Server error")
+			serverErr <- err
 		}
 	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+
+	select {
+	case <-quit:
+	case err := <-serverErr:
+		exitCode = 1
+		logrus.WithFields(logrus.Fields{
+			"error": err,
+		}).Error("Server failed to listen")
+		// 日志可能被异步写出器丢弃或落在文件里，stderr 兜底保证启动失败可见
+		fmt.Fprintf(os.Stderr, "server failed to listen: %v\n", err)
+	}
 
 	logrus.Info("Shutting down server...")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -785,9 +809,6 @@ func main() {
 
 	// 关闭审计服务，确保所有日志都已写入
 	auditSvc.Shutdown()
-
-	// 关闭日志文件（lumberjack 句柄），避免句柄泄露
-	util.CloseLoggers()
 
 	logrus.Info("Server exited")
 }

@@ -95,3 +95,19 @@ func (w *blockingWriter) Write(p []byte) (int, error) {
 	<-w.release
 	return len(p), nil
 }
+
+// TestAsyncWriterCloseIdempotent 验证重复关闭不 panic。
+// CloseLoggers 由 main 的优雅退出和 deferred database.Close 各调用一次，
+// 第二次关闭曾触发 "close of closed channel"，把正常退出变成进程 panic。
+func TestAsyncWriterCloseIdempotent(t *testing.T) {
+	w := newAsyncWriter(&bytes.Buffer{})
+	w.close()
+	w.close()
+}
+
+// TestFlushAsyncLoggersTwice 验证清理入口整体幂等（不止单个写出器）。
+func TestFlushAsyncLoggersTwice(t *testing.T) {
+	newAsyncWriter(&bytes.Buffer{})
+	flushAsyncLoggers()
+	flushAsyncLoggers()
+}

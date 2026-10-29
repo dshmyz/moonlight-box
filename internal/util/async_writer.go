@@ -11,11 +11,12 @@ import (
 // （历史故障：logrus 全局互斥 + 磁盘 IO 卡顿 → 全站请求排队）。
 // 队列满时丢弃该行并计数——日志是可丢数据，丢一行好过挂一个请求。
 type asyncWriter struct {
-	ch      chan []byte
-	closing chan struct{}
-	exited  chan struct{}
-	out     io.Writer
-	dropped atomic.Uint64
+	ch        chan []byte
+	closing   chan struct{}
+	exited    chan struct{}
+	out       io.Writer
+	dropped   atomic.Uint64
+	closeOnce sync.Once
 }
 
 const asyncLogQueueSize = 8192
@@ -70,9 +71,13 @@ func (w *asyncWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// close 幂等：CloseLoggers 会被 main 与 database.Close 各调用一次，
+// 第二次 close 曾触发 "close of closed channel" 让优雅退出变成 panic。
 func (w *asyncWriter) close() {
-	close(w.closing)
-	<-w.exited
+	w.closeOnce.Do(func() {
+		close(w.closing)
+		<-w.exited
+	})
 }
 
 // LogDroppedCount 累计因队列满被丢弃的日志行数（供 Prometheus 采集）。
@@ -88,10 +93,15 @@ func LogDroppedCount() uint64 {
 
 // flushAsyncLoggers 排空所有异步写出器（必须在关闭底层文件之前调用，
 // 否则优雅退出时丢尾部日志）。
+// 只拷贝快照再关闭：不持锁等待 IO；同时保留登记表，后续 CloseLoggers 仍能
+// 关闭在这之后才创建的写出器（close 已幂等，重复 flush 安全）。
 func flushAsyncLoggers() {
 	asyncWritersMu.Lock()
-	defer asyncWritersMu.Unlock()
-	for _, w := range asyncWriters {
+	writers := make([]*asyncWriter, len(asyncWriters))
+	copy(writers, asyncWriters)
+	asyncWritersMu.Unlock()
+
+	for _, w := range writers {
 		w.close()
 	}
 }
