@@ -1038,14 +1038,22 @@ func (n *ProxyRuntime) blobRefsExist(ctx context.Context, refs []BlobRef) (bool,
 // 按未命中返回，下一次请求走 loadArtifact → ensureArtifactBlob 探测引用并重新下载。
 // 注意本地文件丢失不是"上游不存在"，不能进负缓存——那会让 TTL 内的所有请求
 // 被 isNegativeCached 直接拦掉 404，自愈路径永远跑不到。
+// healMissingBlob 处理打开 blob 失败。缺失与损坏都让缓存失效，下一次请求重新
+// 回源（RefsExist 会识别坏文件并触发重新下载）。
+// 返回语义：缺失沿用 404 的历史行为；损坏返回原错误（→500），避免客户端把
+// "不存在"缓存下来，也便于运维从 5xx 发现磁盘完整性问题。
 func (n *ProxyRuntime) healMissingBlob(ctx context.Context, key ArtifactKey, err error) error {
-	if !errors.Is(err, ErrNotFound) {
+	if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrBlobCorrupt) {
 		return err
 	}
 	logrus.WithFields(logrus.Fields{
-		"key": key.String(),
-	}).Warn("proxy: blob file missing on open, invalidating cache to trigger re-fetch")
+		"key":   key.String(),
+		"error": err.Error(),
+	}).Warn("proxy: blob open failed, invalidating cache to trigger re-fetch")
 	n.invalidateCachedArtifact(key)
+	if errors.Is(err, ErrBlobCorrupt) {
+		return err
+	}
 	return ErrNotFound
 }
 

@@ -12,6 +12,9 @@ type Backend interface {
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
 	Delete(ctx context.Context, key string) error
 	Exists(ctx context.Context, key string) (bool, error)
+	// Size 返回对象大小。对象不存在时必须返回可被 isBlobMissingErr 识别的错误
+	// （Local 用 util.ErrPackageNotFound，S3 用 SDK 的 404），不要返回 (0, nil)：
+	// CAS 用它同时完成存在性与完整性探测，否则"文件丢失"会被误判成"大小不符"。
 	Size(ctx context.Context, key string) (int64, error)
 	List(ctx context.Context, prefix string) ([]Entry, error)
 	Browse(ctx context.Context, path string) ([]BrowseEntry, error)

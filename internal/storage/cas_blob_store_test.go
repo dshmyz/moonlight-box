@@ -12,6 +12,7 @@ import (
 
 	"github.com/dshmyz/moonlight-box/internal/core/runtime"
 	"github.com/dshmyz/moonlight-box/internal/model"
+	"github.com/dshmyz/moonlight-box/internal/util"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -115,8 +116,14 @@ func (b *movingMemoryBackend) Exists(ctx context.Context, key string) (bool, err
 	return ok, nil
 }
 
+// Size 与真实后端（Local/S3）保持一致：对象不存在时返回缺失错误而不是 (0, nil)，
+// 否则 CAS 会把"文件丢失"误判成"大小不符"。
 func (b *movingMemoryBackend) Size(ctx context.Context, key string) (int64, error) {
-	return int64(len(b.files[key])), nil
+	content, ok := b.files[key]
+	if !ok {
+		return 0, util.ErrPackageNotFound
+	}
+	return int64(len(content)), nil
 }
 
 func (b *movingMemoryBackend) List(ctx context.Context, prefix string) ([]Entry, error) {

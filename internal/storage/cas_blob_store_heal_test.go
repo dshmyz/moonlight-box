@@ -50,6 +50,7 @@ func corruptBlobFile(t *testing.T, db *gorm.DB, dir string, blobID uint, keepByt
 }
 
 // 坏文件在读取时必须被识别为不可用，而不是把截断的字节发给客户端。
+// 语义上与"文件缺失"区分：缺失 → ErrNotFound（404），损坏 → ErrBlobCorrupt（500）。
 func TestCASBlobStoreOpenRejectsSizeMismatch(t *testing.T) {
 	store, _, db, dir := newHealTestStore(t)
 	ctx := context.Background()
@@ -60,6 +61,29 @@ func TestCASBlobStoreOpenRejectsSizeMismatch(t *testing.T) {
 		t.Fatalf("PutContext: %v", err)
 	}
 	corruptBlobFile(t, db, dir, ref.BlobID, 100)
+
+	if _, err := store.OpenContext(ctx, ref); !errors.Is(err, runtime.ErrBlobCorrupt) {
+		t.Fatalf("Open err = %v, want ErrBlobCorrupt", err)
+	}
+}
+
+// 文件真的不存在时仍映射为 ErrNotFound（沿用 404 语义）。
+func TestCASBlobStoreOpenMissingFileIsNotFound(t *testing.T) {
+	store, _, db, dir := newHealTestStore(t)
+	ctx := context.Background()
+	content := []byte("tarball-bytes")
+
+	ref, err := store.PutContext(ctx, bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("PutContext: %v", err)
+	}
+	var blob model.Blob
+	if err := db.First(&blob, ref.BlobID).Error; err != nil {
+		t.Fatalf("load blob: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, blob.StoragePath)); err != nil {
+		t.Fatalf("remove blob file: %v", err)
+	}
 
 	if _, err := store.OpenContext(ctx, ref); !errors.Is(err, runtime.ErrNotFound) {
 		t.Fatalf("Open err = %v, want ErrNotFound", err)

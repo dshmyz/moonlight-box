@@ -18,6 +18,10 @@ var (
 	ErrBlocked             = errors.New("blocked by rule")
 	ErrRemoteUnsupported   = errors.New("remote open unsupported")
 	ErrUpstreamUnavailable = errors.New("upstream unavailable")
+	// ErrBlobCorrupt 表示 blob 文件与元数据记录不一致（被截断/写坏）。
+	// 与 ErrNotFound 区分：损坏是服务端完整性故障，映射 500 让客户端重试；
+	// 缺失沿用 404 的历史语义。proxy 仓库两者都会清缓存并在下次请求重新回源。
+	ErrBlobCorrupt = errors.New("blob content corrupted")
 	// ErrUpstreamTimeout 表示回源请求超时。
 	// 与 ErrUpstreamUnavailable 的区别：
 	//   - ErrUpstreamUnavailable：上游返回错误响应（如 5xx）或网络不可达
