@@ -196,9 +196,10 @@ func TestCircuitBreakerDecoratorFetchMetadataRecordsSuccess(t *testing.T) {
 	}
 }
 
-// TestCircuitBreakerDecoratorFetchMetadataNotFoundNotRecordedAsFailure
-// 验证上游 404（meta.Exists=false, err=nil）不计入熔断失败——上游正常应答。
-func TestCircuitBreakerDecoratorFetchMetadataNotFoundNotRecordedAsFailure(t *testing.T) {
+// TestCircuitBreakerDecoratorFetchMetadataNotFoundRecordsSuccess
+// 验证上游 404（meta.Exists=false, err=nil）记为成功——上游能应答就是健康的。
+// 半开状态依赖这次记录清理 halfOpenProbeInFlight，否则熔断会永久卡在半开。
+func TestCircuitBreakerDecoratorFetchMetadataNotFoundRecordsSuccess(t *testing.T) {
 	cb := &fakeCircuitBreaker{allowRequest: true}
 	inner := &fakeInnerRemoteClient{metadata: &RemoteMetadata{Exists: false}}
 	decorator := NewCircuitBreakerDecorator(inner, cb)
@@ -208,8 +209,8 @@ func TestCircuitBreakerDecoratorFetchMetadataNotFoundNotRecordedAsFailure(t *tes
 	if cb.FailureCount() != 0 {
 		t.Fatalf("failureRecorded = %d, want 0 (404 is not a failure)", cb.FailureCount())
 	}
-	if cb.SuccessCount() != 0 {
-		t.Fatalf("successRecorded = %d, want 0 (404 is not a success either)", cb.SuccessCount())
+	if cb.SuccessCount() != 1 {
+		t.Fatalf("successRecorded = %d, want 1 (404 means upstream is healthy)", cb.SuccessCount())
 	}
 }
 
@@ -263,9 +264,9 @@ func TestCircuitBreakerDecoratorFetchBlobRecordsSuccess(t *testing.T) {
 	}
 }
 
-// TestCircuitBreakerDecoratorFetchBlobNotFoundNotRecordedAsFailure
-// 验证上游 404（ErrNotFound）不计入熔断失败。
-func TestCircuitBreakerDecoratorFetchBlobNotFoundNotRecordedAsFailure(t *testing.T) {
+// TestCircuitBreakerDecoratorFetchBlobNotFoundRecordsSuccess
+// 验证上游 404（ErrNotFound）记为成功：上游健康，且半开探测需要这次记录收尾。
+func TestCircuitBreakerDecoratorFetchBlobNotFoundRecordsSuccess(t *testing.T) {
 	cb := &fakeCircuitBreaker{allowRequest: true}
 	inner := &fakeInnerRemoteClient{blobErr: ErrNotFound}
 	decorator := NewCircuitBreakerDecorator(inner, cb)
@@ -275,8 +276,8 @@ func TestCircuitBreakerDecoratorFetchBlobNotFoundNotRecordedAsFailure(t *testing
 	if cb.FailureCount() != 0 {
 		t.Fatalf("failureRecorded = %d, want 0 (404 is not a failure)", cb.FailureCount())
 	}
-	if cb.SuccessCount() != 0 {
-		t.Fatalf("successRecorded = %d, want 0 (404 is not a success)", cb.SuccessCount())
+	if cb.SuccessCount() != 1 {
+		t.Fatalf("successRecorded = %d, want 1 (404 means upstream is healthy)", cb.SuccessCount())
 	}
 }
 
@@ -512,6 +513,49 @@ func TestCircuitBreakerFetcherDecoratorTimeoutRecordsTimeout(t *testing.T) {
 	}
 	if cb.FailureCount() != 0 {
 		t.Fatalf("failure recorded = %d, want 0", cb.FailureCount())
+	}
+}
+
+// TestCircuitBreakerFetcherDecoratorNotFoundRecordedAsSuccess 验证上游 404 记为成功。
+// 场景：包只发布在本地成员，组库聚合查询仍会问远端一次，远端 404 属于正常应答。
+// 若计入失败，连续几个本地专有包就会把整条上游熔断；若什么都不记，半开状态下
+// halfOpenProbeInFlight 永远清不掉，上游会被永久拒绝。
+func TestCircuitBreakerFetcherDecoratorNotFoundRecordedAsSuccess(t *testing.T) {
+	cb := &fakeCircuitBreaker{allowRequest: true}
+	inner := &fakeRemoteFetcher{err: ErrNotFound}
+	decorator := NewCircuitBreakerFetcherDecorator(inner, cb)
+
+	_, err := decorator.FetchRemote(context.Background(), "https://example.test", "only-local")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("FetchRemote error = %v, want ErrNotFound", err)
+	}
+	if cb.FailureCount() != 0 {
+		t.Fatalf("failure recorded = %d, want 0", cb.FailureCount())
+	}
+	if cb.TimeoutCount() != 0 {
+		t.Fatalf("timeout recorded = %d, want 0", cb.TimeoutCount())
+	}
+	if cb.SuccessCount() != 1 {
+		t.Fatalf("success recorded = %d, want 1", cb.SuccessCount())
+	}
+}
+
+// TestCircuitBreakerFetcherDecoratorMetadataNotFoundRecordedAsSuccess 验证取制品元数据
+// 时远端 404 同样记为成功（上游能应答就是健康的）。
+func TestCircuitBreakerFetcherDecoratorMetadataNotFoundRecordedAsSuccess(t *testing.T) {
+	cb := &fakeCircuitBreaker{allowRequest: true}
+	inner := &fakeMetadataFetcher{metaErr: ErrNotFound}
+	decorator := NewCircuitBreakerFetcherDecorator(inner, cb)
+
+	_, err := decorator.FetchArtifactMetadata(context.Background(), "https://example.test", ArtifactKey{Name: "only-local"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("FetchArtifactMetadata error = %v, want ErrNotFound", err)
+	}
+	if cb.FailureCount() != 0 {
+		t.Fatalf("failure recorded = %d, want 0", cb.FailureCount())
+	}
+	if cb.SuccessCount() != 1 {
+		t.Fatalf("success recorded = %d, want 1", cb.SuccessCount())
 	}
 }
 

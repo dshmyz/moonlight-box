@@ -62,10 +62,11 @@ func (d *CircuitBreakerDecorator) FetchMetadata(ctx context.Context, key Artifac
 	meta, err := d.inner.FetchMetadata(ctx, key)
 	if err != nil {
 		d.recordFailure(err)
-	} else if meta != nil && meta.Exists {
+	} else {
+		// 上游正常应答（含 404：meta.Exists == false）都说明上游健康。半开状态下
+		// 必须记录成功，否则 halfOpenProbeInFlight 永远清不掉，熔断会卡在半开。
 		d.cb.RecordSuccess()
 	}
-	// err == nil && meta.Exists == false：上游正常应答 404，不记录
 	return meta, err
 }
 
@@ -73,9 +74,12 @@ func (d *CircuitBreakerDecorator) FetchMetadata(ctx context.Context, key Artifac
 //
 // 错误分类：
 //   - err == nil: RecordSuccess
-//   - errors.Is(err, ErrNotFound): 不记录（上游正常应答 404）
+//   - errors.Is(err, ErrNotFound): RecordSuccess（上游正常应答 404，说明上游健康）
 //   - err 是 timeout: RecordTimeout
 //   - 其他 err: RecordFailure
+//
+// 404 必须记成功而不是"不记录"：半开状态一次只放行一个探测，探测结果若不落账，
+// halfOpenProbeInFlight 就永远保持 true，整条上游会被永久拒绝。
 func (d *CircuitBreakerDecorator) FetchBlob(ctx context.Context, key ArtifactKey) (io.ReadCloser, error) {
 	if d.cb == nil {
 		return d.inner.FetchBlob(ctx, key)
@@ -88,8 +92,9 @@ func (d *CircuitBreakerDecorator) FetchBlob(ctx context.Context, key ArtifactKey
 		d.cb.RecordSuccess()
 		return blob, nil
 	}
-	// ErrNotFound 是上游正常应答 404，不计入熔断失败
+	// ErrNotFound 是上游正常应答 404，说明上游健康
 	if errors.Is(err, ErrNotFound) {
+		d.cb.RecordSuccess()
 		return blob, err
 	}
 	d.recordFailure(err)
@@ -178,6 +183,13 @@ func (d *CircuitBreakerFetcherDecorator) FetchRemote(ctx context.Context, remote
 		d.cb.RecordSuccess()
 		return artifacts, nil
 	}
+	// 上游正常应答 404（包在远端不存在）说明上游是健康的，记成功而不是记失败。
+	// 若记失败，"本地发布、远端没有"的包每次被依赖都会攒一次失败，最终熔断整条
+	// 上游；若什么都不记，半开的探测标志永远清不掉，上游同样会被永久拒绝。
+	if errors.Is(err, ErrNotFound) {
+		d.cb.RecordSuccess()
+		return artifacts, err
+	}
 	if IsUpstreamTimeout(err) {
 		d.cb.RecordTimeout()
 		return artifacts, err
@@ -207,6 +219,11 @@ func (d *CircuitBreakerFetcherDecorator) FetchArtifactMetadata(ctx context.Conte
 	if err == nil {
 		d.cb.RecordSuccess()
 		return meta, nil
+	}
+	// 同 FetchRemote：远端没有该制品属于正常应答，记成功以清理半开探测状态。
+	if errors.Is(err, ErrNotFound) {
+		d.cb.RecordSuccess()
+		return meta, err
 	}
 	if IsUpstreamTimeout(err) {
 		d.cb.RecordTimeout()
