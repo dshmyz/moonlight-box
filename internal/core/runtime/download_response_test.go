@@ -471,3 +471,30 @@ func TestServeArtifactContent_KeepsExplicitContentType(t *testing.T) {
 		t.Fatalf("Content-Type = %q, want %q", got, explicit)
 	}
 }
+
+// SizeBytes 可能是陈旧的行级投影。以实际服务的 blob 尺寸为准，
+// 否则偏小的 SizeBytes 会把正确文件静默截断且 Content-Length 与之一致。
+func TestServeArtifactContent_PrefersBlobSizeOverSizeBytes(t *testing.T) {
+	content := "0123456789"
+	artifact := NewArtifact(ArtifactSpec{
+		Format:    "npm",
+		Kind:      KindFile,
+		Name:      "pkg",
+		Filename:  "pkg-1.0.0.tgz",
+		SizeBytes: 4,
+		Content:   io.NopCloser(strings.NewReader(content)),
+		BlobRefs:  []BlobRef{{Size: int64(len(content))}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/repository/npm/pkg/-/pkg-1.0.0.tgz", nil)
+	w := httptest.NewRecorder()
+
+	if err := ServeArtifactContent(w, req, artifact, "pkg-1.0.0.tgz", "", "inline"); err != nil {
+		t.Fatalf("ServeArtifactContent failed: %v", err)
+	}
+	if got, want := w.Header().Get("Content-Length"), "10"; got != want {
+		t.Fatalf("Content-Length = %q, want %q", got, want)
+	}
+	if got := w.Body.String(); got != content {
+		t.Fatalf("body = %q, want full %q", got, content)
+	}
+}

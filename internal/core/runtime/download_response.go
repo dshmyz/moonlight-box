@@ -15,6 +15,7 @@ import (
 const maxInMemoryRangeFallbackBytes = 8 * 1024 * 1024
 
 // ContentTypeForFilename 按扩展名推导 Content-Type，对齐 Nexus 的映射习惯。
+// 这是全仓唯一的扩展名→MIME 映射：插件不再各自维护一份表。
 // 不用 mime.TypeByExtension：它依赖宿主机 /etc/mime.types，不同机器结果不同。
 func ContentTypeForFilename(filename string) string {
 	switch strings.ToLower(filepath.Ext(filename)) {
@@ -76,10 +77,15 @@ func ServeArtifactContent(w http.ResponseWriter, r *http.Request, artifact *Arti
 
 	// 已知大小就带 Content-Length：客户端据此判断"收全了没有"。没有它，任何
 	// 传输中断都只能由格式解码器报"数据不完整"，客户端还会把半截内容缓存下来。
-	// 多 blob 制品不声明长度：Content 只包含 BlobRefs[0]，声明总长会误报截断。
+	// 本次写出的就是 BlobRefs[0] 的内容，它的尺寸才是权威值（SizeBytes 可能是
+	// 陈旧的行级投影，比文件小就会把正确文件静默截断）。多 blob 制品不声明长度：
+	// Content 只包含 BlobRefs[0]，声明总长会误报截断。
 	size := int64(0)
-	if len(artifact.BlobRefs) <= 1 {
-		size = artifactKnownSize(artifact)
+	switch {
+	case len(artifact.BlobRefs) == 1 && artifact.BlobRefs[0].Size > 0:
+		size = artifact.BlobRefs[0].Size
+	case len(artifact.BlobRefs) == 0:
+		size = artifact.SizeBytes
 	}
 	if size > 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
