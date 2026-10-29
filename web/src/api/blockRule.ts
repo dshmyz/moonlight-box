@@ -1,6 +1,7 @@
 import request, { rawRequest } from './request'
 
 export type BlockMatchType = 'exact' | 'wildcard' | 'range'
+export type BlockRuleSource = 'manual' | 'auto'
 
 export interface BlockRule {
   id: number
@@ -10,6 +11,7 @@ export interface BlockRule {
   package_type: string
   reason: string
   enabled: boolean
+  source: BlockRuleSource
   condition_type: string
   condition_op: string
   condition_value: string
@@ -31,7 +33,15 @@ export interface BlockRuleCreateParams {
 }
 
 export const blockRuleApi = {
-  list(params?: { page?: number; page_size?: number; package_name?: string; package_type?: string; enabled?: string }) {
+  list(params?: {
+    page?: number
+    page_size?: number
+    package_name?: string
+    package_type?: string
+    enabled?: string
+    source?: string
+    keyword?: string
+  }) {
     return request.get<{ items: BlockRule[]; pagination: { total: number; page: number; page_size: number } }>('/block-rules', { params })
   },
 
@@ -41,6 +51,14 @@ export const blockRuleApi = {
 
   batchImport(data: { rules: BlockRuleCreateParams[] }) {
     return request.post<{ success: number; failed: number; total: number }>('/block-rules/batch-import', data)
+  },
+
+  batchStatus(ids: number[], enabled: boolean) {
+    return request.post<{ affected: number; enabled: boolean }>('/block-rules/batch-status', { ids, enabled })
+  },
+
+  batchDelete(ids: number[]) {
+    return request.post<{ affected: number }>('/block-rules/batch-delete', { ids })
   },
 
   async downloadTemplate() {

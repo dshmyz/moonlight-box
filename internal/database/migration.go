@@ -125,6 +125,29 @@ func backfillRepositoryPolicies() error {
 	}).Error
 }
 
+// backfillBlockRuleSource 一次性迁移：历史自动生成的阻断规则没有 source 标记，
+// 按 reason 前缀回填为 auto，便于在列表中按来源筛选和批量清理。
+func backfillBlockRuleSource() error {
+	const marker = "migration.block_rule_source_backfill_20261029"
+	var m model.SystemConfig
+	if DB.Where("key = ?", marker).First(&m).Error == nil {
+		return nil
+	}
+	logrus.WithField("step", "block_rule_source_backfill").Info("Running one-time block rule source backfill")
+	if err := DB.Model(&model.BlockRule{}).
+		Where("reason LIKE ? OR reason LIKE ?", "安全扫描自动阻断%", "风险组件研判%").
+		Update("source", model.BlockRuleSourceAuto).Error; err != nil {
+		return err
+	}
+	return DB.Create(&model.SystemConfig{
+		Key:         marker,
+		Value:       "true",
+		ValueType:   "bool",
+		Category:    "migration",
+		Description: "标记存量自动生成阻断规则已回填 source=auto",
+	}).Error
+}
+
 // migrateLogCleanupSchedule 一次性迁移：旧 log_cleanup.interval 键迁移到 scheduler.cron.log_cleanup。
 // 调度统一后 log_cleanup.interval 不再被调度器读取，存量自定义节奏若不迁移会静默回退到全局间隔。
 func migrateLogCleanupSchedule() error {
@@ -166,6 +189,9 @@ func SeedData() error {
 		return err
 	}
 	if err := migrateLogCleanupSchedule(); err != nil {
+		return err
+	}
+	if err := backfillBlockRuleSource(); err != nil {
 		return err
 	}
 

@@ -32,6 +32,12 @@ export const menuConfig: MenuItem[] = [
         icon: 'fa-solid fa-folder-tree',
         permission: { resource: 'repositories', action: 'read' },
       },
+      {
+        index: '/admin/migration-v2',
+        title: '数据迁移',
+        icon: 'fa-solid fa-arrow-right-arrow-left',
+        permission: { resource: 'system', action: 'admin' },
+      },
     ],
   },
   {
@@ -110,9 +116,9 @@ export const menuConfig: MenuItem[] = [
     ],
   },
   {
-    index: 'system',
-    title: '系统运维',
-    icon: 'fa-solid fa-server',
+    index: 'settings',
+    title: '系统设置',
+    icon: 'fa-solid fa-sliders',
     children: [
       {
         index: '/admin/system-config',
@@ -121,27 +127,35 @@ export const menuConfig: MenuItem[] = [
         permission: { resource: 'system', action: 'admin' },
       },
       {
-        index: '/admin/cas-settings',
-        title: 'CAS 设置',
-        icon: 'fa-solid fa-key',
+        index: '/admin/scheduler',
+        title: '定时任务',
+        icon: 'fa-solid fa-clock',
         permission: { resource: 'system', action: 'admin' },
       },
       {
-        index: '/admin/connections',
-        title: '活跃连接',
-        icon: 'fa-solid fa-network-wired',
+        index: '/admin/backups',
+        title: '备份管理',
+        icon: 'fa-solid fa-download',
         permission: { resource: 'system', action: 'admin' },
       },
       {
-        index: '/admin/system-info',
-        title: '系统信息',
-        icon: 'fa-solid fa-info-circle',
+        index: '/admin/webhooks',
+        title: 'Webhook 管理',
+        icon: 'fa-solid fa-link',
+        permission: { resource: 'webhooks', action: 'read' },
+      },
+    ],
+  },
+  {
+    index: 'ops',
+    title: '运维观测',
+    icon: 'fa-solid fa-wave-square',
+    children: [
+      {
+        index: '/admin/runtime-status',
+        title: '运行状态',
+        icon: 'fa-solid fa-server',
         permission: { resource: 'system', action: 'read' },
-      },
-      {
-        index: '/admin/api-docs',
-        title: 'API 文档',
-        icon: 'fa-solid fa-book',
       },
       {
         index: '/admin/audit',
@@ -154,30 +168,6 @@ export const menuConfig: MenuItem[] = [
         title: '下载日志',
         icon: 'fa-solid fa-file-lines',
         permission: { resource: 'audit', action: 'read' },
-      },
-      {
-        index: '/admin/backups',
-        title: '备份管理',
-        icon: 'fa-solid fa-download',
-        permission: { resource: 'system', action: 'admin' },
-      },
-      {
-        index: '/admin/scheduler',
-        title: '定时任务',
-        icon: 'fa-solid fa-clock',
-        permission: { resource: 'system', action: 'admin' },
-      },
-      {
-        index: '/admin/webhooks',
-        title: 'Webhook 管理',
-        icon: 'fa-solid fa-link',
-        permission: { resource: 'webhooks', action: 'read' },
-      },
-      {
-        index: '/admin/migration-v2',
-        title: '数据迁移',
-        icon: 'fa-solid fa-arrow-right-arrow-left',
-        permission: { resource: 'system', action: 'admin' },
       },
     ],
   },

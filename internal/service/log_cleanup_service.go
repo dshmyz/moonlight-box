@@ -57,6 +57,10 @@ func (s *LogCleanupService) LoadConfig() {
 
 func (s *LogCleanupService) Name() string { return "log_cleanup" }
 
+// ScheduleOnly 实现 ScheduleOnlyTask：清理参数由「下载日志」页维护，
+// 统一调度页只管理调度，避免同一份配置两处可改。
+func (s *LogCleanupService) ScheduleOnly() bool { return true }
+
 // ConfigFields 实现 ConfigurableTask，声明可配置参数。
 func (s *LogCleanupService) ConfigFields() []TaskConfigField {
 	s.mu.RLock()

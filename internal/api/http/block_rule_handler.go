@@ -36,6 +36,18 @@ func (h *BlockRuleHandler) List(c *gin.Context) {
 	if enabled := c.Query("enabled"); enabled != "" {
 		filter["enabled"] = enabled == "true"
 	}
+	if matchType := c.Query("match_type"); matchType != "" {
+		filter["match_type"] = matchType
+	}
+	if source := c.Query("source"); source != "" {
+		filter["source"] = source
+	}
+	if reason := c.Query("reason"); reason != "" {
+		filter["reason"] = "%" + reason + "%"
+	}
+	if keyword := c.Query("keyword"); keyword != "" {
+		filter["keyword"] = "%" + keyword + "%"
+	}
 
 	if p := c.Query("page"); p != "" {
 		page, pageSize := parsePagination(c)
@@ -148,6 +160,54 @@ func (h *BlockRuleHandler) Delete(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"message": "Block rule deleted"})
+}
+
+// maxBatchRuleIDs 单次批量操作上限，避免超大 IN 列表拖垮数据库。
+const maxBatchRuleIDs = 1000
+
+func (h *BlockRuleHandler) BatchUpdateEnabled(c *gin.Context) {
+	var req struct {
+		IDs     []uint `json:"ids" binding:"required"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request", err.Error())
+		return
+	}
+	if len(req.IDs) > maxBatchRuleIDs {
+		response.BadRequest(c, "Too many ids", fmt.Sprintf("at most %d ids per request", maxBatchRuleIDs))
+		return
+	}
+
+	affected, err := h.svc.BulkUpdateEnabled(req.IDs, req.Enabled)
+	if err != nil {
+		internalErr(c, err, "handler error")
+		return
+	}
+
+	response.Success(c, gin.H{"affected": affected, "enabled": req.Enabled})
+}
+
+func (h *BlockRuleHandler) BatchDelete(c *gin.Context) {
+	var req struct {
+		IDs []uint `json:"ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request", err.Error())
+		return
+	}
+	if len(req.IDs) > maxBatchRuleIDs {
+		response.BadRequest(c, "Too many ids", fmt.Sprintf("at most %d ids per request", maxBatchRuleIDs))
+		return
+	}
+
+	affected, err := h.svc.BulkDelete(req.IDs)
+	if err != nil {
+		internalErr(c, err, "handler error")
+		return
+	}
+
+	response.Success(c, gin.H{"affected": affected})
 }
 
 func (h *BlockRuleHandler) ListBlockLogs(c *gin.Context) {

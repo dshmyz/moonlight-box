@@ -72,97 +72,6 @@ type ScanRule struct {
 	References     string
 }
 
-var scanRules = []ScanRule{
-	{
-		PackagePattern: regexp.MustCompile(`(?i)log4j`),
-		MaxVersion:     "2.17.0",
-		CVE:            "CVE-2021-44228",
-		Severity:       model.SeverityCritical,
-		CVSS:           10.0,
-		Title:          "Apache Log4j Remote Code Execution (Log4Shell)",
-		Description:    "Apache Log4j2 JNDI features do not protect against attacker controlled LDAP and other JNDI related endpoints.",
-		FixedVersion:   "2.17.0",
-		References:     "https://nvd.nist.gov/vuln/detail/CVE-2021-44228",
-	},
-	{
-		PackagePattern: regexp.MustCompile(`(?i)lodash`),
-		MaxVersion:     "4.17.21",
-		CVE:            "CVE-2021-23337",
-		Severity:       model.SeverityHigh,
-		CVSS:           7.2,
-		Title:          "Lodash Command Injection",
-		Description:    "Lodash versions prior to 4.17.21 are vulnerable to Command Injection via the template function.",
-		FixedVersion:   "4.17.21",
-		References:     "https://nvd.nist.gov/vuln/detail/CVE-2021-23337",
-	},
-	{
-		PackagePattern: regexp.MustCompile(`(?i)^express$`),
-		MaxVersion:     "4.17.3",
-		CVE:            "CVE-2022-24999",
-		Severity:       model.SeverityMedium,
-		CVSS:           5.3,
-		Title:          "Express.js qs Prototype Pollution",
-		Description:    "Express.js prior to 4.17.3 allows qs prototype pollution via the query string.",
-		FixedVersion:   "4.17.3",
-		References:     "https://nvd.nist.gov/vuln/detail/CVE-2022-24999",
-	},
-	{
-		PackagePattern: regexp.MustCompile(`(?i)^django$`),
-		MaxVersion:     "3.2.14",
-		CVE:            "CVE-2022-28346",
-		Severity:       model.SeverityHigh,
-		CVSS:           7.5,
-		Title:          "Django SQL Injection",
-		Description:    "Django before 3.2.14 allows SQL injection via the QuerySet.order_by() method.",
-		FixedVersion:   "3.2.14",
-		References:     "https://nvd.nist.gov/vuln/detail/CVE-2022-28346",
-	},
-	{
-		PackagePattern: regexp.MustCompile(`(?i)^flask$`),
-		MaxVersion:     "2.2.5",
-		CVE:            "CVE-2023-30861",
-		Severity:       model.SeverityMedium,
-		CVSS:           5.5,
-		Title:          "Flask Cookie Vulnerability",
-		Description:    "Flask before 2.2.5 allows unauthorized access to session cookies.",
-		FixedVersion:   "2.2.5",
-		References:     "https://nvd.nist.gov/vuln/detail/CVE-2023-30861",
-	},
-	{
-		PackagePattern: regexp.MustCompile(`(?i)requests$`),
-		MaxVersion:     "2.31.0",
-		CVE:            "CVE-2023-32681",
-		Severity:       model.SeverityMedium,
-		CVSS:           5.6,
-		Title:          "Requests Proxy Authorization Leak",
-		Description:    "Requests prior to 2.31.0 leaks Proxy-Authorization header to destination servers.",
-		FixedVersion:   "2.31.0",
-		References:     "https://nvd.nist.gov/vuln/detail/CVE-2023-32681",
-	},
-	{
-		PackagePattern: regexp.MustCompile(`(?i)spring-core`),
-		MaxVersion:     "5.3.18",
-		CVE:            "CVE-2022-22965",
-		Severity:       model.SeverityCritical,
-		CVSS:           9.8,
-		Title:          "Spring4Shell RCE Vulnerability",
-		Description:    "Spring Framework RCE via Data Binding on JDK 9+.",
-		FixedVersion:   "5.3.18",
-		References:     "https://nvd.nist.gov/vuln/detail/CVE-2022-22965",
-	},
-	{
-		PackagePattern: regexp.MustCompile(`(?i)^jsonwebtoken$`),
-		MaxVersion:     "9.0.0",
-		CVE:            "CVE-2022-23529",
-		Severity:       model.SeverityHigh,
-		CVSS:           7.5,
-		Title:          "jsonwebtoken Insecure Key Handling",
-		Description:    "jsonwebtoken prior to 9.0.0 allows insecure key handling.",
-		FixedVersion:   "9.0.0",
-		References:     "https://nvd.nist.gov/vuln/detail/CVE-2022-23529",
-	},
-}
-
 func NewSecurityScanner(scanRepo *repository.ScanRepository, db *gorm.DB, blockRepo *repository.BlockRuleRepository) *SecurityScanner {
 	scanner := &SecurityScanner{
 		scanRepo:  scanRepo,
@@ -245,6 +154,7 @@ func (s *SecurityScanner) Run(ctx context.Context) (int, error) {
 func (s *SecurityScanner) Stop() {}
 
 // maybeAutoBlock 扫描命中后按配置自动生成阻断规则（严重/高危/中危可选）。
+// 每个包版本最多生成一条精确规则：同版本多个漏洞合并进 reason，避免规则数与 CVE 数同步膨胀。
 // 通过 blockRuleSvc 创建以失效运行时缓存；同名同版本精确规则已存在时跳过。
 func (s *SecurityScanner) maybeAutoBlock(pkgType, name, version string, vulns []model.Vulnerability) {
 	if s.blockRuleSvc == nil {
@@ -254,7 +164,7 @@ func (s *SecurityScanner) maybeAutoBlock(pkgType, name, version string, vulns []
 	blockCritical, blockHigh, blockMedium := s.blockCritical, s.blockHigh, s.blockMedium
 	s.cfgMu.RUnlock()
 
-	var rules []*model.BlockRule
+	var hits []string
 	for i := range vulns {
 		v := &vulns[i]
 		shouldBlock := (v.Severity == model.SeverityCritical && blockCritical) ||
@@ -263,36 +173,46 @@ func (s *SecurityScanner) maybeAutoBlock(pkgType, name, version string, vulns []
 		if !shouldBlock {
 			continue
 		}
-		rules = append(rules, &model.BlockRule{
-			PackageName: name,
-			PackageType: pkgType,
-			Version:     version,
-			MatchType:   model.BlockMatchExact,
-			Reason:      fmt.Sprintf("安全扫描自动阻断：%s (%s)", v.CVEID, v.Title),
-			Enabled:     true,
-		})
+		hits = append(hits, fmt.Sprintf("%s (%s)", v.CVEID, v.Title))
 	}
-	if len(rules) == 0 {
+	if len(hits) == 0 {
 		return
+	}
+
+	rule := &model.BlockRule{
+		PackageName: name,
+		PackageType: pkgType,
+		Version:     version,
+		MatchType:   model.BlockMatchExact,
+		Reason:      truncateRunes("安全扫描自动阻断："+strings.Join(hits, "；"), 500),
+		Enabled:     true,
+		Source:      model.BlockRuleSourceAuto,
 	}
 
 	// 串行化查重+创建，避免 8 路并发扫描同时判断"规则不存在"导致重复创建
 	s.autoBlockMu.Lock()
 	defer s.autoBlockMu.Unlock()
-	for _, rule := range rules {
-		var count int64
-		if err := s.db.Model(&model.BlockRule{}).
-			Where("package_name = ? AND package_type = ? AND version = ? AND match_type = ?",
-				rule.PackageName, rule.PackageType, rule.Version, rule.MatchType).
-			Count(&count).Error; err == nil && count > 0 {
-			continue
-		}
-		if err := s.blockRuleSvc.Create(rule); err != nil {
-			s.logger.Warnf("自动阻断 %s@%s 失败: %v", name, version, err)
-		} else {
-			s.logger.Infof("安全扫描自动阻断: %s@%s (%s)", name, version, rule.Reason)
-		}
+	var count int64
+	if err := s.db.Model(&model.BlockRule{}).
+		Where("package_name = ? AND package_type = ? AND version = ? AND match_type = ?",
+			rule.PackageName, rule.PackageType, rule.Version, rule.MatchType).
+		Count(&count).Error; err == nil && count > 0 {
+		return
 	}
+	if err := s.blockRuleSvc.Create(rule); err != nil {
+		s.logger.Warnf("自动阻断 %s@%s 失败: %v", name, version, err)
+	} else {
+		s.logger.Infof("安全扫描自动阻断: %s@%s (%s)", name, version, rule.Reason)
+	}
+}
+
+// truncateRunes 按字符数截断，避免多字节字符被截成半个。
+func truncateRunes(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
 }
 
 func (s *SecurityScanner) ScanPackage(ctx context.Context, versionID uint, pkgType, name, version string) *model.ScanResult {
@@ -470,11 +390,14 @@ func (s *SecurityScanner) ListVulnerabilitiesPaginated(page, pageSize int, sever
 func (s *SecurityScanner) detectVulnerabilities(pkgType, name, version string) ([]model.Vulnerability, error) {
 	var vulns []model.Vulnerability
 
-	rules := scanRules
-	if s.vulnRuleService != nil {
-		if allRules, err := s.vulnRuleService.GetAllScanRules(); err == nil {
-			rules = allRules
-		}
+	// 漏洞规则只来自数据库配置（VulnRule），不再内置默认规则：内置表是静态正则，
+	// 误报率高且无法按企业实际依赖维护。未配置规则时不产出任何漏洞。
+	if s.vulnRuleService == nil {
+		return vulns, nil
+	}
+	rules, err := s.vulnRuleService.GetAllScanRules()
+	if err != nil {
+		return nil, fmt.Errorf("load vuln rules: %w", err)
 	}
 
 	for _, rule := range rules {
@@ -615,6 +538,7 @@ func (s *SecurityScanner) BlockByVulnerability(ctx context.Context, cveID string
 			PackageType: "*",
 			Reason:      fmt.Sprintf("Auto-blocked for %s: %s", cveID, v.Title),
 			Enabled:     true,
+			Source:      model.BlockRuleSourceManual,
 		}
 
 		if fixed := strings.TrimSpace(v.FixedVersion); fixed != "" {

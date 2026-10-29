@@ -41,12 +41,12 @@ type ArtifactRemover interface {
 
 // RiskAssessmentService 风险组件研判：上传风险清单 → 匹配仓库制品与依赖 → 落库。
 type RiskAssessmentService struct {
-	db                *gorm.DB
-	logger            *logrus.Logger
-	blockRuleSvc      *BlockRuleService
-	artifactSvc       ArtifactRemover
+	db                  *gorm.DB
+	logger              *logrus.Logger
+	blockRuleSvc        *BlockRuleService
+	artifactSvc         ArtifactRemover
 	dependencyResolvers map[string]runtime.DependencyResolver
-	aiSvc             AICompleter
+	aiSvc               AICompleter
 }
 
 func NewRiskAssessmentService(db *gorm.DB) *RiskAssessmentService {
@@ -838,6 +838,7 @@ func (s *RiskAssessmentService) CreateBlockRules(ctx context.Context, assessment
 			PackageType: pkgType,
 			Reason:      blockRuleReason(item),
 			Enabled:     true,
+			Source:      model.BlockRuleSourceAuto,
 		}
 		if ver.IsFamily(item.Version) {
 			rule.MatchType = model.BlockMatchWildcard

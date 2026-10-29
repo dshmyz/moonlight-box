@@ -94,6 +94,12 @@ func (s *BlockRuleService) ValidateRule(rule *model.BlockRule) error {
 	if rule.MatchType != model.BlockMatchExact && rule.MatchType != model.BlockMatchWildcard && rule.MatchType != model.BlockMatchRange {
 		return invalidBlockRule("match_type must be 'exact', 'wildcard' or 'range'")
 	}
+	if rule.Source == "" {
+		rule.Source = model.BlockRuleSourceManual
+	}
+	if rule.Source != model.BlockRuleSourceManual && rule.Source != model.BlockRuleSourceAuto {
+		return invalidBlockRule("source must be 'manual' or 'auto'")
+	}
 	if rule.MatchType == model.BlockMatchRange {
 		if _, err := parseVersionConstraint(rule.Version); err != nil {
 			return invalidBlockRule("version must be a valid semantic version range: %v", err)
@@ -279,6 +285,7 @@ func (s *BlockRuleService) IsBlockedByPath(pkgType, path string) (*BlockResult, 
 	}
 	return &BlockResult{Blocked: false}, nil
 }
+
 // 第一层调用 IsBlocked（包名+版本）；未命中时进入第二层条件匹配，
 // 遍历条件规则，按 ConditionType 从 attrs 取值并按 ConditionOp 匹配。
 // attrs 中缺少对应 key 时放行（元数据缺失不阻断）。
@@ -724,6 +731,24 @@ func (s *BlockRuleService) Delete(id uint) error {
 		s.invalidateCache()
 	}
 	return err
+}
+
+// BulkUpdateEnabled 批量启用/禁用规则，返回受影响行数。
+func (s *BlockRuleService) BulkUpdateEnabled(ids []uint, enabled bool) (int64, error) {
+	affected, err := s.repo.BulkUpdateEnabled(ids, enabled)
+	if err == nil && affected > 0 {
+		s.invalidateCache()
+	}
+	return affected, err
+}
+
+// BulkDelete 批量删除规则，返回受影响行数。
+func (s *BlockRuleService) BulkDelete(ids []uint) (int64, error) {
+	affected, err := s.repo.BulkDelete(ids)
+	if err == nil && affected > 0 {
+		s.invalidateCache()
+	}
+	return affected, err
 }
 
 func (s *BlockRuleService) invalidateCache() {

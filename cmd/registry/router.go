@@ -255,12 +255,14 @@ func (ctx *RouterContext) setupBlockRuleRoutes(protected *gin.RouterGroup) {
 	{
 		blockRulesWrite.POST("", ctx.Handlers.BlockRule.Create)
 		blockRulesWrite.POST("/batch-import", ctx.Handlers.BlockRule.BatchImport)
+		blockRulesWrite.POST("/batch-status", ctx.Handlers.BlockRule.BatchUpdateEnabled)
 		blockRulesWrite.PUT("/:id", ctx.Handlers.BlockRule.Update)
 	}
 
 	blockRulesDelete := protected.Group("/block-rules")
 	blockRulesDelete.Use(ctx.requirePermission("block-rules", "delete"))
 	{
+		blockRulesDelete.POST("/batch-delete", ctx.Handlers.BlockRule.BatchDelete)
 		blockRulesDelete.DELETE("/:id", ctx.Handlers.BlockRule.Delete)
 	}
 }

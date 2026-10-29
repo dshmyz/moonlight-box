@@ -212,21 +212,22 @@ const routes: RouteRecordRaw[] = [
       },
       {
         path: 'cas-settings',
-        name: 'CASSettings',
-        component: () => import('@/views/CASSettings.vue'),
-        meta: { title: 'CAS 设置', permission: { resource: 'system', action: 'admin' } },
+        redirect: { name: 'SystemConfig', query: { tab: 'cas' } },
       },
       {
+        path: 'runtime-status',
+        name: 'RuntimeStatus',
+        component: () => import('@/views/RuntimeStatus.vue'),
+        meta: { title: '运行状态', permission: { resource: 'system', action: 'read' } },
+      },
+      // 旧的独立页面入口重定向到合并后的运行状态页
+      {
         path: 'system-info',
-        name: 'SystemInfo',
-        component: () => import('@/views/SystemInfo.vue'),
-        meta: { title: '系统信息', permission: { resource: 'system', action: 'read' } },
+        redirect: { name: 'RuntimeStatus', query: { tab: 'info' } },
       },
       {
         path: 'connections',
-        name: 'Connections',
-        component: () => import('@/views/Connections.vue'),
-        meta: { title: '活跃连接', permission: { resource: 'system', action: 'admin' } },
+        redirect: { name: 'RuntimeStatus', query: { tab: 'connections' } },
       },
       {
         path: 'api-docs',

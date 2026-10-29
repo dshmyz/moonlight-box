@@ -37,12 +37,12 @@
             <div class="filter-bar">
               <div class="search-wrapper">
                 <el-input
-                  v-model="searchName"
-                  placeholder="搜索包名"
+                  v-model="keyword"
+                  placeholder="搜索包名 / CVE / 原因"
                   clearable
                   class="search-input"
-                  @clear="loadRules"
-                  @keyup.enter="loadRules"
+                  @clear="handleSearch"
+                  @keyup.enter="handleSearch"
                 >
                   <template #prefix>
                     <i class="fa-solid fa-magnifying-glass search-icon"></i>
@@ -51,27 +51,49 @@
               </div>
 
               <el-select
+                v-model="filterSource"
+                placeholder="来源"
+                clearable
+                class="filter-select"
+                @change="handleSearch"
+              >
+                <el-option label="手动" value="manual" />
+                <el-option label="自动" value="auto" />
+              </el-select>
+
+              <el-select
                 v-model="filterPkgType"
                 placeholder="包类型"
                 clearable
                 class="filter-select"
-                @change="loadRules"
+                @change="handleSearch"
               >
                 <el-option v-for="opt in PACKAGE_TYPE_OPTIONS" :key="opt.value" :label="opt.label" :value="opt.value" />
               </el-select>
 
-              <el-button type="primary" class="search-btn" @click="loadRules">搜索</el-button>
+              <el-button type="primary" class="search-btn" @click="handleSearch">搜索</el-button>
+            </div>
+
+            <div v-if="selectedIds.length" class="batch-bar">
+              <span class="batch-count">已选 {{ selectedIds.length }} 项</span>
+              <el-button size="small" @click="batchSetEnabled(true)">批量启用</el-button>
+              <el-button size="small" @click="batchSetEnabled(false)">批量禁用</el-button>
+              <el-button size="small" type="danger" @click="batchDeleteSelected">批量删除</el-button>
+              <el-button size="small" link @click="clearSelection">取消选择</el-button>
             </div>
 
             <el-table
+              ref="ruleTableRef"
               :data="rules"
               style="width: 100%"
               :header-cell-style="{ background: '#fafbfc' }"
               :row-class-name="tableRowClass"
               @row-mouse-enter="handleRowEnter"
               @row-mouse-leave="handleRowLeave"
+              @selection-change="handleSelectionChange"
               fit
             >
+              <el-table-column type="selection" width="48" />
               <el-table-column prop="package_name" label="包名" min-width="120" show-overflow-tooltip />
               <el-table-column prop="version" label="版本" min-width="100" align="center" />
               <el-table-column prop="match_type" label="匹配类型" min-width="90" align="center">
@@ -84,6 +106,13 @@
               <el-table-column prop="package_type" label="包类型" min-width="85" align="center">
                 <template #default="{ row }">
                   <span class="pkg-type">{{ row.package_type }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="source" label="来源" min-width="75" align="center">
+                <template #default="{ row }">
+                  <el-tag :type="row.source === 'auto' ? 'warning' : 'info'" size="small" effect="plain">
+                    {{ row.source === 'auto' ? '自动' : '手动' }}
+                  </el-tag>
                 </template>
               </el-table-column>
               <el-table-column prop="reason" label="阻断原因" min-width="150" show-overflow-tooltip />
@@ -178,8 +207,11 @@ const loading = ref(false)
 const submitting = ref(false)
 const activeTab = ref('rules')
 const rules = ref<BlockRule[]>([])
-const searchName = ref('')
+const keyword = ref('')
+const filterSource = ref('')
 const filterPkgType = ref('')
+const selectedIds = ref<number[]>([])
+const ruleTableRef = ref<{ clearSelection: () => void } | null>(null)
 const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
@@ -244,8 +276,9 @@ const loadRules = async () => {
   loading.value = true
   try {
     const params: Record<string, any> = { page: page.value, page_size: pageSize.value }
-    if (searchName.value) params.package_name = searchName.value
+    if (keyword.value) params.keyword = keyword.value
     if (filterPkgType.value) params.package_type = filterPkgType.value
+    if (filterSource.value) params.source = filterSource.value
     const res = await blockRuleApi.list(params)
     rules.value = res?.items || []
     total.value = res?.pagination?.total || 0
@@ -253,6 +286,51 @@ const loadRules = async () => {
     ElMessage.error('加载阻断规则失败')
   } finally {
     loading.value = false
+  }
+}
+
+const handleSearch = () => {
+  page.value = 1
+  selectedIds.value = []
+  loadRules()
+}
+
+const handleSelectionChange = (rows: BlockRule[]) => {
+  selectedIds.value = rows.map((row) => row.id)
+}
+
+const clearSelection = () => {
+  ruleTableRef.value?.clearSelection()
+  selectedIds.value = []
+}
+
+const batchSetEnabled = async (enabled: boolean) => {
+  if (!selectedIds.value.length) return
+  try {
+    const res = await blockRuleApi.batchStatus(selectedIds.value, enabled)
+    ElMessage.success(`已${enabled ? '启用' : '禁用'} ${res?.affected ?? selectedIds.value.length} 条规则`)
+    clearSelection()
+    loadRules()
+  } catch {
+    ElMessage.error('批量操作失败')
+  }
+}
+
+const batchDeleteSelected = async () => {
+  if (!selectedIds.value.length) return
+  const ok = await confirm({
+    title: '批量删除确认',
+    message: `确定要删除选中的 ${selectedIds.value.length} 条规则吗？`,
+    type: 'warning',
+  })
+  if (!ok) return
+  try {
+    const res = await blockRuleApi.batchDelete(selectedIds.value)
+    success(`已删除 ${res?.affected ?? selectedIds.value.length} 条规则`)
+    clearSelection()
+    loadRules()
+  } catch {
+    error('批量删除失败')
   }
 }
 
@@ -382,6 +460,8 @@ onMounted(loadRules)
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
   padding: 20px 24px;
   background: #fff;
   border-radius: 16px;
@@ -393,6 +473,7 @@ onMounted(loadRules)
   display: flex;
   align-items: center;
   gap: 16px;
+  flex-shrink: 0;
 }
 
 .header-icon {
@@ -412,6 +493,7 @@ onMounted(loadRules)
   font-size: 20px;
   font-weight: 600;
   color: #1e293b;
+  white-space: nowrap;
 }
 
 .header-subtitle {
@@ -423,6 +505,7 @@ onMounted(loadRules)
 .header-actions {
   display: flex;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .import-btn {
@@ -543,6 +626,24 @@ onMounted(loadRules)
   align-items: center;
 }
 
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+}
+
+.batch-count {
+  font-size: 13px;
+  font-weight: 500;
+  color: #4f46e5;
+  margin-right: 4px;
+}
+
 .search-input {
   width: 200px;
 }
@@ -620,7 +721,8 @@ onMounted(loadRules)
 }
 
 :deep(.el-table td) {
-  padding: 14px 12px;
+  /* 横向留白交给 Element 自带的 .cell padding，避免双层 12px 把窄列挤到换行 */
+  padding: 14px 0;
   border-bottom: 1px solid rgba(0, 0, 0, 0.03);
 }
 

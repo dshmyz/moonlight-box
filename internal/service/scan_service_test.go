@@ -104,6 +104,8 @@ func newScanTestDB(t *testing.T) *gorm.DB {
 		&model.ScanResult{},
 		&model.Vulnerability{},
 		&model.BlockRule{},
+		&model.VulnRule{},
+		&model.VulnDataSource{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -323,18 +325,37 @@ func TestMaybeAutoBlock(t *testing.T) {
 	if rules[0].PackageName != "lodash" || rules[0].Version != "4.17.18" || rules[0].MatchType != model.BlockMatchExact {
 		t.Errorf("rule = %+v", rules[0])
 	}
+	if rules[0].Source != model.BlockRuleSourceAuto {
+		t.Errorf("source = %q, want auto", rules[0].Source)
+	}
+
+	// 同一版本多个漏洞 → 仍只有一条规则，CVE 合并进 reason
+	multiVuln := []model.Vulnerability{
+		{CVEID: "CVE-2021-44228", Severity: model.SeverityCritical, Title: "Log4Shell"},
+		{CVEID: "CVE-2021-45046", Severity: model.SeverityCritical, Title: "Log4j DoS"},
+	}
+	scanner.maybeAutoBlock("npm", "log4j-core", "2.14.1", multiVuln)
+	db.Find(&rules)
+	if len(rules) != 2 {
+		t.Fatalf("多漏洞同版本 rules = %d, want 2 (lodash + log4j-core)", len(rules))
+	}
+	var log4jRule model.BlockRule
+	db.Where("package_name = ?", "log4j-core").First(&log4jRule)
+	if !strings.Contains(log4jRule.Reason, "CVE-2021-44228") || !strings.Contains(log4jRule.Reason, "CVE-2021-45046") {
+		t.Errorf("reason 未合并全部 CVE: %q", log4jRule.Reason)
+	}
 
 	// 再次调用 → 去重，仍 1 条
 	scanner.maybeAutoBlock("npm", "lodash", "4.17.18", criticalVuln)
 	db.Find(&rules)
-	if len(rules) != 1 {
-		t.Errorf("重复自动阻断 rules = %d, want 1 (去重)", len(rules))
+	if len(rules) != 2 {
+		t.Errorf("重复自动阻断 rules = %d, want 2 (去重)", len(rules))
 	}
 
 	// high 命中但 block_high=false → 不生成
 	scanner.maybeAutoBlock("npm", "lodash", "4.17.18", highVuln)
 	db.Find(&rules)
-	if len(rules) != 1 {
+	if len(rules) != 2 {
 		t.Errorf("high 未开启却生成规则: %d", len(rules))
 	}
 }
@@ -344,8 +365,20 @@ func TestScanPackageIdempotent(t *testing.T) {
 	db := newScanTestDB(t)
 	scanner := NewSecurityScanner(repository.NewScanRepository(db), db, repository.NewBlockRuleRepository(db))
 	scanner.SetSecurityDefaults(false, false, false) // 关闭自动阻断，聚焦幂等
+	scanner.SetVulnRuleService(NewVulnRuleService(repository.NewVulnRuleRepository(db), repository.NewVulnDataSourceRepository(db)))
 
-	// lodash 命中内置规则 CVE-2021-23337（MaxVersion 4.17.21）
+	// 漏洞规则只来自数据库配置：lodash 低于 4.17.21 命中
+	if err := db.Create(&model.VulnRule{
+		PackagePattern: `(?i)lodash`,
+		MaxVersion:     "4.17.21",
+		CVE:            "CVE-2021-23337",
+		Severity:       model.SeverityHigh,
+		Title:          "Lodash Command Injection",
+		Enabled:        true,
+	}).Error; err != nil {
+		t.Fatalf("seed vuln rule: %v", err)
+	}
+
 	r1 := scanner.ScanPackage(context.Background(), 42, "npm", "lodash", "4.17.18")
 	if r1 == nil || r1.ScanStatus != model.ScanStatusCompleted {
 		t.Fatalf("first scan result: %+v", r1)

@@ -27,8 +27,9 @@ func NewSystemConfigHandler(configSvc *service.SystemConfigService, auditSvc *se
 }
 
 type SetConfigRequest struct {
-	Key         string `json:"key" binding:"required"`
-	Value       string `json:"value" binding:"required"`
+	Key string `json:"key" binding:"required"`
+	// Value 不加 required：清空某个配置项（如可选 URL）是合法操作
+	Value       string `json:"value"`
 	ValueType   string `json:"value_type"`
 	Category    string `json:"category"`
 	Description string `json:"description"`
@@ -37,8 +38,9 @@ type SetConfigRequest struct {
 
 type BatchUpdateConfigRequest struct {
 	Configs []struct {
-		Key   string `json:"key" binding:"required"`
-		Value string `json:"value" binding:"required"`
+		Key string `json:"key" binding:"required"`
+		// Value 不加 required：允许把配置清空为空字符串
+		Value string `json:"value"`
 	} `json:"configs" binding:"required"`
 }
 
@@ -91,7 +93,19 @@ func (h *SystemConfigHandler) List(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, configs)
+	// 只返回系统配置页负责的键：有专属管理页面的配置（CAS/备份/定时任务）和
+	// 内部迁移标记在这里隐藏，分类也按配置项含义重新归类，不依赖库里的旧 category。
+	visible := make([]model.SystemConfig, 0, len(configs))
+	for _, config := range configs {
+		category, ok := service.DescribeConfig(config.Key)
+		if !ok {
+			continue
+		}
+		config.Category = category
+		visible = append(visible, config)
+	}
+
+	response.Success(c, visible)
 }
 
 func (h *SystemConfigHandler) Set(c *gin.Context) {

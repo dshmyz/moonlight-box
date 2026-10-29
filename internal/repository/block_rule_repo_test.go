@@ -314,3 +314,72 @@ func TestFindAllEnabledConditionalRulesOnlyEnabled(t *testing.T) {
 		t.Fatalf("returned rule id=%d is disabled, should be enabled", got[0].ID)
 	}
 }
+
+// TestListWithPageFiltersAndBulk 验证来源/关键字过滤与批量启停、批量删除。
+func TestListWithPageFiltersAndBulk(t *testing.T) {
+	db := setupTestBlockRuleDB(t)
+	repo := NewBlockRuleRepository(db)
+
+	rules := []*model.BlockRule{
+		{PackageName: "lodash", Version: "4.17.20", MatchType: model.BlockMatchExact, PackageType: "npm", Reason: "安全扫描自动阻断：CVE-2021-23337", Enabled: true, Source: model.BlockRuleSourceAuto},
+		{PackageName: "log4j-core", Version: "2.14.1", MatchType: model.BlockMatchExact, PackageType: "maven", Reason: "安全扫描自动阻断：CVE-2021-44228", Enabled: true, Source: model.BlockRuleSourceAuto},
+		{PackageName: "internal-lib", Version: "1.0.0", MatchType: model.BlockMatchExact, PackageType: "npm", Reason: "人工维护", Enabled: true, Source: model.BlockRuleSourceManual},
+	}
+	for _, r := range rules {
+		if err := repo.Create(r); err != nil {
+			t.Fatalf("create rule: %v", err)
+		}
+	}
+
+	got, total, err := repo.ListWithPage(1, 10, map[string]interface{}{"source": model.BlockRuleSourceAuto})
+	if err != nil {
+		t.Fatalf("ListWithPage by source: %v", err)
+	}
+	if total != 2 || len(got) != 2 {
+		t.Fatalf("source=auto total=%d len=%d, want 2", total, len(got))
+	}
+
+	// keyword 同时匹配包名与 reason（CVE 在 reason 里）
+	got, total, err = repo.ListWithPage(1, 10, map[string]interface{}{"keyword": "%CVE-2021-44228%"})
+	if err != nil {
+		t.Fatalf("ListWithPage by keyword: %v", err)
+	}
+	if total != 1 || got[0].PackageName != "log4j-core" {
+		t.Fatalf("keyword=CVE-2021-44228 total=%d got=%+v", total, got)
+	}
+
+	// keyword 与其他过滤条件组合时必须按 AND 生效
+	got, total, err = repo.ListWithPage(1, 10, map[string]interface{}{
+		"keyword":      "%安全扫描%",
+		"package_type": "npm",
+	})
+	if err != nil {
+		t.Fatalf("ListWithPage combined: %v", err)
+	}
+	if total != 1 || got[0].PackageName != "lodash" {
+		t.Fatalf("combined filters total=%d got=%+v, want only lodash", total, got)
+	}
+
+	ids := make([]uint, 0, len(rules))
+	for _, r := range rules {
+		ids = append(ids, r.ID)
+	}
+
+	affected, err := repo.BulkUpdateEnabled(ids, false)
+	if err != nil || affected != 3 {
+		t.Fatalf("BulkUpdateEnabled affected=%d err=%v, want 3", affected, err)
+	}
+	got, _, _ = repo.ListWithPage(1, 10, map[string]interface{}{"enabled": false})
+	if len(got) != 3 {
+		t.Fatalf("disabled rules = %d, want 3", len(got))
+	}
+
+	affected, err = repo.BulkDelete(ids[:2])
+	if err != nil || affected != 2 {
+		t.Fatalf("BulkDelete affected=%d err=%v, want 2", affected, err)
+	}
+	_, total, _ = repo.ListWithPage(1, 10, nil)
+	if total != 1 {
+		t.Fatalf("remaining rules = %d, want 1", total)
+	}
+}

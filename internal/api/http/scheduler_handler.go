@@ -25,10 +25,10 @@ func NewSchedulerHandler(configSvc *service.SystemConfigService, scheduler *serv
 }
 
 type schedulerTaskItem struct {
-	Name     string                      `json:"name"`
-	Schedule string                      `json:"schedule"`
-	Custom   bool                        `json:"custom"`
-	Config   []service.TaskConfigField   `json:"config,omitempty"`
+	Name     string                    `json:"name"`
+	Schedule string                    `json:"schedule"`
+	Custom   bool                      `json:"custom"`
+	Config   []service.TaskConfigField `json:"config,omitempty"`
 }
 
 func (h *SchedulerHandler) taskByName(name string) service.ScheduledTask {
@@ -51,7 +51,7 @@ func (h *SchedulerHandler) List(c *gin.Context) {
 			Schedule: spec,
 			Custom:   custom,
 		}
-		if configurable, ok := task.(service.ConfigurableTask); ok {
+		if configurable, ok := task.(service.ConfigurableTask); ok && !service.IsScheduleOnly(task) {
 			item.Config = configurable.ConfigFields()
 		}
 		items = append(items, item)
@@ -96,6 +96,11 @@ func (h *SchedulerHandler) Update(c *gin.Context) {
 
 	userID := c.GetUint("userID")
 	if req.Config != nil {
+		if service.IsScheduleOnly(task) {
+			response.BadRequest(c, "task config is managed elsewhere",
+				"该任务的参数由专属页面维护，调度页只能修改调度")
+			return
+		}
 		configurable, ok := task.(service.ConfigurableTask)
 		if !ok {
 			response.BadRequest(c, "task not configurable", name)
@@ -140,7 +145,7 @@ func (h *SchedulerHandler) Update(c *gin.Context) {
 		Schedule: spec,
 		Custom:   custom,
 	}
-	if configurable, ok := task.(service.ConfigurableTask); ok {
+	if configurable, ok := task.(service.ConfigurableTask); ok && !service.IsScheduleOnly(task) {
 		item.Config = configurable.ConfigFields()
 	}
 	response.Success(c, item)

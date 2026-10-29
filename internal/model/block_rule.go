@@ -32,6 +32,12 @@ const (
 // PackageTypeAll 表示匹配所有包类型的特殊值
 const PackageTypeAll = "all"
 
+// 规则来源：manual 为人工创建/导入，auto 为扫描或研判自动生成
+const (
+	BlockRuleSourceManual = "manual"
+	BlockRuleSourceAuto   = "auto"
+)
+
 type BlockRule struct {
 	ID          uint           `gorm:"primaryKey" json:"id"`
 	PackageName string         `gorm:"size:200;not null;index" json:"package_name"`
@@ -44,7 +50,9 @@ type BlockRule struct {
 	ConditionType  ConditionType `gorm:"size:30" json:"condition_type"`
 	ConditionOp    ConditionOp   `gorm:"size:20" json:"condition_op"`
 	ConditionValue string        `gorm:"size:500" json:"condition_value"`
-	CreatedBy      *uint         `json:"created_by,omitempty"`
-	CreatedAt      time.Time     `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt      time.Time     `gorm:"autoUpdateTime" json:"updated_at"`
+	// Source 规则来源：manual=人工创建/导入，auto=扫描或研判自动生成
+	Source    string    `gorm:"size:20;not null;default:manual;index" json:"source"`
+	CreatedBy *uint     `json:"created_by,omitempty"`
+	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }

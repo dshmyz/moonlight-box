@@ -101,8 +101,30 @@ func TestTaskSchedulerInvalidScheduleSkipsTask(t *testing.T) {
 	}
 }
 
+// TestTaskSchedulerDisabledScheduleSkipsTask 验证 off/disabled/none 显式关闭任务。
+func TestTaskSchedulerDisabledScheduleSkipsTask(t *testing.T) {
+	for _, spec := range []string{"off", "disabled", "none", " OFF "} {
+		configSvc := newTestConfigSvc(t)
+		s := NewTaskScheduler(configSvc)
+		task := &countingTask{name: "t1"}
+		s.Register(task)
+		if err := configSvc.Set(ScheduleConfigKey("t1"), spec, "string", "scheduler", "", false, 0); err != nil {
+			t.Fatalf("set schedule %q: %v", spec, err)
+		}
+
+		s.Start()
+		time.Sleep(200 * time.Millisecond)
+		s.Stop()
+
+		if task.count() != 0 {
+			t.Fatalf("disabled schedule %q ran %d times, want 0", spec, task.count())
+		}
+	}
+}
+
 // TestTaskSchedulerRunNow 验证 RunNow 按名执行，未知任务返回 ErrTaskNotFound。
-func TestTaskSchedulerRunNow(t *testing.T) {	s := NewTaskScheduler(nil)
+func TestTaskSchedulerRunNow(t *testing.T) {
+	s := NewTaskScheduler(nil)
 	a := &countingTask{name: "a"}
 	b := &countingTask{name: "b"}
 	s.Register(a)
@@ -191,7 +213,7 @@ func TestTaskSchedulerRunNowReturnsError(t *testing.T) {
 
 type failingTask struct{}
 
-func (t *failingTask) Name() string                        { return "failing" }
+func (t *failingTask) Name() string                         { return "failing" }
 func (t *failingTask) Run(ctx context.Context) (int, error) { return 0, errors.New("boom") }
 func (t *failingTask) Reload()                              {}
 func (t *failingTask) Stop()                                {}

@@ -36,17 +36,7 @@ func (r *BlockRuleRepository) GetByID(id uint) (*model.BlockRule, error) {
 
 func (r *BlockRuleRepository) List(filter map[string]interface{}) ([]model.BlockRule, error) {
 	var rules []model.BlockRule
-	query := r.db.Model(&model.BlockRule{})
-
-	if pkgName, ok := filter["package_name"]; ok {
-		query = query.Where("package_name LIKE ?", pkgName)
-	}
-	if pkgType, ok := filter["package_type"]; ok {
-		query = query.Where("package_type = ?", pkgType)
-	}
-	if enabled, ok := filter["enabled"]; ok {
-		query = query.Where("enabled = ?", enabled)
-	}
+	query := applyBlockRuleFilters(r.db.Model(&model.BlockRule{}), filter)
 
 	err := query.Order("created_at DESC").Find(&rules).Error
 	return rules, err
@@ -55,17 +45,7 @@ func (r *BlockRuleRepository) List(filter map[string]interface{}) ([]model.Block
 func (r *BlockRuleRepository) ListWithPage(page, pageSize int, filter map[string]interface{}) ([]model.BlockRule, int64, error) {
 	var rules []model.BlockRule
 	var total int64
-	query := r.db.Model(&model.BlockRule{})
-
-	if pkgName, ok := filter["package_name"]; ok {
-		query = query.Where("package_name LIKE ?", pkgName)
-	}
-	if pkgType, ok := filter["package_type"]; ok {
-		query = query.Where("package_type = ?", pkgType)
-	}
-	if enabled, ok := filter["enabled"]; ok {
-		query = query.Where("enabled = ?", enabled)
-	}
+	query := applyBlockRuleFilters(r.db.Model(&model.BlockRule{}), filter)
 
 	err := query.Count(&total).Error
 	if err != nil {
@@ -77,6 +57,49 @@ func (r *BlockRuleRepository) ListWithPage(page, pageSize int, filter map[string
 		Find(&rules).Error
 
 	return rules, total, err
+}
+
+// applyBlockRuleFilters 应用列表过滤条件。package_name/reason/keyword 由调用方传入带 % 的 LIKE 值。
+func applyBlockRuleFilters(query *gorm.DB, filter map[string]interface{}) *gorm.DB {
+	if pkgName, ok := filter["package_name"]; ok {
+		query = query.Where("package_name LIKE ?", pkgName)
+	}
+	if pkgType, ok := filter["package_type"]; ok {
+		query = query.Where("package_type = ?", pkgType)
+	}
+	if enabled, ok := filter["enabled"]; ok {
+		query = query.Where("enabled = ?", enabled)
+	}
+	if matchType, ok := filter["match_type"]; ok {
+		query = query.Where("match_type = ?", matchType)
+	}
+	if source, ok := filter["source"]; ok {
+		query = query.Where("source = ?", source)
+	}
+	if reason, ok := filter["reason"]; ok {
+		query = query.Where("reason LIKE ?", reason)
+	}
+	if keyword, ok := filter["keyword"]; ok {
+		// 显式加括号：GORM 不会给裸 SQL 片段补括号，OR 会与其他条件按优先级错位组合
+		query = query.Where("(package_name LIKE ? OR reason LIKE ?)", keyword, keyword)
+	}
+	return query
+}
+
+func (r *BlockRuleRepository) BulkUpdateEnabled(ids []uint, enabled bool) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	result := r.db.Model(&model.BlockRule{}).Where("id IN ?", ids).Update("enabled", enabled)
+	return result.RowsAffected, result.Error
+}
+
+func (r *BlockRuleRepository) BulkDelete(ids []uint) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	result := r.db.Where("id IN ?", ids).Delete(&model.BlockRule{})
+	return result.RowsAffected, result.Error
 }
 
 // FindAllEnabledExactRules 查询所有启用的精确匹配规则，排除带条件的规则

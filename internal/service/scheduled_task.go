@@ -57,14 +57,41 @@ type ConfigurableTask interface {
 	UpdateConfig(values map[string]any, updatedBy uint) error
 }
 
+// ScheduleOnlyTask 可选接口：任务参数由专属页面维护，统一调度页只管理调度、
+// 不渲染参数表单，避免同一份配置出现多个编辑入口。
+type ScheduleOnlyTask interface {
+	ScheduleOnly() bool
+}
+
+// IsScheduleOnly 判断任务参数是否由专属页面维护。
+func IsScheduleOnly(task ScheduledTask) bool {
+	if t, ok := task.(ScheduleOnlyTask); ok {
+		return t.ScheduleOnly()
+	}
+	return false
+}
+
 // ScheduleConfigKey 返回某任务的调度配置 key（存于 system_configs）。
 func ScheduleConfigKey(name string) string {
 	return "scheduler.cron." + name
 }
 
+// IsScheduleDisabled 判断调度是否被显式关闭（off/disabled/none）。
+// 关闭的任务保留配置但不建立 cron entry，可随时改回 cron/@every 恢复。
+func IsScheduleDisabled(spec string) bool {
+	switch strings.ToLower(strings.TrimSpace(spec)) {
+	case "off", "disabled", "none":
+		return true
+	}
+	return false
+}
+
 // ValidateSchedule 校验调度表达式：必须是合法的 cron/@every，且 @every 间隔必须为正。
 // robfig/cron 对 "@every 0s" / 负间隔不报错（clamp 到 1s 每秒触发），必须显式拦截。
 func ValidateSchedule(spec string) error {
+	if IsScheduleDisabled(spec) {
+		return nil
+	}
 	if _, err := cron.ParseStandard(spec); err != nil {
 		return err
 	}
@@ -236,6 +263,14 @@ func (s *TaskScheduler) rebuild() {
 	defer s.schedMu.Unlock()
 	for _, task := range s.tasks {
 		spec := s.ScheduleFor(task)
+		if IsScheduleDisabled(spec) {
+			if id, ok := s.entryIDs[task.Name()]; ok {
+				s.cron.Remove(id)
+				delete(s.entryIDs, task.Name())
+			}
+			s.entrySpecs[task.Name()] = spec
+			continue
+		}
 		if err := ValidateSchedule(spec); err != nil {
 			logrus.WithError(err).WithFields(logrus.Fields{
 				"module": "scheduler",

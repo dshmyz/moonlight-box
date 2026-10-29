@@ -90,7 +90,6 @@ func (s *VulnRuleService) GetAllScanRules() ([]ScanRule, error) {
 		})
 	}
 
-	rules = append(rules, scanRules...)
 	return rules, nil
 }
 

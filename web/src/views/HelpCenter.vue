@@ -10,10 +10,16 @@
           <p class="header-subtitle">查找使用文档和常见问题解答</p>
         </div>
       </div>
-      <el-button class="back-btn" @click="goBack">
-        <i class="fa-solid fa-arrow-left"></i>
-        <span>返回</span>
-      </el-button>
+      <div class="header-actions">
+        <el-button class="docs-btn" @click="router.push('/admin/api-docs')">
+          <i class="fa-solid fa-book"></i>
+          <span>API 文档</span>
+        </el-button>
+        <el-button class="back-btn" @click="goBack">
+          <i class="fa-solid fa-arrow-left"></i>
+          <span>返回</span>
+        </el-button>
+      </div>
     </header>
 
     <div class="content-panel">
@@ -53,6 +59,12 @@ const goBack = () => {
 .help-center {
   min-height: 100%;
   background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .page-header {
