@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -71,11 +72,28 @@ func ServeArtifactContent(w http.ResponseWriter, r *http.Request, artifact *Arti
 		return serveArtifactRange(w, r, artifact, rangeHeader)
 	}
 
+	// 已知大小就带 Content-Length：客户端据此判断"收全了没有"。没有它，任何
+	// 传输中断都只能由格式解码器报"数据不完整"，客户端还会把半截内容缓存下来。
+	// 多 blob 制品不声明长度：Content 只包含 BlobRefs[0]，声明总长会误报截断。
+	size := int64(0)
+	if len(artifact.BlobRefs) <= 1 {
+		size = artifactKnownSize(artifact)
+	}
+	if size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
 	w.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodHead {
 		return nil
 	}
-	_, err := io.Copy(w, artifact.Content)
+	if size <= 0 {
+		_, err := io.Copy(w, artifact.Content)
+		return err
+	}
+	written, err := io.CopyN(w, artifact.Content, size)
+	if errors.Is(err, io.EOF) {
+		return fmt.Errorf("artifact content truncated: wrote %d of %d bytes", written, size)
+	}
 	return err
 }
 

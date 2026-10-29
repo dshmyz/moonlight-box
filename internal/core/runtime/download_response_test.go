@@ -273,6 +273,136 @@ func TestServeArtifactContent_IfModifiedSinceReturnsNotModifiedWithoutBody(t *te
 	}
 }
 
+// 制品响应必须带 Content-Length：客户端据此判断传输是否完整。
+// 没有它，中断只能被格式解码器暴露成"数据不完整"，客户端还会缓存半截文件。
+func TestServeArtifactContent_SetsContentLength(t *testing.T) {
+	content := "tarball-bytes"
+	artifact := NewArtifact(ArtifactSpec{
+		Format:    "npm",
+		Kind:      KindFile,
+		Name:      "pkg",
+		Filename:  "pkg-1.0.0.tgz",
+		SizeBytes: int64(len(content)),
+		Content:   io.NopCloser(strings.NewReader(content)),
+		BlobRefs:  []BlobRef{{Size: int64(len(content))}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/repository/npm/pkg/-/pkg-1.0.0.tgz", nil)
+	w := httptest.NewRecorder()
+
+	if err := ServeArtifactContent(w, req, artifact, "pkg-1.0.0.tgz", "application/octet-stream", "inline"); err != nil {
+		t.Fatalf("ServeArtifactContent failed: %v", err)
+	}
+	if got, want := w.Header().Get("Content-Length"), "13"; got != want {
+		t.Fatalf("Content-Length = %q, want %q", got, want)
+	}
+	if got := w.Body.String(); got != content {
+		t.Fatalf("body = %q, want %q", got, content)
+	}
+}
+
+// HEAD 也应带 Content-Length，客户端可据此预检大小。
+func TestServeArtifactContent_HeadReturnsContentLengthWithoutBody(t *testing.T) {
+	content := "tarball-bytes"
+	artifact := NewArtifact(ArtifactSpec{
+		Format:    "npm",
+		Kind:      KindFile,
+		Name:      "pkg",
+		Filename:  "pkg-1.0.0.tgz",
+		SizeBytes: int64(len(content)),
+		Content:   io.NopCloser(strings.NewReader(content)),
+		BlobRefs:  []BlobRef{{Size: int64(len(content))}},
+	})
+	req := httptest.NewRequest(http.MethodHead, "/repository/npm/pkg/-/pkg-1.0.0.tgz", nil)
+	w := httptest.NewRecorder()
+
+	if err := ServeArtifactContent(w, req, artifact, "pkg-1.0.0.tgz", "application/octet-stream", "inline"); err != nil {
+		t.Fatalf("ServeArtifactContent failed: %v", err)
+	}
+	if got, want := w.Header().Get("Content-Length"), "13"; got != want {
+		t.Fatalf("Content-Length = %q, want %q", got, want)
+	}
+	if w.Body.Len() != 0 {
+		t.Fatalf("HEAD body = %q, want empty", w.Body.String())
+	}
+}
+
+// 大小未知时保持原有行为：不声明长度，全量输出。
+func TestServeArtifactContent_UnknownSizeOmitsContentLength(t *testing.T) {
+	content := "dynamic-content"
+	artifact := NewArtifact(ArtifactSpec{
+		Format:   "maven",
+		Kind:     KindMetadata,
+		Name:     "artifact",
+		Filename: "maven-metadata.xml",
+		Content:  io.NopCloser(strings.NewReader(content)),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/repository/maven/maven-metadata.xml", nil)
+	w := httptest.NewRecorder()
+
+	if err := ServeArtifactContent(w, req, artifact, "maven-metadata.xml", "application/xml", "inline"); err != nil {
+		t.Fatalf("ServeArtifactContent failed: %v", err)
+	}
+	if got := w.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want empty", got)
+	}
+	if got := w.Body.String(); got != content {
+		t.Fatalf("body = %q, want %q", got, content)
+	}
+}
+
+// 内容比声明的短时必须返回错误（而不是静默发半截），且响应头仍声明完整长度，
+// 让客户端把它识别为"传输不完整"并重试，而不是当成坏文件缓存。
+func TestServeArtifactContent_ShortContentReportsTruncation(t *testing.T) {
+	artifact := NewArtifact(ArtifactSpec{
+		Format:    "npm",
+		Kind:      KindFile,
+		Name:      "pkg",
+		Filename:  "pkg-1.0.0.tgz",
+		SizeBytes: 100,
+		Content:   io.NopCloser(strings.NewReader("only-20-bytes-here!!")),
+		BlobRefs:  []BlobRef{{Size: 100}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/repository/npm/pkg/-/pkg-1.0.0.tgz", nil)
+	w := httptest.NewRecorder()
+
+	err := ServeArtifactContent(w, req, artifact, "pkg-1.0.0.tgz", "application/octet-stream", "inline")
+	if err == nil {
+		t.Fatal("expected truncation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "truncated") {
+		t.Fatalf("error = %v, want truncation", err)
+	}
+	if got, want := w.Header().Get("Content-Length"), "100"; got != want {
+		t.Fatalf("Content-Length = %q, want %q", got, want)
+	}
+}
+
+// 多 blob 制品当前只服务 BlobRefs[0]，不能声明总长度（会误报截断）。
+func TestServeArtifactContent_MultiBlobOmitsContentLength(t *testing.T) {
+	content := "part-one"
+	artifact := NewArtifact(ArtifactSpec{
+		Format:    "generic",
+		Kind:      KindFile,
+		Name:      "multi",
+		Filename:  "multi.bin",
+		SizeBytes: 100,
+		Content:   io.NopCloser(strings.NewReader(content)),
+		BlobRefs:  []BlobRef{{Size: 8}, {Size: 92}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/repository/generic/multi.bin", nil)
+	w := httptest.NewRecorder()
+
+	if err := ServeArtifactContent(w, req, artifact, "multi.bin", "application/octet-stream", "inline"); err != nil {
+		t.Fatalf("ServeArtifactContent failed: %v", err)
+	}
+	if got := w.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want empty", got)
+	}
+	if got := w.Body.String(); got != content {
+		t.Fatalf("body = %q, want %q", got, content)
+	}
+}
+
 // MIME 由文件名推导，且与 Nexus 的映射习惯对齐。
 func TestContentTypeForFilename(t *testing.T) {
 	cases := map[string]string{
